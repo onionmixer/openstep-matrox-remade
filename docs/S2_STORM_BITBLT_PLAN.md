@@ -203,21 +203,35 @@ S2b 목적지가 가시영역 안에 정확히 들어감.
 
 codex 답변을 **그대로 채택하지 않고** X.Org 원본과 대조했다.
 
-### 8-1. 채택하지 않음 — `RPL` → `RSTR` 변경 요구
+### 8-1. 채택하지 않음(결론) / 근거는 실재했음 — `RPL` vs `RSTR`
 
 codex는 "화면간 복사는 `RSTR`을 써야 하므로 `0x040C4008`이 아니라 `0x040C4018`"
-이라며 하드웨어 실행 보류를 권고했다. **원본 대조 결과 이 주장은 틀렸다.**
+이라며 하드웨어 실행 보류를 권고했다. 우리는 X.Org 대조 후 `RPL`을 유지했고
+**실기에서 동작했다(§9).**
 
-1. `pMga->AtypeNoBLK = MGAAtypeNoBLK` — 칩별 대체 경로가 없다(대입 2곳 모두 동일).
-2. `MGAAtypeNoBLK[GXcopy=3] = MGADWG_RPL | 0x000c0000` — **RPL이다.**
-3. 표의 패턴이 이를 뒷받침한다: `RPL`이 놓인 인덱스는 0(GXclear)·3(GXcopy)·
-   12(GXcopyInverted)·15(GXset) — 정확히 **목적지를 읽을 필요가 없는** ROP들이다.
-   `RSTR`은 소스·목적지 조합이 필요한 ROP용이다. 단순 복사에 RPL은 의미상 옳다.
-4. 결정적으로, FastBlit 경로가 끝나며 DWGCTL을 **복원**하는 코드가
-   `AtypeNoBLK[GXcopy] | SHIFTZERO | BITBLT | BFCOL`을 그대로 쓴다 — 즉 소스
-   두 곳에서 동일한 조합이 확인된다.
+**사후 정정(중요)**: 처음 이 절에 "codex 주장은 틀렸다"고 적었으나 부정확했다.
+S3 조사 중 우리 저장소 안의 **또 다른 Matrox 구현**을 발견했다 —
+`openstep-sdl12/upstream/SDL-1.2.15/src/video/fbcon/SDL_fbmatrox.c:203`:
 
-→ **`DWGCTL = 0x040C4008` 유지.**
+```c
+blitop = MGADWG_BFCOL | MGADWG_BITBLT | MGADWG_SHIFTZERO
+       | MGADWG_RSTR | (0x0C << 16);
+```
+
+즉 **codex가 인용한 "Matrox SDL 경로는 RSTR을 쓴다"는 사실이었다.** 틀린 것은
+*근거*가 아니라 *결론*("0x040C4008은 suspect이니 실행을 막아라")이었다.
+
+정확한 정리: 단순 복사에서 두 형식 모두 유효하다.
+- `RSTR | bop=0x0C` (SDL): 래스터 연산으로 "소스 복사"를 지정
+- `RPL | bop=0x0C` (X.Org, 우리): 목적지를 읽지 않는 "치환"
+
+같은 결과를 내며 `RPL`이 목적지 read를 생략하므로 오히려 유리하다. X.Org의
+`MGAAtypeNoBLK`에서 `RPL` 슬롯이 0(GXclear)·3(GXcopy)·12·15 — 정확히 목적지를
+읽을 필요 없는 ROP들인 것이 이를 뒷받침한다. 또 X.Org FastBlit 경로가 DWGCTL을
+복원할 때 같은 `AtypeNoBLK[GXcopy] | SHIFTZERO | BITBLT | BFCOL` 조합을 쓴다.
+
+→ **`DWGCTL = 0x040C4008` 유지(실기 실증).** 교훈: 교차검토가 제시한 *근거*는
+독립적으로 확인할 가치가 있으며, 결론이 틀렸다고 해서 근거까지 틀린 것은 아니다.
 
 ### 8-2. 채택 — 클립은 목적지 전용, 넓히지 말 것
 
