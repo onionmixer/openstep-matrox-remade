@@ -2,6 +2,14 @@
 
 기준일: 2026-08-18
 
+> **폐기됨(2026-08-19)**: 이 계획은 `MatroxMGA`와 공존하는 Mesa/3D sidecar
+> 서비스를 목표로 세운 초기 설계다. 실제로는 H1 방법론 전환 이후 `MatroxMGA`를
+> 완전히 대체하는 `OpenStepMGAReplacementDisplay`를 만드는 방향으로 바뀌었고,
+> 그 드라이버가 실기에서 다중해상도·다중심도로 동작 중이다. 현재 상태는
+> [README.md](README.md#현재-상태-2026-08-19)와
+> [docs/TEST_STATUS.md](docs/TEST_STATUS.md)를 따른다. 이 문서는 탐색 과정의
+> 근거 기록으로만 남긴다.
+
 ## 목표와 완료 정의
 
 최종 목표는 PCI Matrox G400/G450에서 Mesa 3.4.2의 고정 기능 OpenGL 1.2

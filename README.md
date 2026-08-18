@@ -5,7 +5,36 @@ OPENSTEP 4.2의 Matrox G400/G450 PCI VGA를 위한 새 DriverKit 기반
 수정하는 것이 아니라, 공개 하드웨어 자료와 공개 MGA 구현을 근거로
 새로운 구현을 만드는 것이다.
 
-## 범위
+## 현재 상태 (2026-08-19)
+
+**`OpenStepMGAReplacementDisplay`가 실기에서 동작한다.** 기존 `MatroxMGA`를
+대체하는 완전한 `IOFrameBufferDisplay` 서브클래스로, G450을 다음 조합으로
+구동한다:
+
+- **해상도** 5종(640×480 ~ 1600×1200, VESA DMT 타이밍)
+- **픽셀 포맷** 5종: RGB:888/32, RGB:555/16, RGB:256/8(PseudoColor,
+  `setTransferTable:count:`로 윈도서버 컬러맵 반영), BW:8/BW:4(grayscale,
+  8bpp 스캔아웃 위에 팔레트 양자화 — 진짜 2bpp linear는 G450 스캔아웃 엔진의
+  한계로 불가능함을 원본 바이너리로 확정)
+- Configure.app의 `Display.modes`로 25개 조합(5×5) 선택 가능,
+  config-table `Display Mode` 문자열로 부팅 시 반영
+
+G450 PLL(픽셀 클럭 M/N/P 후보 탐색)과 15bpp RAMDAC 팔레트 인덱싱은 원본
+`MatroxMGA` 바이너리를 IDA로 완전 해독하고 codex와 교차검토해 충실히
+포팅했다 — 자세한 내용과 실기 검증 결과는
+[docs/R6_G450_PIXEL_PLL_ALGORITHM.md](docs/R6_G450_PIXEL_PLL_ALGORITHM.md)에,
+전체 검증 이력은 [docs/TEST_STATUS.md](docs/TEST_STATUS.md)에 있다.
+
+아래 "## 범위"부터 "## 초기 설계 결론"까지는 이 결과에 이르기 전, 2026-08-18
+기준으로 세운 **초기 설계 방향(폐기됨)** — `MatroxMGA`와 공존하는 별도
+Mesa/3D sidecar 서비스 — 의 기록이다. 실제로는 H1 방법론 전환(운영자가 target을
+generic SVGA 단독 소유로 재부팅해 MGA native 자원을 무소유 상태로 만듦) 이후
+`MatroxMGA`를 완전히 대체하는 display driver 자체를 새로 만드는 방향으로
+바뀌었고, 그 결과가 위 "현재 상태"다. 아래 내용은 탐색 과정의 근거·결정 기록으로
+남겨두되, 현재 아키텍처를 나타내지는 않는다. Mesa/3D 가속 경로는 이 replacement
+driver 위에서 아직 다시 설계되지 않았다.
+
+## 범위 (2026-08-18 초기 설계, 폐기됨)
 
 - 대상: Matrox MGA G400/G450 계열, PCI, i386 OPENSTEP 4.2.
 - 3D 목표: Mesa 3.4.2와 연결 가능한 고정 기능 OpenGL 1.2 가속 경로.
@@ -14,7 +43,7 @@ OPENSTEP 4.2의 Matrox G400/G450 PCI VGA를 위한 새 DriverKit 기반
 - 제외: AGP/GART, GL 1.3 이상 확장, shader, 다중 head, WindowServer
   교체, 기존 `MatroxMGA` 바이너리의 수정.
 
-## 현재 결론
+## 초기 설계 결론 (2026-08-18, 폐기됨)
 
 OPENSTEP DriverKit은 PCI/MMIO mapping, DMA 물리 주소 변환, 인터럽트,
 loadable kernel server, MiG 통신을 제공하므로 native DRM-유사 서비스는
