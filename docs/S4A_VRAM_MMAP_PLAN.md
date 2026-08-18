@@ -1,8 +1,8 @@
 # S4a — 오프스크린 VRAM을 유저 태스크에 매핑 (`cdevsw` mmap)
 
 기준일: 2026-08-19
-상태: codex 교차검토(§8) 반영해 **대폭 개정**. 구현 미시작.
-**차단 요건 2건(캐시 속성·언로드 수명)이 해결되기 전에는 Mesa 연결 불가.**
+상태: ✅ **완료 — 실기 전항목 PASS(§9).** 차단 요건 §7-1(캐시 일관성)은
+**해제**됐고, §7-2(매핑 수명)는 "언로드 금지 + 재부팅 해제"로 대응 중이다.
 선행: [S3a](S3_IODISPLAY_DO_BLIT_PLAN.md) PASS(엔진 구동 경로 완성),
 [S3b-prep](S3B_PREP_INSTRUMENTATION_PLAN.md) §14(관문 조사).
 
@@ -298,3 +298,84 @@ MMIO(디바이스 부작용), 미존재 물리공간(폴트·행)을 유저 프�
 핸들**이 필요하고, 콜백은 그 클라이언트에 할당된 구간만 허용해야 한다.
 → 고정 창으로 **물리 매핑·캐시 거동을 먼저 증명**하고, S4b 전에 할당자
 (`protocol/OpenStepMGAOffscreenAllocator`)와 실제 소유권 모델을 도입한다.
+
+## 9. ✅ 실기 결과 — 전항목 PASS (2026-08-19)
+
+1024×768×32, `"VRAM Mmap" = "Yes"`, 콜드 부팅.
+
+부팅 시 등록:
+```
+S4a: PAGE_SIZE=8192 PAGE_SHIFT=13 fbPhys=f8000000 firstPFN=7c200
+S4a: VRAM window 4194304..7340031 (3072 KiB) as character major 1;
+     the driver must NOT be unloaded while this is enabled
+S3: self-test end 6/6 passed          ← 회귀 없음
+```
+
+유저스페이스 프로브:
+```
+character major = 1
+OSMGA_VRAM_MMAP      offset=4194304 len=65536 OK addr=0x40000
+OSMGA_VRAM_SELF      PASS (0 bad)
+OSMGA_VRAM_FILL      y=1024 colour=5aa55aa5 r=0 OK
+OSMGA_VRAM_CACHE     row0 before=a5000000 after=5aa55aa5 -> COHERENT
+OSMGA_VRAM_CACHE     row1 before=a5000400 after=5aa55aa5 -> COHERENT
+OSMGA_VRAM_UNTOUCHED PASS (0 differ outside the filled rect)
+OSMGA_VRAM_GUARD     offset=0    (visible scanout)     -> REFUSED (correct)
+OSMGA_VRAM_GUARD     offset=8MiB (beyond proven VRAM)  -> REFUSED (correct)
+```
+
+### 9-1. ✅ 차단 요건 §7-1(캐시) 해제
+
+**stale-cache 게이트 통과.** 유저스페이스가 옛 값을 읽어 캐시에 올린 뒤
+(`before=a5000000`) 엔진이 같은 VRAM을 덮어썼고, 다시 읽으니 **새 값이 보였다**
+(`after=5aa55aa5`). 단순 왕복이 아니라 캐시를 의도적으로 오염시킨 뒤 확인한
+결과이므로, **유저 매핑이 엔진 쓰기와 일관**함이 실증됐다.
+
+역방향(CPU가 쓴 데이터를 엔진이 보는가)은 `UNTOUCHED PASS`가 뒷받침한다 —
+채운 사각형 밖의 CPU 패턴이 그대로 남아 있고, 엔진이 창 안에서 정확히 지정 영역만
+건드렸다.
+
+### 9-2. ✅ 경계 방어 실증
+가시 스캔아웃(offset 0)과 미실증 VRAM(8 MiB) 모두 거부됐다. 호스트에서 전수
+검증한 14개 경계 케이스가 실기에서도 성립한다.
+
+## 10. 이 과정에서 확정된 플랫폼 사실 (중요)
+
+### 10-1. 이 커널의 VM 페이지는 **8 KiB**다
+`PAGE_SIZE=8192, PAGE_SHIFT=13`. i386 하드웨어 페이지(4 KiB)가 아니다.
+`d_mmap`이 반환하는 PFN도 **8 KiB 단위**다.
+→ 상수 4096/12를 하드코딩했다면 매핑이 절반씩 어긋났을 것이다.
+커널 전역(`page_size`/`page_shift`)을 링크해 쓴 판단이 옳았다.
+
+### 10-2. 이 `mmap`은 **4.2BSD 판본**이다
+`bsd/sys/mman.h`가 `@(#)mman.h 7.1 (Berkeley) 6/4/86`이고 `MAP_SHARED=1`,
+`MAP_PRIVATE=2`뿐 — **`MAP_FIXED`도 `MAP_ANON`도 없다.**
+
+`_smmap` 동작:
+1. `vm_map_check_protection(task, addr, addr+len, RW)` — **호출자가 이미 그 주소를
+   읽기/쓰기 가능하게 소유하고 있어야 한다.** `addr=0`은 여기서 EINVAL.
+2. `vm_deallocate(task, addr, len)` 후 그 자리에 디바이스 객체를 매핑
+3. **성공 시 0을 반환한다** — 매핑 주소를 돌려주지 않는다
+
+→ 올바른 사용법: `vm_allocate`로 자리를 먼저 잡고, 그 주소로 `mmap`하고,
+**반환값은 성공/실패 판정에만 쓰고 주소는 자기가 잡은 것을 쓴다.**
+반환값을 포인터로 쓰면 NULL 역참조(Bus error)가 난다. 둘 다 실제로 겪었다.
+
+### 10-3. 우리 테스트 산술 오류 1건 (기록)
+`UNTOUCHED FAIL (448 differ)`는 드라이버가 아니라 **검사 코드의 오류**였다.
+64×8 사각형은 stride 1024로 흩어지는데 선형 512워드로 검사했다.
+448 = 7행 × 64로 정확히 설명된다. stride-aware로 고친 뒤 PASS.
+→ 실패를 보면 **피검체가 아니라 검사기를 먼저 의심**할 것.
+
+## 11. 남은 차단 요건과 다음
+
+§7-2(매핑 수명)는 **미해결로 남는다**: `IORemoveFromCdevsw`는 기존 매핑을 되돌리지
+못하고, 매핑은 `close()`와 드라이버 언로드보다 오래 산다. 현재 대응("매핑 기능이
+켜지면 언로드 금지, 해제는 재부팅")은 유효하며 이 단계에서는 충분하다.
+
+S4b(Mesa 연결) 전에 필요한 것:
+- 오프스크린 **할당자**와 per-client 소유권 모델(`d_mmap`은 클라이언트 신원을 못
+  받으므로 검증된 minor 등에 인코딩해야 한다 — §8-7)
+- Mesa 렌더 타깃(색상+깊이)이 창 크기(현재 3 MiB)에 맞는지 검토.
+  1024×768×32 색상만 3 MiB이므로 깊이버퍼까지 넣으려면 창 확장이나 더 작은
+  렌더 타깃이 필요하다 — populated VRAM 실측이 여기서 다시 관건이 된다.

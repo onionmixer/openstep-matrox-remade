@@ -29,6 +29,10 @@
 #import <driverkit/IODeviceDescription.h>
 #import <driverkit/IOConfigTable.h>
 #import <driverkit/i386/ioPorts.h>
+#import <driverkit/devsw.h>
+#import <mach/vm_param.h>
+#import <bsd/sys/mman.h>
+#import <bsd/sys/errno.h>
 #import "OpenStepMGAReplacementDisplay.h"
 #import "OpenStepMGAManualConfig.h"
 #import "OpenStepMGAEDID.h"
@@ -140,6 +144,9 @@
  * arguments, same validation, same engine helper.
  */
 #define OSMGA_PROBE_BLIT_PARAM  "OSMGAProbeBlit"
+/* Solid fill inside the mmap window; lets a client prove engine/mapping
+ * coherence.  Parameters: [x, y, w, h, colour]. */
+#define OSMGA_PROBE_FILL_PARAM  "OSMGAProbeFill"
 
 /* Single primary outcome per request, for the statistics. */
 #define OSMGA_BLIT_R_OK         0
@@ -150,6 +157,35 @@
 #define OSMGA_BLIT_R_PREEXEC    5
 #define OSMGA_BLIT_R_POSTEXEC   6
 #define OSMGA_BLIT_R_OBSERVED   7   /* reject-only mode: recorded, not run */
+
+/*
+ * ---- S4a: offscreen VRAM mapped into a user task (cdevsw mmap) ----
+ * docs/S4A_VRAM_MMAP_PLAN.md.
+ *
+ * Contract established by disassembling this target's mach_kernel:
+ *   d_mmap(dev, offset, prot) is cdevsw entry index 8; it returns a PAGE FRAME
+ *   NUMBER and refuses with -1.  It is called AT LEAST TWICE for the same
+ *   offset -- once in _smmap's validation loop and again in vm_object_special
+ *   to populate the object -- and the second call is NOT checked for -1: that
+ *   path does `*slot = ret << PAGE_SHIFT` unconditionally.  A handler that
+ *   passes validation and then refuses would hand the kernel 0xFFFFF000 as a
+ *   physical address.
+ *
+ * Therefore the handler is strictly deterministic over IMMUTABLE state.  The
+ * feature is gated by not registering the device at all, never by a runtime
+ * flag in the decision path.  A non-(-1) return is trusted by the kernel with
+ * no validation of its own, so a wrong PFN would map arbitrary physical RAM,
+ * MMIO or nonexistent space into a user process -- correctness here is
+ * entirely ours.
+ *
+ * dev encoding is derived from the same disassembly: _smmap indexes cdevsw
+ * with the byte at offset 67 of a 16-bit dev word whose low byte is at 66, so
+ * the high byte is the major and the low byte is the minor.
+ */
+#define OSMGA_DEV_MINOR(d)      ((d) & 0xFF)
+#define OSMGA_PROT_RW           (PROT_READ | PROT_WRITE)
+/* Offscreen window: guard rows below the visible image, up to proven VRAM. */
+#define OSMGA_MMAP_GUARD_ROWS   256UL
 
 /* S2 geometry: source and the offscreen destination, as row offsets below the
  * visible image; the visible destination is the bottom-right corner. */
@@ -551,6 +587,83 @@ osmgaStormBlit(vm_address_t base, unsigned long stride,
     if (!osmgaStormWaitIdle(base))
         return -1;                 /* post-execute: not safely recoverable */
     return 1;
+}
+
+/*
+ * ---- S4a character device: offscreen VRAM window ----
+ *
+ * These three values are written ONCE, before the cdevsw entry is published,
+ * and are never modified afterwards.  The handler's decision depends on
+ * nothing else (see the determinism requirement above).
+ */
+static unsigned long osmgaMmapWindowStart;   /* byte offset into VRAM */
+static unsigned long osmgaMmapWindowEnd;     /* exclusive */
+static unsigned long osmgaMmapFbPhysical;
+static int osmgaMmapRegistered;              /* class-level, register once */
+
+/* Unused switch slots: refuse rather than leaving a NULL pointer behind. */
+static int
+osmgaDevNotSupported(void)
+{
+    return ENODEV;
+}
+
+static int
+osmgaDevOpen(int dev, int flag, int devtype)
+{
+    (void)flag;
+    (void)devtype;
+    /* open() is an ordinary syscall context; a log here is safe and tells us
+     * whether our cdevsw slot is actually the one being reached. */
+    IOLog("OpenStepMGA S4a: open dev=%04x minor=%d registered=%d\n",
+          dev & 0xFFFF, OSMGA_DEV_MINOR(dev), osmgaMmapRegistered);
+    if (OSMGA_DEV_MINOR(dev) != 0)
+        return ENXIO;
+    if (!osmgaMmapRegistered)
+        return ENXIO;
+    return 0;
+}
+
+static int
+osmgaDevClose(int dev, int flag, int devtype)
+{
+    (void)dev;
+    (void)flag;
+    (void)devtype;
+    return 0;
+}
+
+/*
+ * Pure arithmetic over immutable state.  No allocation, no sleeping, no I/O,
+ * no IOLog, no locks: this runs inside VM-object construction, may hold VM
+ * locks, and is called repeatedly for the same offset.
+ */
+static int
+osmgaDevMmap(int dev, int offset, int prot)
+{
+    unsigned long off, phys;
+
+    if (OSMGA_DEV_MINOR(dev) != 0 || offset < 0)
+        return -1;
+    if (prot != OSMGA_PROT_RW)                     /* no EXEC, no read-only */
+        return -1;
+
+    off = (unsigned long)offset;
+    /* Written so no expression can overflow. */
+    if (osmgaMmapWindowStart >= osmgaMmapWindowEnd ||
+        osmgaMmapWindowEnd - osmgaMmapWindowStart < (unsigned long)PAGE_SIZE ||
+        off < osmgaMmapWindowStart ||
+        off > osmgaMmapWindowEnd - (unsigned long)PAGE_SIZE)
+        return -1;
+
+    if (osmgaMmapFbPhysical > 0xFFFFFFFFUL - off)
+        return -1;
+    phys = osmgaMmapFbPhysical + off;
+    if ((phys & ((unsigned long)PAGE_SIZE - 1UL)) != 0UL)
+        return -1;
+    if ((phys >> PAGE_SHIFT) > 0x7FFFFFFFUL)
+        return -1;
+    return (int)(phys >> PAGE_SHIFT);
 }
 
 /* Position-encoding test pattern: a shifted or misaligned copy is detected,
@@ -1174,6 +1287,77 @@ static IODisplayInfo osmgaModeTemplate = {
     }
     displayInfo->frameBuffer = (void *)fbVirt;
     frameBufferMapped = YES;
+
+    /*
+     * S4a: publish the offscreen VRAM window as a character device, if the
+     * configuration asks for it.  Gating is done HERE, by not registering at
+     * all -- never by a flag the mmap handler consults, because that handler
+     * must give the same answer every time it is asked (see its comment).
+     */
+    {
+        IOConfigTable *ct = [deviceDescription configTable];
+        const char *flag = (ct == nil) ? 0
+                         : (const char *)[ct valueForStringKey:"VRAM Mmap"];
+        if (flag != 0 && osmgaTextContains(flag, "Yes") && !osmgaMmapRegistered) {
+            const OSMGARes *wr = &osmgaRes[selectedResIndex];
+            const OSMGAFormat *wf = &osmgaFmt[selectedFormatIndex];
+            unsigned long visEnd =
+                (unsigned long)wr->width * (unsigned long)wf->bytesPerPixel *
+                (unsigned long)wr->height;
+            unsigned long guard =
+                OSMGA_MMAP_GUARD_ROWS * (unsigned long)wr->width *
+                (unsigned long)wf->bytesPerPixel;
+            unsigned long start =
+                (visEnd + guard + (unsigned long)PAGE_SIZE - 1UL) &
+                ~((unsigned long)PAGE_SIZE - 1UL);
+            unsigned long end =
+                OSMGA_S1_VRAM_PROVEN & ~((unsigned long)PAGE_SIZE - 1UL);
+
+            if (start >= end ||
+                end - start < (unsigned long)PAGE_SIZE ||
+                end > MGA_VRAM_16MB) {
+                IOLog("OpenStepMGA S4a: no usable offscreen window for this "
+                      "mode (start=%lu end=%lu), device NOT registered\n",
+                      start, end);
+            } else {
+                /* Immutable state first, cdevsw entry published after. */
+                osmgaMmapWindowStart = start;
+                osmgaMmapWindowEnd   = end;
+                osmgaMmapFbPhysical  = frameBufferPhysical;
+                if ([[self class]
+                        addToCdevswFromDescription:deviceDescription
+                          open:(IOSwitchFunc)osmgaDevOpen
+                         close:(IOSwitchFunc)osmgaDevClose
+                          read:(IOSwitchFunc)osmgaDevNotSupported
+                         write:(IOSwitchFunc)osmgaDevNotSupported
+                         ioctl:(IOSwitchFunc)osmgaDevNotSupported
+                          stop:(IOSwitchFunc)osmgaDevNotSupported
+                         reset:(IOSwitchFunc)osmgaDevNotSupported
+                        select:(IOSwitchFunc)osmgaDevNotSupported
+                          mmap:(IOSwitchFunc)osmgaDevMmap
+                          getc:(IOSwitchFunc)osmgaDevNotSupported
+                          putc:(IOSwitchFunc)osmgaDevNotSupported]) {
+                    osmgaMmapRegistered = 1;
+                    IOLog("OpenStepMGA S4a: PAGE_SIZE=%lu PAGE_SHIFT=%lu "
+                          "fbPhys=%08lx firstPFN=%lx\n",
+                          (unsigned long)PAGE_SIZE, (unsigned long)PAGE_SHIFT,
+                          osmgaMmapFbPhysical,
+                          (osmgaMmapFbPhysical + start) >> PAGE_SHIFT);
+                    IOLog("OpenStepMGA S4a: VRAM window %lu..%lu (%lu KiB) "
+                          "as character major %d; the driver must NOT be "
+                          "unloaded while this is enabled (mappings outlive "
+                          "it)\n", start, end - 1UL, (end - start) / 1024UL,
+                          [[self class] characterMajor]);
+                } else {
+                    osmgaMmapWindowStart = 0;
+                    osmgaMmapWindowEnd = 0;
+                    osmgaMmapFbPhysical = 0;
+                    IOLog("OpenStepMGA S4a: cdevsw registration failed; "
+                          "continuing without the VRAM device\n");
+                }
+            }
+        }
+    }
 
     IOLog("OpenStepMGAReplacementDisplay: init ok fb=%08x mmio=%08x %s %s\n",
           (unsigned int)displayInfo->frameBuffer, (unsigned int)mmioBase,
@@ -2155,6 +2339,74 @@ unmap:
             forParameter:(IOParameterName)parameterName
                    count:(unsigned)count
 {
+    /*
+     * S4a: solid-fill a rectangle that lies wholly inside the mmap window, so
+     * a userspace client can prove the engine and its mapping see the same
+     * memory (and, crucially, run the stale-cache test).  Refused unless the
+     * window is registered, and validated against the WINDOW, not the screen.
+     * Parameters: [x, y, w, h, colour].
+     */
+    if (osmgaTextEquals(parameterName, OSMGA_PROBE_FILL_PARAM)) {
+        const OSMGARes *r2 = &osmgaRes[selectedResIndex];
+        const OSMGAFormat *f2 = &osmgaFmt[selectedFormatIndex];
+        unsigned long stride, first, last;
+        unsigned x, y, w2, h2, colour;
+        int rc;
+
+        if (!osmgaMmapRegistered || stormBlitFailed || !stormBlitReady)
+            return IO_R_RESOURCE;
+        if (!mmioMapped || !linearModeActive || f2->bytesPerPixel != 4)
+            return IO_R_RESOURCE;
+        if (parameterArray == 0 || count != 5)
+            return IO_R_RESOURCE;
+        x = parameterArray[0]; y = parameterArray[1];
+        w2 = parameterArray[2]; h2 = parameterArray[3];
+        colour = parameterArray[4];
+        if (((x | y | w2 | h2) & 0x80000000U) || w2 == 0U || h2 == 0U)
+            return IO_R_RESOURCE;
+        stride = (unsigned long)r2->width;
+        if ((unsigned long)x + w2 > stride)
+            return IO_R_RESOURCE;
+        /* Whole rectangle must sit inside the registered window. */
+        first = ((unsigned long)y * stride + x) * 4UL;
+        last  = (((unsigned long)(y + h2 - 1U)) * stride + x + w2 - 1U) * 4UL
+                + 4UL;
+        if (first < osmgaMmapWindowStart || last > osmgaMmapWindowEnd)
+            return IO_R_RESOURCE;
+
+        simple_lock(&stormLock);
+        if (stormBusy) { simple_unlock(&stormLock); return IO_R_RESOURCE; }
+        stormBusy = YES;
+        simple_unlock(&stormLock);
+
+        rc = 0;
+        if (osmgaStormWaitIdle(mmioBase) &&
+            osmgaStormWaitFifo(mmioBase, 13U)) {
+            osmgaStormInitState(mmioBase, stride, x, x + w2 - 1U,
+                                (unsigned long)y * stride,
+                                (unsigned long)(y + h2 - 1U) * stride);
+            osmgaW32(mmioBase, MGA_DWGCTL, MGA_DWGCTL_SOLID_FILL);
+            if (osmgaStormWaitFifo(mmioBase, 3U)) {
+                osmgaW32(mmioBase, MGA_FCOL, (unsigned long)colour);
+                osmgaW32(mmioBase, MGA_FXBNDRY,
+                         (((unsigned long)x + w2) << 16) |
+                         ((unsigned long)x & 0xffffUL));
+                osmgaW32(mmioBase, MGA_YDSTLEN + MGA_EXEC,
+                         ((unsigned long)y << 16) | h2);
+                rc = osmgaStormWaitIdle(mmioBase) ? 1 : -1;
+            }
+        }
+        if (rc < 0) {
+            stormBlitFailed = YES;
+            IOLog("OpenStepMGA S4a: fill execute timed out; acceleration "
+                  "DISABLED permanently\n");
+        }
+        simple_lock(&stormLock);
+        stormBusy = NO;
+        simple_unlock(&stormLock);
+        return (rc == 1) ? IO_R_SUCCESS : IO_R_RESOURCE;
+    }
+
     if (osmgaTextEquals(parameterName, IO_DISPLAY_DO_BLIT) ||
         osmgaTextEquals(parameterName, OSMGA_PROBE_BLIT_PARAM)) {
         if (parameterArray == 0 || count != IO_DISPLAY_BLIT_SIZE) {
