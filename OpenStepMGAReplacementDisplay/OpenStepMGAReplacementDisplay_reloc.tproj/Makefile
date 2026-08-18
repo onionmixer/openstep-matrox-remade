@@ -9,34 +9,18 @@ LANGUAGE = English
 
 CLASSES = OpenStepMGAReplacementDisplay.m
 #
-# CFILES: driver-local sources plus the reviewed data-only R6 policy/generator
-# modules (pure C89, no libc), copied in from ../../profile and ../../protocol
-# at build time by the build driver.  They implement the mode transaction the
-# driver runs in enterLinearMode.
+# CFILES: driver-local sources plus the EDID manual-mode parser (pure C89, no
+# libc), copied in from ../../edid at build time by the build driver.  The
+# profile/ R2-R3 review modules and the protocol/ mode-transaction+
+# bounded-poll modules are a separate design track (used by
+# protocol/OpenStepMGAModeTransaction.h and mesa/); the driver's own mode
+# programming is direct X.Org-derived register writes in
+# OpenStepMGAReplacementDisplay.m and does not link them.
 #
 CFILES = OpenStepMGAManualConfig.c \
-         OpenStepMGAEDID.c \
-         OpenStepMGAProfile.c \
-         OpenStepMGATimingReview.c \
-         OpenStepMGAModeReview.c \
-         OpenStepMGAMappingReview.c \
-         OpenStepMGARecoveryMatrix.c \
-         OpenStepMGAG450PLL.c \
-         OpenStepMGAG450PLLEncoding.c \
-         OpenStepMGAG450CRTCPlan.c \
-         OpenStepMGAG450PrimaryCRTCImage.c \
-         OpenStepMGAG450PrimaryCRTCReadback.c \
-         OpenStepMGAG450RangePlan.c \
-         OpenStepMGABoundedPoll.c \
-         OpenStepMGAModeTransaction.c
+         OpenStepMGAEDID.c
 HFILES = OpenStepMGAReplacementDisplay.h OpenStepMGAManualConfig.h \
-         OpenStepMGAEDID.h OpenStepMGAProfile.h OpenStepMGATimingReview.h \
-         OpenStepMGAModeReview.h OpenStepMGAMappingReview.h \
-         OpenStepMGARecoveryMatrix.h OpenStepMGAG450PLL.h \
-         OpenStepMGAG450PLLEncoding.h OpenStepMGAG450CRTCPlan.h \
-         OpenStepMGAG450PrimaryCRTCImage.h OpenStepMGAG450PrimaryCRTCReadback.h \
-         OpenStepMGAG450RangePlan.h OpenStepMGABoundedPoll.h \
-         OpenStepMGAModeTransaction.h
+         OpenStepMGAEDID.h
 OTHERSRCS = Makefile Makefile.preamble Makefile.postamble\
             Makefile.driver_preamble Load_Commands.sect
 

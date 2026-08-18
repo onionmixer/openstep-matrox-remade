@@ -1,13 +1,15 @@
 /*
  * R6 replacement display driver for Matrox MGA G450 (primary head).
  *
- * Programs a full X.Org-derived G450 32bpp linear mode (generic VGA + RAMDAC
- * pixel format + G450 pixel-PLL lock search) in enterLinearMode; init maps the
+ * Programs a full X.Org-derived G450 linear mode directly in enterLinearMode
+ * (generic VGA + depth-specific RAMDAC pixel format/palette + G450 pixel-PLL
+ * candidate search, no mode-validation/transaction layer); init maps the
  * framebuffer (BAR0, mapMemoryRange range 0) and the MMIO control aperture
- * (BAR1, via IOMapPhysicalIntoIOTask) and publishes the fixed 1600x1200x32
- * IODisplayInfo.  Hardware register values are the X.Org-verified constants in
- * docs/R6_G450_FULL_LINEAR_MODESET.md; the reviewed mode transaction wraps them
- * for input validation, PLL-lock sequencing, and rollback reporting.
+ * (BAR1, via IOMapPhysicalIntoIOTask), selects a resolution+pixel-format from
+ * the config-table "Display Mode" string, and publishes the matching
+ * IODisplayInfo.  Hardware register values are the X.Org-verified constants
+ * in docs/R6_G450_FULL_LINEAR_MODESET.md; the PLL search is a faithful port
+ * of the original documented in docs/R6_G450_PIXEL_PLL_ALGORITHM.md.
  *
  * Owns the display only when selected in System.config "Active Drivers" and
  * cold-rebooted.  Building does not change the running display.

@@ -1,22 +1,27 @@
 /*
  * R6 replacement display driver for Matrox MGA G450 (primary head).
  *
- * enterLinearMode programs a complete X.Org-derived G450 32bpp linear
- * "power graphic" mode: generic VGA (Misc/SEQ/CRTC incl. 0x17 reset-release/
- * GR/Attribute+PAS video-on), the RAMDAC pixel-format registers (MUL_CTL 32bpp,
- * MISC_CTL DAC_EN, ...), PAN_CTL loop filter, and the G450 pixel PLL via a
- * jitter+statistical-lock search.  All register values are the X.Org-verified
- * constants in docs/R6_G450_FULL_LINEAR_MODESET.md.  The reviewed mode
- * transaction (docs/R6_H1_TRANSACTION_INPUTS.md) wraps this for input
- * validation, PLL-lock sequencing, and rollback reporting.
+ * enterLinearMode programs a complete X.Org-derived G450 linear "power
+ * graphic" mode directly (no mode-validation/transaction layer -- an earlier
+ * design had one, but its exact-60Hz timing check rejected real VESA modes;
+ * the original MatroxMGA has none either): generic VGA (Misc/SEQ/CRTC incl.
+ * 0x17 reset-release/GR/Attribute+PAS video-on), the RAMDAC pixel-format
+ * registers per selected depth (MUL_CTL, PAN_CTL loop filter, palette), and
+ * the G450 pixel PLL via a faithful port of the original's sorted-candidate +
+ * jitter-band stability search (see docs/R6_G450_PIXEL_PLL_ALGORITHM.md).
+ * All register values are the X.Org-verified constants in
+ * docs/R6_G450_FULL_LINEAR_MODESET.md.
  *
  * init maps BAR0 (framebuffer, mapMemoryRange range 0) and BAR1 (MMIO, via
- * IOMapPhysicalIntoIOTask on the PCI-config BAR1 address), publishes the fixed
- * 1600x1200x32 IODisplayInfo, and returns self.  Risky mode-register writes
- * happen in enterLinearMode (after the window server starts, i.e. after the
- * network is up), so a mode failure loses the screen but not telnet; recovery
- * is the R5-VGA config-edit reboot.  Owns the display only when selected in
- * System.config "Active Drivers" and cold-rebooted.
+ * IOMapPhysicalIntoIOTask on the PCI-config BAR1 address), selects a
+ * resolution+pixel-format from the config-table "Display Mode" string (see
+ * osmgaRes/osmgaFmt and Display.modes for the Configure.app-visible list),
+ * publishes the matching IODisplayInfo, and returns self.  Risky
+ * mode-register writes happen in enterLinearMode (after the window server
+ * starts, i.e. after the network is up), so a mode failure loses the screen
+ * but not telnet; recovery is the R5-VGA config-edit reboot.  Owns the
+ * display only when selected in System.config "Active Drivers" and
+ * cold-rebooted.
  */
 
 #import <driverkit/generalFuncs.h>
@@ -27,7 +32,6 @@
 #import "OpenStepMGAReplacementDisplay.h"
 #import "OpenStepMGAManualConfig.h"
 #import "OpenStepMGAEDID.h"
-#import "OpenStepMGAModeTransaction.h"
 
 #define PCI_CFG_ADDR            0x0CF8
 #define PCI_CFG_DATA            0x0CFC
@@ -265,13 +269,6 @@ osmgaWriteCrtcExt(vm_address_t base, unsigned char idx, unsigned char v)
 {
     osmgaW8(base, MGA_CRTCEXT_INDEX, idx);
     osmgaW8(base, MGA_CRTCEXT_DATA, v);
-}
-
-static unsigned char
-osmgaReadCrtcExt(vm_address_t base, unsigned char idx)
-{
-    osmgaW8(base, MGA_CRTCEXT_INDEX, idx);
-    return osmgaR8(base, MGA_CRTCEXT_DATA);
 }
 
 static void
@@ -903,36 +900,7 @@ static IODisplayInfo osmgaModeTemplate = {
 }
 
 /*
- * Honest rollback: report only the stages actually performed in hardware.
- * We remove the MGA clock select (VGA-safe-ish) and call the superclass revert;
- * full display-state/PLL restore is not done here -- the reviewed recovery for
- * a failed mode is the R5-VGA config-edit reboot.
- */
-- (void)rollbackTransaction:(OSMGAModeTransaction *)t
-{
-    OSMGAModeTransactionReason reason;
-    unsigned char misc;
-
-    if (t->state != OSMGA_MODE_TRANSACTION_ROLLBACK_REQUIRED)
-        (void)OSMGARequireModeRollback(t, &reason);
-
-    if (mmioMapped) {
-        misc = osmgaR8(mmioBase, MGA_MISC_READ);
-        osmgaW8(mmioBase, MGA_MISC_WRITE,
-                (unsigned char)(misc & (unsigned char)~MGA_CLKSEL_MGA));
-    }
-    OSMGAReportModeRollbackStage(t, OSMGA_ROLLBACK_STAGE_VGA_SAFE_STATE, 1);
-    OSMGAReportModeRollbackStage(t, OSMGA_ROLLBACK_STAGE_SUPERCLASS_REVERT, 1);
-    (void)OSMGACompleteModeRollback(t, &reason);
-    IOLog("OpenStepMGAReplacementDisplay: rollback (partial hw restore; full "
-          "recovery is R5-VGA reboot): %s\n",
-          OSMGAModeTransactionReasonString(reason));
-    [super revertToVGAMode];
-    linearModeActive = NO;
-}
-
-/*
- * Program the fixed mode directly, following the proven production MatroxMGA
+ * Program the selected mode directly, following the proven production MatroxMGA
  * G450 sequence (verified by IDA + codex cross-analysis of MatroxMGA_reloc):
  * blank (SEQ reset + screen off) -> pixel PLL with lock search -> PAN_CTL ->
  * RAMDAC (skip PLL regs) -> CRTCEXT -> generic VGA (Misc/SEQ/CRTC/GR/ATTR) ->
