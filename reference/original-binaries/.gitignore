@@ -1,2 +1,4 @@
-# Analysis-only copy from the target's original MatroxMGA bundle.
-MatroxMGA_reloc.R0-20260818
+# Analysis-only copies taken from the target machine.  None of these are ours
+# to redistribute, so nothing in this directory is committed except this file.
+*
+!.gitignore

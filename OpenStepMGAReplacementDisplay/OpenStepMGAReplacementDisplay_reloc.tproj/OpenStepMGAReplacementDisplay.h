@@ -73,6 +73,30 @@
     BOOL stormBusy;
     simple_lock_data_t stormLock;
 
+    /*
+     * S3b-prep telemetry (docs/S3B_PREP_INSTRUMENTATION_PLAN.md).  Read out
+     * through getIntValues:forParameter:"OSMGAStats".  Deliberately updated
+     * without a lock: cursor entry points may run at interrupt context, so
+     * they must not take locks, allocate, log or wait.  Lost or slightly
+     * inconsistent counts are acceptable -- we want to know whether something
+     * happens and roughly how often, not exact totals.
+     */
+    volatile unsigned statBlitRequests;   /* RPC boundary only, not self-test */
+    volatile unsigned statBlitOk;
+    volatile unsigned statBlitNoop;
+    volatile unsigned statRefusedDisabled;
+    volatile unsigned statRefusedGeometry;
+    volatile unsigned statRefusedBusy;
+    volatile unsigned statRefusedPreExec;
+    volatile unsigned statPostExecTimeout;
+    volatile unsigned statCursorShow;
+    volatile unsigned statCursorMove;
+    volatile unsigned statCursorHide;
+    volatile unsigned statCursorWhileBusy; /* cursor entered mid-transaction */
+    volatile unsigned statThin1px;
+    volatile unsigned statEnterLinear;
+    volatile unsigned statRevertVGA;
+
     /* lifecycle */
     BOOL linearModeActive;
 }
@@ -90,7 +114,15 @@
                      label:(const char *)label;
 - (IOReturn)doDisplayBlitSrcX:(unsigned)srcX srcY:(unsigned)srcY
                         width:(unsigned)w height:(unsigned)h
-                         dstX:(unsigned)dstX dstY:(unsigned)dstY;
+                         dstX:(unsigned)dstX dstY:(unsigned)dstY
+                       reason:(unsigned *)outReason;
+- (IOReturn)rpcBlitFrom:(unsigned *)p;
+- hideCursor:(int)token;
+- moveCursor:(Point *)cursorLoc frame:(int)frame token:(int)t;
+- showCursor:(Point *)cursorLoc frame:(int)frame token:(int)t;
+- (IOReturn)getIntValues:(unsigned *)parameterArray
+            forParameter:(IOParameterName)parameterName
+                   count:(unsigned *)count;
 - (IOReturn)setIntValues:(unsigned *)parameterArray
             forParameter:(IOParameterName)parameterName
                    count:(unsigned)count;

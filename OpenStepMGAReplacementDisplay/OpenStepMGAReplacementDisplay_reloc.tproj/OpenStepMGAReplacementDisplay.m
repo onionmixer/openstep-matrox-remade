@@ -129,6 +129,27 @@
 #define MGA_SGN_BLIT_LEFT       0x00000001UL  /* copy right-to-left */
 #define MGA_SGN_BLIT_UP         0x00000004UL  /* copy bottom-to-top */
 
+/* ---- S3b-prep: telemetry + test-only blit parameter ---- */
+#define OSMGA_STATS_PARAM       "OSMGAStats"
+#define OSMGA_STATS_VERSION     1
+#define OSMGA_STATS_COUNT       18
+/*
+ * displayDefs.h says callers must not use IO_DISPLAY_DO_BLIT unless
+ * IO_DISPLAY_CAN_BLIT is set.  We have not set it, so our own probe client
+ * uses this private parameter instead of violating that contract.  Same six
+ * arguments, same validation, same engine helper.
+ */
+#define OSMGA_PROBE_BLIT_PARAM  "OSMGAProbeBlit"
+
+/* Single primary outcome per request, for the statistics. */
+#define OSMGA_BLIT_R_OK         0
+#define OSMGA_BLIT_R_NOOP       1
+#define OSMGA_BLIT_R_DISABLED   2
+#define OSMGA_BLIT_R_GEOMETRY   3
+#define OSMGA_BLIT_R_BUSY       4
+#define OSMGA_BLIT_R_PREEXEC    5
+#define OSMGA_BLIT_R_POSTEXEC   6
+
 /* S2 geometry: source and the offscreen destination, as row offsets below the
  * visible image; the visible destination is the bottom-right corner. */
 #define OSMGA_S2_SRC_Y_OFF      256UL
@@ -1017,6 +1038,12 @@ static IODisplayInfo osmgaModeTemplate = {
     stormBlitFailed = NO;
     stormBusy = NO;
     simple_lock_init(&stormLock);
+    statBlitRequests = 0; statBlitOk = 0; statBlitNoop = 0;
+    statRefusedDisabled = 0; statRefusedGeometry = 0; statRefusedBusy = 0;
+    statRefusedPreExec = 0; statPostExecTimeout = 0;
+    statCursorShow = 0; statCursorMove = 0; statCursorHide = 0;
+    statCursorWhileBusy = 0; statThin1px = 0;
+    statEnterLinear = 0; statRevertVGA = 0;
     manualVideoMemoryConfigured = NO;
     configuredVideoMemoryBytes = 0;
 
@@ -1771,7 +1798,7 @@ unmap:
     IOUnmapPhysicalFromIOTask(alias, mapLen);
 
     result = [self doDisplayBlitSrcX:srcX srcY:srcY width:w height:h
-                                dstX:dstX dstY:dstY];
+                                dstX:dstX dstY:dstY reason:(unsigned *)0];
     if (result != IO_R_SUCCESS) {
         IOLog("OpenStepMGA S3/%s: blit returned %d -- FAIL\n", label,
               (int)result);
@@ -1844,7 +1871,7 @@ unmap:
     /* src == dst must succeed as a no-op without touching the engine. */
     total++;
     rr = [self doDisplayBlitSrcX:704 srcY:576 width:64 height:64
-                            dstX:704 dstY:576];
+                            dstX:704 dstY:576 reason:(unsigned *)0];
     if (rr == IO_R_SUCCESS) { passes++; IOLog("OpenStepMGA S3/e-noop: PASS\n"); }
     else IOLog("OpenStepMGA S3/e-noop: FAIL rr=%d\n", (int)rr);
 
@@ -1852,20 +1879,22 @@ unmap:
     total++;
     {
         int refused = 0;
+        unsigned *no = (unsigned *)0;
         if ([self doDisplayBlitSrcX:0 srcY:0 width:0 height:64
-                               dstX:100 dstY:100] == IO_R_RESOURCE) refused++;
+                       dstX:100 dstY:100 reason:no] == IO_R_RESOURCE) refused++;
         if ([self doDisplayBlitSrcX:0 srcY:0 width:64 height:64
-                               dstX:W - 8U dstY:100] == IO_R_RESOURCE) refused++;
+                       dstX:W - 8U dstY:100 reason:no] == IO_R_RESOURCE) refused++;
         if ([self doDisplayBlitSrcX:0 srcY:H - 8U width:64 height:64
-                               dstX:0 dstY:0] == IO_R_RESOURCE) refused++;
+                       dstX:0 dstY:0 reason:no] == IO_R_RESOURCE) refused++;
         if ([self doDisplayBlitSrcX:0xFFFFFFF0U srcY:0 width:64 height:64
-                               dstX:0 dstY:0] == IO_R_RESOURCE) refused++;
+                       dstX:0 dstY:0 reason:no] == IO_R_RESOURCE) refused++;
         if (refused == 4) { passes++; IOLog("OpenStepMGA S3/f-invalid: PASS "
                                             "(4/4 refused)\n"); }
         else IOLog("OpenStepMGA S3/f-invalid: FAIL (%d/4 refused)\n", refused);
     }
 
-    stormBlitReady = NO;      /* leave acceleration off after the self-test */
+    /* Stay enabled while the config flag is on: the S3b-prep probe client
+     * needs to reach OSMGAProbeBlit from userspace. */
     IOLog("OpenStepMGA S3: self-test end %d/%d passed%s\n", passes, total,
           stormBlitFailed ? " (ACCEL PERMANENTLY DISABLED)" : "");
 }
@@ -1891,40 +1920,47 @@ unmap:
 - (IOReturn)doDisplayBlitSrcX:(unsigned)srcX srcY:(unsigned)srcY
                         width:(unsigned)w height:(unsigned)h
                          dstX:(unsigned)dstX dstY:(unsigned)dstY
+                       reason:(unsigned *)outReason
 {
     const OSMGARes *r = &osmgaRes[selectedResIndex];
     const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
     unsigned long dispW = (unsigned long)r->width;
     unsigned long dispH = (unsigned long)r->height;
+    unsigned reason = OSMGA_BLIT_R_GEOMETRY;
     int rc;
 
-    if (stormBlitFailed || !stormBlitReady)
+    if (stormBlitFailed || !stormBlitReady ||
+        !mmioMapped || !frameBufferMapped || !linearModeActive ||
+        f->bytesPerPixel != 4) {
+        if (outReason) *outReason = OSMGA_BLIT_R_DISABLED;
         return IO_R_RESOURCE;
-    if (!mmioMapped || !frameBufferMapped || !linearModeActive)
-        return IO_R_RESOURCE;
-    if (f->bytesPerPixel != 4)
-        return IO_R_RESOURCE;
+    }
 
     /* Parameters arrive as unsigned; a value meant as negative shows up with
      * the high bit set.  Refuse those instead of wrapping into huge extents. */
-    if ((srcX | srcY | w | h | dstX | dstY) & 0x80000000U)
+    if (((srcX | srcY | w | h | dstX | dstY) & 0x80000000U) ||
+        w == 0U || h == 0U ||
+        /* Both rectangles must lie wholly on the screen (the API is "on the
+         * screen"); this also keeps every address inside proven VRAM. */
+        (unsigned long)srcX + w > dispW || (unsigned long)srcY + h > dispH ||
+        (unsigned long)dstX + w > dispW || (unsigned long)dstY + h > dispH) {
+        if (outReason) *outReason = OSMGA_BLIT_R_GEOMETRY;
         return IO_R_RESOURCE;
-    if (w == 0U || h == 0U)
-        return IO_R_RESOURCE;
-    /* Both rectangles must lie wholly on the screen (the API is "on the
-     * screen"); these also keep every address inside proven VRAM. */
-    if ((unsigned long)srcX + w > dispW || (unsigned long)srcY + h > dispH)
-        return IO_R_RESOURCE;
-    if ((unsigned long)dstX + w > dispW || (unsigned long)dstY + h > dispH)
-        return IO_R_RESOURCE;
-    if (srcX == dstX && srcY == dstY)
-        return IO_R_SUCCESS;                    /* no-op, engine untouched */
+    }
+    if (srcX == dstX && srcY == dstY) {          /* no-op, engine untouched */
+        if (outReason) *outReason = OSMGA_BLIT_R_NOOP;
+        return IO_R_SUCCESS;
+    }
 
     /* Serialize: refuse rather than wait, so no thread ever spins on another
-     * and the caller simply does this one in software. */
+     * and the caller simply does this one in software.  The cursor code in
+     * IOFrameBufferDisplay uses the same philosophy -- it takes a non-blocking
+     * ev_try_lock and silently skips when contended (verified by disassembly,
+     * docs/S3B_PREP_INSTRUMENTATION_PLAN.md 8-2). */
     simple_lock(&stormLock);
     if (stormBusy) {
         simple_unlock(&stormLock);
+        if (outReason) *outReason = OSMGA_BLIT_R_BUSY;
         return IO_R_RESOURCE;
     }
     stormBusy = YES;
@@ -1932,15 +1968,20 @@ unmap:
 
     if (!osmgaStormWaitIdle(mmioBase)) {
         rc = 0;                                  /* nothing issued yet */
+        reason = OSMGA_BLIT_R_PREEXEC;
     } else {
         rc = osmgaStormBlit(mmioBase, (unsigned long)r->width,
                             (unsigned long)srcX, (unsigned long)srcY,
                             (unsigned long)w, (unsigned long)h,
                             (unsigned long)dstX, (unsigned long)dstY);
+        if (rc == 1)       reason = OSMGA_BLIT_R_OK;
+        else if (rc == 0)  reason = OSMGA_BLIT_R_PREEXEC;
+        else               reason = OSMGA_BLIT_R_POSTEXEC;
     }
 
     if (rc < 0) {
-        /* Post-execute timeout: the engine may still be writing. */
+        /* Post-execute timeout: the engine may still be writing, so the
+         * caller must NOT redo this in software.  Disable permanently. */
         stormBlitFailed = YES;
         IOLog("OpenStepMGA S3: execute timed out; acceleration DISABLED "
               "permanently (engine may still be writing)\n");
@@ -1950,22 +1991,116 @@ unmap:
     stormBusy = NO;
     simple_unlock(&stormLock);
 
+    if (outReason) *outReason = reason;
     return (rc == 1) ? IO_R_SUCCESS : IO_R_RESOURCE;
+}
+
+/* RPC boundary: count here so the statistics describe EXTERNAL callers, not
+ * the boot self-test (which calls the core method directly). */
+- (IOReturn)rpcBlitFrom:(unsigned *)p
+{
+    unsigned reason = OSMGA_BLIT_R_GEOMETRY;
+    IOReturn rr;
+
+    statBlitRequests++;
+    if (p[2] == 1U || p[3] == 1U)
+        statThin1px++;
+
+    rr = [self doDisplayBlitSrcX:p[0] srcY:p[1] width:p[2] height:p[3]
+                            dstX:p[4] dstY:p[5] reason:&reason];
+
+    switch (reason) {
+    case OSMGA_BLIT_R_OK:       statBlitOk++;           break;
+    case OSMGA_BLIT_R_NOOP:     statBlitNoop++;         break;
+    case OSMGA_BLIT_R_DISABLED: statRefusedDisabled++;  break;
+    case OSMGA_BLIT_R_GEOMETRY: statRefusedGeometry++;  break;
+    case OSMGA_BLIT_R_BUSY:     statRefusedBusy++;      break;
+    case OSMGA_BLIT_R_PREEXEC:  statRefusedPreExec++;   break;
+    case OSMGA_BLIT_R_POSTEXEC: statPostExecTimeout++;  break;
+    default: break;
+    }
+    return rr;
+}
+
+/*
+ * Cursor instrumentation.  IOFrameBufferDisplay's cursor is a SOFTWARE cursor:
+ * disassembly of the kernel shows hideCursor:/showCursor: copying pixels
+ * between a private backing store and IODisplayInfo.frameBuffer with the CPU
+ * (docs/S3B_PREP_INSTRUMENTATION_PLAN.md 8-1).  So it really can collide with
+ * an engine blit over the same rectangle.
+ *
+ * These overrides only count and forward.  No lock, no allocation, no IOLog,
+ * no waiting: the call context is not documented and must be assumed to be
+ * interrupt level.
+ */
+- hideCursor:(int)token
+{
+    statCursorHide++;
+    if (stormBusy) statCursorWhileBusy++;
+    return [super hideCursor:token];
+}
+
+- moveCursor:(Point *)cursorLoc frame:(int)frame token:(int)t
+{
+    statCursorMove++;
+    if (stormBusy) statCursorWhileBusy++;
+    return [super moveCursor:cursorLoc frame:frame token:t];
+}
+
+- showCursor:(Point *)cursorLoc frame:(int)frame token:(int)t
+{
+    statCursorShow++;
+    if (stormBusy) statCursorWhileBusy++;
+    return [super showCursor:cursorLoc frame:frame token:t];
+}
+
+- (IOReturn)getIntValues:(unsigned *)parameterArray
+            forParameter:(IOParameterName)parameterName
+                   count:(unsigned *)count
+{
+    if (osmgaTextEquals(parameterName, OSMGA_STATS_PARAM)) {
+        /* Exact-size contract, as the DriverKit AMD_SCSI example does: no
+         * clamping, no partial snapshot. */
+        if (parameterArray == 0 || count == 0 || *count != OSMGA_STATS_COUNT)
+            return IO_R_INVALID_ARG;
+        parameterArray[0]  = OSMGA_STATS_VERSION;
+        parameterArray[1]  = statBlitRequests;
+        parameterArray[2]  = statBlitOk;
+        parameterArray[3]  = statBlitNoop;
+        parameterArray[4]  = statRefusedDisabled;
+        parameterArray[5]  = statRefusedGeometry;
+        parameterArray[6]  = statRefusedBusy;
+        parameterArray[7]  = statRefusedPreExec;
+        parameterArray[8]  = statPostExecTimeout;
+        parameterArray[9]  = statCursorShow;
+        parameterArray[10] = statCursorMove;
+        parameterArray[11] = statCursorHide;
+        parameterArray[12] = statCursorWhileBusy;
+        parameterArray[13] = statThin1px;
+        parameterArray[14] = statEnterLinear;
+        parameterArray[15] = statRevertVGA;
+        parameterArray[16] = stormBlitReady ? 1U : 0U;
+        parameterArray[17] = stormBlitFailed ? 1U : 0U;
+        *count = OSMGA_STATS_COUNT;
+        return IO_R_SUCCESS;
+    }
+    return [super getIntValues:parameterArray
+                  forParameter:parameterName
+                         count:count];
 }
 
 - (IOReturn)setIntValues:(unsigned *)parameterArray
             forParameter:(IOParameterName)parameterName
                    count:(unsigned)count
 {
-    if (osmgaTextEquals(parameterName, IO_DISPLAY_DO_BLIT)) {
-        if (parameterArray == 0 || count != IO_DISPLAY_BLIT_SIZE)
+    if (osmgaTextEquals(parameterName, IO_DISPLAY_DO_BLIT) ||
+        osmgaTextEquals(parameterName, OSMGA_PROBE_BLIT_PARAM)) {
+        if (parameterArray == 0 || count != IO_DISPLAY_BLIT_SIZE) {
+            statBlitRequests++;
+            statRefusedGeometry++;
             return IO_R_RESOURCE;
-        return [self doDisplayBlitSrcX:parameterArray[0]
-                                  srcY:parameterArray[1]
-                                 width:parameterArray[2]
-                                height:parameterArray[3]
-                                  dstX:parameterArray[4]
-                                  dstY:parameterArray[5]];
+        }
+        return [self rpcBlitFrom:parameterArray];
     }
     return [super setIntValues:parameterArray
                   forParameter:parameterName
@@ -1974,6 +2109,7 @@ unmap:
 
 - (void)enterLinearMode
 {
+    statEnterLinear++;
     IOLog("OpenStepMGAReplacementDisplay: enterLinearMode begin\n");
 #if OSMGA_ENABLE_MODE_PROGRAM
     if (![self programLinearMode]) {
@@ -2048,6 +2184,7 @@ unmap:
 
 - (void)revertToVGAMode
 {
+    statRevertVGA++;
     linearModeActive = NO;
     [super revertToVGAMode];
 }
