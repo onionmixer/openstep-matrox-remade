@@ -125,7 +125,9 @@
  * at the end of the fast-blit path).  See docs/S2_STORM_BITBLT_PLAN.md 8-1.
  */
 #define MGA_DWGCTL_BITBLT       0x040C4008UL
-#define MGA_SGN_DOWN_RIGHT      0x00000000UL  /* BLIT_LEFT=1, BLIT_UP=4 */
+#define MGA_SGN_DOWN_RIGHT      0x00000000UL
+#define MGA_SGN_BLIT_LEFT       0x00000001UL  /* copy right-to-left */
+#define MGA_SGN_BLIT_UP         0x00000004UL  /* copy bottom-to-top */
 
 /* S2 geometry: source and the offscreen destination, as row offsets below the
  * visible image; the visible destination is the bottom-right corner. */
@@ -458,6 +460,75 @@ osmgaMapUncachedBlock(unsigned long fbPhysical, unsigned long byteStart,
     *outMapLen = mapLen;
     *outPtr = (volatile unsigned long *)(alias + (byteStart - mapStart));
     return IO_R_SUCCESS;
+}
+
+/*
+ * General screen-to-screen copy with overlap handling.
+ *
+ * Direction follows the memmove rule and is applied unconditionally (it is
+ * also correct for non-overlapping rectangles).  Verified three ways: X.Org
+ * mga_storm.c, our own host simulation of all six overlap cases against
+ * memmove semantics, and openstep-sdl12/.../SDL_fbmatrox.c, which matches it
+ * verbatim.  See docs/S3_IODISPLAY_DO_BLIT_PLAN.md.
+ *
+ * Returns  1  copy completed and the engine went idle
+ *          0  failed BEFORE the execute write -- nothing was issued, so the
+ *             caller may safely fall back to a software copy
+ *         -1  timed out AFTER the execute write -- the engine may still be
+ *             writing, so a software fallback would be overwritten later.
+ *             The caller must permanently disable acceleration.
+ */
+static int
+osmgaStormBlit(vm_address_t base, unsigned long stride,
+               unsigned long srcX, unsigned long srcY,
+               unsigned long w, unsigned long h,
+               unsigned long dstX, unsigned long dstY)
+{
+    int up   = (srcY < dstY);      /* copy bottom-to-top  */
+    int left = (srcX < dstX);      /* copy right-to-left  */
+    unsigned long sgn = (up ? MGA_SGN_BLIT_UP : 0UL) |
+                        (left ? MGA_SGN_BLIT_LEFT : 0UL);
+    unsigned long ar5 = up ? (unsigned long)(-(long)stride) : stride;
+    unsigned long w1 = w - 1UL;
+    unsigned long sy = srcY;
+    unsigned long dy = dstY;
+    unsigned long start, end;
+
+    if (up) {                      /* start from the last row */
+        sy += h - 1UL;
+        dy += h - 1UL;
+    }
+    start = end = sy * stride + srcX;
+    if (left)
+        start += w1;               /* start from the rightmost pixel */
+    else
+        end += w1;
+
+    /* 12 state writes + DWGCTL.  The clip is the GEOMETRIC destination
+     * rectangle -- it is not reversed when copying up/left. */
+    if (!osmgaStormWaitFifo(base, 13U))
+        return 0;
+    osmgaStormInitState(base, stride, dstX, dstX + w1,
+                        dstY * stride, (dstY + h - 1UL) * stride);
+    osmgaW32(base, MGA_DWGCTL, MGA_DWGCTL_BITBLT);
+
+    if (!osmgaStormWaitFifo(base, 3U))
+        return 0;
+    osmgaW32(base, MGA_SGN, sgn);
+    osmgaW32(base, MGA_AR5, ar5);
+
+    if (!osmgaStormWaitFifo(base, 4U))
+        return 0;
+    osmgaW32(base, MGA_AR0, end);
+    osmgaW32(base, MGA_AR3, start);
+    /* BITBLT takes an inclusive right edge; dstX is never direction-adjusted. */
+    osmgaW32(base, MGA_FXBNDRY, ((dstX + w1) << 16) | (dstX & 0xffffUL));
+    /* dy IS direction-adjusted: going up, the operation starts at the last row. */
+    osmgaW32(base, MGA_YDSTLEN + MGA_EXEC, (dy << 16) | h);
+
+    if (!osmgaStormWaitIdle(base))
+        return -1;                 /* post-execute: not safely recoverable */
+    return 1;
 }
 
 /* Position-encoding test pattern: a shifted or misaligned copy is detected,
@@ -814,6 +885,20 @@ osmgaComputeCRTC(const OSMGARes *m, int bppShift, unsigned char crtc[25],
     *miscOut = misc;
 }
 
+/* Exact string equality (no libc in the kernel loadable).  Parameter-name
+ * dispatch must be exact: a substring match could claim a longer name. */
+static int
+osmgaTextEquals(const char *a, const char *b)
+{
+    if (a == 0 || b == 0)
+        return 0;
+    while (*a != '\0' && *a == *b) {
+        a++;
+        b++;
+    }
+    return (*a == '\0' && *b == '\0');
+}
+
 /* Substring search (no libc in the kernel loadable). */
 static int
 osmgaTextContains(const char *hay, const char *needle)
@@ -928,6 +1013,10 @@ static IODisplayInfo osmgaModeTemplate = {
     selectedFormatIndex = OSMGA_FMT_DEFAULT;
     paletteValid = NO;
     stormTestEnabled = NO;
+    stormBlitReady = NO;
+    stormBlitFailed = NO;
+    stormBusy = NO;
+    simple_lock_init(&stormLock);
     manualVideoMemoryConfigured = NO;
     configuredVideoMemoryBytes = 0;
 
@@ -1640,6 +1729,249 @@ unmap:
     IOLog("OpenStepMGA S2: end\n");
 }
 
+/*
+ * S3a self-test: exercise the IODisplayDoBlit path with controlled inputs
+ * before any external caller can reach it.  Runs at the end of
+ * enterLinearMode, i.e. before the window server paints and before a cursor
+ * exists, so cursor/framebuffer concurrency is not yet a factor (that is an
+ * S3b concern -- docs/S3_IODISPLAY_DO_BLIT_PLAN.md 2-6).
+ *
+ * IO_DISPLAY_CAN_BLIT is deliberately NOT advertised, so the window server
+ * keeps using its software path this boot.
+ */
+- (BOOL)stormBlitCheckSrcX:(unsigned)srcX srcY:(unsigned)srcY
+                     width:(unsigned)w height:(unsigned)h
+                      dstX:(unsigned)dstX dstY:(unsigned)dstY
+                     label:(const char *)label
+{
+    const OSMGARes *r = &osmgaRes[selectedResIndex];
+    unsigned long stride = (unsigned long)r->width;
+    unsigned long srcBytes = ((unsigned long)srcY * stride + srcX) * 4UL;
+    unsigned long srcEnd   = (((unsigned long)(srcY + h - 1U)) * stride +
+                              srcX + w - 1U) * 4UL + 4UL;
+    unsigned long dstBytes = ((unsigned long)dstY * stride + dstX) * 4UL;
+    unsigned long dstEnd   = (((unsigned long)(dstY + h - 1U)) * stride +
+                              dstX + w - 1U) * 4UL + 4UL;
+    vm_address_t alias = 0;
+    unsigned long mapLen = 0;
+    volatile unsigned long *p = 0;
+    unsigned long row, col, bad = 0UL;
+    IOReturn result;
+
+    /* Paint the source with the position-encoding pattern. */
+    result = osmgaMapUncachedBlock(frameBufferPhysical, srcBytes, srcEnd,
+                                   &alias, &mapLen, &p);
+    if (result != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA S3/%s: src map failed r=%d\n", label, (int)result);
+        return NO;
+    }
+    for (row = 0UL; row < (unsigned long)h; row++)
+        for (col = 0UL; col < (unsigned long)w; col++)
+            p[row * stride + col] = osmgaS2Pattern(row, col);
+    IOUnmapPhysicalFromIOTask(alias, mapLen);
+
+    result = [self doDisplayBlitSrcX:srcX srcY:srcY width:w height:h
+                                dstX:dstX dstY:dstY];
+    if (result != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA S3/%s: blit returned %d -- FAIL\n", label,
+              (int)result);
+        return NO;
+    }
+
+    result = osmgaMapUncachedBlock(frameBufferPhysical, dstBytes, dstEnd,
+                                   &alias, &mapLen, &p);
+    if (result != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA S3/%s: dst map failed r=%d\n", label, (int)result);
+        return NO;
+    }
+    for (row = 0UL; row < (unsigned long)h; row++)
+        for (col = 0UL; col < (unsigned long)w; col++)
+            if (p[row * stride + col] != osmgaS2Pattern(row, col))
+                bad++;
+    IOUnmapPhysicalFromIOTask(alias, mapLen);
+
+    if (bad == 0UL) {
+        IOLog("OpenStepMGA S3/%s: PASS (%u,%u)->(%u,%u) %ux%u\n",
+              label, srcX, srcY, dstX, dstY, w, h);
+        return YES;
+    }
+    IOLog("OpenStepMGA S3/%s: FAIL -- %lu/%lu px wrong\n", label, bad,
+          (unsigned long)w * (unsigned long)h);
+    return NO;
+}
+
+- (void)runStormBlitApiTest
+{
+    const OSMGARes *r = &osmgaRes[selectedResIndex];
+    const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
+    unsigned W, H;
+    IOReturn rr;
+    int passes = 0, total = 0;
+
+    if (!stormTestEnabled || stormBlitFailed)
+        return;
+    if (!mmioMapped || !frameBufferMapped || !linearModeActive)
+        return;
+    if (f->bytesPerPixel != 4) {
+        IOLog("OpenStepMGA S3: 32bpp only, skipped\n");
+        return;
+    }
+    W = (unsigned)r->width;
+    H = (unsigned)r->height;
+    if (W < 1024U || H < 768U) {
+        IOLog("OpenStepMGA S3: self-test geometry needs >=1024x768, skipped\n");
+        return;
+    }
+
+    /* Accept requests for the duration of the self-test only.  The public
+     * capability flag stays clear, so nothing outside the driver calls in. */
+    stormBlitReady = YES;
+    IOLog("OpenStepMGA S3: self-test begin (CAN_BLIT not advertised)\n");
+
+    total++; if ([self stormBlitCheckSrcX:64  srcY:64  width:64 height:64
+                                     dstX:704 dstY:576
+                                    label:"a-nonoverlap"]) passes++;
+    total++; if ([self stormBlitCheckSrcX:896 srcY:640 width:64 height:64
+                                     dstX:896 dstY:672
+                                    label:"b-overlap-down"]) passes++;
+    total++; if ([self stormBlitCheckSrcX:896 srcY:576 width:64 height:64
+                                     dstX:928 dstY:576
+                                    label:"c-overlap-right"]) passes++;
+    total++; if ([self stormBlitCheckSrcX:880 srcY:432 width:64 height:64
+                                     dstX:912 dstY:464
+                                    label:"d-overlap-diag"]) passes++;
+
+    /* src == dst must succeed as a no-op without touching the engine. */
+    total++;
+    rr = [self doDisplayBlitSrcX:704 srcY:576 width:64 height:64
+                            dstX:704 dstY:576];
+    if (rr == IO_R_SUCCESS) { passes++; IOLog("OpenStepMGA S3/e-noop: PASS\n"); }
+    else IOLog("OpenStepMGA S3/e-noop: FAIL rr=%d\n", (int)rr);
+
+    /* Invalid requests must all be refused with IO_R_RESOURCE. */
+    total++;
+    {
+        int refused = 0;
+        if ([self doDisplayBlitSrcX:0 srcY:0 width:0 height:64
+                               dstX:100 dstY:100] == IO_R_RESOURCE) refused++;
+        if ([self doDisplayBlitSrcX:0 srcY:0 width:64 height:64
+                               dstX:W - 8U dstY:100] == IO_R_RESOURCE) refused++;
+        if ([self doDisplayBlitSrcX:0 srcY:H - 8U width:64 height:64
+                               dstX:0 dstY:0] == IO_R_RESOURCE) refused++;
+        if ([self doDisplayBlitSrcX:0xFFFFFFF0U srcY:0 width:64 height:64
+                               dstX:0 dstY:0] == IO_R_RESOURCE) refused++;
+        if (refused == 4) { passes++; IOLog("OpenStepMGA S3/f-invalid: PASS "
+                                            "(4/4 refused)\n"); }
+        else IOLog("OpenStepMGA S3/f-invalid: FAIL (%d/4 refused)\n", refused);
+    }
+
+    stormBlitReady = NO;      /* leave acceleration off after the self-test */
+    IOLog("OpenStepMGA S3: self-test end %d/%d passed%s\n", passes, total,
+          stormBlitFailed ? " (ACCEL PERMANENTLY DISABLED)" : "");
+}
+
+/*
+ * S3: the documented IODisplayDoBlit acceleration entry point.
+ * docs/S3_IODISPLAY_DO_BLIT_PLAN.md.
+ *
+ * Runs one on-screen rectangle copy on the Storm engine.  Callers reach this
+ * through IODeviceMaster's setIntValues:, the same path the window server
+ * already uses for brightness and gamma, so userspace never sees MMIO.
+ *
+ * The contract (driverkit/displayDefs.h) says a driver may return
+ * IO_R_RESOURCE and the caller must be prepared to do the copy in software.
+ * We use that for every doubt: bad geometry, acceleration not enabled, a
+ * concurrent blit already in flight, or a failure before the execute write.
+ *
+ * The one case that is NOT a soft failure is a timeout AFTER the execute
+ * write: the engine may still be writing, so letting the caller redo the
+ * copy in software would leave the late engine writes on top.  That path
+ * disables acceleration permanently instead.
+ */
+- (IOReturn)doDisplayBlitSrcX:(unsigned)srcX srcY:(unsigned)srcY
+                        width:(unsigned)w height:(unsigned)h
+                         dstX:(unsigned)dstX dstY:(unsigned)dstY
+{
+    const OSMGARes *r = &osmgaRes[selectedResIndex];
+    const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
+    unsigned long dispW = (unsigned long)r->width;
+    unsigned long dispH = (unsigned long)r->height;
+    int rc;
+
+    if (stormBlitFailed || !stormBlitReady)
+        return IO_R_RESOURCE;
+    if (!mmioMapped || !frameBufferMapped || !linearModeActive)
+        return IO_R_RESOURCE;
+    if (f->bytesPerPixel != 4)
+        return IO_R_RESOURCE;
+
+    /* Parameters arrive as unsigned; a value meant as negative shows up with
+     * the high bit set.  Refuse those instead of wrapping into huge extents. */
+    if ((srcX | srcY | w | h | dstX | dstY) & 0x80000000U)
+        return IO_R_RESOURCE;
+    if (w == 0U || h == 0U)
+        return IO_R_RESOURCE;
+    /* Both rectangles must lie wholly on the screen (the API is "on the
+     * screen"); these also keep every address inside proven VRAM. */
+    if ((unsigned long)srcX + w > dispW || (unsigned long)srcY + h > dispH)
+        return IO_R_RESOURCE;
+    if ((unsigned long)dstX + w > dispW || (unsigned long)dstY + h > dispH)
+        return IO_R_RESOURCE;
+    if (srcX == dstX && srcY == dstY)
+        return IO_R_SUCCESS;                    /* no-op, engine untouched */
+
+    /* Serialize: refuse rather than wait, so no thread ever spins on another
+     * and the caller simply does this one in software. */
+    simple_lock(&stormLock);
+    if (stormBusy) {
+        simple_unlock(&stormLock);
+        return IO_R_RESOURCE;
+    }
+    stormBusy = YES;
+    simple_unlock(&stormLock);
+
+    if (!osmgaStormWaitIdle(mmioBase)) {
+        rc = 0;                                  /* nothing issued yet */
+    } else {
+        rc = osmgaStormBlit(mmioBase, (unsigned long)r->width,
+                            (unsigned long)srcX, (unsigned long)srcY,
+                            (unsigned long)w, (unsigned long)h,
+                            (unsigned long)dstX, (unsigned long)dstY);
+    }
+
+    if (rc < 0) {
+        /* Post-execute timeout: the engine may still be writing. */
+        stormBlitFailed = YES;
+        IOLog("OpenStepMGA S3: execute timed out; acceleration DISABLED "
+              "permanently (engine may still be writing)\n");
+    }
+
+    simple_lock(&stormLock);
+    stormBusy = NO;
+    simple_unlock(&stormLock);
+
+    return (rc == 1) ? IO_R_SUCCESS : IO_R_RESOURCE;
+}
+
+- (IOReturn)setIntValues:(unsigned *)parameterArray
+            forParameter:(IOParameterName)parameterName
+                   count:(unsigned)count
+{
+    if (osmgaTextEquals(parameterName, IO_DISPLAY_DO_BLIT)) {
+        if (parameterArray == 0 || count != IO_DISPLAY_BLIT_SIZE)
+            return IO_R_RESOURCE;
+        return [self doDisplayBlitSrcX:parameterArray[0]
+                                  srcY:parameterArray[1]
+                                 width:parameterArray[2]
+                                height:parameterArray[3]
+                                  dstX:parameterArray[4]
+                                  dstY:parameterArray[5]];
+    }
+    return [super setIntValues:parameterArray
+                  forParameter:parameterName
+                         count:count];
+}
+
 - (void)enterLinearMode
 {
     IOLog("OpenStepMGAReplacementDisplay: enterLinearMode begin\n");
@@ -1654,6 +1986,7 @@ unmap:
      * S2 runs after S1 and reuses the same offscreen area for its source. */
     [self runStormLivenessTest];
     [self runStormBlitTest];
+    [self runStormBlitApiTest];
 #else
     IOLog("OpenStepMGAReplacementDisplay: enterLinearMode mode-program DISABLED "
           "(FB-mapping isolation test); no register programming\n");

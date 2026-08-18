@@ -1,7 +1,7 @@
 # S3 — `IODisplayDoBlit` 구현 (WindowServer가 Storm 엔진을 쓰게 하기)
 
 기준일: 2026-08-19
-상태: 계획 + 방향로직 호스트검증 + codex 교차검토(§8) 반영 완료. **구현 미시작.**
+상태: ✅ **S3a 완료 — 실기 PASS 6/6(§9).** S3b(`IO_DISPLAY_CAN_BLIT` 광고)는 §10의 선행작업 후.
 선행: [S1](S1_STORM_ENGINE_LIVENESS_PLAN.md) PASS(엔진 생존),
 [S2](S2_STORM_BITBLT_PLAN.md) PASS(BITBLT·오프스크린→가시).
 
@@ -329,3 +329,64 @@ skip = (srcY < dstY) ? -pitch : pitch;                       /* AR5 */
 - 로깅은 **호출당 로그가 아니라 카운터/버킷**으로(치수, 방향, 지연, 거부, 타임아웃 상태).
 - "실패를 반환하면 호출자가 소프트웨어로 처리한다"는 헤더의 요구사항이지 실행 보장이
   아니다. S3b에서 실제 폴백 동작을 확인해야 한다.
+
+## 9. ✅ S3a 실기 결과 — PASS 6/6 (2026-08-19)
+
+1024×768×32, `"Storm 2D Test" = "Yes"`, 콜드 부팅 1회.
+`IO_DISPLAY_CAN_BLIT`는 세우지 않았으므로 WindowServer는 소프트웨어 경로 유지.
+
+```
+S3: self-test begin (CAN_BLIT not advertised)
+S3/a-nonoverlap:    PASS (64,64)->(704,576) 64x64
+S3/b-overlap-down:  PASS (896,640)->(896,672) 64x64     ← BLIT_UP
+S3/c-overlap-right: PASS (896,576)->(928,576) 64x64     ← BLIT_LEFT
+S3/d-overlap-diag:  PASS (880,432)->(912,464) 64x64     ← 둘 다
+S3/e-noop:          PASS
+S3/f-invalid:       PASS (4/4 refused)
+S3: self-test end 6/6 passed
+```
+
+### 판정
+
+| 기준 | 결과 |
+| --- | --- |
+| 비겹침 복사 | ✅ |
+| `BLIT_UP` 겹침 | ✅ |
+| `BLIT_LEFT` 겹침 | ✅ |
+| **대각(양방향) 겹침** | ✅ — codex 지적으로 추가한 케이스 |
+| `src==dst` no-op 성공 | ✅ 엔진 미접촉 |
+| 잘못된 입력 4종 거부 | ✅ 전부 `IO_R_RESOURCE` |
+| 화면 이상 없음 | ✅ operator 확인 |
+| telnet 생존 | ✅ |
+
+위치 인코딩 패턴을 썼으므로 **방향이 틀렸다면 겹친 영역이 번져 즉시 검출**됐을
+것이다. 대각 케이스까지 통과한 것이 겹침 로직 검증의 핵심이다.
+
+### 부수 확인 — 직렬화가 실제로 유효함
+
+`mach/i386/simple_lock.h`를 확인한 결과 `simple_lock`은 no-op이 아니라 `xchgl`
+기반의 실제 스핀락이다. 따라서 `stormBusy` test-and-set이 원자적으로 보호된다.
+설계상 스핀락은 플래그 조작 몇 명령어만 잡고, 경합한 호출자는 **대기하지 않고**
+`IO_R_RESOURCE`를 받아 소프트웨어로 처리한다.
+
+### 구현 위치
+
+`-doDisplayBlitSrcX:srcY:width:height:dstX:dstY:`(검증·직렬화·영구실패 처리),
+`-setIntValues:forParameter:count:`(정확 이름 매칭 후 위임),
+`osmgaStormBlit()`(방향 처리 포함 일반 복사), `osmgaTextEquals()`.
+self-test는 `-runStormBlitApiTest` / `-stormBlitCheckSrcX:...`.
+
+## 10. S3b 착수 전 필수 선행 작업
+
+S3a는 커서가 없는 부팅 초기에만 실행됐으므로 §2-6의 동시성 문제가 잠재해 있었다.
+`IO_DISPLAY_CAN_BLIT`를 세우기 **전에** 다음이 필요하다.
+
+1. **커서·teardown 락 공유** — `hideCursor:`/`moveCursor:`/`showCursor:`와
+   `revertToVGAMode`가 `stormBusy`/`stormLock`을 공유하도록 오버라이드.
+   커서는 프레임버퍼를 CPU로 저장·복원하므로 진행 중인 블릿과 영역이 겹치면 훼손된다.
+2. **좌표 원점 확정** — top-left 가정이 맞는지 WindowServer 실사용으로 확인.
+   틀리면 화면이 상하 반전된 위치로 복사된다.
+3. **카운터 기반 통계** — 호출당 로그는 금지(고빈도). 치수·방향·거부·타임아웃을
+   카운터로 모으고 별도 파라미터로 조회.
+4. **플래그 설정 시점** — `IO_DISPLAY_CAN_BLIT`는 `IODisplayInfo` 발행 시점
+   (init)에 세워야 한다. WindowServer가 flags를 캐시한 뒤면 늦다.

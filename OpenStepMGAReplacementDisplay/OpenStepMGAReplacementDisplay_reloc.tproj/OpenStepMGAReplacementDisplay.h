@@ -19,6 +19,7 @@
 #define OPENSTEP_MGA_REPLACEMENT_DISPLAY_H
 
 #import <driverkit/IOFrameBufferDisplay.h>
+#import <mach/machine/simple_lock.h>
 
 /* mapMemoryRange: indices, matching Default.table "Memory Maps" order. */
 #define OSMGA_RANGE_FRAMEBUFFER 0
@@ -57,6 +58,21 @@
      * Default NO: a normal boot never writes a drawing-engine register. */
     BOOL stormTestEnabled;
 
+    /* S3 IODisplayDoBlit acceleration.
+     *   stormBlitReady   -- accept IODisplayDoBlit requests at all
+     *   stormBlitFailed  -- an execute timed out; the engine may still be
+     *                       writing, so acceleration is permanently off and
+     *                       every later request is refused
+     *   stormBusy        -- one blit transaction in flight; a concurrent
+     *                       caller is refused (IO_R_RESOURCE) rather than
+     *                       queued, so no thread ever waits on another
+     *   stormLock        -- guards stormBusy only, held for a few instructions
+     */
+    BOOL stormBlitReady;
+    BOOL stormBlitFailed;
+    BOOL stormBusy;
+    simple_lock_data_t stormLock;
+
     /* lifecycle */
     BOOL linearModeActive;
 }
@@ -67,6 +83,17 @@
 - (void)selectModeFromConfig:configTable;
 - (void)runStormLivenessTest;
 - (void)runStormBlitTest;
+- (void)runStormBlitApiTest;
+- (BOOL)stormBlitCheckSrcX:(unsigned)srcX srcY:(unsigned)srcY
+                     width:(unsigned)w height:(unsigned)h
+                      dstX:(unsigned)dstX dstY:(unsigned)dstY
+                     label:(const char *)label;
+- (IOReturn)doDisplayBlitSrcX:(unsigned)srcX srcY:(unsigned)srcY
+                        width:(unsigned)w height:(unsigned)h
+                         dstX:(unsigned)dstX dstY:(unsigned)dstY;
+- (IOReturn)setIntValues:(unsigned *)parameterArray
+            forParameter:(IOParameterName)parameterName
+                   count:(unsigned)count;
 - (BOOL)runStormBlitOnceFrom:(unsigned long)srcY
                          toX:(unsigned long)dstX
                          toY:(unsigned long)dstY
