@@ -1,0 +1,25 @@
+# Proprietary / third-party analysis inputs must never be committed.
+reference/original-binaries/*.i64
+reference/original-binaries/*.idb
+reference/original-binaries/*.id0
+reference/original-binaries/*.id1
+reference/original-binaries/*.nam
+reference/original-binaries/*.til
+ref/private/
+ref/MatroxMGA-*.tgz
+ref/*.i64
+ref/*.idb
+ref/*.id0
+ref/*.id1
+ref/*.nam
+ref/*.til
+analysis-output/
+
+# OPENSTEP build products
+build/
+*.config/
+i386_obj/
+sym/
+*.o
+*.d
+*.reloc

@@ -1,0 +1,38 @@
+/*
+ * OpenStepMGA.defs - P2 control-plane MiG interface.
+ *
+ * P2.3 adds an explicit static capability query. It has no MGA hardware
+ * arguments and cannot map, submit to, or reset the device.
+ */
+
+subsystem openstep_mga 4100;
+
+#import <mach/std_types.defs>
+
+userprefix OSMGA_;
+serverprefix OSMGA_;
+
+routine protocol_info(
+    server_port     : port_t;
+    client_protocol : int;
+    out service_protocol : int;
+    out feature_flags     : int);
+
+routine query_capabilities(
+    server_port     : port_t;
+    client_protocol : int;
+    out feature_flags : int;
+    out max_leases    : int;
+    out hardware_ready : int);
+
+routine acquire(
+    server_port     : port_t;
+    client_protocol : int;
+    client_port     : port_t;
+    out token       : int;
+    out generation  : int);
+
+routine release(
+    server_port : port_t;
+    token       : int;
+    generation  : int);

@@ -1,0 +1,21 @@
+#
+# No DriverKit matching is used.  Per H1_HARDWARE_INTERROGATION_DECISION.md the
+# generic SVGA (IOVGADisplay, legacy VGA only) is the sole display owner and
+# MatroxMGA is not loaded, so the MGA native BARs are unowned.
+#
+# stage 0: PCI config READ only.
+# stage 1: stage 0 report + config-space BAR sizing (write 0xFFFFFFFF, read
+#          size mask, restore original, verify restore).  Configuration space
+#          only; the PCI command register is not modified.
+# stage 2: stage 0 report + read-only MMIO characterization.  Maps BAR1
+#          (16 KiB) with IOMapPhysicalIntoIOTask, reads only the verified
+#          read-only registers (DWGCTL/FIFOSTATUS/STATUS/VCOUNT/OPMODE/MEMCTL,
+#          common to G400 and G450), samples VCOUNT to prove a live uncached
+#          mapping, then unmaps.  It never writes a register, never touches
+#          Reset (0x1e40) or EXEC (0x0100), and does not change PCI config.
+#
+# Set the argument below: 0 read-only PCI, 1 BAR sizing, 2 MMIO read.
+#
+CALL openStepMGAProbeEntry 4
+WIRE
+START

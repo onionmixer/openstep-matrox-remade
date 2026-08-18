@@ -1,0 +1,10 @@
+"Kernel Flags" = "";
+"Boot Graphics" = "Yes";
+"Version" = "4.00";
+"Active Drivers" = "SpaceSaver2Mouse Pro1000 SoundBlaster16PCI OpenStepMGAReplacementDisplay";
+"APM" = "Yes";
+"Instance" = "0";
+"Install Mode" = "No";
+"Kernel" = "mach_kernel";
+"Language" = "English";
+"Boot Drivers" = "EIDE Floppy SpaceSaver2Keyboard PCMCIABus PCIBus EISABus ISASerialPort";

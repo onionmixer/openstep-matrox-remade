@@ -1,0 +1,20 @@
+/*
+ * P-recovery configuration template.  This is review input only and is not
+ * part of any installable bundle or staging package.
+ */
+"Title" = "OpenStep MGA G450 Recovery Activation (review only)";
+"Family" = "Display";
+"Version" = "0.1-g450-16m";
+"Location" = "Dev:0 Func:0 Bus:4";
+"Instance" = "0";
+"Driver Name" = "OpenStepMGAReplacementDisplay";
+"Class Names" = "OpenStepMGAReplacementDisplay";
+"Server Name" = "OpenStepMGAReplacementDisplay";
+"Auto Detect IDs" = "0x0525102B";
+"Display Mode" = "Height: 1200 Width: 1600 Refresh: 60Hz ColorSpace: RGB:888/32";
+"MGA Memory Size" = "16";
+"Recovery Profile" = "P-recovery";
+"DMA Channels" = "";
+"IRQ Levels" = "";
+"Memory Maps" = "";
+"I/O Ports" = "";

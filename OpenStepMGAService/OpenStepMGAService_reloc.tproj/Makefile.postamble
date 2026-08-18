@@ -1,0 +1,15 @@
+# P2 stores the .defs source, not machine-generated MiG C files.  Explicit
+# output names avoid MiG deriving names from the subsystem identifier.
+MIG_OUTPUTS = OpenStepMGAUser.h OpenStepMGAUser.c OpenStepMGAServer.c
+
+$(MIG_OUTPUTS): OpenStepMGA.defs
+	/usr/bin/mig OpenStepMGA.defs -user OpenStepMGAUser.c \
+		-server OpenStepMGAServer.c -header OpenStepMGAUser.h
+
+OpenStepMGAServer.o: OpenStepMGAServer.c OpenStepMGAProtocol.h
+OpenStepMGAService.o: OpenStepMGAService.m OpenStepMGAProtocol.h
+
+after_clean::
+	rm -f $(MIG_OUTPUTS)
+
+-include $(LOCALMAKEFILEDIR)/Makefile.local_postamble

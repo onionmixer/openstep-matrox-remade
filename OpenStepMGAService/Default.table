@@ -1,0 +1,11 @@
+"Title" = "OpenStep MGA Control Service";
+"Family" = "Bus";
+"Instance" = "0";
+"Version" = "0.2";
+"Driver Name" = "OpenStepMGAService";
+"Class Names" = "OpenStepMGAService";
+"Server Name" = "OpenStepMGAService";
+"IRQ Levels" = "";
+"DMA Channels" = "";
+"Memory Maps" = "";
+"I/O Ports" = "";

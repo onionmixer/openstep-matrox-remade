@@ -1,0 +1,161 @@
+# OpenStep Matrox MGA Remade
+
+OPENSTEP 4.2의 Matrox G400/G450 PCI VGA를 위한 새 DriverKit 기반
+가속 드라이버 연구 프로젝트다. 목표는 기존 바이너리 display driver를
+수정하는 것이 아니라, 공개 하드웨어 자료와 공개 MGA 구현을 근거로
+새로운 구현을 만드는 것이다.
+
+## 범위
+
+- 대상: Matrox MGA G400/G450 계열, PCI, i386 OPENSTEP 4.2.
+- 3D 목표: Mesa 3.4.2와 연결 가능한 고정 기능 OpenGL 1.2 가속 경로.
+- 1차 표시 목표: offscreen VRAM 렌더링 결과를 SDL2의 기존 AppKit
+  표시 경로로 전달한다.
+- 제외: AGP/GART, GL 1.3 이상 확장, shader, 다중 head, WindowServer
+  교체, 기존 `MatroxMGA` 바이너리의 수정.
+
+## 현재 결론
+
+OPENSTEP DriverKit은 PCI/MMIO mapping, DMA 물리 주소 변환, 인터럽트,
+loadable kernel server, MiG 통신을 제공하므로 native DRM-유사 서비스는
+기술적으로 가능하다. 그러나 OPENSTEP은 X11이 아니므로 Linux/FreeBSD의
+DRI/DRM ABI를 포팅하지 않는다. `OpenStepMGA`라는 별도 kernel service와
+Mesa backend를 설계한다.
+
+실기의 기존 `MatroxMGA` display driver가 현재 화면을 소유한다. 따라서
+처음부터 같은 PCI 장치를 claim하거나 mode setting을 수행하지 않는다.
+안전한 공존과 offscreen VRAM 사용이 검증되기 전에는 read-only probe만
+허용한다.
+
+현재 `MatroxMGA` configuration의 16 MiB profile과 PCI subsystem `102b:0d43`의
+공개 32 Mb board catalogue 표기는 서로 다르다. release deployment는 운영자가
+확정한 보수적 PCI G450 16 MiB cap만 사용하며, 32 MiB candidate로 넓히지 않는다.
+이는 R3 fixed 1600×1200@60 record에는 충분하지만, P3 BAR mapping, offscreen
+allocation, GPU command submission에는 existing scanout/cursor/hidden allocation과
+mapping compatibility evidence가 추가로 필요하다. 대조와 경계는
+[docs/P1_SUBSYSTEM_MEMORY_RECONCILIATION.md](docs/P1_SUBSYSTEM_MEMORY_RECONCILIATION.md)에
+기록한다.
+
+자세한 근거는 [ANALYSIS.md](ANALYSIS.md), OPENSTEP 원전 문서 대조는
+[docs/P0_OPENSTEP_DOCUMENTS.md](docs/P0_OPENSTEP_DOCUMENTS.md), 단계별 실행
+기준은 [PLAN.md](PLAN.md), 출처와 라이선스 경계는
+[refs/SOURCES.md](refs/SOURCES.md)에 기록한다.
+
+G400/G450 DDC/EDID는 기술적으로 가능하지만, 현재 display driver와 공존하는
+3D sidecar에는 넣지 않는다. 새 display driver가 단독 소유할 때의 optional
+boot-time 기능으로 분리하며, DDC 실패 시 수동 `Display Mode`를 유지하는
+정책은 [docs/P0_DDC_EDID_FEASIBILITY.md](docs/P0_DDC_EDID_FEASIBILITY.md)에
+기록한다.
+
+그 정책의 D0 pure-C EDID base-block parser와 fixed-mode intersection test는
+[docs/D0_EDID_PARSER_POLICY.md](docs/D0_EDID_PARSER_POLICY.md)에 기록한다.
+OPENSTEP user-process loader 진단용 target-only harness의 경계는
+[docs/D0_TARGET_HARNESS.md](docs/D0_TARGET_HARNESS.md)에 기록한다.
+
+기존 `MatroxMGA`와 공존하지 않는 replacement display driver의 lifecycle,
+manual-mode/EDID 우선순위, recovery admission gate는
+[docs/D1_REPLACEMENT_DISPLAY_OWNERSHIP.md](docs/D1_REPLACEMENT_DISPLAY_OWNERSHIP.md)에
+고정한다. 이 문서는 현재 hardware access 권한을 부여하지 않는다.
+recovery boot에서의 실제 후속 단계, 각 gate의 evidence, failure rollback은
+[docs/RECOVERY_REPLACEMENT_DRIVER_EXECUTION_PLAN.md](docs/RECOVERY_REPLACEMENT_DRIVER_EXECUTION_PLAN.md)에
+분리해 두었다.
+그 중 현재 실행 순서(R0 fingerprint comparator → R5 original-only recovery
+rehearsal 및 별도 R2 physical evidence)는
+[docs/NEXT_STEP_EXECUTION_PLAN.md](docs/NEXT_STEP_EXECUTION_PLAN.md)에 구체화했다.
+R2 physical evidence가 없는 값의 code 유입을 거부하는 pure-C admission contract는
+[docs/R2_PROFILE_ADMISSION_POLICY.md](docs/R2_PROFILE_ADMISSION_POLICY.md)에 기록한다.
+target original binary의 configuration override 및 hardware-sensitive count path를
+분리한 static audit은
+[docs/R2_ORIGINAL_BINARY_CONFIGURATION_AUDIT.md](docs/R2_ORIGINAL_BINARY_CONFIGURATION_AUDIT.md)에 기록한다.
+future recovery profile의 three-snapshot sole-owner invariant는
+[docs/R1_RECOVERY_MATRIX_POLICY.md](docs/R1_RECOVERY_MATRIX_POLICY.md)에 고정한다.
+P-recovery/P-failure Configure 및 Installer rollback 실기에서 사용할 기록 양식은
+[docs/reports/R1_RECOVERY_CONFIGURATION_RUN_SHEET.md](docs/reports/R1_RECOVERY_CONFIGURATION_RUN_SHEET.md)에
+고정한다.
+P-recovery table의 exact PCI/mode/16MiB admission contract는
+[docs/R1_G450_RECOVERY_CONFIG_POLICY.md](docs/R1_G450_RECOVERY_CONFIG_POLICY.md)에
+기록한다.
+G1의 hardware-precondition 완료 범위와 별도로 남은 Configure/rollback evidence는
+[docs/G1_HARDWARE_PRECONDITION_STATUS.md](docs/G1_HARDWARE_PRECONDITION_STATUS.md)에
+기록한다.
+G2 이후 단 하나의 manual mode를 evidence와 산술로 검토하는 fail-closed policy는
+[docs/R3_MANUAL_MODE_REVIEW_POLICY.md](docs/R3_MANUAL_MODE_REVIEW_POLICY.md)에 있다.
+operator-provided 16 MiB working assumption과 현재 실기 1600×1200×32 geometry로 준비한 offline
+candidate와 그 증거 경계는
+[docs/R3_16M_WORKING_ASSUMPTION.md](docs/R3_16M_WORKING_ASSUMPTION.md)에 분리했다.
+그 geometry와 비교할 1600×1200@60 DMT timing shape의 offline verifier/audit은
+[docs/R3_DMT_TIMING_CANDIDATE_AUDIT.md](docs/R3_DMT_TIMING_CANDIDATE_AUDIT.md)에 있다.
+16 MiB 가정에서 display-only와 Mesa color/depth layout을 구분하는 byte budget은
+[docs/R3_16M_RENDER_BUDGET.md](docs/R3_16M_RENDER_BUDGET.md)에 기록한다.
+Mesa의 고정 1024×768 render target과 current desktop으로의 CPU-reference
+presentation 경계는
+[docs/P3_1024_RENDER_TARGET_PRESENTATION.md](docs/P3_1024_RENDER_TARGET_PRESENTATION.md)에 있다.
+Mesa 3.4.2 software fallback과 future hardware candidate를 분리하는 selector는
+[docs/P3_MESA_BACKEND_FALLBACK.md](docs/P3_MESA_BACKEND_FALLBACK.md)에,
+code-only regression의 aggregate contract는
+[docs/NO_HARDWARE_REGRESSION_MATRIX.md](docs/NO_HARDWARE_REGRESSION_MATRIX.md)에 있다.
+그 계획의 R4 fail-closed `IOFrameBufferDisplay` skeleton과 source/target-build
+검토 결과는 [docs/R4_SKELETON_REVIEW.md](docs/R4_SKELETON_REVIEW.md)에 있다.
+future recovery-only framebuffer mapping API의 local DriverKit audit과 unresolved
+range boundary는 [docs/R6_DRIVERKIT_MAPPING_AUDIT.md](docs/R6_DRIVERKIT_MAPPING_AUDIT.md)에
+기록한다.
+future Storm 2D bring-up의 public-source analysis와 staged safety boundary는
+[docs/R6_STORM_2D_SOURCE_AUDIT.md](docs/R6_STORM_2D_SOURCE_AUDIT.md)에 기록한다.
+G450 PLL/DAC mode transition의 one-head/one-candidate/rollback boundary는
+[docs/R6_G450_PLL_MODE_SOURCE_AUDIT.md](docs/R6_G450_PLL_MODE_SOURCE_AUDIT.md)에 기록한다.
+그 중 reviewed single-plan M/N/P byte-image의 source/license boundary와 C89
+encoder는 [docs/R6_G450_PLL_ENCODING_POLICY.md](docs/R6_G450_PLL_ENCODING_POLICY.md)에
+기록한다.
+현재 original G450 16 MiB bundle가 노출하는 one-mode selection의 read-only
+audit은 [docs/R6_ORIGINAL_MODE_LIST_AUDIT.md](docs/R6_ORIGINAL_MODE_LIST_AUDIT.md)에
+기록한다.
+original static-analysis evidence를 independent three-range recovery data plan으로
+재구성한 boundary는 [docs/R6_G450_RANGE_PUBLICATION_PLAN.md](docs/R6_G450_RANGE_PUBLICATION_PLAN.md)에
+기록한다.
+checked 1600×1200×32 primary-head CRTC byte image의 offline boundary는
+[docs/R6_G450_PRIMARY_CRTC_IMAGE_POLICY.md](docs/R6_G450_PRIMARY_CRTC_IMAGE_POLICY.md)에
+기록한다.
+PLL lock 및 Storm 2D FIFO/idle에 공통으로 적용할 timeout/stability policy는
+[docs/R6_BOUNDED_POLL_POLICY.md](docs/R6_BOUNDED_POLL_POLICY.md)에 기록한다.
+R6 preflight·PLL lock·linear result·rollback을 결합하는 one-mode transaction
+policy는 [docs/R6_MODE_TRANSACTION_POLICY.md](docs/R6_MODE_TRANSACTION_POLICY.md)에 기록한다.
+first 2D clear/copy의 active-transaction/offscreen-only admission은
+[docs/R6_OFFSCREEN_2D_ADMISSION.md](docs/R6_OFFSCREEN_2D_ADMISSION.md)에 기록한다.
+그 admission에 전달할 address-free surface ID/footprint ledger의 monotonic
+allocation boundary는
+[docs/R6_OFFSCREEN_ALLOCATOR_POLICY.md](docs/R6_OFFSCREEN_ALLOCATOR_POLICY.md)에 기록한다.
+R6 policy의 OPENSTEP target compiler validation 결과는
+[docs/R6_TARGET_PURE_C_VALIDATION.md](docs/R6_TARGET_PURE_C_VALIDATION.md)에 기록한다.
+
+현재 부팅의 independent PCI config cross-check는
+[docs/P1_PCIL_RECHECK.md](docs/P1_PCIL_RECHECK.md)에 기록한다.
+
+현재 MiG control plane은 P2.6까지 target에서 검증되었다. client는
+`query_capabilities`로 단일 software lease와 명시적 `hardware_ready=0` 상태를
+확인할 수 있으며, 이는 PCI/MMIO를 포함한 실제 MGA 자원에 접근하지 않는다는
+계약이다. protocol, client-death recovery, two-client contention, raw MiG
+negative path를 포함한 full regression 결과는
+[docs/P2_P26_CONTROL_REGRESSION_REPORT.md](docs/P2_P26_CONTROL_REGRESSION_REPORT.md)에
+기록한다.
+
+P2 bundle에는 hardware API·device binding·resource table·`START/WIRE`의 유입을
+거부하는 host-side static gate도 있다. 실행 방법과 한계는
+[docs/P2_STATIC_SAFETY_GATE.md](docs/P2_STATIC_SAFETY_GATE.md)에 기록한다.
+target-native relocatable의 import table도 service load 전에 검사하며, 근거와
+실행 방법은 [docs/P2_BINARY_IMPORT_GATE.md](docs/P2_BINARY_IMPORT_GATE.md)에
+기록한다.
+
+NFS source에서 temporary clean build 후 control-plane suite를 재현하는 P2.9
+runner와 target 검증 상태는
+[docs/P2_CLEAN_REPRODUCIBILITY.md](docs/P2_CLEAN_REPRODUCIBILITY.md)에 기록한다.
+
+현재 target/host 검증 상태와 P3 차단 조건의 요약은
+[docs/TEST_STATUS.md](docs/TEST_STATUS.md)에 기록한다.
+
+P3 첫 clear/readback test의 hardware-independent expected-pixel, checksum 및
+mismatch oracle은 [docs/P3_REFERENCE_ORACLE.md](docs/P3_REFERENCE_ORACLE.md)에
+있다. 이 oracle은 MGA에 접근하지 않는다.
+
+future P3 clear/triangle request가 raw VRAM address를 받지 않도록 하는 geometry-only
+command envelope은 [docs/P3_COMMAND_ENVELOPE.md](docs/P3_COMMAND_ENVELOPE.md)에
+정의한다. 현재 P2 MiG ABI에는 아직 연결하지 않는다.

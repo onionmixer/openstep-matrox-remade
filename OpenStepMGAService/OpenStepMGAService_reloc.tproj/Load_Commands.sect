@@ -1,0 +1,7 @@
+# MiG server interface, activated on the first lookup/request.
+# CALL only initializes software lease state.  There is no START or WIRE:
+# P2.2 adds only the documented port-death callback; no hardware or IRQ path.
+CALL      openStepMGAServiceInit 0
+PORT_DEATH openStepMGAServicePortDeath
+SMAP      openstepmga0 openstep_mga_server 0
+ADVERTISE openstepmga0

@@ -1,0 +1,11 @@
+"Title" = "OpenStep MGA Read-Only Probe";
+"Family" = "Bus";
+"Instance" = "0";
+"Version" = "0.1";
+"Driver Name" = "OpenStepMGAProbe";
+"Class Names" = "OpenStepMGAProbe";
+"Server Name" = "OpenStepMGAProbe";
+"IRQ Levels" = "";
+"DMA Channels" = "";
+"Memory Maps" = "";
+"I/O Ports" = "";

@@ -1,0 +1,9 @@
+Title OPENSTEP Matrox G450 Recovery Staging (Intel i486)
+Version 0.1-g450-16m-staging.1
+Description Fail-closed i486 recovery-staging bundle for the OPENSTEP Matrox G450 project. It is not a display-driver activation package.
+DefaultLocation /LocalDeveloper
+Relocatable YES
+Application NO
+UseUserMask NO
+DiskName OPENSTEP Matrox G450 Recovery Staging
+DeleteWarning Removing this staging package removes only its inactive recovery-review bundle from the selected development prefix.

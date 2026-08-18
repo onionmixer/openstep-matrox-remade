@@ -1,0 +1,7 @@
+#
+# R4 staging skeleton.  There is intentionally no START or CALL entry point:
+# kernel-loader registration is not an execution or device-claim test.
+# The class also refuses +probe: unconditionally until the R1-R5 gates are
+# reviewed and a recovery-only configuration is separately admitted.
+#
+WIRE

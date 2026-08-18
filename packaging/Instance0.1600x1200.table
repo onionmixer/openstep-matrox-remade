@@ -1,0 +1,17 @@
+"Title" = "OpenStep MGA Replacement Display";
+"Family" = "Display";
+"Instance" = "0";
+"Driver Name" = "OpenStepMGAReplacementDisplay";
+"Class Names" = "OpenStepMGAReplacementDisplay";
+"Server Name" = "OpenStepMGAReplacementDisplay";
+"Bus Type" = "PCI";
+"Auto Detect IDs" = "0x0525102B";
+"Display Mode" = "Height: 1200 Width: 1600 Refresh: 60Hz ColorSpace: RGB:888/32";
+"MGA Memory Size" = "16";
+"FB Address" = "";
+"Memory Maps" = "";
+"VGA Memory Maps" = "0xa0000-0xbffff 0xc0000-0xcffff";
+"I/O Ports" = "";
+"DMA Channels" = "";
+"IRQ Levels" = "";
+"Location" = "";

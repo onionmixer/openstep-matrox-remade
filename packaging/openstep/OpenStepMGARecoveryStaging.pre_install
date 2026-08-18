@@ -1,0 +1,23 @@
+#!/bin/csh -f
+# This package is deliberately staging-only.  It must never be installed into
+# OPENSTEP's production driver directories by an Installer location choice.
+
+if ($#argv != 2) then
+    echo "FAILED (unexpected Installer arguments)"
+    exit 1
+endif
+
+set cpu = `/usr/bin/arch`
+if ("$cpu" != "i386") then
+    echo "OPENSTEP Matrox G450 recovery staging installs only on Intel i386/i486 computers."
+    exit 1
+endif
+
+set prefix = "$argv[2]"
+echo "$prefix" | grep '^/private' > /dev/null
+if ($status == 0) then
+    echo "OPENSTEP Matrox G450 recovery staging must not install below /private."
+    exit 1
+endif
+
+exit 0

@@ -1,0 +1,23 @@
+/* P2.3 protocol constants shared by the MiG server and user client. */
+
+#ifndef OPENSTEP_MGA_PROTOCOL_H
+#define OPENSTEP_MGA_PROTOCOL_H
+
+#define OSMGA_PROTOCOL_VERSION 3
+
+#define OSMGA_FEATURE_PROTOCOL_ONLY 0x00000001
+#define OSMGA_FEATURE_NO_SUBMIT     0x00000002
+#define OSMGA_FEATURE_NO_MMIO       0x00000004
+#define OSMGA_FEATURE_NO_DMA        0x00000008
+#define OSMGA_FEATURE_CLIENT_DEATH_CLEANUP 0x00000010
+
+#define OSMGA_P2_FEATURES (OSMGA_FEATURE_PROTOCOL_ONLY | \
+                           OSMGA_FEATURE_NO_SUBMIT | \
+                           OSMGA_FEATURE_NO_MMIO | \
+                           OSMGA_FEATURE_NO_DMA | \
+                           OSMGA_FEATURE_CLIENT_DEATH_CLEANUP)
+
+#define OSMGA_MAX_LEASES 1
+#define OSMGA_HARDWARE_READY 0
+
+#endif /* OPENSTEP_MGA_PROTOCOL_H */
