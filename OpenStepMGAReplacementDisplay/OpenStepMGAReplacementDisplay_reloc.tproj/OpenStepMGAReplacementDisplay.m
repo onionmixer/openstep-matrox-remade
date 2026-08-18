@@ -109,6 +109,29 @@
  */
 #define MGA_DWGCTL_SOLID_FILL   0x000C7804UL
 
+/* ---- S2: screen-to-screen BITBLT ---- */
+#define MGA_SGN                 0x1c58
+#define MGA_AR0                 0x1c60  /* source span end   */
+#define MGA_AR3                 0x1c6c  /* source span start */
+#define MGA_AR5                 0x1c74  /* source row delta (signed, pixels) */
+
+/*
+ * Screen-to-screen copy, ROP=copy:
+ *   AtypeNoBLK[GXcopy] (= RPL | 0x000C0000) | SHIFTZERO(1<<14)
+ *   | BITBLT(0x08) | BFCOL(0x02<<25)
+ * RPL (not RSTR) is correct for GXcopy: the RPL slots in the table are exactly
+ * the ROPs that need no destination read (clear/copy/copyInverted/set).  The
+ * same expression appears twice in X.Org (blit setup, and the DWGCTL restore
+ * at the end of the fast-blit path).  See docs/S2_STORM_BITBLT_PLAN.md 8-1.
+ */
+#define MGA_DWGCTL_BITBLT       0x040C4008UL
+#define MGA_SGN_DOWN_RIGHT      0x00000000UL  /* BLIT_LEFT=1, BLIT_UP=4 */
+
+/* S2 geometry: source and the offscreen destination, as row offsets below the
+ * visible image; the visible destination is the bottom-right corner. */
+#define OSMGA_S2_SRC_Y_OFF      256UL
+#define OSMGA_S2_DST_Y_OFF      384UL
+
 /* S1 test geometry; see plan section 4. */
 #define OSMGA_S1_GUARD_ROWS     256UL
 #define OSMGA_S1_X              0UL
@@ -373,6 +396,76 @@ osmgaStormWaitFifo(vm_address_t base, unsigned int slots)
             return 1;
     }
     return 0;
+}
+
+/*
+ * Deterministic engine state shared by every primitive (12 writes; the caller
+ * adds DWGCTL for its own opcode, so gate 13 FIFO slots).  Nothing is inherited
+ * from a previous user.
+ *
+ * The clip is DESTINATION-ONLY: source reads go through AR3/AR0/AR5 and are not
+ * clipped, so the window is narrowed to just the destination rectangle -- that
+ * is the strongest containment available and widening it to cover the source
+ * would only weaken it (docs/S2_STORM_BITBLT_PLAN.md 8-2).
+ */
+static void
+osmgaStormInitState(vm_address_t base, unsigned long stridePixels,
+                    unsigned long clipX0, unsigned long clipX1,
+                    unsigned long clipTopPixel, unsigned long clipBotPixel)
+{
+    unsigned long opmode = osmgaR32(base, MGA_OPMODE);
+
+    osmgaW32(base, MGA_PITCH,   stridePixels);
+    osmgaW32(base, MGA_YDSTORG, 0UL);
+    osmgaW32(base, MGA_MACCESS, MGA_MACCESS_PW32);
+    osmgaW32(base, MGA_PLNWT,   0xffffffffUL);
+    osmgaW32(base, MGA_FCOL,    0UL);
+    osmgaW32(base, MGA_BCOL,    0UL);
+    osmgaW32(base, MGA_OPMODE,
+             MGA_OPMODE_DMA_BLIT | (opmode & ~(unsigned long)MGA_OPMODE_BYTESWAP));
+    osmgaW32(base, MGA_CXBNDRY, (clipX1 << 16) | clipX0);  /* right inclusive */
+    osmgaW32(base, MGA_YTOP,    clipTopPixel);             /* row start ptrs  */
+    osmgaW32(base, MGA_YBOT,    clipBotPixel);
+    osmgaW32(base, MGA_SRCORG,  0UL);
+    osmgaW32(base, MGA_DSTORG,  0UL);
+}
+
+/*
+ * Map [byteStart, byteEnd) of the framebuffer as an uncached alias, because the
+ * framebuffer mapping's read cache attribute is unproven and `volatile` does
+ * not make cached reads coherent with engine writes.  IOMapPhysicalIntoIOTask
+ * is known-uncached from H1 S2 (VCOUNT read through it increments).
+ */
+static IOReturn
+osmgaMapUncachedBlock(unsigned long fbPhysical, unsigned long byteStart,
+                      unsigned long byteEnd, vm_address_t *outAlias,
+                      unsigned long *outMapLen,
+                      volatile unsigned long **outPtr)
+{
+    unsigned long mapStart = byteStart & ~0x0FFFUL;
+    unsigned long mapLen   = ((byteEnd - mapStart) + 0x0FFFUL) & ~0x0FFFUL;
+    vm_address_t alias = 0;
+    IOReturn r;
+
+    *outAlias = 0;
+    *outMapLen = 0;
+    *outPtr = 0;
+    r = IOMapPhysicalIntoIOTask((unsigned)(fbPhysical + mapStart),
+                                (unsigned)mapLen, &alias);
+    if (r != IO_R_SUCCESS || alias == 0)
+        return (r == IO_R_SUCCESS) ? IO_R_NO_MEMORY : r;
+    *outAlias = alias;
+    *outMapLen = mapLen;
+    *outPtr = (volatile unsigned long *)(alias + (byteStart - mapStart));
+    return IO_R_SUCCESS;
+}
+
+/* Position-encoding test pattern: a shifted or misaligned copy is detected,
+ * not merely "something got written". */
+static unsigned long
+osmgaS2Pattern(unsigned long row, unsigned long col)
+{
+    return 0xFF000000UL | (row << 8) | col;
 }
 
 /* ---- G450 pixel PLL (jitter + statistical lock search) ---- */
@@ -1215,8 +1308,8 @@ static IODisplayInfo osmgaModeTemplate = {
     const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
     vm_address_t base = mmioBase;
     unsigned long stridePixels, testY, startPixel, endPixel;
-    unsigned long byteStart, byteEnd, mapStart, mapLen;
-    unsigned long opmode, checksum, expectChecksum;
+    unsigned long byteStart, byteEnd, mapLen;
+    unsigned long checksum, expectChecksum;
     vm_address_t alias = 0;
     volatile unsigned long *blk;
     unsigned int fifoDepth;
@@ -1255,16 +1348,13 @@ static IODisplayInfo osmgaModeTemplate = {
     }
 
     /* Uncached alias of the block, page aligned (plan 3-1). */
-    mapStart = byteStart & ~0x0FFFUL;
-    mapLen   = ((byteEnd - mapStart) + 0x0FFFUL) & ~0x0FFFUL;
-    result = IOMapPhysicalIntoIOTask((unsigned)(frameBufferPhysical + mapStart),
-                                     (unsigned)mapLen, &alias);
-    if (result != IO_R_SUCCESS || alias == 0) {
+    result = osmgaMapUncachedBlock(frameBufferPhysical, byteStart, byteEnd,
+                                   &alias, &mapLen, &blk);
+    if (result != IO_R_SUCCESS) {
         IOLog("OpenStepMGA S1: uncached alias map failed r=%d, skipped\n",
               (int)result);
         return;
     }
-    blk = (volatile unsigned long *)(alias + (byteStart - mapStart));
 
     IOLog("OpenStepMGA S1: begin %dx%d stride=%lu block y=%lu px %lu..%lu "
           "bytes %lu..%lu\n", r->width, r->height, stridePixels, testY,
@@ -1298,27 +1388,13 @@ static IODisplayInfo osmgaModeTemplate = {
         IOLog("OpenStepMGA S1: fifo timeout before init, aborted\n");
         goto unmap;
     }
-    opmode = osmgaR32(base, MGA_OPMODE);
-    osmgaW32(base, MGA_PITCH,   stridePixels);
-    osmgaW32(base, MGA_YDSTORG, 0UL);
-    osmgaW32(base, MGA_MACCESS, MGA_MACCESS_PW32);
-    osmgaW32(base, MGA_PLNWT,   0xffffffffUL);
-    osmgaW32(base, MGA_FCOL,    0UL);
-    osmgaW32(base, MGA_BCOL,    0UL);
-    osmgaW32(base, MGA_OPMODE,
-             MGA_OPMODE_DMA_BLIT | (opmode & ~(unsigned long)MGA_OPMODE_BYTESWAP));
-    /* Narrow the destination clip to the block: X inclusive, Y as row
-     * pointers (X.Org MGASetClippingRectangle form). */
-    osmgaW32(base, MGA_CXBNDRY,
-             ((OSMGA_S1_X + OSMGA_S1_W - 1UL) << 16) | OSMGA_S1_X);
-    osmgaW32(base, MGA_YTOP, testY * stridePixels);
-    osmgaW32(base, MGA_YBOT, (testY + OSMGA_S1_H - 1UL) * stridePixels);
-    osmgaW32(base, MGA_SRCORG, 0UL);
-    osmgaW32(base, MGA_DSTORG, 0UL);
+    osmgaStormInitState(base, stridePixels,
+                        OSMGA_S1_X, OSMGA_S1_X + OSMGA_S1_W - 1UL,
+                        testY * stridePixels,
+                        (testY + OSMGA_S1_H - 1UL) * stridePixels);
     osmgaW32(base, MGA_DWGCTL, MGA_DWGCTL_SOLID_FILL);
-    IOLog("OpenStepMGA S1: engine state set (dwgctl=%08lx maccess=%02x "
-          "opmode=%08lx)\n", MGA_DWGCTL_SOLID_FILL, MGA_MACCESS_PW32,
-          MGA_OPMODE_DMA_BLIT | (opmode & ~(unsigned long)MGA_OPMODE_BYTESWAP));
+    IOLog("OpenStepMGA S1: engine state set (dwgctl=%08lx maccess=%02x)\n",
+          MGA_DWGCTL_SOLID_FILL, MGA_MACCESS_PW32);
 
     if (!osmgaStormWaitFifo(base, 3U)) {
         IOLog("OpenStepMGA S1: fifo timeout before fill, aborted\n");
@@ -1369,6 +1445,201 @@ unmap:
     IOLog("OpenStepMGA S1: end\n");
 }
 
+/*
+ * S2: screen-to-screen BITBLT -- docs/S2_STORM_BITBLT_PLAN.md.  This is the
+ * presentation primitive: later, Mesa renders into offscreen VRAM and the
+ * result reaches the screen through exactly this copy.
+ *
+ * Split into two phases so the new source-addressing semantics (AR3/AR0/AR5,
+ * SGN) and "writing into visible scanout" are never introduced together:
+ *   S2a  offscreen -> offscreen   -- all the new semantics, zero display risk
+ *   S2b  offscreen -> visible     -- only the destination address is new,
+ *                                    and it runs only if S2a passed
+ *
+ * The source carries a position-encoding pattern, so a shifted or misaligned
+ * copy fails the check instead of passing as "something got written".
+ */
+- (BOOL)runStormBlitOnceFrom:(unsigned long)srcY
+                        toX:(unsigned long)dstX
+                        toY:(unsigned long)dstY
+                     stride:(unsigned long)stridePixels
+                      label:(const char *)label
+{
+    vm_address_t base = mmioBase;
+    unsigned long wLast = OSMGA_S1_W - 1UL;
+    unsigned long start = srcY * stridePixels + OSMGA_S1_X;   /* YDSTORG = 0 */
+    unsigned long end   = start + wLast;                      /* left-to-right */
+    unsigned long dstByteStart = (dstY * stridePixels + dstX) * 4UL;
+    unsigned long dstByteEnd   =
+        ((dstY + OSMGA_S1_H - 1UL) * stridePixels + dstX + OSMGA_S1_W - 1UL)
+        * 4UL + 4UL;
+    vm_address_t alias = 0;
+    unsigned long mapLen = 0;
+    volatile unsigned long *blk = 0;
+    unsigned long row, col, bad = 0UL;
+    IOReturn result;
+
+    /* 12 state writes + DWGCTL; clip narrowed to the DESTINATION only. */
+    if (!osmgaStormWaitFifo(base, 13U)) {
+        IOLog("OpenStepMGA S2/%s: fifo timeout before init, aborted\n", label);
+        return NO;
+    }
+    osmgaStormInitState(base, stridePixels,
+                        dstX, dstX + OSMGA_S1_W - 1UL,
+                        dstY * stridePixels,
+                        (dstY + OSMGA_S1_H - 1UL) * stridePixels);
+    osmgaW32(base, MGA_DWGCTL, MGA_DWGCTL_BITBLT);
+
+    if (!osmgaStormWaitFifo(base, 3U)) {
+        IOLog("OpenStepMGA S2/%s: fifo timeout before blit setup, aborted\n",
+              label);
+        return NO;
+    }
+    osmgaW32(base, MGA_SGN, MGA_SGN_DOWN_RIGHT);
+    osmgaW32(base, MGA_AR5, stridePixels);      /* +1 row, top-down */
+
+    if (!osmgaStormWaitFifo(base, 4U)) {
+        IOLog("OpenStepMGA S2/%s: fifo timeout before copy, aborted\n", label);
+        return NO;
+    }
+    osmgaW32(base, MGA_AR0, end);
+    osmgaW32(base, MGA_AR3, start);
+    /* BITBLT takes an INCLUSIVE right edge (the solid fill takes exclusive). */
+    osmgaW32(base, MGA_FXBNDRY, ((dstX + wLast) << 16) | (dstX & 0xffffUL));
+    osmgaW32(base, MGA_YDSTLEN + MGA_EXEC, (dstY << 16) | OSMGA_S1_H);
+
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA S2/%s: engine did NOT return idle (timeout) -- FAIL\n",
+              label);
+        return NO;
+    }
+
+    result = osmgaMapUncachedBlock(frameBufferPhysical, dstByteStart,
+                                   dstByteEnd, &alias, &mapLen, &blk);
+    if (result != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA S2/%s: dst alias map failed r=%d\n", label,
+              (int)result);
+        return NO;
+    }
+    for (row = 0UL; row < OSMGA_S1_H; row++) {
+        for (col = 0UL; col < OSMGA_S1_W; col++) {
+            unsigned long got = blk[row * stridePixels + col];
+            if (got != osmgaS2Pattern(row, col)) {
+                if (bad < 4UL)
+                    IOLog("OpenStepMGA S2/%s: mismatch r=%lu c=%lu got=%08lx "
+                          "want=%08lx\n", label, row, col, got,
+                          osmgaS2Pattern(row, col));
+                bad++;
+            }
+        }
+    }
+    IOUnmapPhysicalFromIOTask(alias, mapLen);
+
+    if (bad == 0UL) {
+        IOLog("OpenStepMGA S2/%s: PASS -- %lu px copied to (%lu,%lu)\n",
+              label, OSMGA_S1_W * OSMGA_S1_H, dstX, dstY);
+        return YES;
+    }
+    IOLog("OpenStepMGA S2/%s: FAIL -- %lu/%lu px wrong\n", label, bad,
+          OSMGA_S1_W * OSMGA_S1_H);
+    return NO;
+}
+
+- (void)runStormBlitTest
+{
+    const OSMGARes *r = &osmgaRes[selectedResIndex];
+    const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
+    vm_address_t base = mmioBase;
+    unsigned long stridePixels, srcY, dstAY, dstBX, dstBY;
+    unsigned long srcByteStart, srcByteEnd, dstAByteEnd, dstBByteEnd;
+    vm_address_t alias = 0;
+    unsigned long mapLen = 0;
+    volatile unsigned long *src = 0;
+    unsigned long row, col, bad = 0UL;
+    IOReturn result;
+
+    if (!stormTestEnabled)
+        return;
+    if (!mmioMapped || !frameBufferMapped || !linearModeActive)
+        return;
+    if (f->bytesPerPixel != 4) {
+        IOLog("OpenStepMGA S2: 32bpp only, skipped\n");
+        return;
+    }
+
+    stridePixels = (unsigned long)r->width;
+    srcY  = (unsigned long)r->height + OSMGA_S2_SRC_Y_OFF;
+    dstAY = (unsigned long)r->height + OSMGA_S2_DST_Y_OFF;
+    dstBX = (unsigned long)r->width  - OSMGA_S1_W;   /* bottom-right corner: */
+    dstBY = (unsigned long)r->height - OSMGA_S1_H;   /* overrun runs offscreen */
+
+    srcByteStart = srcY * stridePixels * 4UL;
+    srcByteEnd   = ((srcY + OSMGA_S1_H - 1UL) * stridePixels +
+                    OSMGA_S1_W - 1UL) * 4UL + 4UL;
+    dstAByteEnd  = ((dstAY + OSMGA_S1_H - 1UL) * stridePixels +
+                    OSMGA_S1_W - 1UL) * 4UL + 4UL;
+    dstBByteEnd  = ((dstBY + OSMGA_S1_H - 1UL) * stridePixels +
+                    dstBX + OSMGA_S1_W - 1UL) * 4UL + 4UL;
+
+    /* Everything must sit inside VRAM proven real by the working scanout. */
+    if (srcByteEnd > OSMGA_S1_VRAM_PROVEN ||
+        dstAByteEnd > OSMGA_S1_VRAM_PROVEN ||
+        dstBByteEnd > OSMGA_S1_VRAM_PROVEN) {
+        IOLog("OpenStepMGA S2: blocks exceed proven VRAM, skipped\n");
+        return;
+    }
+    /* S2b must land wholly inside the visible image. */
+    if (dstBX + OSMGA_S1_W > (unsigned long)r->width ||
+        dstBY + OSMGA_S1_H > (unsigned long)r->height) {
+        IOLog("OpenStepMGA S2: visible destination out of range, skipped\n");
+        return;
+    }
+
+    IOLog("OpenStepMGA S2: begin stride=%lu src y=%lu dstA y=%lu "
+          "dstB (%lu,%lu)\n", stridePixels, srcY, dstAY, dstBX, dstBY);
+
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA S2: engine BUSY at entry (timeout), aborted\n");
+        return;
+    }
+
+    /* Lay down the position-encoding source pattern through an uncached alias. */
+    result = osmgaMapUncachedBlock(frameBufferPhysical, srcByteStart,
+                                   srcByteEnd, &alias, &mapLen, &src);
+    if (result != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA S2: src alias map failed r=%d, skipped\n",
+              (int)result);
+        return;
+    }
+    for (row = 0UL; row < OSMGA_S1_H; row++)
+        for (col = 0UL; col < OSMGA_S1_W; col++)
+            src[row * stridePixels + col] = osmgaS2Pattern(row, col);
+    for (row = 0UL; row < OSMGA_S1_H; row++)
+        for (col = 0UL; col < OSMGA_S1_W; col++)
+            if (src[row * stridePixels + col] != osmgaS2Pattern(row, col))
+                bad++;
+    IOUnmapPhysicalFromIOTask(alias, mapLen);
+    if (bad != 0UL) {
+        IOLog("OpenStepMGA S2: source pattern readback failed (%lu bad), "
+              "aborted\n", bad);
+        return;
+    }
+    IOLog("OpenStepMGA S2: source pattern ok\n");
+
+    /* S2a: offscreen -> offscreen.  No display risk. */
+    if (![self runStormBlitOnceFrom:srcY toX:OSMGA_S1_X toY:dstAY
+                             stride:stridePixels label:"a-offscreen"]) {
+        IOLog("OpenStepMGA S2: S2a failed -- NOT attempting the visible "
+              "destination\n");
+        return;
+    }
+
+    /* S2b: offscreen -> visible.  Only reached because S2a passed. */
+    (void)[self runStormBlitOnceFrom:srcY toX:dstBX toY:dstBY
+                              stride:stridePixels label:"b-visible"];
+    IOLog("OpenStepMGA S2: end\n");
+}
+
 - (void)enterLinearMode
 {
     IOLog("OpenStepMGAReplacementDisplay: enterLinearMode begin\n");
@@ -1379,8 +1650,10 @@ unmap:
         return;
     }
     IOLog("OpenStepMGAReplacementDisplay: enterLinearMode done\n");
-    /* Opt-in engine test, last of all: display is already up and verified. */
+    /* Opt-in engine tests, last of all: display is already up and verified.
+     * S2 runs after S1 and reuses the same offscreen area for its source. */
     [self runStormLivenessTest];
+    [self runStormBlitTest];
 #else
     IOLog("OpenStepMGAReplacementDisplay: enterLinearMode mode-program DISABLED "
           "(FB-mapping isolation test); no register programming\n");

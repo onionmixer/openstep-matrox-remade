@@ -66,6 +66,12 @@
 - (BOOL)readManualMemoryConfiguration:configTable;
 - (void)selectModeFromConfig:configTable;
 - (void)runStormLivenessTest;
+- (void)runStormBlitTest;
+- (BOOL)runStormBlitOnceFrom:(unsigned long)srcY
+                         toX:(unsigned long)dstX
+                         toY:(unsigned long)dstY
+                      stride:(unsigned long)stridePixels
+                       label:(const char *)label;
 - setTransferTable:(const unsigned int *)table count:(int)count;
 - (void)enterLinearMode;
 - (void)revertToVGAMode;
