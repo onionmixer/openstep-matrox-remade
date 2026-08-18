@@ -53,6 +53,10 @@
     unsigned char paletteBlue[256];
     BOOL paletteValid;
 
+    /* opt-in S1 Storm 2D engine liveness test ("Storm 2D Test" = "Yes").
+     * Default NO: a normal boot never writes a drawing-engine register. */
+    BOOL stormTestEnabled;
+
     /* lifecycle */
     BOOL linearModeActive;
 }
@@ -61,6 +65,7 @@
 - initFromDeviceDescription:deviceDescription;
 - (BOOL)readManualMemoryConfiguration:configTable;
 - (void)selectModeFromConfig:configTable;
+- (void)runStormLivenessTest;
 - setTransferTable:(const unsigned int *)table count:(int)count;
 - (void)enterLinearMode;
 - (void)revertToVGAMode;

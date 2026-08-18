@@ -69,6 +69,58 @@
 #define MGA_BPP32_SHIFT         2      /* BppShift for 32 bpp */
 
 /*
+ * ---- Storm 2D drawing engine (S1 liveness test only) ----
+ *
+ * Offsets and field meanings are behaviour-level facts derived from the public
+ * X.Org xf86-video-mga 2.0.0 driver; no source is copied.  Plan, safety
+ * analysis and the codex cross-review are in
+ * docs/S1_STORM_ENGINE_LIVENESS_PLAN.md.  These registers are touched ONLY by
+ * the opt-in offscreen liveness test; normal boots never write them.
+ */
+#define MGA_DWGCTL              0x1c00
+#define MGA_MACCESS             0x1c04
+#define MGA_PLNWT               0x1c1c
+#define MGA_BCOL                0x1c20
+#define MGA_FCOL                0x1c24
+#define MGA_CXBNDRY             0x1c80
+#define MGA_FXBNDRY             0x1c84
+#define MGA_YDSTLEN             0x1c88
+#define MGA_PITCH               0x1c8c
+#define MGA_YDSTORG             0x1c94
+#define MGA_YTOP                0x1c98
+#define MGA_YBOT                0x1c9c
+#define MGA_FIFOSTATUS          0x1e10
+#define MGA_ENGSTATUS           0x1e14
+#define MGA_OPMODE              0x1e54
+#define MGA_SRCORG              0x2cb4
+#define MGA_DSTORG              0x2cb8
+#define MGA_EXEC                0x0100  /* added to a register: write + execute */
+
+#define MGA_ENGBUSY_BIT         0x01    /* ENGSTATUS+2, bit 0 */
+#define MGA_OPMODE_DMA_BLIT     0x04
+#define MGA_OPMODE_BYTESWAP     0x30000 /* cleared on little-endian */
+#define MGA_MACCESS_PW32        0x02
+
+/*
+ * Solid rectangle fill, replace mode, ROP=copy, block mode deliberately unused:
+ *   TRAP(0x04) | SOLID(1<<11) | ARZERO(1<<12) | SGNZERO(1<<13)
+ *   | SHIFTZERO(1<<14) | BMONOLEF(0) | RPL(0<<4) | bop_copy(0x000C0000)
+ * ARZERO/SGNZERO remove any dependency on the AR/SGN registers.
+ */
+#define MGA_DWGCTL_SOLID_FILL   0x000C7804UL
+
+/* S1 test geometry; see plan section 4. */
+#define OSMGA_S1_GUARD_ROWS     256UL
+#define OSMGA_S1_X              0UL
+#define OSMGA_S1_W              64UL
+#define OSMGA_S1_H              64UL
+#define OSMGA_S1_SENTINEL       0x5A5A5A5AUL
+#define OSMGA_S1_FILL           0xDEADBEEFUL
+/* Only VRAM proven real by the working 1600x1200x32 scanout (7.32 MiB). */
+#define OSMGA_S1_VRAM_PROVEN    (7UL * 1024UL * 1024UL)
+#define OSMGA_S1_SPIN_LIMIT     100000UL
+
+/*
  * Mode table.  Timing -> CRTC/CRTCEXT/Misc is computed from these by
  * osmgaComputeCRTC (X.Org MGAGInit + vgaHWInit formulas), so adding modes is
  * just adding rows.  Starting with a safe 1024x768@60 (65 MHz) to prove the
@@ -243,6 +295,18 @@ osmgaW8(vm_address_t base, unsigned int off, unsigned char v)
     *(volatile unsigned char *)(base + off) = v;
 }
 
+static unsigned long
+osmgaR32(vm_address_t base, unsigned int off)
+{
+    return *(volatile unsigned long *)(base + off);
+}
+
+static void
+osmgaW32(vm_address_t base, unsigned int off, unsigned long v)
+{
+    *(volatile unsigned long *)(base + off) = v;
+}
+
 static void
 osmgaOutDac(vm_address_t base, unsigned char idx, unsigned char v)
 {
@@ -277,6 +341,38 @@ osmgaWriteAttr(vm_address_t base, unsigned char idx, unsigned char v)
     (void)osmgaR8(base, MGA_INSTS1);       /* reset attr flip-flop to index */
     osmgaW8(base, MGA_ATTR_INDEX, idx);
     osmgaW8(base, MGA_ATTR_INDEX, v);
+}
+
+/* ---- Storm 2D engine: bounded waits (never spin forever) ---- */
+
+/* Wait until the drawing engine reports idle.  Returns 1 on idle, 0 on
+ * timeout.  A timeout must abort the caller: never issue an EXEC, and never
+ * try to "clean up" a possibly wedged FIFO. */
+static int
+osmgaStormWaitIdle(vm_address_t base)
+{
+    unsigned long spins;
+
+    for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
+        if ((osmgaR8(base, MGA_ENGSTATUS + 2) & MGA_ENGBUSY_BIT) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+/* Wait until at least `slots' FIFO entries are free.  Returns 1, or 0 on
+ * timeout.  Engine-idle alone does NOT guarantee FIFO admission, so every
+ * write batch is gated by this. */
+static int
+osmgaStormWaitFifo(vm_address_t base, unsigned int slots)
+{
+    unsigned long spins;
+
+    for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
+        if ((unsigned int)osmgaR8(base, MGA_FIFOSTATUS) >= slots)
+            return 1;
+    }
+    return 0;
 }
 
 /* ---- G450 pixel PLL (jitter + statistical lock search) ---- */
@@ -738,6 +834,7 @@ static IODisplayInfo osmgaModeTemplate = {
     selectedResIndex = OSMGA_RES_DEFAULT;
     selectedFormatIndex = OSMGA_FMT_DEFAULT;
     paletteValid = NO;
+    stormTestEnabled = NO;
     manualVideoMemoryConfigured = NO;
     configuredVideoMemoryBytes = 0;
 
@@ -764,6 +861,18 @@ static IODisplayInfo osmgaModeTemplate = {
     if (![self readManualMemoryConfiguration:[deviceDescription configTable]])
         IOLog("OpenStepMGAReplacementDisplay: manual MGA Memory Size unavailable\n");
     [self selectModeFromConfig:[deviceDescription configTable]];
+
+    /* Opt-in S1 engine liveness test; absent/anything-but-Yes means off. */
+    {
+        IOConfigTable *ct = [deviceDescription configTable];
+        const char *flag = (ct == nil) ? 0
+                         : (const char *)[ct valueForStringKey:"Storm 2D Test"];
+        stormTestEnabled = (flag != 0 && osmgaTextContains(flag, "Yes"))
+                           ? YES : NO;
+        if (stormTestEnabled)
+            IOLog("OpenStepMGAReplacementDisplay: S1 Storm 2D test ENABLED "
+                  "by configuration\n");
+    }
 
     if (frameBufferPhysical == 0 || mmioPhysical == 0) {
         IOLog("OpenStepMGAReplacementDisplay: bad fb/mmio phys fb=%08x mmio=%08x, abort\n",
@@ -1076,6 +1185,190 @@ static IODisplayInfo osmgaModeTemplate = {
  */
 #define OSMGA_ENABLE_MODE_PROGRAM 1
 
+/*
+ * S1: Storm 2D engine liveness test -- docs/S1_STORM_ENGINE_LIVENESS_PLAN.md.
+ *
+ * Fills one 64x64 OFFSCREEN block with the engine and verifies it by CPU
+ * readback.  This is the single unknown the whole 2D/OpenGL effort rests on:
+ * does the engine respond to the sequence we derived?
+ *
+ * Opt-in only ("Storm 2D Test" = "Yes"); a normal boot never writes an engine
+ * register.  Runs at the very end of enterLinearMode, i.e. after the display
+ * is up and the network is available, so the proven "screen may die but telnet
+ * survives" recovery still applies.
+ *
+ * Containment (plan section 4/5):
+ *  - 32bpp only, and only while the block stays inside VRAM proven real by the
+ *    working 1600x1200x32 scanout -- populated VRAM has never been measured,
+ *    and an address beyond it could alias back into visible scanout.
+ *  - CXBNDRY/YTOP/YBOT are narrowed to the block, so the hardware destination
+ *    clip contains any coordinate mistake (it cannot contain VRAM aliasing).
+ *  - Every wait is bounded; a timeout aborts before EXEC and performs no
+ *    cleanup writes to a possibly wedged FIFO.
+ *  - Sentinel/readback go through a separate uncached alias mapping, because
+ *    the framebuffer mapping's read cache attribute is unproven and `volatile`
+ *    does not make cached reads coherent with engine writes.
+ */
+- (void)runStormLivenessTest
+{
+    const OSMGARes *r = &osmgaRes[selectedResIndex];
+    const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
+    vm_address_t base = mmioBase;
+    unsigned long stridePixels, testY, startPixel, endPixel;
+    unsigned long byteStart, byteEnd, mapStart, mapLen;
+    unsigned long opmode, checksum, expectChecksum;
+    vm_address_t alias = 0;
+    volatile unsigned long *blk;
+    unsigned int fifoDepth;
+    unsigned long row, col;
+    unsigned long mismatches = 0UL;
+    IOReturn result;
+
+    if (!stormTestEnabled)
+        return;
+    if (!mmioMapped || !frameBufferMapped || !linearModeActive) {
+        IOLog("OpenStepMGA S1: not ready (mmio/fb/mode), skipped\n");
+        return;
+    }
+    if (f->bytesPerPixel != 4) {
+        IOLog("OpenStepMGA S1: 32bpp only, current is %s, skipped\n", f->cspace);
+        return;
+    }
+
+    stridePixels = (unsigned long)r->width;
+    testY        = (unsigned long)r->height + OSMGA_S1_GUARD_ROWS;
+    startPixel   = testY * stridePixels;
+    endPixel     = (testY + OSMGA_S1_H - 1UL) * stridePixels +
+                   (OSMGA_S1_X + OSMGA_S1_W - 1UL);
+    byteStart    = startPixel * 4UL;
+    byteEnd      = (endPixel + 1UL) * 4UL;
+
+    if (byteEnd > OSMGA_S1_VRAM_PROVEN) {
+        IOLog("OpenStepMGA S1: block ends at %lu B > proven VRAM %lu B "
+              "(populated VRAM unmeasured), skipped\n",
+              byteEnd, OSMGA_S1_VRAM_PROVEN);
+        return;
+    }
+    if (byteEnd > MGA_VRAM_16MB) {
+        IOLog("OpenStepMGA S1: block outside the 16 MiB mapping, skipped\n");
+        return;
+    }
+
+    /* Uncached alias of the block, page aligned (plan 3-1). */
+    mapStart = byteStart & ~0x0FFFUL;
+    mapLen   = ((byteEnd - mapStart) + 0x0FFFUL) & ~0x0FFFUL;
+    result = IOMapPhysicalIntoIOTask((unsigned)(frameBufferPhysical + mapStart),
+                                     (unsigned)mapLen, &alias);
+    if (result != IO_R_SUCCESS || alias == 0) {
+        IOLog("OpenStepMGA S1: uncached alias map failed r=%d, skipped\n",
+              (int)result);
+        return;
+    }
+    blk = (volatile unsigned long *)(alias + (byteStart - mapStart));
+
+    IOLog("OpenStepMGA S1: begin %dx%d stride=%lu block y=%lu px %lu..%lu "
+          "bytes %lu..%lu\n", r->width, r->height, stridePixels, testY,
+          startPixel, endPixel, byteStart, byteEnd - 1UL);
+
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA S1: engine BUSY at entry (timeout), aborted\n");
+        goto unmap;
+    }
+    fifoDepth = (unsigned int)osmgaR8(base, MGA_FIFOSTATUS);
+    IOLog("OpenStepMGA S1: engine idle, fifo depth=%u\n", fifoDepth);
+
+    /* Sentinel through the uncached alias: proves the readback path works and
+     * rules out "the memory already held the fill value". */
+    for (row = 0UL; row < OSMGA_S1_H; row++)
+        for (col = 0UL; col < OSMGA_S1_W; col++)
+            blk[row * stridePixels + col] = OSMGA_S1_SENTINEL;
+    for (row = 0UL; row < OSMGA_S1_H; row++)
+        for (col = 0UL; col < OSMGA_S1_W; col++)
+            if (blk[row * stridePixels + col] != OSMGA_S1_SENTINEL)
+                mismatches++;
+    if (mismatches != 0UL) {
+        IOLog("OpenStepMGA S1: sentinel readback failed (%lu bad), aborted\n",
+              mismatches);
+        goto unmap;
+    }
+    IOLog("OpenStepMGA S1: sentinel ok\n");
+
+    /* 13 state writes -- gate the whole batch, not just the fill. */
+    if (!osmgaStormWaitFifo(base, 13U)) {
+        IOLog("OpenStepMGA S1: fifo timeout before init, aborted\n");
+        goto unmap;
+    }
+    opmode = osmgaR32(base, MGA_OPMODE);
+    osmgaW32(base, MGA_PITCH,   stridePixels);
+    osmgaW32(base, MGA_YDSTORG, 0UL);
+    osmgaW32(base, MGA_MACCESS, MGA_MACCESS_PW32);
+    osmgaW32(base, MGA_PLNWT,   0xffffffffUL);
+    osmgaW32(base, MGA_FCOL,    0UL);
+    osmgaW32(base, MGA_BCOL,    0UL);
+    osmgaW32(base, MGA_OPMODE,
+             MGA_OPMODE_DMA_BLIT | (opmode & ~(unsigned long)MGA_OPMODE_BYTESWAP));
+    /* Narrow the destination clip to the block: X inclusive, Y as row
+     * pointers (X.Org MGASetClippingRectangle form). */
+    osmgaW32(base, MGA_CXBNDRY,
+             ((OSMGA_S1_X + OSMGA_S1_W - 1UL) << 16) | OSMGA_S1_X);
+    osmgaW32(base, MGA_YTOP, testY * stridePixels);
+    osmgaW32(base, MGA_YBOT, (testY + OSMGA_S1_H - 1UL) * stridePixels);
+    osmgaW32(base, MGA_SRCORG, 0UL);
+    osmgaW32(base, MGA_DSTORG, 0UL);
+    osmgaW32(base, MGA_DWGCTL, MGA_DWGCTL_SOLID_FILL);
+    IOLog("OpenStepMGA S1: engine state set (dwgctl=%08lx maccess=%02x "
+          "opmode=%08lx)\n", MGA_DWGCTL_SOLID_FILL, MGA_MACCESS_PW32,
+          MGA_OPMODE_DMA_BLIT | (opmode & ~(unsigned long)MGA_OPMODE_BYTESWAP));
+
+    if (!osmgaStormWaitFifo(base, 3U)) {
+        IOLog("OpenStepMGA S1: fifo timeout before fill, aborted\n");
+        goto unmap;
+    }
+    osmgaW32(base, MGA_FCOL, OSMGA_S1_FILL);
+    /* FXBNDRY right edge is exclusive; CXBNDRY above was inclusive. */
+    osmgaW32(base, MGA_FXBNDRY,
+             ((OSMGA_S1_X + OSMGA_S1_W) << 16) | (OSMGA_S1_X & 0xffffUL));
+    /* Writing YDSTLEN+EXEC stores YDSTLEN and triggers the operation. Last. */
+    osmgaW32(base, MGA_YDSTLEN + MGA_EXEC, (testY << 16) | OSMGA_S1_H);
+    IOLog("OpenStepMGA S1: fill issued\n");
+
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA S1: engine did NOT return idle after fill "
+              "(timeout) -- FAIL\n");
+        goto unmap;
+    }
+
+    checksum = 0UL;
+    mismatches = 0UL;
+    for (row = 0UL; row < OSMGA_S1_H; row++) {
+        for (col = 0UL; col < OSMGA_S1_W; col++) {
+            unsigned long got = blk[row * stridePixels + col];
+            checksum += got;
+            if (got != OSMGA_S1_FILL) {
+                if (mismatches < 4UL)
+                    IOLog("OpenStepMGA S1: mismatch r=%lu c=%lu got=%08lx\n",
+                          row, col, got);
+                mismatches++;
+            }
+        }
+    }
+    expectChecksum = OSMGA_S1_FILL * (OSMGA_S1_W * OSMGA_S1_H);
+
+    if (mismatches == 0UL && checksum == expectChecksum) {
+        IOLog("OpenStepMGA S1: PASS -- engine filled %lu px with %08lx, "
+              "checksum %08lx\n", OSMGA_S1_W * OSMGA_S1_H, OSMGA_S1_FILL,
+              checksum);
+    } else {
+        IOLog("OpenStepMGA S1: FAIL -- %lu/%lu px wrong, checksum %08lx "
+              "expected %08lx\n", mismatches, OSMGA_S1_W * OSMGA_S1_H,
+              checksum, expectChecksum);
+    }
+
+unmap:
+    IOUnmapPhysicalFromIOTask(alias, mapLen);
+    IOLog("OpenStepMGA S1: end\n");
+}
+
 - (void)enterLinearMode
 {
     IOLog("OpenStepMGAReplacementDisplay: enterLinearMode begin\n");
@@ -1086,6 +1379,8 @@ static IODisplayInfo osmgaModeTemplate = {
         return;
     }
     IOLog("OpenStepMGAReplacementDisplay: enterLinearMode done\n");
+    /* Opt-in engine test, last of all: display is already up and verified. */
+    [self runStormLivenessTest];
 #else
     IOLog("OpenStepMGAReplacementDisplay: enterLinearMode mode-program DISABLED "
           "(FB-mapping isolation test); no register programming\n");
