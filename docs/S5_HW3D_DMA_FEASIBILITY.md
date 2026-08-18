@@ -1,0 +1,119 @@
+# S5 — 하드웨어 3D(WARP) 및 DMA 실현 가능성 조사
+
+기준일: 2026-08-19
+상태: **조사만 완료. 착수하지 않음.** 구현 전 별도 계획서와 교차검토가 필요하다.
+
+## 0. 이 문서가 답하는 질문
+
+"OpenGL 가속"의 이득이 실제로 어디서 나오는가, 그리고 진짜 이득이 나는
+**하드웨어 삼각형 래스터화(WARP 엔진)** 가 이 플랫폼에서 가능한가.
+
+## 1. 가속 이득의 소재 — 냉정한 분석
+
+Mesa 3.4.2의 삼각형 래스터화는 **CPU가 픽셀을 하나씩 쓰는** 소프트웨어 방식이다.
+그 대상이 RAM이면 빠르고 **VRAM이면 PCI를 거쳐 훨씬 느리다.**
+
+| 연산 | 하드웨어 가능? | 효과 |
+| --- | --- | --- |
+| `glClear` | ✅ Storm 단색채우기(S1 실증) | **큰 이득** — 프레임마다 전체 화면 |
+| 화면 전송(presentation) | ✅ Storm BITBLT(S2 실증) | **이득** — CPU 복사 제거 |
+| 삼각형 래스터화 | ⚠️ **WARP 엔진 필요** | **진짜 이득은 여기** |
+| 스팬 픽셀 쓰기(CPU) | ❌ | VRAM 대상이면 **손해** |
+
+→ **렌더 타깃을 VRAM으로 옮기는 것 자체는 이득이 아니다.** WARP 없이는
+`glClear`와 presentation만 이득이고, 스팬 쓰기는 오히려 느려질 수 있다.
+순이득 여부는 워크로드에 달렸으며 **측정 없이는 알 수 없다.**
+
+## 2. 프레젠테이션의 구조적 제약
+
+렌더 결과를 화면에 올리면 WindowServer 영역과 충돌한다. S3b-prep에서 실제로
+관측했듯, 우리가 가시 프레임버퍼에 직접 블릿하면 나타나기는 하지만 **WindowServer가
+리페인트할 때 지워진다**(damage 장부에 없으므로).
+
+- **창 안(windowed) 가속 GL**: 협조 프로토콜이 없다. `IODisplayDoBlit`은
+  사문화됐고(S3b), DRI 같은 것도 없다. **사실상 불가능.**
+- **전체화면 가속 GL**: 우리가 화면을 소유하므로 정당하게 성립한다.
+  데모·게임형 용도라면 이쪽이 현실적이다.
+
+## 3. OPENSTEP의 DMA 지원 실태 (실측)
+
+### 3-1. 있는 것
+
+| 항목 | 근거 |
+| --- | --- |
+| `_kmem_alloc_wired` (0x173d1c) | 커널 전역 export — **wired 할당 가능** |
+| `_IOPhysicalFromVirtual` (0x1a9334) | 공개 API(`driverkit/kernelDriver.h`) — 물리주소 조회 |
+| PCI 버스마스터 활성 | H1 S0 실측 `command=0x0007`(bit2 = bus master) |
+
+### 3-2. 없는 것 — 이쪽이 핵심
+
+| 항목 | 확인 결과 |
+| --- | --- |
+| **물리적 연속 할당자** | `nm /mach_kernel \| grep -i contig` → **0건.** `kmem_alloc`, `kmem_alloc_pageable`, `kmem_alloc_wait`, `kmem_alloc_wired`, `kmem_alloc_zone`만 존재 |
+| DriverKit PCI DMA 헬퍼 | `IOPCIDirectDevice`는 **config space 접근만** 제공 |
+| DriverKit DMA API | 전부 **EISA/ISA 8237 채널용**(`IOEISADMABuffer`, `startDMAForBuffer:`, DMA 채널/전송모드) — **PCI 버스마스터와 무관** |
+| AGP | PCI 카드이며 OPENSTEP에 AGP 개념 자체가 없다 |
+
+### 3-3. 판정: "아예 불가"는 아니나 필요한 형태가 없다
+
+MGA primary DMA는 `PRIMADDRESS`~`PRIMEND`로 **연속 물리 영역**을 요구한다.
+연속 할당자가 없으므로 우회가 필요하다:
+- **1페이지(8 KiB)** 는 자명하게 연속 — 명령 약 2048 dword를 담는 링으로 사용 가능
+- 여러 페이지가 필요하면 `IOPhysicalFromVirtual`로 **연속성을 검사해 재시도**.
+  부팅 직후처럼 메모리가 덜 조각난 시점이면 현실적이다
+
+→ **DMA 자체는 실현 가능하다고 판단된다. 다만 검증되지 않았다.**
+
+## 4. DMA보다 큰 장벽 — 3D 소프트웨어 스택이 통째로 없다
+
+### 4-1. X.Org의 3D 경로는 전부 AGP 전제
+`mga_dri.c`가 WARP 마이크로코드·primary DMA·버퍼·텍스처를 모두 `DRM_AGP`로
+매핑한다. PCI 전용 경로는 Linux DRM 커널 모듈 쪽에 있고 우리 참조 트리에 없다.
+
+### 4-2. DDX는 3D를 실행하지 않는다
+`mga_dri.c`는 AGP 매핑을 잡아 offset을 DRM에 넘기는 것이 전부다
+(`drmCommandWrite(DRM_MGA_INIT, ...)`). 실제 WARP 구동·상태 emit은 Linux 커널
+DRM(`mga_warp.c`, `mga_state.c`)에 있으며 **우리에게 없다.**
+
+### 4-3. 결정적 — Mesa 3.4.2에 MGA 드라이버가 없다
+우리 `opennstep-mesa342/upstream/Mesa-3.4.2/src/`에는 FX(3dfx)·S3·SVGA·GGI·
+D3D·Allegro·DOS·BeOS·Windows·X·OSmesa만 있다. **MGA 없음.**
+MGA용 Mesa 하드웨어 드라이버는 DRI 트리(Mesa 3.5+)에 있고 **DRM ioctl·SAREA·
+DRI 락에 의존**한다 — OPENSTEP에 전부 없다. 따라서 **포팅이 아니라 신규 작성**이다.
+
+### 4-4. 쓸 수 있는 자산
+`xf86-video-mga-2.0.0/src/mga_ucode.h` — **WARP 마이크로코드 11,610줄**,
+MIT 라이선스("Permission is hereby granted, free of charge...")이므로 사용 가능.
+마이크로코드 자체는 다시 만들 필요가 없다.
+
+## 5. 옵션 3의 실제 작업 목록
+
+"DMA를 붙이는 일"이 아니라 다음을 **전부 새로 만드는 일**이다:
+
+1. PCI 버스마스터 DMA 링 (연속 물리 메모리 확보 포함)
+2. WARP 마이크로코드 업로드 경로
+3. 3D 상태·정점 명령 스트림 생성기
+4. DMA 완료 동기화(인터럽트 또는 bounded 폴링)
+5. VRAM 텍스처 관리
+6. **Mesa 하드웨어 드라이버 신규 작성**(DRI판 포팅 불가 → `dd_function_table`
+   훅을 Mesa 3.4.2 내장 FX/Glide 드라이버 구조를 참고해 직접)
+
+S1~S4a가 각각 하루 이내 규모였다면 이것은 **차원이 다른 규모**다.
+
+## 6. 착수한다면 첫 단계 (권고)
+
+**DMA 링 하나만 먼저 실증한다**: 연속 물리 메모리를 확보하고, 카드가 그것을
+버스마스터로 읽어 **이미 검증된 2D 명령**(단색채우기)을 실행하는지 확인한다.
+
+- 성립하면 → 나머지 5개 항목이 의미를 갖는다
+- 성립하지 않으면 → **거기서 멈춘다.** 3D 스택을 만들 이유가 없다
+
+이 방식이 지금까지의 원칙(가장 큰 미지수를 가장 싸게 먼저 제거)과 일치한다.
+S1이 "엔진이 반응하는가"를 물었듯, 이 단계는 "카드가 시스템 메모리를 읽는가"를
+묻는다.
+
+## 7. 이 문서가 결정하지 않은 것
+
+- 옵션 3을 실제로 할지 여부(operator 판단)
+- 전체화면 전용으로 갈지, 창 안 가속을 다른 방법으로 시도할지
+- `glClear`+presentation만으로 얻는 실제 이득 수치(**측정된 바 없음**)
