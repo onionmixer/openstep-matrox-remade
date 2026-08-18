@@ -9,6 +9,7 @@
 "Display Mode" = "Height: 768 Width: 1024 Refresh: 60Hz ColorSpace: RGB:888/32";
 "MGA Memory Size" = "16";
 "Storm 2D Test" = "Yes";
+"Storm Blit Observe" = "Yes";
 "FB Address" = "";
 "Memory Maps" = "";
 "VGA Memory Maps" = "0xa0000-0xbffff 0xc0000-0xcffff";

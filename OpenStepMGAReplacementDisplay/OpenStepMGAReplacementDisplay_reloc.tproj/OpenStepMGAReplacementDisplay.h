@@ -97,6 +97,24 @@
     volatile unsigned statEnterLinear;
     volatile unsigned statRevertVGA;
 
+    /*
+     * Reject-only observation mode (docs/S3B_PREP_INSTRUMENTATION_PLAN.md 10).
+     * With "Storm Blit Observe" = "Yes" we advertise IO_DISPLAY_CAN_BLIT but
+     * RECORD AND REFUSE every standard request before touching hardware, so
+     * the window server's real workload can be characterised at zero risk.
+     */
+    BOOL stormObserveOnly;
+    volatile unsigned statObserved;        /* standard requests recorded */
+    volatile unsigned statObsOverlap;      /* source and destination overlap */
+    volatile unsigned statObsDirUp;        /* would need BLIT_UP   */
+    volatile unsigned statObsDirLeft;      /* would need BLIT_LEFT */
+    volatile unsigned statObsCursorNear;   /* a cursor call happened between
+                                            * this request and the previous */
+    volatile unsigned statObsMaxW;
+    volatile unsigned statObsMaxH;
+    volatile unsigned statObsMinDim;
+    volatile unsigned obsLastCursorTotal;  /* snapshot for the "near" test */
+
     /* lifecycle */
     BOOL linearModeActive;
 }

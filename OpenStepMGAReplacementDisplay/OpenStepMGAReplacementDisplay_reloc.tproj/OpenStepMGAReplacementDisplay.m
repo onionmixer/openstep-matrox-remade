@@ -132,7 +132,7 @@
 /* ---- S3b-prep: telemetry + test-only blit parameter ---- */
 #define OSMGA_STATS_PARAM       "OSMGAStats"
 #define OSMGA_STATS_VERSION     1
-#define OSMGA_STATS_COUNT       18
+#define OSMGA_STATS_COUNT       26
 /*
  * displayDefs.h says callers must not use IO_DISPLAY_DO_BLIT unless
  * IO_DISPLAY_CAN_BLIT is set.  We have not set it, so our own probe client
@@ -149,6 +149,7 @@
 #define OSMGA_BLIT_R_BUSY       4
 #define OSMGA_BLIT_R_PREEXEC    5
 #define OSMGA_BLIT_R_POSTEXEC   6
+#define OSMGA_BLIT_R_OBSERVED   7   /* reject-only mode: recorded, not run */
 
 /* S2 geometry: source and the offscreen destination, as row offsets below the
  * visible image; the visible destination is the bottom-right corner. */
@@ -1044,6 +1045,10 @@ static IODisplayInfo osmgaModeTemplate = {
     statCursorShow = 0; statCursorMove = 0; statCursorHide = 0;
     statCursorWhileBusy = 0; statThin1px = 0;
     statEnterLinear = 0; statRevertVGA = 0;
+    stormObserveOnly = NO;
+    statObserved = 0; statObsOverlap = 0; statObsDirUp = 0; statObsDirLeft = 0;
+    statObsCursorNear = 0; statObsMaxW = 0; statObsMaxH = 0; statObsMinDim = 0;
+    obsLastCursorTotal = 0;
     manualVideoMemoryConfigured = NO;
     configuredVideoMemoryBytes = 0;
 
@@ -1081,6 +1086,17 @@ static IODisplayInfo osmgaModeTemplate = {
         if (stormTestEnabled)
             IOLog("OpenStepMGAReplacementDisplay: S1 Storm 2D test ENABLED "
                   "by configuration\n");
+
+        /* Reject-only observation mode: advertise the capability but never
+         * run the engine for a standard request (plan section 10). */
+        flag = (ct == nil) ? 0
+             : (const char *)[ct valueForStringKey:"Storm Blit Observe"];
+        stormObserveOnly = (flag != 0 && osmgaTextContains(flag, "Yes"))
+                           ? YES : NO;
+        if (stormObserveOnly)
+            IOLog("OpenStepMGAReplacementDisplay: blit OBSERVE-ONLY mode "
+                  "(CAN_BLIT advertised, every request recorded and refused, "
+                  "engine untouched)\n");
     }
 
     if (frameBufferPhysical == 0 || mmioPhysical == 0) {
@@ -1112,6 +1128,15 @@ static IODisplayInfo osmgaModeTemplate = {
         displayInfo->dotClockRate = (int)(r->clockKHz * 1000UL);
         displayInfo->screenWidth = r->width;
         displayInfo->screenHeight = r->height;
+        /*
+         * The capability flag must be set where IODisplayInfo is published --
+         * once the window server has read flags, setting it later is too late.
+         * For now it is advertised ONLY in reject-only observation mode, where
+         * every standard request is recorded and refused without touching the
+         * engine (docs/S3B_PREP_INSTRUMENTATION_PLAN.md 10).
+         */
+        if (stormObserveOnly)
+            displayInfo->flags |= IO_DISPLAY_CAN_BLIT;
     }
 
     /* map MMIO control aperture (BAR1) cache-inhibited (as MatroxMGA/MGAProbe) */
@@ -2006,6 +2031,35 @@ unmap:
     if (p[2] == 1U || p[3] == 1U)
         statThin1px++;
 
+    /*
+     * Reject-only observation: characterise the caller's workload WITHOUT
+     * running the engine.  Everything here is arithmetic on the parameters;
+     * no MMIO, no framebuffer access, so this cannot corrupt the display.
+     * Refusing is the documented contract, so the caller does it in software.
+     */
+    if (stormObserveOnly) {
+        unsigned sx = p[0], sy = p[1], w = p[2], h = p[3], dx = p[4], dy = p[5];
+        unsigned cursorTotal = statCursorShow + statCursorMove + statCursorHide;
+
+        statObserved++;
+        if (sx < dx) statObsDirLeft++;
+        if (sy < dy) statObsDirUp++;
+        /* rectangle overlap test */
+        if (sx < dx + w && dx < sx + w && sy < dy + h && dy < sy + h)
+            statObsOverlap++;
+        if (w > statObsMaxW) statObsMaxW = w;
+        if (h > statObsMaxH) statObsMaxH = h;
+        if (statObsMinDim == 0U || w < statObsMinDim) statObsMinDim = w;
+        if (h < statObsMinDim) statObsMinDim = h;
+        /* Did the cursor move between the previous request and this one?
+         * A high ratio means cursor and blits genuinely interleave. */
+        if (cursorTotal != obsLastCursorTotal) {
+            statObsCursorNear++;
+            obsLastCursorTotal = cursorTotal;
+        }
+        return IO_R_RESOURCE;          /* recorded, engine untouched */
+    }
+
     rr = [self doDisplayBlitSrcX:p[0] srcY:p[1] width:p[2] height:p[3]
                             dstX:p[4] dstY:p[5] reason:&reason];
 
@@ -2081,6 +2135,14 @@ unmap:
         parameterArray[15] = statRevertVGA;
         parameterArray[16] = stormBlitReady ? 1U : 0U;
         parameterArray[17] = stormBlitFailed ? 1U : 0U;
+        parameterArray[18] = stormObserveOnly ? 1U : 0U;
+        parameterArray[19] = statObserved;
+        parameterArray[20] = statObsOverlap;
+        parameterArray[21] = statObsDirUp;
+        parameterArray[22] = statObsDirLeft;
+        parameterArray[23] = statObsCursorNear;
+        parameterArray[24] = (statObsMaxW << 16) | (statObsMaxH & 0xffffU);
+        parameterArray[25] = statObsMinDim;
         *count = OSMGA_STATS_COUNT;
         return IO_R_SUCCESS;
     }

@@ -27,7 +27,7 @@
 #import <string.h>
 
 #define STATS_PARAM   "OSMGAStats"
-#define STATS_COUNT   18
+#define STATS_COUNT   26
 #define PROBE_PARAM   "OSMGAProbeBlit"
 #define PROBE_COUNT   6
 
@@ -36,7 +36,11 @@ static const char *statName[STATS_COUNT] = {
     "refusedDisabled", "refusedGeometry", "refusedBusy", "refusedPreExec",
     "postExecTimeout", "cursorShow", "cursorMove", "cursorHide",
     "cursorWhileStormBusy", "thin1px", "enterLinear", "revertVGA",
-    "stormBlitReady", "stormBlitFailed"
+    "stormBlitReady", "stormBlitFailed",
+    /* reject-only observation mode */
+    "observeOnly", "obsRequests", "obsOverlap", "obsWouldBlitUp",
+    "obsWouldBlitLeft", "obsCursorInterleaved", "obsMaxWxH(packed)",
+    "obsMinDim"
 };
 
 static int
@@ -91,6 +95,28 @@ main(int argc, char **argv)
         return 1;
     }
 
+    if (argc >= 2 && strcmp(argv[1], "info") == 0) {
+        /* Read IODisplayInfo through the SAME parameter the window server
+         * uses, and report flags.  IO_DISPLAY_CAN_BLIT is bit 5 (0x20).
+         * flags sits at byte offset 96: 5 ints + void* + 2 enums + char[64]. */
+        unsigned char info[512];
+        unsigned n = sizeof(info);
+        r = [master getCharValues:info forParameter:"IOGetDisplayInfo"
+                     objectNumber:objNum count:&n];
+        printf("OSMGA_DISPLAY_INFO result=%d bytes=%u\n", (int)r, n);
+        if (r == IO_R_SUCCESS && n >= 100) {
+            unsigned *w = (unsigned *)info;
+            unsigned flags = w[24];
+            printf("  width=%u height=%u totalWidth=%u rowBytes=%u\n",
+                   w[0], w[1], w[2], w[3]);
+            printf("  bitsPerPixel=%u colorSpace=%u\n", w[6], w[7]);
+            printf("  flags=0x%08x  CAN_BLIT(0x20)=%s  HAS_XFER_TABLE(0x10)=%s\n",
+                   flags,
+                   (flags & 0x20) ? "SET" : "clear",
+                   (flags & 0x10) ? "SET" : "clear");
+        }
+    }
+
     if (argc >= 8 && strcmp(argv[1], "blit") == 0) {
         unsigned blit[PROBE_COUNT];
         for (i = 0; i < PROBE_COUNT; i++)
@@ -111,7 +137,12 @@ main(int argc, char **argv)
         return 1;
     }
     printf("OSMGA_PROBE_STATS result=0 count=%u\n", count);
-    for (i = 0; i < (int)count && i < STATS_COUNT; i++)
-        printf("  %-22s %u\n", statName[i], values[i]);
+    for (i = 0; i < (int)count && i < STATS_COUNT; i++) {
+        if (i == 24)
+            printf("  %-22s %ux%u\n", "obsMaxW x obsMaxH",
+                   values[i] >> 16, values[i] & 0xffffU);
+        else
+            printf("  %-22s %u\n", statName[i], values[i]);
+    }
     return 0;
 }

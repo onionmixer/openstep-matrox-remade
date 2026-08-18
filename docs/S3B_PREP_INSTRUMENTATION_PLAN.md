@@ -1,7 +1,7 @@
 # S3b-prep — 계측과 유저스페이스 경로 실증 (락 설계 이전 단계)
 
 기준일: 2026-08-19
-상태: ✅ **완료 — 실기 측정으로 미지수 4개 전부 해결(§9).** 다음은 §10 reject-only 측정 부팅.
+상태: ✅ **완료(§9)** + reject-only 측정 완료(§11) — **`IODisplayDoBlit`은 OPENSTEP 4.2에서 사문화된 API임이 확정**되어 S3b는 성립하지 않는다.
 선행: [S3a](S3_IODISPLAY_DO_BLIT_PLAN.md) PASS 6/6.
 
 ## 0. 왜 이 단계가 필요한가 — 가정 위에 설계하지 않기 위해
@@ -341,3 +341,69 @@ WindowServer가 어떤 좌표를 보낼지는 §10에서 별도로 관측한다.
   한다고 요구할 뿐, 그 구현이 그렇게 한다는 보장은 아니다)
 
 이 관측 결과로 락 설계를 확정한 뒤에야 엔진을 실제로 구동한다.
+
+## 11. ✅ reject-only 측정 결과 — `IODisplayDoBlit`은 사문화된 API (2026-08-19)
+
+`"Storm Blit Observe" = "Yes"`로 `IO_DISPLAY_CAN_BLIT`을 광고하고, 모든 표준 요청을
+하드웨어 접촉 전에 기록·거절하는 모드로 부팅. operator가 창을 옮기고 스크롤하는 등
+정상 사용.
+
+```
+observeOnly            1      ← 모드 활성, CAN_BLIT 광고됨
+cursorMove          1784      ← 실제로 활발히 사용됨
+blitRequests           0      ← WindowServer가 한 번도 요청하지 않음
+obsRequests            0
+```
+화면 이상 없음(operator 확인) — 당연하다. 하드웨어 경로를 시도조차 하지 않았다.
+
+### 11-1. 원인 규명 — 플래그 문제가 아니라 호출자가 없다
+
+WindowServer와 같은 경로로 되읽기를 시도했으나
+`IOGetDisplayInfo` → **`IO_R_UNSUPPORTED(-711)`**. 즉 그 파라미터 자체가 지원되지
+않는다. 그래서 **바이너리에서 직접 확인**했다:
+
+```
+strings /usr/lib/NextStep/WindowServer | grep DoBlit   → (없음)
+strings /mach_kernel                   | grep DoBlit   → (없음)
+```
+
+검색 방법이 유효함을 대조로 확인 — WindowServer가 실제로 쓰는 문자열은 존재한다:
+```
+IOSetTransferTable
+IO_Framebuffer_Dimensions / IO_Framebuffer_Map /
+IO_Framebuffer_Pixel_Encoding / IO_Framebuffer_Register
+IO_BM256_to_BM38_map / IO_BM38_to_BM256_map / IO_4BPS_to_5BPS_map ...
+```
+
+→ **WindowServer는 프레임버퍼를 직접 매핑해 CPU로 그린다**(`IO_Framebuffer_Map`).
+헤더의 블릿 API(주석 날짜 12/94)는 정의만 남았고, 이 WindowServer(1997-04 빌드)는
+**사용하지 않는다.** `IODisplayDoBlit`은 OPENSTEP 4.2에서 **사문화**됐다.
+
+### 11-2. 판정
+
+**S3b는 성립하지 않는다.** `IO_DISPLAY_CAN_BLIT`을 세워도 호출자가 없다.
+
+**reject-only 방식을 택한 것이 결정적으로 옳았다.** 엔진을 켜는 S3b로 곧장 갔다면
+"화면은 멀쩡한데 왜 빨라지지 않는가"를 한참 헤맸을 것이다. 위험 0으로 사실을 얻었다.
+
+### 11-3. 잃은 것은 없다 — 자산은 그대로 유효
+
+- `IODisplayDoBlit` 핸들러 + 겹침 처리 + 입력 검증 + 직렬화: 실기 6/6 동작(S3a §9)
+- **유저스페이스→커널 RPC 경로 실증**(`Display0` → 카운터 조회·블릿 요청 성공)
+- 좌표 원점 top-left 확정
+- 커서가 소프트웨어 커서라는 IDA 확정
+
+즉 **"유저스페이스가 커널을 통해 Storm 엔진을 구동하는 길"은 이미 완성돼 있다.**
+호출자가 WindowServer가 아닐 뿐이다.
+
+애초 목표에 비추면 문제가 아니다 — 우리가 원한 호출자는 **Mesa**였다.
+`OSMGAProbeBlit`(정식 이름을 붙여) Mesa가 직접 호출하면 된다. WindowServer 가속은
+부수적 기대였을 뿐이다.
+
+### 11-4. 다음
+
+S4(Mesa 연결)로 간다. 단 Mesa가 오프스크린 VRAM에 **직접 렌더**하려면 여전히
+**유저 태스크 VRAM 매핑**(미검증)이 필요하다. 그것을 먼저 조사한다.
+`devsw`의 `mmap` 엔트리(`IOAddToCdevsw`)가 헤더에 있으나 우리 미러에 예제가 없고,
+`IO_Framebuffer_Map`이라는 WindowServer가 쓰는 파라미터가 **유력한 단서**다 —
+WindowServer가 프레임버퍼를 유저스페이스로 매핑받는 바로 그 메커니즘이다.
