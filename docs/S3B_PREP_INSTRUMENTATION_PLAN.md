@@ -407,3 +407,121 @@ S4(Mesa 연결)로 간다. 단 Mesa가 오프스크린 VRAM에 **직접 렌더**
 `devsw`의 `mmap` 엔트리(`IOAddToCdevsw`)가 헤더에 있으나 우리 미러에 예제가 없고,
 `IO_Framebuffer_Map`이라는 WindowServer가 쓰는 파라미터가 **유력한 단서**다 —
 WindowServer가 프레임버퍼를 유저스페이스로 매핑받는 바로 그 메커니즘이다.
+
+## 12. 검증 방법의 결함 발견과 재확인 (2026-08-19)
+
+§11의 결론은 **깨진 명령으로 도출됐다.** 타깃의 `grep`은 `"A\|B"` 교체 패턴에서
+**조용히 아무것도 반환하지 않는다**(에러도 없음). §11에서 쓴
+`grep -i "IODisplayDoBlit\|DoBlit"`이 정확히 그 패턴이었다.
+
+발견 경위: IDA는 `mach_kernel`에 `IO_Framebuffer_Pixel_Encoding` 문자열이 있다고
+보여주는데(`0x1d8fdc`), 같은 방식의 타깃 grep은 없다고 답했다. 대조 실험:
+
+```
+strings /mach_kernel | grep IO_Framebuffer_Pixel_Encoding   → 검출됨
+strings /mach_kernel | grep "IO_Framebuffer\|IO_BM256"      → (없음)   ← 거짓
+strings /mach_kernel | grep IO_Framebuffer                  → 6건 검출
+```
+
+**plain grep으로 재검증한 결과 §11의 결론은 유지된다**:
+```
+strings /mach_kernel                   | grep Blit  → (없음)
+strings /usr/lib/NextStep/WindowServer | grep Blit  → (없음)
+```
+대조군(`IO_Framebuffer_Pixel_Encoding`)이 검출되므로 방법이 유효하다.
+
+> 교훈: 이 저장소 메모리에 이미 "타깃 grep은 `-E`/`-iE`를 못 쓴다"가 기록돼 있었는데
+> `\|` 교체도 같은 함정이라는 점을 놓쳤다. **타깃에서는 항상 단일 패턴 grep을 쓴다.**
+
+## 13. 디스플레이 파라미터 실제 계약 (IDA 확정)
+
+`-[IOFrameBufferDisplay getIntValues:forParameter:count:]`(`0x1c3cdc`) 정독 결과.
+`IODisplayInfo` 필드 번호는 IDA 구조체(`size=136`, `displayModes` stride 136과 일치)로
+확정: `var0`=width, `var1`=height, `var2`=totalWidth, `var3`=rowBytes,
+`var4`=refreshRate, `var5`=frameBuffer, `var6`=bitsPerPixel, `var7`=colorSpace,
+`var8`=pixelEncoding[64], **`var9`@0x60=`flags`**.
+
+| 파라미터 | 종류 | 동작 |
+| --- | --- | --- |
+| `IO_Framebuffer_Map` | getInt | `revertToVGAMode` → `enterLinearMode` → `[kmId registerDisplay:self]`. **메모리를 호출자에게 매핑하지 않는다.** |
+| `IO_Framebuffer_Dimensions` | getInt | `[width, height, rowBytes, **flags**, bpp숫자]` |
+| `IO_Framebuffer_Register` | getInt | `_registerWithED` → 이벤트드라이버 등록, token 반환 |
+| `IO_Framebuffer_Pixel_Encoding` | **getChar** | `pixelEncoding` 64바이트 |
+| `IOGetDisplayInfo` | **getInt**(count 5 또는 7) | `[width, height, refreshRate, bitsPerPixel, colorSpace, (totalWidth, rowBytes)]` — **flags 없음** |
+| `IOGetDisplayMemory` / `IOGetRAMDACSpeed` / `IOGetDisplayModeNum` / `IOGetDisplayModeInfo:` / `IOGetCurrentDisplayMode` / `IOGetPendingDisplayMode` | getInt | 각 게터 |
+
+### 13-1. 우리 프로브의 오류 정정
+`IOGetDisplayInfo`를 **getCharValues**로 호출해 `IO_R_UNSUPPORTED(-711)`를 받았는데,
+실제로는 **getIntValues**이고 count는 5 또는 7이어야 한다. 프로브가 틀렸던 것이다.
+
+### 13-2. `flags`는 실제로 WindowServer에 노출된다
+`IO_Framebuffer_Dimensions`의 [3]번 원소가 `flags`다. 즉 우리가 세운
+`IO_DISPLAY_CAN_BLIT`을 WindowServer가 **볼 수는 있다.** 그럼에도 블릿 요청이 0인
+이유는 §11대로 **그 요청을 보내는 코드 자체가 없기** 때문이다. 결론은 더 정확한
+근거 위에서 유지된다.
+
+### 13-3. 우리 카운터가 설명된다
+`enterLinear 1`, `revertVGA 1`은 WindowServer가 기동 시 `IO_Framebuffer_Map`을
+호출한 결과다(그 안에서 revert→enter를 연달아 수행). 우연이 아니라 이 계약의 결과다.
+
+### 13-4. S4의 핵심 질문은 아직 열려 있다
+`IO_Framebuffer_Map`은 **매핑을 하지 않는다** — 모드 전환과 `kmId` 등록만 한다.
+그렇다면 WindowServer는 프레임버퍼를 **어떻게** 자기 주소공간에 넣는가?
+후보: `IODisplay`의 `- (port_t)devicePort`로 얻은 디바이스 포트 + Mach VM,
+또는 `[kmId registerDisplay:]` 경로. **이것이 S4의 다음 조사 대상이다.**
+
+## 14. S4 관문 조사 — 유저 태스크 VRAM 매핑 (2026-08-19)
+
+### 14-1. WindowServer는 어떻게 프레임버퍼를 얻는가
+
+`nm -u /usr/lib/NextStep/WindowServer`에 `IO*` 심볼이 **하나도 없다.** 이유는
+`libDriver.a`가 **정적** 아카이브라 `IODeviceMaster` 코드가 통째로 링크되기 때문이다
+(우리 프로브도 `-lDriver`로 같은 방식). 그래서 `IO_Framebuffer_Map` 등의 문자열은
+WindowServer 바이너리 안에 있다.
+
+임포트 중 유의미한 것: **`_mmap`**, `_map_fd`, `__NXEvMapEventShmem`.
+→ WindowServer는 **`mmap`으로 프레임버퍼를 얻는다.**
+
+`IO_Framebuffer_Map` 자체는 §13대로 매핑을 하지 않고 모드 전환+등록만 한다.
+즉 "모드를 켜라"는 신호이고, 실제 메모리 획득은 `mmap`이 담당한다.
+
+### 14-2. 드라이버가 유저 태스크에 매핑할 수 있는가 — **가능**
+
+커널 심볼 확인(둘 다 전역 `T`):
+```
+001a9d30 T _IOAddToCdevsw               ← 공개 헤더 driverkit/devsw.h에 선언
+001a9c6c T _IOAddToCdevswAt
+001a9dec T _IORemoveFromCdevsw
+0017f74c T __KernBusMemoryCreateMapping ← task 인자를 받음(내부 API)
+```
+
+`IOAddToCdevsw(open, close, read, write, ioctl, stop, reset, select,
+**mmap**, getc, putc)` — **공개·문서화된 경로**다. 드라이버가 문자 디바이스를
+등록하고 mmap 엔트리를 제공하면, 유저 프로세스가 `open()`+`mmap()`으로 VRAM을
+자기 주소공간에 넣을 수 있다.
+
+부수 확인: `-[IOFrameBufferDisplay mapFrameBufferAtPhysicalAddress:length:]`는
+`_KernBusMemoryCreateMapping(phys, len, &virt, current_task_EXTERNAL(), 1, cache)`를
+호출하며, `cache` 인자는 `displayInfo->flags & 0xC`(=`IO_DISPLAY_CACHE_MASK`)에서
+유도된다(writethrough→1, copyback→2, off→0). 우리가 쓰는 API의 내부가 확인됐다.
+
+### 14-3. S4에 이것이 필요한 이유 (설계 판단)
+
+**하드웨어 엔진은 VRAM만 조작할 수 있다.** 따라서:
+- Mesa가 일반 RAM에 렌더하면(현재 OSMesa 방식) 엔진이 그 버퍼를 건드릴 수 없다.
+  `Clear`를 하드웨어로 돌릴 수도, 화면으로 blit할 수도 없다(엔진은 RAM을 못 읽는다).
+- 의미 있는 가속은 **Mesa의 렌더 타깃이 VRAM에 있을 때만** 성립한다.
+
+→ 유저 태스크 VRAM 매핑은 S4의 **선택이 아니라 전제**다. 그 관문이 열려 있음이
+확인됐다.
+
+### 14-4. S4 착수 시 확정해야 할 것 (다음 계획서에서)
+
+- `cdevsw` mmap 엔트리의 **정확한 시그니처와 반환 규약**(고전 BSD는
+  `int mmap(dev_t, off_t, int prot)`로 페이지 프레임 번호 반환이나, 이 커널의
+  디스패치를 직접 확인해야 한다)
+- 오프셋 검증: 클라이언트가 요구한 오프셋이 **우리가 할당한 오프스크린 범위 안**인지
+  강제. 가시 스캔아웃이나 VRAM 밖으로 나가면 거부
+- 디바이스 노드 생성·권한
+- 오프스크린 할당자(어느 클라이언트가 어느 범위를 갖는가) — `protocol/`의
+  `OpenStepMGAOffscreenAllocator`가 이 목적으로 이미 설계돼 있다(현재 미링크)
