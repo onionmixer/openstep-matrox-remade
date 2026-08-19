@@ -27,7 +27,7 @@
  * balance the two -- both hold about 255 triangles (scratchpad/m1_size.py). */
 #define OSMGA_HW3D_BATCH_BYTES  (28UL * 1024UL)
 #define OSMGA_HW3D_RING_OFFSET  OSMGA_HW3D_BATCH_BYTES
-#define OSMGA_HW3D_MAX_TRI      250UL
+#define OSMGA_HW3D_MAX_TRI      200UL
 
 /*
  * Pixels of x travel an edge may accumulate over one triangle.  Chosen to
@@ -53,13 +53,45 @@
 #define OSMGA_HW3D_E_TRIROW     8
 #define OSMGA_HW3D_E_TRICOL     9
 #define OSMGA_HW3D_E_TRISLOPE  10
+#define OSMGA_HW3D_E_ALPHA     11
+
+/*
+ * What a client may say in DWGCTL, and what the kernel says for it.
+ *
+ * Handing over the whole register would hand over BOP, transparency,
+ * BLTMOD, SOLID, SHIFTZERO, ARZERO and SGNZERO as well.  None of those
+ * changes an address, but none of them has been reasoned about either,
+ * and a mask is stronger than a check: bits outside it cannot be
+ * expressed, so there is no check to forget.  Deriving every field from
+ * mgareg_flags.h by computation confirms this mask covers exactly opcode
+ * (bits 0-3), atype (4-6) and zmode (8-10), and that bit 7 -- linear
+ * addressing, which would turn x and y into a flat offset and step past
+ * the clip -- is outside it.
+ */
+#define OSMGA_HW3D_DWG_CLIENT   0x0000077FUL
+#define OSMGA_HW3D_DWG_FIXED    0x000C4000UL   /* bop/trans, SHIFTZERO */
+
+#define OSMGA_HW3D_OPCODE_TRAP  0x4UL
+#define OSMGA_HW3D_OPCODE_TEX   0x6UL
+#define OSMGA_HW3D_ATYPE_I      0x7UL
+#define OSMGA_HW3D_ATYPE_ZI     0x3UL
+
+/*
+ * ALPHACTRL likewise.  Its named fields cover bits 0-9, 11-25; bits 10
+ * and 26-31 have no field at all and leave the mask.  Four fields also
+ * have encodings the header never names, and refusing them costs a
+ * comparison each: the source factor above 8, the destination factor
+ * above 7, the reserved alpha mode 3, and alpha-test mode 1, which has no
+ * macro whatsoever.
+ */
+#define OSMGA_HW3D_AC_CLIENT    0x03FFFBFFUL
+#define OSMGA_HW3D_AC_SRC_MAX   8UL
+#define OSMGA_HW3D_AC_DST_MAX   7UL
 
 typedef struct {
     unsigned long dstorg;          /* colour origin, byte offset into VRAM */
     unsigned long zorg;            /* depth origin; ignored unless depth is on */
     unsigned long texorg;          /* texture origin; ignored unless textured */
-    unsigned long dwgctl;          /* opcode and atype, checked */
-    unsigned long alphactrl;
     unsigned long texctl;
     unsigned long texctl2;
     unsigned long texfilter;
@@ -67,6 +99,11 @@ typedef struct {
 } OSMGAHW3DState;
 
 typedef struct {
+    /* Per triangle, because Mesa varies depth mode, blending and texture
+     * enable between primitives; when these were per batch, four depth
+     * modes needed four submissions. */
+    unsigned long dwgctl;          /* masked to opcode, atype and zmode */
+    unsigned long alphactrl;       /* masked, and undefined encodings refused */
     long y, h;                     /* first row and row count */
     long ar0, ar1, ar2, ar4, ar5, ar6, sgn;   /* both edges */
     unsigned long fxbndry;         /* (right << 16) | left */

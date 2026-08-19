@@ -33,6 +33,7 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                   unsigned long *badTri)
 {
     unsigned long i, rows, opcode, atype;
+    int anyZI, anyTex;
 
     if (badTri != 0)
         *badTri = 0UL;
@@ -68,29 +69,30 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                         lim->colourStart, lim->colourEnd))
         return OSMGA_HW3D_E_DSTORG;
 
-    opcode = b->state.dwgctl & 0x0000000FUL;
-    atype  = (b->state.dwgctl >> 4) & 0x7UL;
+    /*
+     * Which origins have to be bounded depends on what the triangles ask
+     * for, and the test is ANY rather than ALL: one depth triangle in a
+     * batch of otherwise flat ones still addresses depth.  Writing this as
+     * "all of them" would let exactly that triangle draw against an origin
+     * nobody checked.
+     */
+    anyZI = 0;
+    anyTex = 0;
+    for (i = 0UL; i < b->triCount; i++) {
+        unsigned long d = b->tri[i].dwgctl & OSMGA_HW3D_DWG_CLIENT;
 
-    /* Only the two trapezoid opcodes, and only the two interpolated access
-     * types.  BITBLT and ILOAD address their source through AR registers we
-     * do not bound, and the linear bit turns x and y into a flat offset,
-     * which would step straight past the clip. */
-    if ((opcode != 0x4UL && opcode != 0x6UL) ||
-        (atype != 0x7UL && atype != 0x3UL) ||
-        (b->state.dwgctl & 0x00000080UL) != 0UL)
-        return OSMGA_HW3D_E_DWGCTL;
+        if (((d >> 4) & 0x7UL) == OSMGA_HW3D_ATYPE_ZI) anyZI = 1;
+        if ((d & 0xFUL) == OSMGA_HW3D_OPCODE_TEX)      anyTex = 1;
+    }
 
-    /* Depth is only addressed when the access type says so. */
-    if (atype == 0x3UL) {
+    if (anyZI) {
         unsigned long zstride = (lim->pitchBytes / 4UL) * OSMGA_HW3D_DEPTH_BYTES;
 
         if (!osmgaHW3DReach(b->state.zorg, rows, zstride,
                             lim->depthStart, lim->depthEnd))
             return OSMGA_HW3D_E_ZORG;
     }
-
-    /* Texture is only fetched by the textured opcode. */
-    if (opcode == 0x6UL) {
+    if (anyTex) {
         if (!osmgaHW3DReach(b->state.texorg, 1UL, lim->texMaxBytes,
                             lim->texStart, lim->texEnd))
             return OSMGA_HW3D_E_TEXORG;
@@ -101,6 +103,30 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
 
         if (badTri != 0)
             *badTri = i;
+
+        /* The mask has already removed everything outside opcode, atype
+         * and zmode; what is left is to reject values those fields do not
+         * define.  zmode is not checked: every value only decides whether
+         * a pixel is written, never where. */
+        opcode = t->dwgctl & 0xFUL;
+        atype  = (t->dwgctl >> 4) & 0x7UL;
+        if ((opcode != OSMGA_HW3D_OPCODE_TRAP &&
+             opcode != OSMGA_HW3D_OPCODE_TEX) ||
+            (atype != OSMGA_HW3D_ATYPE_I && atype != OSMGA_HW3D_ATYPE_ZI))
+            return OSMGA_HW3D_E_DWGCTL;
+
+        {   /* Encodings the register documentation never names.  None of
+             * them moves a write, but a field whose meaning is unknown is
+             * not something to hand to a client. */
+            unsigned long ac = t->alphactrl & OSMGA_HW3D_AC_CLIENT;
+
+            if ((ac & 0xFUL) > OSMGA_HW3D_AC_SRC_MAX ||
+                ((ac >> 4) & 0xFUL) > OSMGA_HW3D_AC_DST_MAX ||
+                ((ac >> 8) & 0x3UL) == 0x3UL ||          /* amode RSVD */
+                ((ac >> 13) & 0x7UL) == 0x1UL)           /* atmode has no macro */
+                return OSMGA_HW3D_E_ALPHA;
+        }
+
         if (t->y < 0L || t->h <= 0L)
             return OSMGA_HW3D_E_TRIROW;
         if ((unsigned long)t->y > lim->clipY1)

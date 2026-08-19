@@ -93,6 +93,9 @@ fillTriangle(OSMGAHW3DTri *t, unsigned long y, unsigned long h,
     long ar5 = sdxr ? dxR : -dxR;
 
     memset(t, 0, sizeof *t);
+    /* Masked form: the client says only opcode, access type and z mode. */
+    t->dwgctl = 0x4UL | (0x7UL << 4);           /* TRAP | atype I */
+    t->alphactrl = 0x00000101UL;                /* opaque replace */
     t->y = (long)y;
     t->h = (long)h;
     t->ar0 = (long)h;
@@ -174,8 +177,6 @@ main(void)
     batch->version = OSMGA_HW3D_VERSION;
     batch->triCount = NTRI;
     batch->state.dstorg = VRAM_BLOCK;
-    batch->state.dwgctl = 0x000C7074UL;         /* TRAP | atype I */
-    batch->state.alphactrl = 0x00000101UL;      /* opaque replace */
 
     /* Three different shapes, so a per-triangle loop that reused one
      * triangle's values, or applied them in the wrong order, would show

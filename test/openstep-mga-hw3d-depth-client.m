@@ -13,9 +13,12 @@
  * colour buffer's geometry is the bug D3-3a made in the kernel and there is
  * no reason to repeat it here.
  *
- * state.dwgctl is per batch, not per triangle, so each band needs its own
- * submission.  That is not a workaround: back-to-back submissions were on
- * the unproven list, so four of them is the cheaper of two tests.
+ * M1-2f moved dwgctl and alphactrl into the triangle, so the four bands
+ * that once needed four submissions now go as ONE batch.  That is the
+ * point of this version: the result must be identical to the four-
+ * submission one, and an encoder that reused any single triangle's dwgctl
+ * for all of them would produce a different draw pattern -- NNYY, YYYY or
+ * YYNN against the correct YYNY.
  *
  *   cc -O -Wall -o /tmp/osmga-hw3d-depth openstep-mga-hw3d-depth-client.m -lDriver
  */
@@ -53,8 +56,10 @@ extern caddr_t mmap(caddr_t, int, int, int, int, long);
 #define ZGUARD          0xC0DEU
 
 /* atype I is 7 << 4, ZI is 3 << 4; zmode lives in bits 8-10. */
-#define DWG_I           0x000C7074UL
-#define DWG_ZI          ((DWG_I & ~0x70UL) | 0x30UL)
+/* Masked form: opcode in bits 0-3, access type in 4-6, z mode in 8-10.
+ * Everything else in DWGCTL is the kernel's and cannot be expressed here. */
+#define DWG_I           (0x4UL | (0x7UL << 4))
+#define DWG_ZI          (0x4UL | (0x3UL << 4))
 #define ZMODE_NOZCMP    0x000UL
 #define ZMODE_ZLT       0x400UL
 #define ZMODE_ZGTE      0x700UL
@@ -100,9 +105,12 @@ verdict(IODeviceMaster *m, unsigned objNum)
 }
 
 static void
-fillRect(OSMGAHW3DTri *t, unsigned long y, unsigned long h, unsigned long z)
+fillRect(OSMGAHW3DTri *t, unsigned long y, unsigned long h, unsigned long z,
+         unsigned long dwgctl)
 {
     memset(t, 0, sizeof *t);
+    t->dwgctl = dwgctl;
+    t->alphactrl = 0x00000101UL;
     t->y = (long)y;
     t->h = (long)h;
     t->ar0 = (long)h;                       /* axis-aligned: no slope */
@@ -160,7 +168,7 @@ main(void)
     colour = (volatile unsigned long *)cwin;
     depth  = (volatile unsigned short *)dwin;
 
-    printf("M1-2e: depth through the batch path\n");
+    printf("M1-2e/2f: depth through the batch path, one batch\n");
 
     for (row = 0UL; row < ROWS; row++)
         for (col = 0UL; col < CLIP_COLS; col++) {
@@ -183,28 +191,33 @@ main(void)
     printf("   depth cleared to %04x, guard %04x, both read back\n",
            ZCLEAR, ZGUARD);
 
-    for (b = 0UL; b < NBAND; b++) {
-        IOReturn r;
+    /* All four bands in ONE batch, each triangle carrying its own z mode. */
+    memset(batch, 0, sizeof *batch);
+    batch->magic = OSMGA_HW3D_MAGIC;
+    batch->version = OSMGA_HW3D_VERSION;
+    batch->triCount = NBAND;
+    batch->state.dstorg = COLOUR_ORG;
+    batch->state.zorg = DEPTH_ORG;
+    for (b = 0UL; b < NBAND; b++)
+        fillRect(&batch->tri[b], b * BAND, BAND, zval[b], DWG_ZI | zmode[b]);
+    /* Bits outside the client's mask must be ignored, not refused: this
+     * triangle asks for linear addressing, SOLID and ARZERO as well. */
+    batch->tri[0].dwgctl |= 0x80UL | 0x800UL | 0x1000UL;
 
-        memset(batch, 0, sizeof *batch);
-        batch->magic = OSMGA_HW3D_MAGIC;
-        batch->version = OSMGA_HW3D_VERSION;
-        batch->triCount = 1;
-        batch->state.dstorg = COLOUR_ORG;
-        batch->state.zorg = DEPTH_ORG;
-        batch->state.dwgctl = DWG_ZI | zmode[b];
-        batch->state.alphactrl = 0x00000101UL;
-        fillRect(&batch->tri[0], b * BAND, BAND, zval[b]);
-
-        r = [master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
-                    objectNumber:objNum count:0];
+    {
+        IOReturn r = [master setIntValues:(unsigned *)0
+                             forParameter:SUBMIT_PARAM
+                             objectNumber:objNum count:0];
         if (r != IO_R_SUCCESS) {
-            printf("   band %lu was refused (%d, verdict %u %s)\n",
-                   b, (int)r, verdict(master, objNum),
+            printf("   the batch was refused (%d, verdict %u %s)\n",
+                   (int)r, verdict(master, objNum),
                    why(verdict(master, objNum)));
             return 1;
         }
+        printf("   one batch of %lu triangles accepted\n", NBAND);
+    }
 
+    for (b = 0UL; b < NBAND; b++) {
         drew[b] = 0UL;
         zbad[b] = 0UL;
         for (row = b * BAND; row < (b + 1UL) * BAND; row++)
@@ -241,9 +254,7 @@ main(void)
     batch->triCount = 1;
     batch->state.dstorg = COLOUR_ORG;
     batch->state.zorg = 0UL;                    /* the visible framebuffer */
-    batch->state.dwgctl = DWG_ZI | ZMODE_NOZCMP;
-    batch->state.alphactrl = 0x00000101UL;
-    fillRect(&batch->tri[0], 0UL, BAND, 0x7000UL);
+    fillRect(&batch->tri[0], 0UL, BAND, 0x7000UL, DWG_ZI | ZMODE_NOZCMP);
     (void)[master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
                   objectNumber:objNum count:0];
     v = verdict(master, objNum);
@@ -251,7 +262,7 @@ main(void)
            v, why(v));
     if (v != OSMGA_HW3D_E_ZORG) fails++;
 
-    batch->state.dwgctl = DWG_I;                /* same bad zorg, unused now */
+    batch->tri[0].dwgctl = DWG_I;               /* same bad zorg, unused now */
     v = ([master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
                  objectNumber:objNum count:0] == IO_R_SUCCESS)
         ? OSMGA_HW3D_OK : verdict(master, objNum);

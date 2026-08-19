@@ -32,7 +32,8 @@ reset(void)
     b.state.dstorg = lim.colourStart;
     b.state.zorg = lim.depthStart;
     b.state.texorg = lim.texStart;
-    b.state.dwgctl = 0x000C7074UL;          /* TRAP | atype I, our Gouraud */
+    b.tri[0].dwgctl = 0x0004UL | 0x0070UL;  /* TRAP | atype I, masked form */
+    b.tri[0].alphactrl = 0x0101UL;          /* ALPHACHANNEL | SRC_ONE */
     b.tri[0].y = 0;
     b.tri[0].h = 1;
     b.tri[0].fxbndry = (64UL << 16) | 0UL;
@@ -93,6 +94,7 @@ main(void)
         reset();
         b.triCount = OSMGA_HW3D_MAX_TRI;
         for (k = 0; k < OSMGA_HW3D_MAX_TRI; k++) {
+            b.tri[k] = b.tri[0];        /* dwgctl and alphactrl included */
             b.tri[k].y = 0; b.tri[k].h = 1;
             b.tri[k].fxbndry = (64UL << 16) | 0UL;
         }
@@ -114,39 +116,55 @@ main(void)
     reset(); b.state.dstorg = lim.colourEnd;    expect("dstorg at the window end", OSMGA_HW3D_E_DSTORG);
     reset(); b.state.dstorg = 0xFFFFF000UL;     expect("dstorg near the 32-bit ceiling", OSMGA_HW3D_E_DSTORG);
 
-    printf("drawing control\n");
-    reset(); b.state.dwgctl = 0x000C7076UL;     expect("TEXTURE_TRAP | atype I", OSMGA_HW3D_OK);
-    reset(); b.state.dwgctl = (0x000C7074UL & ~0x70UL) | 0x30UL;
+    printf("drawing control -- per triangle now, and masked\n");
+    reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                                                expect("TEXTURE_TRAP | atype I", OSMGA_HW3D_OK);
+    reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL; b.state.texorg = 0;
+                                                expect("the same with texorg at the framebuffer", OSMGA_HW3D_E_TEXORG);
+    reset(); b.tri[0].dwgctl = 0x0004UL | 0x0030UL;
                                                 expect("TRAP | atype ZI", OSMGA_HW3D_OK);
-    reset(); b.state.dwgctl = 0x000C7804UL;     expect("TRAP | atype RPL (solid fill)", OSMGA_HW3D_E_DWGCTL);
-    reset(); b.state.dwgctl = (0x000C7074UL & ~0xFUL) | 0x8UL;
+    reset(); b.tri[0].dwgctl = 0x0004UL | 0x0000UL;
+                                                expect("atype RPL is not an option", OSMGA_HW3D_E_DWGCTL);
+    reset(); b.tri[0].dwgctl = 0x0008UL | 0x0070UL;
                                                 expect("BITBLT opcode", OSMGA_HW3D_E_DWGCTL);
-    reset(); b.state.dwgctl = (0x000C7074UL & ~0xFUL) | 0x9UL;
+    reset(); b.tri[0].dwgctl = 0x0009UL | 0x0070UL;
                                                 expect("ILOAD opcode", OSMGA_HW3D_E_DWGCTL);
-    reset(); b.state.dwgctl = 0x000C7074UL | 0x80UL;
-                                                expect("linear addressing bit set", OSMGA_HW3D_E_DWGCTL);
+    reset(); b.tri[0].dwgctl |= 0x0080UL;       expect("linear bit is masked away, not refused", OSMGA_HW3D_OK);
+    reset(); b.tri[0].dwgctl |= 0x0800UL;       expect("SOLID is masked away", OSMGA_HW3D_OK);
+    reset(); b.tri[0].dwgctl |= 0x3000UL;       expect("ARZERO and SGNZERO are masked away", OSMGA_HW3D_OK);
+    reset(); b.tri[0].dwgctl |= 0x0700UL;       expect("any zmode is allowed", OSMGA_HW3D_OK);
 
-    printf("depth origin -- only checked when the access type is ZI\n");
-    reset(); b.state.zorg = 0;                  expect("bad zorg but atype I, so unused", OSMGA_HW3D_OK);
-    reset(); b.state.dwgctl = (b.state.dwgctl & ~0x70UL) | 0x30UL;
-             b.state.zorg = lim.depthEnd - rows * (pitch / 4) * 2;
-                                                expect("zorg at the last fitting origin", OSMGA_HW3D_OK);
-    reset(); b.state.dwgctl = (b.state.dwgctl & ~0x70UL) | 0x30UL;
-             b.state.zorg = lim.depthEnd - rows * (pitch / 4) * 2 + 1;
-                                                expect("zorg one byte past that", OSMGA_HW3D_E_ZORG);
-    reset(); b.state.dwgctl = (b.state.dwgctl & ~0x70UL) | 0x30UL;
-             b.state.zorg = 0;                  expect("zorg at the visible framebuffer", OSMGA_HW3D_E_ZORG);
+    printf("alpha control -- undefined encodings\n");
+    reset(); b.tri[0].alphactrl = 0x0008UL;     expect("src factor 8, the last defined", OSMGA_HW3D_OK);
+    reset(); b.tri[0].alphactrl = 0x0009UL;     expect("src factor 9, undefined", OSMGA_HW3D_E_ALPHA);
+    reset(); b.tri[0].alphactrl = 0x0070UL;     expect("dst factor 7, the last defined", OSMGA_HW3D_OK);
+    reset(); b.tri[0].alphactrl = 0x0080UL;     expect("dst factor 8, undefined", OSMGA_HW3D_E_ALPHA);
+    reset(); b.tri[0].alphactrl = 0x0200UL;     expect("amode 2, video alpha", OSMGA_HW3D_OK);
+    reset(); b.tri[0].alphactrl = 0x0300UL;     expect("amode 3, reserved", OSMGA_HW3D_E_ALPHA);
+    reset(); b.tri[0].alphactrl = 0x0000UL;     expect("atmode 0, no compare", OSMGA_HW3D_OK);
+    reset(); b.tri[0].alphactrl = 0x2000UL;     expect("atmode 1, no macro exists", OSMGA_HW3D_E_ALPHA);
+    reset(); b.tri[0].alphactrl = 0x4000UL;     expect("atmode 2, defined", OSMGA_HW3D_OK);
+    reset(); b.tri[0].alphactrl = 0xFC000400UL; expect("bits with no field are masked away", OSMGA_HW3D_OK);
 
-    printf("texture origin -- only checked for the textured opcode\n");
-    reset(); b.state.texorg = 0;                expect("bad texorg but untextured", OSMGA_HW3D_OK);
-    reset(); b.state.dwgctl = 0x000C7076UL;
-             b.state.texorg = lim.texEnd - lim.texMaxBytes;
-                                                expect("texorg at the last fitting origin", OSMGA_HW3D_OK);
-    reset(); b.state.dwgctl = 0x000C7076UL;
-             b.state.texorg = lim.texEnd - lim.texMaxBytes + 1;
-                                                expect("texorg one byte past that", OSMGA_HW3D_E_TEXORG);
-    reset(); b.state.dwgctl = 0x000C7076UL;
-             b.state.texorg = 0;                expect("texorg at the visible framebuffer", OSMGA_HW3D_E_TEXORG);
+    printf("origins follow ANY triangle, not all of them\n");
+    reset(); b.triCount = 3;
+             b.tri[1] = b.tri[0]; b.tri[2] = b.tri[0];
+             b.state.zorg = 0;                  expect("bad zorg, no triangle is ZI", OSMGA_HW3D_OK);
+    reset(); b.triCount = 3;
+             b.tri[1] = b.tri[0]; b.tri[2] = b.tri[0];
+             b.tri[1].dwgctl = 0x0004UL | 0x0030UL;
+             b.state.zorg = 0;                  expect("bad zorg, ONE middle triangle is ZI", OSMGA_HW3D_E_ZORG);
+    reset(); b.triCount = 3;
+             b.tri[1] = b.tri[0]; b.tri[2] = b.tri[0];
+             b.tri[2].dwgctl = 0x0004UL | 0x0030UL;
+             b.state.zorg = 0;                  expect("bad zorg, the LAST triangle is ZI", OSMGA_HW3D_E_ZORG);
+    reset(); b.triCount = 3;
+             b.tri[1] = b.tri[0]; b.tri[2] = b.tri[0];
+             b.tri[1].dwgctl = 0x0006UL | 0x0070UL;
+             b.state.texorg = 0;                expect("bad texorg, ONE triangle is textured", OSMGA_HW3D_E_TEXORG);
+    reset(); b.triCount = 3;
+             b.tri[1] = b.tri[0]; b.tri[2] = b.tri[0];
+             b.state.texorg = 0;                expect("bad texorg, none is textured", OSMGA_HW3D_OK);
 
     printf("per-triangle geometry\n");
     reset(); b.tri[0].y = lim.clipY1; b.tri[0].h = 1;
@@ -163,8 +181,7 @@ main(void)
                                                 expect("span one past the clip edge", OSMGA_HW3D_E_TRICOL);
     reset(); b.tri[0].fxbndry = (0UL << 16) | 8UL;
                                                 expect("right edge left of the left edge", OSMGA_HW3D_E_TRICOL);
-    reset(); b.triCount = 3; b.tri[1].h = 1; b.tri[2].h = 1;
-             b.tri[1].fxbndry = b.tri[2].fxbndry = (64UL << 16);
+    reset(); b.triCount = 3; b.tri[1] = b.tri[0]; b.tri[2] = b.tri[0];
              b.tri[2].y = lim.clipY1 + 1;       expect("a bad triangle late in the batch", OSMGA_HW3D_E_TRIROW);
 
     printf("edge slopes -- bounded so containment does not rest on the clip alone\n");

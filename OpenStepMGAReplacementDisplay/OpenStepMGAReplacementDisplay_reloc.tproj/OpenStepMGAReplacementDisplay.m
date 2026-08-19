@@ -6222,28 +6222,38 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                 const OSMGAHW3DBatch *b, unsigned long *outTail)
 {
     unsigned long pos = 0UL, i;
-    unsigned long atype = (b->state.dwgctl >> 4) & 0x7UL;
+    int anyZI = 0;
     int ok = 1;
 
-    /* When the access type does not address depth, ZORG should still point
-     * somewhere harmless rather than at zero: zero is the visible
-     * framebuffer, so the one value that costs nothing to avoid is the one
-     * that would be worst if a depth write happened anyway.  The validator
-     * only checks this field for ZI, which is correct -- it is not
-     * addressed otherwise -- but "not addressed" is a claim about the
-     * hardware, and this makes it not matter. */
+    for (i = 0UL; i < b->triCount; i++)
+        if (((b->tri[i].dwgctl >> 4) & 0x7UL) == OSMGA_HW3D_ATYPE_ZI)
+            anyZI = 1;
+
+    /* When no triangle addresses depth, ZORG should still point somewhere
+     * harmless rather than at zero: zero is the visible framebuffer, so
+     * the one case the validator does not check is the one that would be
+     * worst if a depth write happened anyway.  "Not addressed" is a claim
+     * about the hardware, and this makes it not matter. */
     ok = ok && osmgaDmaBlock(list, listDwords, &pos,
                              MGA_DSTORG,   b->state.dstorg,
-                             MGA_ZORG,     (atype == 0x3UL) ? b->state.zorg
-                                                            : OSMGA_D3_ZORG,
-                             MGA_ALPHACTRL, b->state.alphactrl,
+                             MGA_ZORG,     anyZI ? b->state.zorg
+                                                 : OSMGA_D3_ZORG,
+                             MGA_DMAPAD,   0UL,
                              MGA_DMAPAD,   0UL);
 
     for (i = 0UL; ok && i < b->triCount; i++) {
         const OSMGAHW3DTri *t = &b->tri[i];
 
+        /* The client supplies opcode, access type and z mode; every other
+         * bit comes from here, so bits it never reasoned about are not
+         * bits it can set.  The sloped form then clears ARZERO and
+         * SGNZERO, which are ours to clear because they are not in the
+         * client's mask either. */
+        unsigned long dwg = OSMGA_HW3D_DWG_FIXED |
+                            (t->dwgctl & OSMGA_HW3D_DWG_CLIENT);
+
         ok = ok && osmgaDmaBlock(list, listDwords, &pos,
-                                 MGA_DWGCTL, MGA_DWGCTL_SLOPED(b->state.dwgctl),
+                                 MGA_DWGCTL, MGA_DWGCTL_SLOPED(dwg),
                                  MGA_AR0, (unsigned long)t->ar0,
                                  MGA_AR1, (unsigned long)t->ar1,
                                  MGA_AR2, (unsigned long)t->ar2);
@@ -6267,19 +6277,20 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                                  MGA_ALPHASTART, t->a0,
                                  MGA_ALPHAXINC,  t->adx,
                                  MGA_ALPHAYINC,  t->ady,
-                                 MGA_FXBNDRY,    t->fxbndry);
+                                 MGA_ALPHACTRL,
+                                 t->alphactrl & OSMGA_HW3D_AC_CLIENT);
         ok = ok && osmgaDmaBlock(list, listDwords, &pos,
                                  MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
-                                 MGA_DMAPAD, 0UL,
+                                 MGA_FXBNDRY, t->fxbndry,
                                  MGA_YDSTLEN + MGA_EXEC,
                                  (((unsigned long)t->y) << 16) |
                                  ((unsigned long)t->h));
     }
 
-    /* Leave DWGCTL as the caller's, not the sloped variant. */
+    /* Leave DWGCTL in a state nothing inherits by accident. */
     ok = ok && osmgaDmaBlock(list, listDwords, &pos,
                              MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
-                             MGA_DWGCTL, b->state.dwgctl,
+                             MGA_DWGCTL, MGA_DWGCTL_GOURAUD,
                              MGA_DMAPAD, 0UL);
     /* The trap has to be INSIDE what PRIMEND covers, and the card reads a
      * little past PRIMEND, so a padding block has to follow it.  Getting
@@ -6516,9 +6527,9 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
         batch->version = OSMGA_HW3D_VERSION;
         batch->triCount = 1UL;
         batch->state.dstorg = OSMGA_S1_VRAM_BLOCK;
-        batch->state.dwgctl = MGA_DWGCTL_GOURAUD;
-        batch->state.alphactrl = MGA_ALPHACTRL_OPAQUE;
         t = &batch->tri[0];
+        t->dwgctl = OSMGA_HW3D_OPCODE_TRAP | (OSMGA_HW3D_ATYPE_I << 4);
+        t->alphactrl = MGA_ALPHACTRL_OPAQUE;
         t->y = (long)band;
         t->h = (long)band;
         t->ar0 = (long)band;                 /* dyL */
@@ -6674,6 +6685,8 @@ osmgaM1cTri(OSMGAHW3DTri *t, unsigned long y, unsigned long h,
     t->sgn = ((long)sdxl << 1) | ((long)sdxr << 5);
     t->fxbndry = (((unsigned long)(right + 1L)) << 16) |
                  ((unsigned long)left & 0xffffUL);
+    t->dwgctl = OSMGA_HW3D_OPCODE_TRAP | (OSMGA_HW3D_ATYPE_I << 4);
+    t->alphactrl = MGA_ALPHACTRL_OPAQUE;
     t->dr[0] = 200UL << 15;
     t->dr[3] = 100UL << 15;
     t->dr[6] =  50UL << 15;
@@ -6771,8 +6784,6 @@ osmgaM1cTri(OSMGAHW3DTri *t, unsigned long y, unsigned long h,
         batch->version = OSMGA_HW3D_VERSION;
         batch->triCount = 1UL;
         batch->state.dstorg = OSMGA_M1C_DSTORG;
-        batch->state.dwgctl = MGA_DWGCTL_GOURAUD;
-        batch->state.alphactrl = MGA_ALPHACTRL_OPAQUE;
         osmgaM1cTri(&batch->tri[0], y0, band,
                     left0, dxL, (long)band, right0, dxR, (long)band);
 
