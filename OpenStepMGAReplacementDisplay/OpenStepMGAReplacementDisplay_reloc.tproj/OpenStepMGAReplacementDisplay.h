@@ -124,6 +124,8 @@
                ringPhys:(unsigned)ringPhys;
 - (void)runWarpPipeStartTest;
 - (void)runRasterInterpolationTest;
+- (void)runDstorgOriginTest;
+- (void)runDepthCompareTest;
 - (BOOL)stormBlitCheckSrcX:(unsigned)srcX srcY:(unsigned)srcY
                      width:(unsigned)w height:(unsigned)h
                       dstX:(unsigned)dstX dstY:(unsigned)dstY
