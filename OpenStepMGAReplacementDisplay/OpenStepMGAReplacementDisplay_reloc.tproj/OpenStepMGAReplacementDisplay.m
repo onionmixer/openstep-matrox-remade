@@ -3896,13 +3896,20 @@ osmgaDmaBuildPipeList(unsigned long *ring, unsigned long ringDwords,
         IOLog("OpenStepMGA D3-0: fifo timeout before interpolators\n");
         goto unmap;
     }
-    osmgaW32(base, MGA_DR4,  0UL);                    /* ramps from 0     */
+    /*
+     * Red gets the x increment (already identified), green the register
+     * that should be the y increment, blue neither.  One draw then says
+     * whether DR7/DR11/DR15 are the y steps and whether both axes can
+     * interpolate at once -- red must vary left to right, green top to
+     * bottom, blue not at all.
+     */
+    osmgaW32(base, MGA_DR4,  0UL);                    /* red: x ramp      */
     osmgaW32(base, MGA_DR6,  (255UL << 15) / OSMGA_S1_W);
     osmgaW32(base, MGA_DR7,  0UL);
-    osmgaW32(base, MGA_DR8,  255UL << 15);            /* flat 255         */
+    osmgaW32(base, MGA_DR8,  0UL);                    /* green: y ramp    */
     osmgaW32(base, MGA_DR10, 0UL);
-    osmgaW32(base, MGA_DR11, 0UL);
-    osmgaW32(base, MGA_DR12, 64UL << 15);             /* flat 64          */
+    osmgaW32(base, MGA_DR11, (255UL << 15) / OSMGA_S1_H);
+    osmgaW32(base, MGA_DR12, 64UL << 15);             /* blue: flat 64    */
     osmgaW32(base, MGA_DR14, 0UL);
     osmgaW32(base, MGA_DR15, 0UL);
     osmgaW32(base, MGA_DWGCTL, MGA_DWGCTL_GOURAUD);
@@ -3927,18 +3934,31 @@ osmgaDmaBuildPipeList(unsigned long *ring, unsigned long ringDwords,
         if (blk[row * stride] != blk[0])
             varyY++;
 
-    IOLog("OpenStepMGA D3-0: DR4 ramp 0->255 step %06lx, DR8=255, DR12=64\n",
-          (255UL << 15) / OSMGA_S1_W);
-    IOLog("OpenStepMGA D3-0: row0 x=0,16,32,48,63: %06lx %06lx %06lx %06lx "
+    IOLog("OpenStepMGA D3-1: red x-ramp via DR6, green y-ramp via DR11, "
+          "blue flat 64\n");
+    IOLog("OpenStepMGA D3-1: row0 x=0,16,32,48,63: %06lx %06lx %06lx %06lx "
           "%06lx\n", blk[0] & 0xFFFFFFUL, blk[16] & 0xFFFFFFUL,
           blk[32] & 0xFFFFFFUL, blk[48] & 0xFFFFFFUL, blk[63] & 0xFFFFFFUL);
-    IOLog("OpenStepMGA D3-0: col0 y=0,16,32,48,63: %06lx %06lx %06lx %06lx "
+    IOLog("OpenStepMGA D3-1: col0 y=0,16,32,48,63: %06lx %06lx %06lx %06lx "
           "%06lx\n", blk[0] & 0xFFFFFFUL, blk[16 * stride] & 0xFFFFFFUL,
           blk[32 * stride] & 0xFFFFFFUL, blk[48 * stride] & 0xFFFFFFUL,
           blk[63 * stride] & 0xFFFFFFUL);
-    IOLog("OpenStepMGA D3-0: %lu of 63 columns vary, %lu of 63 rows vary "
-          "-> DR6 is the %s increment\n", varyX, varyY,
-          varyX > varyY ? "x" : (varyY > varyX ? "y" : "(neither)"));
+    IOLog("OpenStepMGA D3-1: diag (0,0),(21,21),(42,42),(63,63): %06lx "
+          "%06lx %06lx %06lx\n", blk[0] & 0xFFFFFFUL,
+          blk[21 * stride + 21] & 0xFFFFFFUL,
+          blk[42 * stride + 42] & 0xFFFFFFUL,
+          blk[63 * stride + 63] & 0xFFFFFFUL);
+    IOLog("OpenStepMGA D3-1: %lu of 63 columns vary, %lu of 63 rows vary\n",
+          varyX, varyY);
+    if (varyX > 0UL && varyY > 0UL)
+        IOLog("OpenStepMGA D3-1: PASS -- DR7/DR11/DR15 are the y "
+              "increments; both axes interpolate together\n");
+    else if (varyX > 0UL)
+        IOLog("OpenStepMGA D3-1: FAIL -- only x varies; DR11 is not the y "
+              "increment\n");
+    else
+        IOLog("OpenStepMGA D3-1: FAIL -- x stopped varying too; something "
+              "other than the y increment changed\n");
 
 unmap:
     if (alias != 0)
