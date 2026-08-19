@@ -1,6 +1,6 @@
 # S5 — 하드웨어 3D(WARP) 및 DMA 실현 가능성 조사
 
-기준일: 2026-08-19
+기준일: 2026-08-19 (§3은 같은 날 정정됨 — §3-2 참조)
 상태: **조사만 완료. 착수하지 않음.** 구현 전 별도 계획서와 교차검토가 필요하다.
 
 ## 0. 이 문서가 답하는 질문
@@ -45,24 +45,70 @@ Mesa 3.4.2의 삼각형 래스터화는 **CPU가 픽셀을 하나씩 쓰는** �
 | `_IOPhysicalFromVirtual` (0x1a9334) | 공개 API(`driverkit/kernelDriver.h`) — 물리주소 조회 |
 | PCI 버스마스터 활성 | H1 S0 실측 `command=0x0007`(bit2 = bus master) |
 
-### 3-2. 없는 것 — 이쪽이 핵심
+### 3-2. 정정 (2026-08-19) — 물리 연속 할당자는 **있다**
+
+초판은 "물리적 연속 할당자 없음(`nm /mach_kernel | grep -i contig` → 0건)"이라고
+적었다. **이 결론은 틀렸고, 원인은 검증 방법에 있었다**: `contig`로 grep하면
+`IOMallocLow`라는 이름의 심볼은 절대 걸리지 않는다. 앞서 기록한 `grep "A\|B"`
+함정과 같은 부류의 실수다.
+
+실기 커널로 다시 확인한 사실:
+
+| 항목 | 근거 |
+| --- | --- |
+| `_IOMallocLow` / `_IOFreeLow` 존재 | 타깃 `nm /mach_kernel` → `001c87e0 T _IOMallocLow` |
+| 공식 API다 | `/NextDeveloper/Headers/driverkit/i386/kernelDriver.h:21` (타깃에도 설치돼 있음) |
+| 헤더의 약속 | "low 16 megabytes ... 24 bits of address" — **연속성은 언급하지 않는다** |
+
+IDA로 구현을 따라간 결과(헤더 문구보다 좁고, 우리 목적에는 오히려 낫다):
+
+```
+IOMallocLow(size)              0x1c87e0
+  └ dma_buf_alloc(buf, size)   0x18980c   size > 0x10000 이면 실패
+      ├ 풀 2개: dma_buf_sm(≤ page_size) / dma_buf_lg(> page_size)
+      └ 풀이 비면 생성자 호출
+          └ sub_1898EC          0x1898ec   alloc_cnvmem(0x10000, 0x10000) + bzero
+              └ alloc_cnvmem    0x18ad9c   고정 아레나 위의 **범프 할당자**
+                  (정렬 → 한계 검사 → 포인터 전진)
+```
+
+아레나 경계는 `sub_18ACF8`(0x18acf8)이 정한다:
+`dword_1E7610 = page_align(MEMORY[0x11138])`, `dword_1E7614 = page_align(cnvmem << 10)`.
+즉 **conventional memory(640 KiB 미만)** 구간이다.
+
+→ **범프 할당자가 선형 아레나를 잘라 주므로 물리적으로 연속이다.** 다만
+헤더가 말하는 "low 16 MB"보다 훨씬 좁은 conventional memory이고, 아레나는
+ISA DMA를 쓰는 다른 모든 것과 공유한다.
+
+### 3-3. 판정: MGA primary DMA 링에는 충분하다
+
+| 제약 | 값 |
+| --- | --- |
+| 1회 할당 상한 | **64 KiB** (`dma_buf_alloc`이 `> 0x10000` 거부) |
+| 연속성 | 보장됨(범프 할당자) |
+| 위치 | conventional memory(<640 KiB), 전체 아레나는 그보다 작고 공유됨 |
+| 정렬 | `alloc_cnvmem(size, align)`이 요청 정렬 보장(대형 풀은 64 KiB 정렬) |
+
+MGA primary DMA는 `PRIMADDRESS`~`PRIMEND`로 연속 물리 영역을 요구하는데,
+64 KiB = 16384 dword면 명령 링으로 넉넉하다. G450은 32비트 PCI 마스터이므로
+저역 주소도 문제가 없다.
+
+**따라서 "연속 물리 메모리를 못 구해서 DMA가 막힌다"는 초판의 우려는 해소됐다.**
+`IOPhysicalFromVirtual`(0x1a9334, 공개 API)로 장치에 넘길 물리주소를 얻는다.
+
+### 3-4. 여전히 없는 것
 
 | 항목 | 확인 결과 |
 | --- | --- |
-| **물리적 연속 할당자** | `nm /mach_kernel \| grep -i contig` → **0건.** `kmem_alloc`, `kmem_alloc_pageable`, `kmem_alloc_wait`, `kmem_alloc_wired`, `kmem_alloc_zone`만 존재 |
 | DriverKit PCI DMA 헬퍼 | `IOPCIDirectDevice`는 **config space 접근만** 제공 |
-| DriverKit DMA API | 전부 **EISA/ISA 8237 채널용**(`IOEISADMABuffer`, `startDMAForBuffer:`, DMA 채널/전송모드) — **PCI 버스마스터와 무관** |
+| 범용 DMA API | `IOEISADMABuffer`/`startDMAForBuffer:` 등은 전부 **ISA/EISA 8237 채널용** — PCI 버스마스터와 무관 |
 | AGP | PCI 카드이며 OPENSTEP에 AGP 개념 자체가 없다 |
 
-### 3-3. 판정: "아예 불가"는 아니나 필요한 형태가 없다
-
-MGA primary DMA는 `PRIMADDRESS`~`PRIMEND`로 **연속 물리 영역**을 요구한다.
-연속 할당자가 없으므로 우회가 필요하다:
-- **1페이지(8 KiB)** 는 자명하게 연속 — 명령 약 2048 dword를 담는 링으로 사용 가능
-- 여러 페이지가 필요하면 `IOPhysicalFromVirtual`로 **연속성을 검사해 재시도**.
-  부팅 직후처럼 메모리가 덜 조각난 시점이면 현실적이다
-
-→ **DMA 자체는 실현 가능하다고 판단된다. 다만 검증되지 않았다.**
+이는 결함이 아니라 구조다. PCI 버스마스터 장치는 자체 DMA 엔진을 갖고, 각
+드라이버가 디스크립터를 만들어 장치 레지스터에 물리주소를 써 넣는 방식이
+당대의 정상 패턴이었다 — OPENSTEP 정식 드라이버 중 DEC 21040/21140,
+AMD PCnet32, 3Com 3C90x, Intel PIIX IDE가 모두 그렇게 했다
+(저장소 루트 `openstep_pci_bus_master_driver_research.md`, 미추적 파일).
 
 ## 4. DMA보다 큰 장벽 — 3D 소프트웨어 스택이 통째로 없다
 
@@ -90,7 +136,7 @@ MIT 라이선스("Permission is hereby granted, free of charge...")이므로 사
 
 "DMA를 붙이는 일"이 아니라 다음을 **전부 새로 만드는 일**이다:
 
-1. PCI 버스마스터 DMA 링 (연속 물리 메모리 확보 포함)
+1. PCI 버스마스터 DMA 링 (`IOMallocLow` 64 KiB + `IOPhysicalFromVirtual`; §3-2/3-3)
 2. WARP 마이크로코드 업로드 경로
 3. 3D 상태·정점 명령 스트림 생성기
 4. DMA 완료 동기화(인터럽트 또는 bounded 폴링)
@@ -102,8 +148,11 @@ S1~S4a가 각각 하루 이내 규모였다면 이것은 **차원이 다른 규�
 
 ## 6. 착수한다면 첫 단계 (권고)
 
-**DMA 링 하나만 먼저 실증한다**: 연속 물리 메모리를 확보하고, 카드가 그것을
-버스마스터로 읽어 **이미 검증된 2D 명령**(단색채우기)을 실행하는지 확인한다.
+**DMA 링 하나만 먼저 실증한다**: `IOMallocLow`로 64 KiB를 잡고
+`IOPhysicalFromVirtual`로 물리주소를 얻어 `PRIMADDRESS`/`PRIMEND`에 써 넣은 뒤,
+카드가 그것을 버스마스터로 읽어 **이미 검증된 2D 명령**(단색채우기)을
+실행하는지 확인한다. §3-2 정정으로 이 단계의 전제(연속 물리 메모리)는
+이미 확보돼 있다.
 
 - 성립하면 → 나머지 5개 항목이 의미를 갖는다
 - 성립하지 않으면 → **거기서 멈춘다.** 3D 스택을 만들 이유가 없다

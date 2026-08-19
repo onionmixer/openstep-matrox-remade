@@ -7,6 +7,7 @@
 > 행은 **탐색 과정의 기록**이다. 특히 P2 MiG control plane과 lease/sidecar
 > 서비스는 **폐기된 경로**이며 현재 드라이버는 그 코드를 링크하지 않는다
 > (빌드 대상은 `OpenStepMGAManualConfig.c` + `OpenStepMGAEDID.c`뿐).
+> 아직 하지 않은 일은 `REMAINING_WORK.md`에 따로 있다.
 
 | 영역 | 최신 결과 | hardware 접근 | 상태 |
 | --- | --- | --- | --- |
