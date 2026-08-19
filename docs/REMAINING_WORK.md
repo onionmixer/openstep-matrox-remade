@@ -115,8 +115,14 @@ without this */`(`mga_storm.c:1768`, `:1813`)를 보고 우리도 방어적으�
 
 syslog가 버스트를 삼켜 D3-3b 첫 실행 데이터를 통째로 잃었다. 대응으로:
 
-- 실기 `Instance0.table`에서 `Storm 2D Test`/`DMA Ring Test`/`WARP Test`를
-  `No`로 바꿨다(원본은 같은 디렉터리의 `Instance0.table.bak`).
+- **저장소의** `OpenStepMGAReplacementDisplay/Instance0.table`과
+  `Default.table`에서 `Storm 2D Test`/`DMA Ring Test`/`WARP Test`를 `No`로
+  바꿨다.
+
+  실기 파일만 고쳤더니 `install-matrox-driver.sh`가 매번 저장소 원본으로
+  덮어써서(`tools/install-matrox-driver.sh:20`) 다음 설치에 되살아났고,
+  그 탓에 D3-4b 결과를 한 번 더 잃었다. **실기가 아니라 저장소를 고쳐야
+  한다.**
 - `enterLinearMode`에서 `runRasterInterpolationTest`와
   `runDstorgOriginTest` 호출을 주석 처리했다.
 

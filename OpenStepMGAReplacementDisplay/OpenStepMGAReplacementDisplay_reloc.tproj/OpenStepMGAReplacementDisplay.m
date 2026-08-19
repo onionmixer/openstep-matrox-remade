@@ -554,6 +554,33 @@
 #define OSMGA_D3_TEXDIM         64UL
 #define OSMGA_D3_TEXLOG2        6UL
 
+/*
+ * D3-4b -- scale, sloped edges, and depth under sloped edges.
+ *
+ * Two questions here have no answer anywhere in the sources, because no
+ * shipped path draws a textured sloped trapezoid at all.
+ *
+ * The first is where the texture coordinate comes from on a sloped edge.
+ * If the engine evaluates it from the pixel's own position then a sloped
+ * left edge changes nothing; if it accumulates along each span from that
+ * span's first pixel, the texture shears and the left edge always shows
+ * u = 0.  Band C slopes the LEFT edge and reads the texel at each row's
+ * first drawn pixel, which separates the two in one number per row.
+ *
+ * The second is the coordinate origin.  mga_storm.c:561-563 writes TMR6
+ * and TMR7 as the source origin and puts the destination position only
+ * in FXBNDRY and YDSTLEN, so the origin should be the primitive rather
+ * than the screen -- but D3-4a drew at y = 0, where the two agree.
+ * Band B starts at y = 20 with TMR7 = 0, so the v it reports says which.
+ *
+ * Band D asks whether the depth write follows the sloped edges or covers
+ * the whole clip rectangle.  It counts depth inside the band rows but
+ * outside the drawn span, which is sharper than an outer guard: depth
+ * that ignored the edge walk would land exactly there.
+ */
+#define OSMGA_D3_4B_BAND        20UL
+#define OSMGA_D3_4B_SLOPE       40L
+
 #define MGA_DMA_GENERAL         0x00     /* PRIMADDRESS mode bits */
 #define MGA_PRIMNOSTART         0x01     /* PRIMEND bit0: do NOT start */
 #define MGA_PAGPXFER            0x02     /* PRIMEND bit1: AGP; 0 for PCI */
@@ -2799,7 +2826,7 @@ unmap:
      * measurement.  Restore both calls once depth is settled. */
     /* [self runRasterInterpolationTest]; */
     /* [self runDstorgOriginTest]; */
-    [self runTextureIdentityTest];
+    [self runTextureSlopeTest];
 }
 
 /*
@@ -4848,6 +4875,42 @@ unmap:
 }
 
 
+
+/* Program the texture unit for the identity 64x64 texture at OSMGA_D3_TEXORG
+ * with the given per-pixel step, shared by every D3-4b band. */
+static void
+osmgaTextureSetup(vm_address_t base, unsigned long dim, unsigned long log2dim,
+                  unsigned long texPitch, unsigned long stepX,
+                  unsigned long stepY)
+{
+    osmgaW32(base, MGA_TEXORG,       OSMGA_D3_TEXORG);
+    osmgaW32(base, MGA_TEXWIDTH,     ((dim - 1UL) << 18) |
+                                     (((8UL - log2dim) & 63UL) << 9) | log2dim);
+    osmgaW32(base, MGA_TEXHEIGHT,    ((dim - 1UL) << 18) |
+                                     (((8UL - log2dim) & 63UL) << 9) | log2dim);
+    osmgaW32(base, MGA_TEXCTL,       MGA_TEXCTL_PITCHLIN |
+                                     ((texPitch & 2047UL) << 9) |
+                                     MGA_TEXCTL_NOPERSP | MGA_TEXCTL_TAKEY |
+                                     MGA_TEXCTL_CLAMPUV | MGA_TEXCTL_TW32);
+    osmgaW32(base, MGA_TEXCTL2,      MGA_TEXCTL2_G400_MAGIC |
+                                     MGA_TEXCTL2_CKSTRANSDIS);
+    osmgaW32(base, MGA_TEXFILTER,    MGA_TEXFILTER_ALPHA | (0x10UL << 21));
+    osmgaW32(base, MGA_TEXTRANS,     0x0000ffffUL);
+    osmgaW32(base, MGA_TEXTRANSHIGH, 0x0000ffffUL);
+    osmgaW32(base, MGA_TDUALSTAGE0,  0UL);
+    osmgaW32(base, MGA_TDUALSTAGE1,  0UL);
+    osmgaW32(base, MGA_ALPHACTRL,    MGA_ALPHACTRL_OPAQUE);
+    osmgaW32(base, MGA_TMR0,         stepX);
+    osmgaW32(base, MGA_TMR0 + 4UL,   0UL);
+    osmgaW32(base, MGA_TMR0 + 8UL,   0UL);
+    osmgaW32(base, MGA_TMR3,         stepY);
+    osmgaW32(base, MGA_TMR0 + 16UL,  0UL);
+    osmgaW32(base, MGA_TMR0 + 20UL,  0UL);
+    osmgaW32(base, MGA_TMR0 + 24UL,  0UL);   /* TMR6 -- u origin */
+    osmgaW32(base, MGA_TMR0 + 28UL,  0UL);   /* TMR7 -- v origin */
+    osmgaW32(base, MGA_TMR8,         1UL << 16);
+}
+
 /*
  * D3-4a -- see the note by MGA_TMR0.
  */
@@ -5003,6 +5066,198 @@ unmap:
 
 unmap:
     if (aTex != 0) (void)IOUnmapPhysicalFromIOTask(aTex, lTex);
+    if (aBlk != 0) (void)IOUnmapPhysicalFromIOTask(aBlk, lBlk);
+}
+
+
+/*
+ * D3-4b -- see the note by OSMGA_D3_4B_BAND.
+ */
+- (void)runTextureSlopeTest
+{
+    IODisplayInfo *di = [self displayInfo];
+    const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
+    vm_address_t base = mmioBase;
+    unsigned long stride = (unsigned long)di->rowBytes / 4UL;
+    unsigned long dim = OSMGA_D3_TEXDIM;
+    unsigned long texPitch = dim;
+    unsigned long texBytes = dim * texPitch * 4UL;
+    unsigned long band = OSMGA_D3_4B_BAND;
+    unsigned long drawRows = 4UL * band;                      /* 80 */
+    unsigned long allRows = drawRows + OSMGA_D3_ISO_GUARDROWS;
+    unsigned long guardW = 2UL * OSMGA_S1_W;
+    unsigned long step = 1UL << (20UL - OSMGA_D3_TEXLOG2);
+    unsigned long dwgTex = (MGA_DWGCTL_GOURAUD & ~MGA_DWGCTL_OPCODE_MASK) |
+                           MGA_DWGCTL_TEXTURE_TRAP;
+    vm_address_t aBlk = 0, aTex = 0, aZ = 0;
+    unsigned long lBlk = 0, lTex = 0, lZ = 0;
+    volatile unsigned long *blk = 0, *tex = 0, *zw = 0;
+    volatile unsigned short *z16;
+    unsigned long b, row, col;
+    unsigned long uA[5], uB[5], firstX[5], uC[5], vB0 = 0xFFFFUL;
+    unsigned long drewD = 0UL, zOutside = 0UL;
+    unsigned long cGuard = 0UL, zGuard = 0UL, texDirty = 0UL;
+    static const unsigned long sampleX[5] = { 0UL, 16UL, 32UL, 48UL, 63UL };
+    static const unsigned long sampleRow[5] = { 0UL, 5UL, 10UL, 15UL, 19UL };
+    IOReturn r;
+
+    if (!rasterTestEnabled || !linearModeActive || !mmioMapped)
+        return;
+    if (f->bytesPerPixel != 4)
+        return;
+    if (OSMGA_D3_TEXORG + texBytes > OSMGA_S1_VRAM_PROVEN ||
+        OSMGA_S1_VRAM_BLOCK + allRows * stride * 4UL > OSMGA_D3_ZORG ||
+        OSMGA_D3_ZORG + allRows * stride * 2UL > OSMGA_D3_TEXORG) {
+        IOLog("OpenStepMGA D3-4b: windows do not fit, skipped\n");
+        return;
+    }
+
+    r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_S1_VRAM_BLOCK,
+                              OSMGA_S1_VRAM_BLOCK + allRows * stride * 4UL,
+                              &aBlk, &lBlk, &blk);
+    if (r != IO_R_SUCCESS) goto unmap;
+    r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_D3_ZORG,
+                              OSMGA_D3_ZORG + allRows * stride * 2UL,
+                              &aZ, &lZ, &zw);
+    if (r != IO_R_SUCCESS) goto unmap;
+    r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_D3_TEXORG,
+                              OSMGA_D3_TEXORG + texBytes,
+                              &aTex, &lTex, &tex);
+    if (r != IO_R_SUCCESS) goto unmap;
+    z16 = (volatile unsigned short *)zw;
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA D3-4b: engine BUSY at entry\n");
+        goto unmap;
+    }
+
+    for (row = 0UL; row < dim; row++)
+        for (col = 0UL; col < dim; col++)
+            tex[row * texPitch + col] = (col << 16) | (row << 8) | 0x40UL;
+    for (row = 0UL; row < allRows; row++)
+        for (col = 0UL; col < guardW; col++) {
+            blk[row * stride + col] = OSMGA_S1_SENTINEL;
+            z16[row * stride + col] = OSMGA_D3_ZSENTINEL;
+        }
+
+    for (b = 0UL; b < 4UL; b++) {
+        unsigned long y0 = b * band;
+        unsigned long sx = (b == 0UL) ? step * 2UL
+                         : (b == 1UL) ? step / 2UL : step;
+
+        if (!osmgaStormWaitFifo(base, 13U)) goto unmap;
+        osmgaStormInitState(base, stride, 0UL, dim - 1UL,
+                            y0 * stride, (y0 + band - 1UL) * stride);
+        if (!osmgaStormWaitFifo(base, 20U)) goto unmap;
+        osmgaW32(base, MGA_DSTORG, OSMGA_S1_VRAM_BLOCK);
+        osmgaTextureSetup(base, dim, OSMGA_D3_TEXLOG2, texPitch, sx, sx);
+
+        if (b < 2UL) {
+            if (!osmgaStormWaitFifo(base, 4U)) goto unmap;
+            osmgaW32(base, MGA_DWGCTL,  dwgTex);
+            osmgaW32(base, MGA_FXBNDRY, (dim << 16) | 0UL);
+            osmgaW32(base, MGA_YDSTLEN + MGA_EXEC, (y0 << 16) | band);
+        } else {
+            /* Sloped LEFT edge: the row's first pixel moves right with y,
+             * which is what makes the texel there discriminating. */
+            unsigned long dwg = dwgTex;
+
+            if (b == 3UL) {
+                if (!osmgaStormWaitFifo(base, 5U)) goto unmap;
+                osmgaW32(base, MGA_ZORG, OSMGA_D3_ZORG);
+                osmgaW32(base, MGA_DR0,  OSMGA_D3_ZMID);
+                osmgaW32(base, MGA_DR2,  0UL);
+                osmgaW32(base, MGA_DR3,  0UL);
+                dwg = (dwgTex & ~MGA_DWGCTL_ATYPE_I) | MGA_DWGCTL_ATYPE_ZI;
+            }
+            if (!osmgaStormWaitFifo(base, 11U)) goto unmap;
+            osmgaStormTrap(base, dwg, y0, band,
+                           0L, OSMGA_D3_4B_SLOPE, (long)band, 0L,
+                           (long)(dim - 1UL), 0L, (long)band, 0L);
+        }
+
+        if (!osmgaStormWaitIdle(base)) {
+            IOLog("OpenStepMGA D3-4b: band %lu did not finish\n", b);
+            osmgaW32(base, MGA_DSTORG, 0UL);
+            osmgaW32(base, MGA_ZORG, 0UL);
+            goto unmap;
+        }
+        osmgaW32(base, MGA_DSTORG, 0UL);
+        osmgaW32(base, MGA_ZORG,   0UL);
+    }
+
+    for (row = 0UL; row < 5UL; row++) {
+        uA[row] = (blk[sampleX[row]] >> 16) & 0xffUL;
+        uB[row] = (blk[band * stride + sampleX[row]] >> 16) & 0xffUL;
+    }
+    vB0 = (blk[band * stride] >> 8) & 0xffUL;
+
+    for (row = 0UL; row < 5UL; row++) {
+        unsigned long ry = 2UL * band + sampleRow[row];
+
+        firstX[row] = 0xFFFFUL;
+        uC[row] = 0xFFFFUL;
+        for (col = 0UL; col < dim; col++)
+            if (blk[ry * stride + col] != OSMGA_S1_SENTINEL) {
+                firstX[row] = col;
+                uC[row] = (blk[ry * stride + col] >> 16) & 0xffUL;
+                break;
+            }
+    }
+
+    /* Depth that ignored the edge walk would land inside the band rows but
+     * outside the drawn span -- sharper than an outer guard. */
+    for (row = 3UL * band; row < 4UL * band; row++)
+        for (col = 0UL; col < dim; col++) {
+            int inside = (blk[row * stride + col] != OSMGA_S1_SENTINEL);
+
+            if (inside) drewD++;
+            if (!inside && z16[row * stride + col] != OSMGA_D3_ZSENTINEL)
+                zOutside++;
+        }
+
+    for (row = 0UL; row < allRows; row++)
+        for (col = 0UL; col < guardW; col++) {
+            if (row < drawRows && col < dim) continue;
+            if (blk[row * stride + col] != OSMGA_S1_SENTINEL) cGuard++;
+            if (z16[row * stride + col] != OSMGA_D3_ZSENTINEL) zGuard++;
+        }
+    for (row = 0UL; row < dim; row++)
+        for (col = 0UL; col < dim; col++)
+            if (tex[row * texPitch + col] !=
+                ((col << 16) | (row << 8) | 0x40UL)) texDirty++;
+
+    IOLog("OpenStepMGA D3-4b: A x2 u at x=0,16,32,48,63 -> %lu %lu %lu %lu "
+          "%lu (expect 0 32 64 96 126 before clamping)\n",
+          uA[0], uA[1], uA[2], uA[3], uA[4]);
+    IOLog("OpenStepMGA D3-4b: B /2 u -> %lu %lu %lu %lu %lu (expect "
+          "0 8 16 24 31); v at its first row %lu (0 = primitive origin, "
+          "10 = screen origin)\n",
+          uB[0], uB[1], uB[2], uB[3], uB[4], vB0);
+    IOLog("OpenStepMGA D3-4b: C sloped rows 0,5,10,15,19 firstx/u -> "
+          "%lu/%lu %lu/%lu %lu/%lu %lu/%lu %lu/%lu\n",
+          firstX[0], uC[0], firstX[1], uC[1], firstX[2], uC[2],
+          firstX[3], uC[3], firstX[4], uC[4]);
+    IOLog("OpenStepMGA D3-4b: D drew %lu; depth outside the span %lu; "
+          "guards colour %lu depth %lu; texture dirty %lu\n",
+          drewD, zOutside, cGuard, zGuard, texDirty);
+
+    if (texDirty != 0UL || cGuard != 0UL || zGuard != 0UL)
+        IOLog("OpenStepMGA D3-4b: STOP -- a write escaped its region\n");
+    else if (zOutside != 0UL)
+        IOLog("OpenStepMGA D3-4b: STOP -- depth was written outside the "
+              "sloped span; depth does not follow the edge walk\n");
+    else if (firstX[4] > firstX[0] && uC[4] == firstX[4])
+        IOLog("OpenStepMGA D3-4b: PASS -- the texel follows the pixel's own "
+              "x across a sloped edge, so no per-row reseeding is needed\n");
+    else if (firstX[4] > firstX[0] && uC[4] == 0UL)
+        IOLog("OpenStepMGA D3-4b: the texture accumulates from each span's "
+              "start -- the driver must reseed TMR6 per row\n");
+    else
+        IOLog("OpenStepMGA D3-4b: read the samples above\n");
+
+unmap:
+    if (aTex != 0) (void)IOUnmapPhysicalFromIOTask(aTex, lTex);
+    if (aZ != 0)   (void)IOUnmapPhysicalFromIOTask(aZ, lZ);
     if (aBlk != 0) (void)IOUnmapPhysicalFromIOTask(aBlk, lBlk);
 }
 
