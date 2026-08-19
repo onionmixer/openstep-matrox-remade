@@ -498,6 +498,62 @@
 #define OSMGA_D3_ZFAR           0x60000000UL   /* depth 0xC000 */
 #define MGA_DWGCTL_ZGTE         0x00000700UL   /* 7 << 8 */
 
+/*
+ * D3-4a -- texture mapping.
+ *
+ * Unlike atype ZI, which no code anywhere uses, the texture unit has two
+ * working implementations in the DDX, and mga_exa.c reaches it with no
+ * WARP register references at all.  EXA runs without DRI, so texturing
+ * without WARP is shipped behaviour rather than our inference.
+ *
+ * The command is one bit from what we already run: TEXTURE_TRAP replaces
+ * TRAP in the Gouraud word, atype stays I, SOLID stays clear.
+ *
+ * The coordinate scale is the part that is easy to get wrong.
+ * setTMIncrementsRegs computes decal = mga_fx_width_size - 16, and the
+ * caller passes 20 - log2(width), so decal = 4 - log2(width) -- negative
+ * for any texture wider than 16 texels, meaning a right shift.  One
+ * texel step is therefore 1 << (20 - log2(width)), which is 0x4000 for
+ * 64 wide.  A 16-texel texture makes decal zero and leaves 16.16
+ * untouched, which is the check that settles the sign.
+ *
+ * Containment differs from the depth work: the texture unit only reads,
+ * so a wrong coordinate reads the wrong VRAM rather than writing outside
+ * it.  The single write is the destination, bounded by the clip we
+ * measured.  CLAMPUV is set but not leaned on -- whether it clamps
+ * before or after the address computation is unverified.
+ */
+#define MGA_TMR0                0x2c00
+#define MGA_TMR3                0x2c0c
+#define MGA_TMR8                0x2c20
+#define MGA_TEXORG              0x2c24
+#define MGA_TEXWIDTH            0x2c28
+#define MGA_TEXHEIGHT           0x2c2c
+#define MGA_TEXCTL              0x2c30
+#define MGA_TEXTRANS            0x2c34
+#define MGA_TEXTRANSHIGH        0x2c38
+#define MGA_TEXCTL2             0x2c3c
+#define MGA_TEXFILTER           0x2c58
+#define MGA_ALPHACTRL           0x2c7c
+#define MGA_TDUALSTAGE0         0x2cf8
+#define MGA_TDUALSTAGE1         0x2cfc
+
+#define MGA_DWGCTL_OPCODE_MASK  0x0000000FUL
+#define MGA_DWGCTL_TEXTURE_TRAP 0x00000006UL
+#define MGA_TEXCTL_PITCHLIN     0x00000100UL
+#define MGA_TEXCTL_NOPERSP      0x00200000UL
+#define MGA_TEXCTL_TAKEY        0x02000000UL
+#define MGA_TEXCTL_CLAMPUV      0x18000000UL
+#define MGA_TEXCTL_TW32         0x00000006UL
+#define MGA_TEXCTL2_G400_MAGIC  0x00008000UL
+#define MGA_TEXCTL2_CKSTRANSDIS 0x00000010UL
+#define MGA_TEXFILTER_ALPHA     0x00100000UL
+#define MGA_ALPHACTRL_OPAQUE    0x00000101UL   /* ALPHACHANNEL|SRC_ONE|DST_ZERO */
+
+#define OSMGA_D3_TEXORG         (6UL * 1024UL * 1024UL)
+#define OSMGA_D3_TEXDIM         64UL
+#define OSMGA_D3_TEXLOG2        6UL
+
 #define MGA_DMA_GENERAL         0x00     /* PRIMADDRESS mode bits */
 #define MGA_PRIMNOSTART         0x01     /* PRIMEND bit0: do NOT start */
 #define MGA_PAGPXFER            0x02     /* PRIMEND bit1: AGP; 0 for PCI */
@@ -2743,7 +2799,7 @@ unmap:
      * measurement.  Restore both calls once depth is settled. */
     /* [self runRasterInterpolationTest]; */
     /* [self runDstorgOriginTest]; */
-    [self runDepthEncodingTest];
+    [self runTextureIdentityTest];
 }
 
 /*
@@ -4788,6 +4844,165 @@ unmap:
 
 unmap:
     if (aZ != 0)   (void)IOUnmapPhysicalFromIOTask(aZ, lZ);
+    if (aBlk != 0) (void)IOUnmapPhysicalFromIOTask(aBlk, lBlk);
+}
+
+
+/*
+ * D3-4a -- see the note by MGA_TMR0.
+ */
+- (void)runTextureIdentityTest
+{
+    IODisplayInfo *di = [self displayInfo];
+    const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
+    vm_address_t base = mmioBase;
+    unsigned long stride = (unsigned long)di->rowBytes / 4UL;
+    unsigned long dim = OSMGA_D3_TEXDIM;
+    unsigned long texPitch = dim;
+    unsigned long texBytes = dim * texPitch * 4UL;
+    unsigned long allRows = dim + OSMGA_D3_ISO_GUARDROWS;
+    unsigned long guardW = 2UL * OSMGA_S1_W;
+    unsigned long step = 1UL << (20UL - OSMGA_D3_TEXLOG2);   /* one texel */
+    vm_address_t aBlk = 0, aTex = 0;
+    unsigned long lBlk = 0, lTex = 0;
+    volatile unsigned long *blk = 0, *tex = 0;
+    unsigned long row, col, ident = 0UL, drawn = 0UL;
+    unsigned long cGuard = 0UL, texDirty = 0UL;
+    IOReturn r;
+
+    if (!rasterTestEnabled || !linearModeActive || !mmioMapped)
+        return;
+    if (f->bytesPerPixel != 4)
+        return;
+    if (OSMGA_D3_TEXORG + texBytes > OSMGA_S1_VRAM_PROVEN ||
+        OSMGA_S1_VRAM_BLOCK + allRows * stride * 4UL > OSMGA_D3_ZORG) {
+        IOLog("OpenStepMGA D3-4a: windows do not fit the proven VRAM "
+              "bound, skipped\n");
+        return;
+    }
+
+    r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_S1_VRAM_BLOCK,
+                              OSMGA_S1_VRAM_BLOCK + allRows * stride * 4UL,
+                              &aBlk, &lBlk, &blk);
+    if (r != IO_R_SUCCESS) goto unmap;
+    r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_D3_TEXORG,
+                              OSMGA_D3_TEXORG + texBytes,
+                              &aTex, &lTex, &tex);
+    if (r != IO_R_SUCCESS) goto unmap;
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA D3-4a: engine BUSY at entry\n");
+        goto unmap;
+    }
+
+    /* Each texel carries its own coordinates, so the readback says which
+     * texel arrived rather than only whether something did. */
+    for (row = 0UL; row < dim; row++)
+        for (col = 0UL; col < dim; col++)
+            tex[row * texPitch + col] = (col << 16) | (row << 8) | 0x40UL;
+    for (row = 0UL; row < allRows; row++)
+        for (col = 0UL; col < guardW; col++)
+            blk[row * stride + col] = OSMGA_S1_SENTINEL;
+
+    if (!osmgaStormWaitFifo(base, 13U)) goto unmap;
+    osmgaStormInitState(base, stride, 0UL, dim - 1UL, 0UL,
+                        (dim - 1UL) * stride);
+
+    if (!osmgaStormWaitFifo(base, 16U)) goto unmap;
+    osmgaW32(base, MGA_DSTORG,       OSMGA_S1_VRAM_BLOCK);
+    osmgaW32(base, MGA_TEXORG,       OSMGA_D3_TEXORG);
+    osmgaW32(base, MGA_TEXWIDTH,     ((dim - 1UL) << 18) |
+                                     (((8UL - OSMGA_D3_TEXLOG2) & 63UL) << 9) |
+                                     OSMGA_D3_TEXLOG2);
+    osmgaW32(base, MGA_TEXHEIGHT,    ((dim - 1UL) << 18) |
+                                     (((8UL - OSMGA_D3_TEXLOG2) & 63UL) << 9) |
+                                     OSMGA_D3_TEXLOG2);
+    osmgaW32(base, MGA_TEXCTL,       MGA_TEXCTL_PITCHLIN |
+                                     ((texPitch & 2047UL) << 9) |
+                                     MGA_TEXCTL_NOPERSP | MGA_TEXCTL_TAKEY |
+                                     MGA_TEXCTL_CLAMPUV | MGA_TEXCTL_TW32);
+    osmgaW32(base, MGA_TEXCTL2,      MGA_TEXCTL2_G400_MAGIC |
+                                     MGA_TEXCTL2_CKSTRANSDIS);
+    osmgaW32(base, MGA_TEXFILTER,    MGA_TEXFILTER_ALPHA | (0x10UL << 21));
+    osmgaW32(base, MGA_TEXTRANS,     0x0000ffffUL);
+    osmgaW32(base, MGA_TEXTRANSHIGH, 0x0000ffffUL);
+    osmgaW32(base, MGA_TDUALSTAGE0,  0UL);
+    osmgaW32(base, MGA_TDUALSTAGE1,  0UL);
+    osmgaW32(base, MGA_ALPHACTRL,    MGA_ALPHACTRL_OPAQUE);
+
+    if (!osmgaStormWaitFifo(base, 14U)) goto unmap;
+    osmgaW32(base, MGA_TMR0, step);          /* one texel per pixel in x */
+    osmgaW32(base, MGA_TMR0 + 4UL,  0UL);
+    osmgaW32(base, MGA_TMR0 + 8UL,  0UL);
+    osmgaW32(base, MGA_TMR3, step);          /* one texel per pixel in y */
+    osmgaW32(base, MGA_TMR0 + 16UL, 0UL);
+    osmgaW32(base, MGA_TMR0 + 20UL, 0UL);
+    osmgaW32(base, MGA_TMR0 + 24UL, 0UL);    /* TMR6 -- u origin */
+    osmgaW32(base, MGA_TMR0 + 28UL, 0UL);    /* TMR7 -- v origin */
+    osmgaW32(base, MGA_TMR8, 1UL << 16);     /* no decal on the H family */
+
+    osmgaW32(base, MGA_DWGCTL,
+             (MGA_DWGCTL_GOURAUD & ~MGA_DWGCTL_OPCODE_MASK) |
+             MGA_DWGCTL_TEXTURE_TRAP);
+    osmgaW32(base, MGA_FXBNDRY, (dim << 16) | 0UL);
+    osmgaW32(base, MGA_YDSTLEN + MGA_EXEC, (0UL << 16) | dim);
+
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA D3-4a: the draw did not finish\n");
+        osmgaW32(base, MGA_DSTORG, 0UL);
+        goto unmap;
+    }
+    osmgaW32(base, MGA_DSTORG, 0UL);
+
+    for (row = 0UL; row < dim; row++)
+        for (col = 0UL; col < dim; col++) {
+            unsigned long got = blk[row * stride + col];
+
+            if (got != OSMGA_S1_SENTINEL) drawn++;
+            if (got == tex[row * texPitch + col]) ident++;
+        }
+    for (row = 0UL; row < allRows; row++)
+        for (col = 0UL; col < guardW; col++) {
+            if (row < dim && col < dim) continue;
+            if (blk[row * stride + col] != OSMGA_S1_SENTINEL) cGuard++;
+        }
+    for (row = 0UL; row < dim; row++)
+        for (col = 0UL; col < dim; col++)
+            if (tex[row * texPitch + col] !=
+                ((col << 16) | (row << 8) | 0x40UL)) texDirty++;
+
+    IOLog("OpenStepMGA D3-4a: drawn %lu, identity %lu of %lu; texel step "
+          "%lx; texture dirty %lu, colour guard %lu\n",
+          drawn, ident, dim * dim, step, texDirty, cGuard);
+    /* Which texel actually arrived, so a constant scale or offset error
+     * yields the right value instead of just a failure. */
+    IOLog("OpenStepMGA D3-4a: row0 x=0,16,32,48,63 -> %06lx %06lx %06lx "
+          "%06lx %06lx\n",
+          blk[0] & 0xffffffUL,          blk[16] & 0xffffffUL,
+          blk[32] & 0xffffffUL,         blk[48] & 0xffffffUL,
+          blk[63] & 0xffffffUL);
+    IOLog("OpenStepMGA D3-4a: col0 y=0,16,32,48,63 -> %06lx %06lx %06lx "
+          "%06lx %06lx\n",
+          blk[0] & 0xffffffUL,          blk[16UL * stride] & 0xffffffUL,
+          blk[32UL * stride] & 0xffffffUL, blk[48UL * stride] & 0xffffffUL,
+          blk[63UL * stride] & 0xffffffUL);
+
+    if (texDirty != 0UL)
+        IOLog("OpenStepMGA D3-4a: STOP -- the texture was written to; "
+              "TEXORG and DSTORG must be overlapping\n");
+    else if (cGuard != 0UL)
+        IOLog("OpenStepMGA D3-4a: STOP -- colour escaped the clip\n");
+    else if (ident == dim * dim)
+        IOLog("OpenStepMGA D3-4a: PASS -- every pixel received its own "
+              "texel; TEXTURE_TRAP and the coordinate scale are both "
+              "right\n");
+    else if (drawn == 0UL)
+        IOLog("OpenStepMGA D3-4a: FAIL -- nothing drew at all\n");
+    else
+        IOLog("OpenStepMGA D3-4a: drew but the mapping is not the "
+              "identity; read the two sample rows above\n");
+
+unmap:
+    if (aTex != 0) (void)IOUnmapPhysicalFromIOTask(aTex, lTex);
     if (aBlk != 0) (void)IOUnmapPhysicalFromIOTask(aBlk, lBlk);
 }
 
