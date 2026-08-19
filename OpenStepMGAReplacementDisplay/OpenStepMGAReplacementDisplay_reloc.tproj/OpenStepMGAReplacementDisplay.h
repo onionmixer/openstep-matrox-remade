@@ -134,6 +134,7 @@
 - (void)runAlphaSourceTest;
 - (void)runAlphaBlendTest;
 - (void)runMmapWindowTest;
+- (void)runHW3DBatchTest;
 - (BOOL)stormBlitCheckSrcX:(unsigned)srcX srcY:(unsigned)srcY
                      width:(unsigned)w height:(unsigned)h
                       dstX:(unsigned)dstX dstY:(unsigned)dstY

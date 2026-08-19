@@ -39,6 +39,7 @@
 #import "OpenStepMGAManualConfig.h"
 #import "OpenStepMGAEDID.h"
 #import "OpenStepMGAWarpUcode.h"
+#import "OpenStepMGAHW3D.h"
 
 #define PCI_CFG_ADDR            0x0CF8
 #define PCI_CFG_DATA            0x0CFC
@@ -3020,6 +3021,7 @@ unmap:
     /* [self runDstorgOriginTest]; */
     [self runAlphaBlendTest];
     [self runMmapWindowTest];
+    [self runHW3DBatchTest];
 }
 
 /*
@@ -5991,6 +5993,96 @@ unmap:
 }
 
 
+
+/*
+ * ---- M1-2a: turn a validated batch into a DMA command list ----
+ *
+ * The engine state that bounds a draw -- PITCH, the clip, MACCESS -- is set
+ * by MMIO before the list is submitted and never appears in the list, so a
+ * batch cannot move the walls it is drawn inside.  What the list carries is
+ * the origins, the interpolators and the edges, which is exactly the set
+ * the validator bounds.
+ *
+ * EXEC goes last in its block: the values in a block are applied in index
+ * order, and everything the triangle needs must be in place before the
+ * write that starts it.
+ */
+static unsigned long
+osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
+                const OSMGAHW3DBatch *b, unsigned long *outTail)
+{
+    unsigned long pos = 0UL, i;
+    unsigned long atype = (b->state.dwgctl >> 4) & 0x7UL;
+    int ok = 1;
+
+    ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                             MGA_DSTORG,   b->state.dstorg,
+                             MGA_ZORG,     (atype == 0x3UL) ? b->state.zorg
+                                                            : 0UL,
+                             MGA_ALPHACTRL, b->state.alphactrl,
+                             MGA_DMAPAD,   0UL);
+
+    for (i = 0UL; ok && i < b->triCount; i++) {
+        const OSMGAHW3DTri *t = &b->tri[i];
+
+        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                                 MGA_DWGCTL, MGA_DWGCTL_SLOPED(b->state.dwgctl),
+                                 MGA_AR0, (unsigned long)t->ar0,
+                                 MGA_AR1, (unsigned long)t->ar1,
+                                 MGA_AR2, (unsigned long)t->ar2);
+        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                                 MGA_AR4, (unsigned long)t->ar4,
+                                 MGA_AR5, (unsigned long)t->ar5,
+                                 MGA_AR6, (unsigned long)t->ar6,
+                                 MGA_SGN, (unsigned long)t->sgn);
+        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                                 MGA_DR4,  t->dr[0], MGA_DR6,  t->dr[1],
+                                 MGA_DR7,  t->dr[2], MGA_DR8,  t->dr[3]);
+        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                                 MGA_DR10, t->dr[4], MGA_DR11, t->dr[5],
+                                 MGA_DR12, t->dr[6], MGA_DR14, t->dr[7]);
+        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                                 MGA_DR15, t->dr[8],
+                                 MGA_DR0,  t->z0,
+                                 MGA_DR2,  t->zdx,
+                                 MGA_DR3,  t->zdy);
+        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                                 MGA_ALPHASTART, t->a0,
+                                 MGA_ALPHAXINC,  t->adx,
+                                 MGA_ALPHAYINC,  t->ady,
+                                 MGA_FXBNDRY,    t->fxbndry);
+        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                                 MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                                 MGA_DMAPAD, 0UL,
+                                 MGA_YDSTLEN + MGA_EXEC,
+                                 (((unsigned long)t->y) << 16) |
+                                 ((unsigned long)t->h));
+    }
+
+    /* Leave DWGCTL as the caller's, not the sloped variant. */
+    ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                             MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                             MGA_DWGCTL, b->state.dwgctl,
+                             MGA_DMAPAD, 0UL);
+    /* The trap has to be INSIDE what PRIMEND covers, and the card reads a
+     * little past PRIMEND, so a padding block has to follow it.  Getting
+     * either the wrong way round leaves the list running to the end with
+     * the trap never fired -- which is exactly what the first attempt did,
+     * and what STATUS bit 0 reported. */
+    ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                             MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                             MGA_DMAPAD, 0UL, MGA_SOFTRAP, 0UL);
+    if (!ok)
+        return 0UL;
+    if (outTail != 0)
+        *outTail = pos;                 /* PRIMEND points here */
+    if (!osmgaDmaBlock(list, listDwords, &pos,
+                       MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                       MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL))
+        return 0UL;
+    return pos;
+}
+
 /*
  * M1-0 -- exercise the mmap decision directly.
  *
@@ -6072,6 +6164,270 @@ unmap:
     else
         IOLog("OpenStepMGA M1-0: FAIL -- see the cases above; do not map "
               "anything until this is clean\n");
+}
+
+
+/*
+ * M1-2a -- the same triangle twice: once by MMIO, once through a validated
+ * batch turned into a DMA list.
+ *
+ * Userland is not involved yet.  Putting the client, the RPC and the DMA
+ * encoding in at once would leave three possible causes for one failure,
+ * which is the mistake D3-3a made by writing a depth probe before the
+ * depth layout was known.  Here the kernel plays the client, so a
+ * mismatch can only be the encoding or the submission.
+ *
+ * This also re-exercises the DMA ring for the first time since the
+ * encoder stopped accepting the secondary and setup address registers.
+ */
+- (void)runHW3DBatchTest
+{
+    IODisplayInfo *di = [self displayInfo];
+    const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
+    vm_address_t base = mmioBase;
+    unsigned long stride = (unsigned long)di->rowBytes / 4UL;
+    unsigned long band = OSMGA_D3_4B_BAND;               /* 20 rows */
+    unsigned long allRows = 2UL * band + OSMGA_D3_ISO_GUARDROWS;
+    unsigned long guardW = 2UL * OSMGA_S1_W;
+    OSMGAHW3DBatch *batch;
+    OSMGAHW3DLimits lim;
+    unsigned long *list, listDwords, listPhys, total, tail;
+    vm_address_t aBlk = 0;
+    unsigned long lBlk = 0;
+    volatile unsigned long *blk = 0;
+    unsigned long row, col, diff = 0UL, drewRef = 0UL, drewDma = 0UL;
+    unsigned long diffLow = 0UL, firstA = 0UL, firstB = 0UL, firstAt = 0UL;
+    unsigned long cGuard = 0UL, spins, status;
+    unsigned long badTri = 0UL;
+    int v;
+    IOReturn r;
+
+    if (!rasterTestEnabled || !linearModeActive || !mmioMapped)
+        return;
+    if (f->bytesPerPixel != 4)
+        return;
+    if (osmgaMmapCmdVirt == 0 || osmgaMmapCmdPhysical == 0UL) {
+        IOLog("OpenStepMGA M1-2a: no command ring, skipped\n");
+        return;
+    }
+    if (OSMGA_S1_VRAM_BLOCK + allRows * stride * 4UL > OSMGA_D3_ZORG) {
+        IOLog("OpenStepMGA M1-2a: window does not fit, skipped\n");
+        return;
+    }
+
+    batch = (OSMGAHW3DBatch *)osmgaMmapCmdVirt;
+    list = (unsigned long *)((char *)osmgaMmapCmdVirt +
+                             OSMGA_HW3D_RING_OFFSET);
+    listDwords = (OSMGA_DMA_RING_BYTES - OSMGA_HW3D_RING_OFFSET) / 4UL;
+    listPhys = osmgaMmapCmdPhysical + OSMGA_HW3D_RING_OFFSET;
+
+    r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_S1_VRAM_BLOCK,
+                              OSMGA_S1_VRAM_BLOCK + allRows * stride * 4UL,
+                              &aBlk, &lBlk, &blk);
+    if (r != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA M1-2a: could not map the window (%d)\n", (int)r);
+        return;
+    }
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA M1-2a: engine BUSY at entry\n");
+        goto unmap;
+    }
+    for (row = 0UL; row < allRows; row++)
+        for (col = 0UL; col < guardW; col++)
+            blk[row * stride + col] = OSMGA_S1_SENTINEL;
+
+    /* What the kernel owns.  None of it is reachable from a batch. */
+    lim.pitchBytes  = (unsigned long)di->rowBytes;
+    lim.clipY1      = 2UL * band - 1UL;
+    lim.clipX1      = OSMGA_S1_W - 1UL;
+    lim.colourStart = OSMGA_S1_VRAM_BLOCK;
+    lim.colourEnd   = OSMGA_D3_ZORG;
+    lim.depthStart  = OSMGA_D3_ZORG;
+    lim.depthEnd    = OSMGA_D3_TEXORG;
+    lim.texStart    = OSMGA_D3_TEXORG;
+    lim.texEnd      = OSMGA_S1_VRAM_PROVEN;
+    lim.texMaxBytes = 256UL * 1024UL;
+    lim.batchBytes  = OSMGA_HW3D_BATCH_BYTES;
+
+    /* Reference: MMIO, rows 0..19. */
+    if (!osmgaStormWaitFifo(base, 13U)) goto unmap;
+    osmgaStormInitState(base, stride, 0UL, OSMGA_S1_W - 1UL,
+                        0UL, (2UL * band - 1UL) * stride);
+    if (!osmgaStormWaitFifo(base, 12U)) goto unmap;
+    osmgaW32(base, MGA_DSTORG,    OSMGA_S1_VRAM_BLOCK);
+    osmgaW32(base, MGA_ALPHACTRL, MGA_ALPHACTRL_OPAQUE);
+    osmgaW32(base, MGA_DR4,  200UL << 15); osmgaW32(base, MGA_DR6,  0UL);
+    osmgaW32(base, MGA_DR7,  0UL);
+    osmgaW32(base, MGA_DR8,  100UL << 15); osmgaW32(base, MGA_DR10, 0UL);
+    osmgaW32(base, MGA_DR11, 0UL);
+    osmgaW32(base, MGA_DR12,  50UL << 15); osmgaW32(base, MGA_DR14, 0UL);
+    osmgaW32(base, MGA_DR15, 0UL);
+    /* The two paths have to write the SAME SET of registers, not merely
+     * the same values in the ones they share.  Anything a path leaves out
+     * is inherited from whatever ran before it -- the DRM's own context
+     * struct tracks DSTORG and ALPHACTRL but not the alpha interpolator,
+     * so that class of leak is how the reference implementation behaves,
+     * not a quirk of ours.  These four are what the DMA list writes and
+     * this path did not. */
+    if (!osmgaStormWaitFifo(base, 8U)) goto unmap;
+    osmgaW32(base, MGA_ALPHASTART, 0UL);
+    osmgaW32(base, MGA_ALPHAXINC,  0UL);
+    osmgaW32(base, MGA_ALPHAYINC,  0UL);
+    osmgaW32(base, MGA_ZORG, 0UL);
+    osmgaW32(base, MGA_DR0,  0UL);
+    osmgaW32(base, MGA_DR2,  0UL);
+    osmgaW32(base, MGA_DR3,  0UL);
+    if (!osmgaStormWaitFifo(base, 11U)) goto unmap;
+    osmgaStormTrap(base, MGA_DWGCTL_GOURAUD, 0UL, band,
+                   0L, OSMGA_D3_4B_SLOPE, (long)band, 0L,
+                   (long)(OSMGA_S1_W - 1UL), 0L, (long)band, 0L);
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA M1-2a: the MMIO reference did not finish\n");
+        goto unmap;
+    }
+
+    /* The batch: the same shape, one band lower.  These are the values
+     * osmgaStormTrap derives, computed here because a client would. */
+    {
+        long dxL = OSMGA_D3_4B_SLOPE;
+        OSMGAHW3DTri *t;
+
+        for (col = 0UL; col < sizeof(OSMGAHW3DBatch) / 4UL; col++)
+            ((unsigned long *)batch)[col] = 0UL;
+        batch->magic = OSMGA_HW3D_MAGIC;
+        batch->version = OSMGA_HW3D_VERSION;
+        batch->triCount = 1UL;
+        batch->state.dstorg = OSMGA_S1_VRAM_BLOCK;
+        batch->state.dwgctl = MGA_DWGCTL_GOURAUD;
+        batch->state.alphactrl = MGA_ALPHACTRL_OPAQUE;
+        t = &batch->tri[0];
+        t->y = (long)band;
+        t->h = (long)band;
+        t->ar0 = (long)band;                 /* dyL */
+        t->ar1 = -dxL;                       /* ar2 - eL */
+        t->ar2 = -dxL;
+        t->ar4 = 0L;
+        t->ar5 = 0L;
+        t->ar6 = (long)band;                 /* dyR */
+        t->sgn = 0L;
+        t->fxbndry = ((unsigned long)OSMGA_S1_W << 16) | 0UL;
+        t->dr[0] = 200UL << 15;
+        t->dr[3] = 100UL << 15;
+        t->dr[6] =  50UL << 15;
+    }
+
+    v = osmgaHW3DValidate(batch, &lim, &badTri);
+    if (v != OSMGA_HW3D_OK) {
+        IOLog("OpenStepMGA M1-2a: the good batch was refused (%d, tri %lu)\n",
+              v, badTri);
+        goto unmap;
+    }
+    total = osmgaHW3DEncode(list, listDwords, batch, &tail);
+    if (total == 0UL) {
+        IOLog("OpenStepMGA M1-2a: encoding failed\n");
+        goto unmap;
+    }
+
+    osmgaW32(base, MGA_ICLEAR, MGA_SOFTRAPICLR);
+
+    /* Before touching the ring, wait for the DMA engine itself to be
+     * quiescent, which is a different question from the drawing engine
+     * being idle.  The DRM does this ahead of every flush, and the shape
+     * of the test is its own: with the trap cleared, quiescent means the
+     * status masks down to exactly ENDPRDMASTS. */
+    for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
+        status = osmgaR32(base, MGA_ENGSTATUS) & MGA_DMA_DONE_MASK;
+        if (status == MGA_STATUS_ENDPRDMASTS)
+            break;
+    }
+    if (spins >= OSMGA_S1_SPIN_LIMIT) {
+        IOLog("OpenStepMGA M1-2a: DMA was not quiescent before submitting "
+              "(status %08lx); the ring is NOT touched\n", status);
+        goto unmap;
+    }
+
+    {   unsigned long sum = 0UL, i;
+
+        for (i = 0UL; i < total; i++) sum += list[i];
+        (void)osmgaR32(base, MGA_ENGSTATUS);
+        if (sum == 0xFFFFFFFFUL) IOLog("barrier %lu\n", sum);
+    }
+    osmgaW32(base, MGA_PRIMADDRESS, listPhys | MGA_DMA_GENERAL);
+    osmgaW32(base, MGA_PRIMEND, (listPhys + tail * 4UL) | MGA_DMA_GENERAL);
+    for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
+        status = osmgaR32(base, MGA_ENGSTATUS);
+        if ((status & MGA_DMA_DONE_MASK) == MGA_DMA_DONE_VALUE)
+            break;
+    }
+    osmgaW32(base, MGA_ICLEAR, MGA_SOFTRAPICLR);
+    if (spins >= OSMGA_S1_SPIN_LIMIT) {
+        IOLog("OpenStepMGA M1-2a: DMA did not report idle (status %08lx); "
+              "the ring is NOT reused\n", status);
+        goto unmap;
+    }
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA M1-2a: engine still busy after the trap\n");
+        goto unmap;
+    }
+
+    for (row = 0UL; row < band; row++)
+        for (col = 0UL; col < OSMGA_S1_W; col++) {
+            unsigned long a = blk[row * stride + col];
+            unsigned long b2 = blk[(row + band) * stride + col];
+
+            if (a != OSMGA_S1_SENTINEL) drewRef++;
+            if (b2 != OSMGA_S1_SENTINEL) drewDma++;
+            if (a != b2) {
+                if (diff == 0UL) {
+                    firstA = a; firstB = b2;
+                    firstAt = row * 1000UL + col;
+                }
+                diff++;
+                /* Splitting the difference by byte says whether the two
+                 * paths disagree about the colour or only about the byte
+                 * nothing displays. */
+                if ((a & 0x00FFFFFFUL) != (b2 & 0x00FFFFFFUL))
+                    diffLow++;
+            }
+        }
+    for (row = 0UL; row < allRows; row++)
+        for (col = 0UL; col < guardW; col++) {
+            if (row < 2UL * band && col < OSMGA_S1_W) continue;
+            if (blk[row * stride + col] != OSMGA_S1_SENTINEL) cGuard++;
+        }
+
+    /* Negative control: the one thing the validator exists to stop. */
+    batch->state.dstorg = 0UL;
+    v = osmgaHW3DValidate(batch, &lim, &badTri);
+
+    IOLog("OpenStepMGA M1-2a: list %lu dwords (tail %lu); MMIO drew %lu, "
+          "DMA drew %lu; differing %lu of which %lu differ below the top "
+          "byte; guard %lu; spins %lu\n",
+          total, tail, drewRef, drewDma, diff, diffLow, cGuard, spins);
+    if (diff != 0UL)
+        IOLog("OpenStepMGA M1-2a: first difference at row %lu col %lu -- "
+              "MMIO %08lx, DMA %08lx\n",
+              firstAt / 1000UL, firstAt % 1000UL, firstA, firstB);
+    IOLog("OpenStepMGA M1-2a: dstorg aimed at the visible framebuffer -> "
+          "validator says %d (4 = refused)\n", v);
+
+    if (cGuard != 0UL)
+        IOLog("OpenStepMGA M1-2a: STOP -- a write escaped the clip\n");
+    else if (v != OSMGA_HW3D_E_DSTORG)
+        IOLog("OpenStepMGA M1-2a: STOP -- the validator did not refuse a "
+              "destination in the visible framebuffer\n");
+    else if (drewRef == 0UL)
+        IOLog("OpenStepMGA M1-2a: FAIL -- the MMIO reference drew nothing, "
+              "so there is nothing to compare against\n");
+    else if (diff == 0UL)
+        IOLog("OpenStepMGA M1-2a: PASS -- the batch drew exactly what MMIO "
+              "drew, pixel for pixel\n");
+    else
+        IOLog("OpenStepMGA M1-2a: FAIL -- the two paths differ; read the "
+              "counts above\n");
+
+unmap:
+    if (aBlk != 0) (void)IOUnmapPhysicalFromIOTask(aBlk, lBlk);
 }
 
 @end

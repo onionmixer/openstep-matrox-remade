@@ -58,7 +58,14 @@ typedef struct {
     long y, h;                     /* first row and row count */
     long ar0, ar1, ar2, ar4, ar5, ar6, sgn;   /* both edges */
     unsigned long fxbndry;         /* (right << 16) | left */
-    unsigned long dr[12];          /* DR4,6,7 DR8,10,11 DR12,14,15 and spares */
+    /* Colour interpolators, in the order the encoder emits them:
+     *   0,1,2 = red   start, x increment, y increment  (DR4,  DR6,  DR7)
+     *   3,4,5 = green                                  (DR8,  DR10, DR11)
+     *   6,7,8 = blue                                   (DR12, DR14, DR15)
+     *   9,10,11 reserved, must be zero.
+     * Values are (component << 15); the << 7 the DDX writes is wrong for
+     * this part, measured three times now (colour, depth, alpha). */
+    unsigned long dr[12];
     unsigned long z0, zdx, zdy;
     unsigned long a0, adx, ady;
 } OSMGAHW3DTri;
