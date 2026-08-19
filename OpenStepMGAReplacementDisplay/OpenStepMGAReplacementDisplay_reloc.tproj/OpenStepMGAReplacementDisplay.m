@@ -227,6 +227,28 @@
 #define MGA_PRIMPTR             0x1e50   /* pointer writeback enable */
 #define MGA_SOFTRAP             0x2c48
 #define MGA_DMAPAD              0x1c54
+#define MGA_ICLEAR              0x1e18
+#define MGA_SOFTRAPICLR         0x00000001UL
+#define MGA_STATUS_SOFTRAPEN    0x00000001UL   /* STATUS bit0  */
+#define MGA_STATUS_DWGENGSTS    0x00010000UL   /* STATUS bit16 */
+#define MGA_STATUS_ENDPRDMASTS  0x00020000UL   /* STATUS bit17 */
+/*
+ * Completion of a polled primary-DMA list is three conditions at once:
+ * the trap we put at the end of the list has fired, the drawing engine has
+ * gone idle, and the DMA read pointer has reached the end.
+ *
+ * Note SOFTRAPEN is set on completion, not cleared.  The DRM compares
+ * (status & ENGINE_IDLE_MASK) == ENDPRDMASTS, which requires SOFTRAPEN to
+ * be *clear* -- that works there because its interrupt handler clears the
+ * trap through ICLEAR.  Polling code that copies the comparison waits for
+ * a condition its own completion signal prevents; measured on hardware as
+ * STATUS=80820025, a finished transfer that never satisfied the test.
+ */
+#define MGA_DMA_DONE_MASK       (MGA_STATUS_SOFTRAPEN | \
+                                 MGA_STATUS_DWGENGSTS | \
+                                 MGA_STATUS_ENDPRDMASTS)
+#define MGA_DMA_DONE_VALUE      (MGA_STATUS_SOFTRAPEN | \
+                                 MGA_STATUS_ENDPRDMASTS)
 #define MGA_DMA_GENERAL         0x00     /* PRIMADDRESS mode bits */
 #define MGA_PRIMNOSTART         0x01     /* PRIMEND bit0: do NOT start */
 #define MGA_PAGPXFER            0x02     /* PRIMEND bit1: AGP; 0 for PCI */
@@ -2436,6 +2458,7 @@ unmap:
     [self runStormBlitApiTest];
     [self runDmaRingAllocTest];
     [self runDmaRingBuildTest];
+    [self runDmaRingStartTest];
 }
 
 /*
@@ -2695,64 +2718,25 @@ osmgaDmaBlock(unsigned long *ring, unsigned long ringDwords, unsigned long *pos,
 
 
 /*
- * D1-1 -- build the list that reproduces the S1 solid fill, and stop.
+ * Build the S1 solid-fill list.  Shared by D1-1 (assemble and dump) and
+ * D1-2 (assemble and start) on purpose: the negative control in D1-2 is
+ * only worth anything if both paths produce the same bytes and differ
+ * solely in whether PRIMEND is written.
  *
- * PRIMADDRESS/PRIMEND are not written, so the card never learns the list
- * exists.  The whole point is to get the encoding wrong on a workbench
- * rather than in a DMA engine: the list is dumped dword by dword so it can
- * be decoded by hand against the register table in the plan.
- *
- * Layout (docs/D1_PRIMARY_DMA_RING_PLAN.md 1-6):
- *
- *   B0..B3   drawing state and the fill, ending in YDSTLEN|EXEC
- *   B4       SOFTRAP alone in its own block, as the DRM emits it
- *   <- PRIMEND would point here
- *   B5       one DMAPAD block, because the card reads past PRIMEND
- *
- * The trailing pad is not decoration.  The DRM pads for the same reason and
- * cites the G400 manual: the card partially reads the command after the
- * end.  Without it the card would decode whatever follows the list.
+ * OPMODE is absent because it cannot be encoded (osmgaDmaIndex refuses it);
+ * the caller sets it over MMIO first.
  */
-- (void)runDmaRingBuildTest
+static int
+osmgaDmaBuildFillList(unsigned long *ring, unsigned long ringDwords,
+                      unsigned long stride, unsigned long blockY,
+                      unsigned long *outTailDwords,
+                      unsigned long *outTotalDwords)
 {
-    void *virt;
-    unsigned phys = 0;
-    unsigned long *ring;
-    unsigned long ringDwords = OSMGA_DMA_RING_BYTES / 4UL;
     unsigned long pos = 0;
-    unsigned long tailDwords;
-    IODisplayInfo *di = [self displayInfo];
-    unsigned long stride = (unsigned long)di->rowBytes / 4UL;
-    unsigned long blockY = (unsigned long)di->height + OSMGA_S1_GUARD_ROWS;
-    unsigned long start, end;
-    IOReturn r;
+    unsigned long start = blockY * stride;
+    unsigned long end   = (blockY + OSMGA_S1_H - 1UL) * stride;
     int ok = 1;
-    unsigned long i;
 
-    if (!dmaRingTestEnabled)
-        return;
-
-    virt = IOMallocLow((int)OSMGA_DMA_RING_BYTES);
-    if (virt == 0) {
-        IOLog("OpenStepMGA D1-1: FAIL -- IOMallocLow returned 0\n");
-        return;
-    }
-    r = IOPhysicalFromVirtual(IOVmTaskSelf(), (vm_address_t)virt, &phys);
-    if (r != IO_R_SUCCESS) {
-        IOLog("OpenStepMGA D1-1: FAIL -- IOPhysicalFromVirtual r=%d\n", (int)r);
-        IOFreeLow(virt, (int)OSMGA_DMA_RING_BYTES);
-        return;
-    }
-    ring = (unsigned long *)virt;
-
-    /* Identical geometry to S1: same offscreen block, same clip pointers. */
-    start = blockY * stride;
-    end   = (blockY + OSMGA_S1_H - 1UL) * stride;
-
-    /* Same values S1 drives over MMIO, minus OPMODE which cannot be
-     * expressed here.  FCOL is written twice deliberately: once as part of
-     * the cleared setup state, once with the fill colour, exactly as the
-     * MMIO path does. */
     ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
                              MGA_PITCH,   stride,
                              MGA_YDSTORG, 0UL,
@@ -2783,20 +2767,73 @@ osmgaDmaBlock(unsigned long *ring, unsigned long ringDwords, unsigned long *pos,
                              MGA_DMAPAD,  0UL,
                              MGA_DMAPAD,  0UL,
                              MGA_SOFTRAP, 0UL);
-    if (!ok) {
-        IOLog("OpenStepMGA D1-1: FAIL -- list assembly rejected\n");
+    if (!ok)
+        return 0;
+
+    *outTailDwords = pos;          /* PRIMEND points here */
+
+    /* The card reads past PRIMEND, so leave it a padding block to read. */
+    if (!osmgaDmaBlock(ring, ringDwords, &pos,
+                       MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                       MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL))
+        return 0;
+
+    *outTotalDwords = pos;
+    return 1;
+}
+
+/*
+ * D1-1 -- build the list that reproduces the S1 solid fill, and stop.
+ *
+ * PRIMADDRESS/PRIMEND are not written, so the card never learns the list
+ * exists.  The whole point is to get the encoding wrong on a workbench
+ * rather than in a DMA engine: the list is dumped dword by dword so it can
+ * be decoded by hand against the register table in the plan.
+ *
+ * Layout (docs/D1_PRIMARY_DMA_RING_PLAN.md 1-6):
+ *
+ *   B0..B3   drawing state and the fill, ending in YDSTLEN|EXEC
+ *   B4       SOFTRAP alone in its own block, as the DRM emits it
+ *   <- PRIMEND would point here
+ *   B5       one DMAPAD block, because the card reads past PRIMEND
+ *
+ * The trailing pad is not decoration.  The DRM pads for the same reason and
+ * cites the G400 manual: the card partially reads the command after the
+ * end.  Without it the card would decode whatever follows the list.
+ */
+- (void)runDmaRingBuildTest
+{
+    void *virt;
+    unsigned phys = 0;
+    unsigned long *ring;
+    unsigned long ringDwords = OSMGA_DMA_RING_BYTES / 4UL;
+    unsigned long pos = 0;
+    unsigned long tailDwords;
+    IODisplayInfo *di = [self displayInfo];
+    unsigned long stride = (unsigned long)di->rowBytes / 4UL;
+    unsigned long blockY = (unsigned long)di->height + OSMGA_S1_GUARD_ROWS;
+    IOReturn r;
+    unsigned long i;
+
+    if (!dmaRingTestEnabled)
+        return;
+
+    virt = IOMallocLow((int)OSMGA_DMA_RING_BYTES);
+    if (virt == 0) {
+        IOLog("OpenStepMGA D1-1: FAIL -- IOMallocLow returned 0\n");
+        return;
+    }
+    r = IOPhysicalFromVirtual(IOVmTaskSelf(), (vm_address_t)virt, &phys);
+    if (r != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA D1-1: FAIL -- IOPhysicalFromVirtual r=%d\n", (int)r);
         IOFreeLow(virt, (int)OSMGA_DMA_RING_BYTES);
         return;
     }
+    ring = (unsigned long *)virt;
 
-    tailDwords = pos;   /* PRIMEND would point here */
-
-    /* The pad the card reads past the end.  It is outside PRIMEND. */
-    ok = osmgaDmaBlock(ring, ringDwords, &pos,
-                       MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
-                       MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL);
-    if (!ok) {
-        IOLog("OpenStepMGA D1-1: FAIL -- trailing pad rejected\n");
+    if (!osmgaDmaBuildFillList(ring, ringDwords, stride, blockY,
+                               &tailDwords, &pos)) {
+        IOLog("OpenStepMGA D1-1: FAIL -- list assembly rejected\n");
         IOFreeLow(virt, (int)OSMGA_DMA_RING_BYTES);
         return;
     }
@@ -2845,4 +2882,262 @@ osmgaDmaBlock(unsigned long *ring, unsigned long ringDwords, unsigned long *pos,
           "untouched)\n");
 }
 
+
+/*
+ * D1-2 -- start the ring.  First hardware contact for DMA.
+ *
+ * Everything before this step could not fail destructively.  This one can:
+ * writing PRIMEND hands the card a physical address and lets it fetch
+ * commands out of system memory on its own.  Three things contain it, in
+ * order of how much they are relied on:
+ *
+ *   1. the assembler's whitelist -- no index can encode PRIMADDRESS,
+ *      PRIMEND or OPMODE, so a list cannot reprogram the engine reading it
+ *   2. the clip registers -- but only while the list is well formed, since
+ *      DWGCTL bit 31 would switch clipping off
+ *   3. the offscreen bound -- the block sits inside the 7 MiB of VRAM that
+ *      the 1600x1200x32 scanout proved real, above the visible area by a
+ *      256-row guard
+ *
+ * The negative control matters as much as the positive result.  Writing
+ * PRIMADDRESS alone must leave the destination untouched; only then does
+ * finding the fill afterwards mean the card fetched and executed the list,
+ * rather than something else having written those pixels.  Both halves run
+ * the same builder and the same setup and differ in one register write.
+ */
+- (void)runDmaRingStartTest
+{
+    IODisplayInfo *di = [self displayInfo];
+    const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
+    vm_address_t base = mmioBase;
+    unsigned long stride, blockY, byteStart, byteEnd;
+    unsigned long tailDwords = 0, totalDwords = 0;
+    unsigned long ringDwords = OSMGA_DMA_RING_BYTES / 4UL;
+    unsigned long *ring;
+    void *virt;
+    unsigned phys = 0, primBefore = 0, primAfter = 0;
+    unsigned long status;
+    vm_address_t alias = 0;
+    unsigned long mapLen = 0;
+    volatile unsigned long *blk = 0;
+    unsigned long row, col, mismatches = 0UL, checksum = 0UL;
+    unsigned long spins;
+    IOReturn r;
+    int started = 0;
+
+    if (!dmaRingTestEnabled || !linearModeActive || !mmioMapped)
+        return;
+    if (f->bytesPerPixel != 4) {
+        IOLog("OpenStepMGA D1-2: not a 32bpp mode, skipped\n");
+        return;
+    }
+
+    stride    = (unsigned long)di->rowBytes / 4UL;
+    blockY    = (unsigned long)di->height + OSMGA_S1_GUARD_ROWS;
+    byteStart = blockY * stride * 4UL;
+    byteEnd   = byteStart + (OSMGA_S1_H - 1UL) * stride * 4UL +
+                OSMGA_S1_W * 4UL;
+
+    if (byteEnd > OSMGA_S1_VRAM_PROVEN) {
+        IOLog("OpenStepMGA D1-2: block ends at %lu, past the %lu proven "
+              "VRAM bound, skipped\n", byteEnd, OSMGA_S1_VRAM_PROVEN);
+        return;
+    }
+
+    virt = IOMallocLow((int)OSMGA_DMA_RING_BYTES);
+    if (virt == 0) {
+        IOLog("OpenStepMGA D1-2: FAIL -- IOMallocLow returned 0\n");
+        return;
+    }
+    r = IOPhysicalFromVirtual(IOVmTaskSelf(), (vm_address_t)virt, &phys);
+    if (r != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA D1-2: FAIL -- IOPhysicalFromVirtual r=%d\n",
+              (int)r);
+        IOFreeLow(virt, (int)OSMGA_DMA_RING_BYTES);
+        return;
+    }
+    ring = (unsigned long *)virt;
+
+    if (!osmgaDmaBuildFillList(ring, ringDwords, stride, blockY,
+                               &tailDwords, &totalDwords)) {
+        IOLog("OpenStepMGA D1-2: FAIL -- list assembly rejected\n");
+        IOFreeLow(virt, (int)OSMGA_DMA_RING_BYTES);
+        return;
+    }
+    if ((phys & 3U) != 0U || ((phys + tailDwords * 4UL) & 3UL) != 0UL) {
+        IOLog("OpenStepMGA D1-2: FAIL -- ring not dword aligned "
+              "(phys=%08x tail=%08x)\n",
+              phys, phys + (unsigned)(tailDwords * 4UL));
+        IOFreeLow(virt, (int)OSMGA_DMA_RING_BYTES);
+        return;
+    }
+
+    r = osmgaMapUncachedBlock(frameBufferPhysical, byteStart, byteEnd,
+                              &alias, &mapLen, &blk);
+    if (r != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA D1-2: uncached alias map failed r=%d, skipped\n",
+              (int)r);
+        IOFreeLow(virt, (int)OSMGA_DMA_RING_BYTES);
+        return;
+    }
+
+    IOLog("OpenStepMGA D1-2: begin, ring %08x..%08x tail=%08x, block y=%lu "
+          "bytes %lu..%lu\n",
+          phys, phys + (unsigned)(totalDwords * 4UL) - 1U,
+          phys + (unsigned)(tailDwords * 4UL), blockY, byteStart, byteEnd - 1UL);
+
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA D1-2: engine BUSY at entry (timeout), aborted\n");
+        goto unmap;
+    }
+
+    /* OPMODE cannot be expressed in the list (it sits between the two DMA
+     * windows), so it is set here, before the card reads anything. */
+    {
+        unsigned long opmode = osmgaR32(base, MGA_OPMODE);
+
+        osmgaW32(base, MGA_OPMODE,
+                 MGA_OPMODE_DMA_BLIT |
+                 (opmode & ~(unsigned long)MGA_OPMODE_BYTESWAP));
+    }
+
+    /* Sentinel, through the uncached alias, exactly as S1 does: it proves
+     * the readback path works and rules out the destination already
+     * holding the fill value. */
+    for (row = 0UL; row < OSMGA_S1_H; row++)
+        for (col = 0UL; col < OSMGA_S1_W; col++)
+            blk[row * stride + col] = OSMGA_S1_SENTINEL;
+    for (row = 0UL; row < OSMGA_S1_H; row++)
+        for (col = 0UL; col < OSMGA_S1_W; col++)
+            if (blk[row * stride + col] != OSMGA_S1_SENTINEL)
+                mismatches++;
+    if (mismatches != 0UL) {
+        IOLog("OpenStepMGA D1-2: sentinel readback failed (%lu bad), "
+              "aborted\n", mismatches);
+        goto unmap;
+    }
+
+    /* Any SOFTRAP left over from earlier would be read as our completion. */
+    osmgaW32(base, MGA_ICLEAR, MGA_SOFTRAPICLR);
+
+    primBefore = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
+
+    /*
+     * Negative control.  PRIMADDRESS on its own selects the list and the
+     * transfer mode; it does not start anything -- the DRM writes it at
+     * init and starts later by writing PRIMEND.  So after this the block
+     * must still be sentinel.
+     */
+    osmgaW32(base, MGA_PRIMADDRESS, (unsigned long)phys | MGA_DMA_GENERAL);
+    for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT / 10UL; spins++)
+        (void)osmgaR32(base, MGA_ENGSTATUS);
+
+    mismatches = 0UL;
+    for (row = 0UL; row < OSMGA_S1_H; row++)
+        for (col = 0UL; col < OSMGA_S1_W; col++)
+            if (blk[row * stride + col] != OSMGA_S1_SENTINEL)
+                mismatches++;
+    if (mismatches != 0UL) {
+        IOLog("OpenStepMGA D1-2: NEGATIVE CONTROL FAILED -- %lu pixels "
+              "changed with only PRIMADDRESS written; a later positive "
+              "result would prove nothing.  Aborted.\n", mismatches);
+        goto unmap;
+    }
+    IOLog("OpenStepMGA D1-2: negative control ok (PRIMADDRESS alone wrote "
+          "nothing)\n");
+
+    /*
+     * Make sure the list is in memory before the card is told to fetch it.
+     * Reading the ring back forces the stores out of the CPU's view, and
+     * the MMIO read that follows is uncached, so it cannot be reordered
+     * ahead of them from the device's side either.
+     */
+    {
+        unsigned long sum = 0UL;
+        unsigned long i;
+
+        for (i = 0UL; i < totalDwords; i++)
+            sum += ring[i];
+        (void)osmgaR32(base, MGA_ENGSTATUS);
+        if (sum == 0xFFFFFFFFUL)      /* never true; keeps sum live */
+            IOLog("OpenStepMGA D1-2: barrier %lu\n", sum);
+    }
+
+    /* PCI: neither PRIMNOSTART nor PAGPXFER.  This starts the fetch. */
+    started = 1;
+    osmgaW32(base, MGA_PRIMEND,
+             ((unsigned long)phys + tailDwords * 4UL) |
+             MGA_DMA_GENERAL);
+
+    for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
+        status = osmgaR32(base, MGA_ENGSTATUS);
+        if ((status & MGA_DMA_DONE_MASK) == MGA_DMA_DONE_VALUE)
+            break;
+    }
+    primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
+    status = osmgaR32(base, MGA_ENGSTATUS);
+    osmgaW32(base, MGA_ICLEAR, MGA_SOFTRAPICLR);   /* consume our trap */
+
+    IOLog("OpenStepMGA D1-2: after start, PRIMADDRESS %08x -> %08x "
+          "(expected %08x), STATUS=%08lx, spins=%lu\n",
+          primBefore, primAfter,
+          phys + (unsigned)(tailDwords * 4UL), status, spins);
+
+    if (spins >= OSMGA_S1_SPIN_LIMIT) {
+        IOLog("OpenStepMGA D1-2: FAIL -- DMA did not report idle "
+              "(timeout).  Acceleration stays off and the ring buffer is "
+              "NOT released; the engine may still be reading it.\n");
+        goto keepbuffer;
+    }
+
+    for (row = 0UL; row < OSMGA_S1_H; row++) {
+        for (col = 0UL; col < OSMGA_S1_W; col++) {
+            unsigned long v = blk[row * stride + col];
+
+            checksum += v;
+            if (v != OSMGA_S1_FILL)
+                mismatches++;
+        }
+    }
+
+    if (mismatches == 0UL && checksum == 0xDBEEF000UL) {
+        IOLog("OpenStepMGA D1-2: PASS -- the card fetched the list from "
+              "system memory and filled %lu px with %08lx, checksum %08lx\n",
+              OSMGA_S1_W * OSMGA_S1_H, OSMGA_S1_FILL, checksum);
+    } else {
+        IOLog("OpenStepMGA D1-2: FAIL -- %lu mismatched px, checksum %08lx "
+              "(expected %08lx)\n", mismatches, checksum, 0xDBEEF000UL);
+        goto keepbuffer;
+    }
+
+    /*
+     * Release only with the engine demonstrably done with the buffer:
+     * the read pointer reached the tail we published and both the DMA and
+     * the drawing engine report idle.  IOMallocLow's contract says nothing
+     * about device synchronisation, so anything short of that keeps the
+     * memory for the rest of the boot.
+     */
+    if (primAfter == phys + (unsigned)(tailDwords * 4UL) &&
+        (status & MGA_DMA_DONE_MASK) == MGA_DMA_DONE_VALUE) {
+        IOFreeLow(virt, (int)OSMGA_DMA_RING_BYTES);
+        IOLog("OpenStepMGA D1-2: ring released (read pointer reached the "
+              "tail, engine idle)\n");
+    } else {
+        IOLog("OpenStepMGA D1-2: ring KEPT for this boot (quiescence not "
+              "provable)\n");
+    }
+    goto unmap;
+
+keepbuffer:
+    IOLog("OpenStepMGA D1-2: ring KEPT at %08x for this boot\n", phys);
+
+unmap:
+    if (!started && virt != 0)
+        IOFreeLow(virt, (int)OSMGA_DMA_RING_BYTES);
+    if (alias != 0)
+        (void)IOUnmapPhysicalFromIOTask(alias, mapLen);
+    IOLog("OpenStepMGA D1-2: end\n");
+}
+
 @end
+
