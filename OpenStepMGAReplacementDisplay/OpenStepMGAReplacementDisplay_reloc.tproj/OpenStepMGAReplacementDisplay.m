@@ -96,6 +96,7 @@
 #define MGA_YTOP                0x1c98
 #define MGA_YBOT                0x1c9c
 #define MGA_FIFOSTATUS          0x1e10
+#define OSMGA_S1_FIFO_MAX       16U   /* the DDX's own largest ask */
 #define MGA_ENGSTATUS           0x1e14
 #define MGA_OPMODE              0x1e54
 #define MGA_SRCORG              0x2cb4
@@ -581,6 +582,32 @@
 #define OSMGA_D3_4B_BAND        20UL
 #define OSMGA_D3_4B_SLOPE       40L
 
+/*
+ * D3-4c -- turn three "consistent with" readings into measurements.
+ *
+ * D3-4b left three conclusions resting on samples that did not fully
+ * separate the alternatives, which the cross-review was right to press
+ * on even though its own counter-model for the third one described a
+ * driver behaviour we never performed.
+ *
+ * Band E samples a FIXED x across rows of a sloped shape.  D3-4b only
+ * ever looked at each row's first drawn pixel, so it excluded the model
+ * where the engine restarts the coordinate at every span, but not the
+ * weaker claim that u depends on x alone.  If a column has one u all the
+ * way down, it does.
+ *
+ * Band F makes the clip taller than the primitive.  In D3-4b the two
+ * began at the same row, so "origin at the primitive" and "origin at the
+ * clip rectangle" predicted the same v and the run could not choose.
+ *
+ * Band G fills the VRAM after the texture with a value no texel can hold
+ * and then magnifies far past the texture's edge.  A clamped COORDINATE
+ * is what D3-4b measured; whether the ADDRESS is clamped with it is a
+ * different question, and it is the one our safety argument leans on.
+ */
+#define OSMGA_D3_CANARY         0xCAFE0000UL
+#define OSMGA_D3_CANARY_BYTES   (512UL * 1024UL)
+
 #define MGA_DMA_GENERAL         0x00     /* PRIMADDRESS mode bits */
 #define MGA_PRIMNOSTART         0x01     /* PRIMEND bit0: do NOT start */
 #define MGA_PAGPXFER            0x02     /* PRIMEND bit1: AGP; 0 for PCI */
@@ -850,8 +877,22 @@ osmgaStormWaitIdle(vm_address_t base)
 static int
 osmgaStormWaitFifo(vm_address_t base, unsigned int slots)
 {
+    static int warned = 0;
     unsigned long spins;
 
+    /* FIFOSTATUS cannot report more free slots than the FIFO holds, so a
+     * request above that never succeeds -- it just spins out and, in a
+     * probe, exits silently.  The DDX clamps for exactly this reason
+     * (mga_macros.h:34), and writing past the free count is safe: the
+     * card stalls the bus rather than dropping the write. */
+    if (slots > OSMGA_S1_FIFO_MAX) {
+        if (!warned) {
+            warned = 1;
+            IOLog("OpenStepMGA: fifo request %u clamped to %u\n",
+                  slots, (unsigned int)OSMGA_S1_FIFO_MAX);
+        }
+        slots = OSMGA_S1_FIFO_MAX;
+    }
     for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
         if ((unsigned int)osmgaR8(base, MGA_FIFOSTATUS) >= slots)
             return 1;
@@ -2826,7 +2867,7 @@ unmap:
      * measurement.  Restore both calls once depth is settled. */
     /* [self runRasterInterpolationTest]; */
     /* [self runDstorgOriginTest]; */
-    [self runTextureSlopeTest];
+    [self runTextureOriginTest];
 }
 
 /*
@@ -5115,15 +5156,19 @@ unmap:
     r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_S1_VRAM_BLOCK,
                               OSMGA_S1_VRAM_BLOCK + allRows * stride * 4UL,
                               &aBlk, &lBlk, &blk);
-    if (r != IO_R_SUCCESS) goto unmap;
-    r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_D3_ZORG,
-                              OSMGA_D3_ZORG + allRows * stride * 2UL,
-                              &aZ, &lZ, &zw);
-    if (r != IO_R_SUCCESS) goto unmap;
-    r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_D3_TEXORG,
-                              OSMGA_D3_TEXORG + texBytes,
-                              &aTex, &lTex, &tex);
-    if (r != IO_R_SUCCESS) goto unmap;
+    if (r == IO_R_SUCCESS)
+        r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_D3_ZORG,
+                                  OSMGA_D3_ZORG + allRows * stride * 2UL,
+                                  &aZ, &lZ, &zw);
+    if (r == IO_R_SUCCESS)
+        r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_D3_TEXORG,
+                                  OSMGA_D3_TEXORG + texBytes,
+                                  &aTex, &lTex, &tex);
+    if (r != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA D3-4b: could not map the three windows (%d)\n",
+              (int)r);
+        goto unmap;
+    }
     z16 = (volatile unsigned short *)zw;
     if (!osmgaStormWaitIdle(base)) {
         IOLog("OpenStepMGA D3-4b: engine BUSY at entry\n");
@@ -5144,15 +5189,15 @@ unmap:
         unsigned long sx = (b == 0UL) ? step * 2UL
                          : (b == 1UL) ? step / 2UL : step;
 
-        if (!osmgaStormWaitFifo(base, 13U)) goto unmap;
+        if (!osmgaStormWaitFifo(base, 13U)) goto fifo;
         osmgaStormInitState(base, stride, 0UL, dim - 1UL,
                             y0 * stride, (y0 + band - 1UL) * stride);
-        if (!osmgaStormWaitFifo(base, 20U)) goto unmap;
+        if (!osmgaStormWaitFifo(base, 12U)) goto fifo;
         osmgaW32(base, MGA_DSTORG, OSMGA_S1_VRAM_BLOCK);
         osmgaTextureSetup(base, dim, OSMGA_D3_TEXLOG2, texPitch, sx, sx);
 
         if (b < 2UL) {
-            if (!osmgaStormWaitFifo(base, 4U)) goto unmap;
+            if (!osmgaStormWaitFifo(base, 4U)) goto fifo;
             osmgaW32(base, MGA_DWGCTL,  dwgTex);
             osmgaW32(base, MGA_FXBNDRY, (dim << 16) | 0UL);
             osmgaW32(base, MGA_YDSTLEN + MGA_EXEC, (y0 << 16) | band);
@@ -5162,14 +5207,14 @@ unmap:
             unsigned long dwg = dwgTex;
 
             if (b == 3UL) {
-                if (!osmgaStormWaitFifo(base, 5U)) goto unmap;
+                if (!osmgaStormWaitFifo(base, 5U)) goto fifo;
                 osmgaW32(base, MGA_ZORG, OSMGA_D3_ZORG);
                 osmgaW32(base, MGA_DR0,  OSMGA_D3_ZMID);
                 osmgaW32(base, MGA_DR2,  0UL);
                 osmgaW32(base, MGA_DR3,  0UL);
                 dwg = (dwgTex & ~MGA_DWGCTL_ATYPE_I) | MGA_DWGCTL_ATYPE_ZI;
             }
-            if (!osmgaStormWaitFifo(base, 11U)) goto unmap;
+            if (!osmgaStormWaitFifo(base, 11U)) goto fifo;
             osmgaStormTrap(base, dwg, y0, band,
                            0L, OSMGA_D3_4B_SLOPE, (long)band, 0L,
                            (long)(dim - 1UL), 0L, (long)band, 0L);
@@ -5255,9 +5300,175 @@ unmap:
     else
         IOLog("OpenStepMGA D3-4b: read the samples above\n");
 
+    goto unmap;
+
+fifo:
+    IOLog("OpenStepMGA D3-4b: fifo wait timed out in band %lu\n", b);
+    osmgaW32(base, MGA_DSTORG, 0UL);
+    osmgaW32(base, MGA_ZORG,   0UL);
+
 unmap:
     if (aTex != 0) (void)IOUnmapPhysicalFromIOTask(aTex, lTex);
     if (aZ != 0)   (void)IOUnmapPhysicalFromIOTask(aZ, lZ);
+    if (aBlk != 0) (void)IOUnmapPhysicalFromIOTask(aBlk, lBlk);
+}
+
+
+/*
+ * D3-4c -- see the note by OSMGA_D3_CANARY.
+ */
+- (void)runTextureOriginTest
+{
+    IODisplayInfo *di = [self displayInfo];
+    const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
+    vm_address_t base = mmioBase;
+    unsigned long stride = (unsigned long)di->rowBytes / 4UL;
+    unsigned long dim = OSMGA_D3_TEXDIM;
+    unsigned long texPitch = dim;
+    unsigned long texBytes = dim * texPitch * 4UL;
+    unsigned long band = OSMGA_D3_4B_BAND;
+    unsigned long drawRows = 3UL * band;
+    unsigned long allRows = drawRows + OSMGA_D3_ISO_GUARDROWS;
+    unsigned long step = 1UL << (20UL - OSMGA_D3_TEXLOG2);
+    unsigned long dwgTex = (MGA_DWGCTL_GOURAUD & ~MGA_DWGCTL_OPCODE_MASK) |
+                           MGA_DWGCTL_TEXTURE_TRAP;
+    vm_address_t aBlk = 0, aTex = 0;
+    unsigned long lBlk = 0, lTex = 0;
+    volatile unsigned long *blk = 0, *tex = 0;
+    unsigned long i, row, col;
+    unsigned long uE[5], vF[3], alien = 0UL, alienVal = 0UL, drewG = 0UL;
+    static const unsigned long sampleRow[5] = { 0UL, 5UL, 10UL, 15UL, 19UL };
+    IOReturn r;
+
+    if (!rasterTestEnabled || !linearModeActive || !mmioMapped)
+        return;
+    if (f->bytesPerPixel != 4)
+        return;
+    if (OSMGA_D3_TEXORG + texBytes + OSMGA_D3_CANARY_BYTES >
+            OSMGA_S1_VRAM_PROVEN) {
+        IOLog("OpenStepMGA D3-4c: the canary does not fit the proven VRAM "
+              "bound, skipped\n");
+        return;
+    }
+
+    r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_S1_VRAM_BLOCK,
+                              OSMGA_S1_VRAM_BLOCK + allRows * stride * 4UL,
+                              &aBlk, &lBlk, &blk);
+    if (r == IO_R_SUCCESS)
+        r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_D3_TEXORG,
+                                  OSMGA_D3_TEXORG + texBytes +
+                                  OSMGA_D3_CANARY_BYTES,
+                                  &aTex, &lTex, &tex);
+    if (r != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA D3-4c: could not map the windows (%d)\n", (int)r);
+        goto unmap;
+    }
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA D3-4c: engine BUSY at entry\n");
+        goto unmap;
+    }
+
+    for (row = 0UL; row < dim; row++)
+        for (col = 0UL; col < dim; col++)
+            tex[row * texPitch + col] = (col << 16) | (row << 8) | 0x40UL;
+    for (i = dim * texPitch; i < dim * texPitch +
+             OSMGA_D3_CANARY_BYTES / 4UL; i++)
+        tex[i] = OSMGA_D3_CANARY;
+    for (row = 0UL; row < allRows; row++)
+        for (col = 0UL; col < 2UL * OSMGA_S1_W; col++)
+            blk[row * stride + col] = OSMGA_S1_SENTINEL;
+
+    for (i = 0UL; i < 3UL; i++) {
+        unsigned long y0 = i * band;
+        unsigned long sx = (i == 2UL) ? step * 8UL : step;
+        unsigned long clipTop = y0;
+        unsigned long drawTop = y0;
+        unsigned long drawLen = band;
+
+        /* Band F: clip the full band but draw only its middle, so the two
+         * candidate origins no longer coincide. */
+        if (i == 1UL) { drawTop = y0 + 5UL; drawLen = band - 10UL; }
+
+        if (!osmgaStormWaitFifo(base, 13U)) goto fifo;
+        osmgaStormInitState(base, stride, 0UL, dim - 1UL,
+                            clipTop * stride, (y0 + band - 1UL) * stride);
+        if (!osmgaStormWaitFifo(base, 12U)) goto fifo;
+        osmgaW32(base, MGA_DSTORG, OSMGA_S1_VRAM_BLOCK);
+        osmgaTextureSetup(base, dim, OSMGA_D3_TEXLOG2, texPitch, sx, sx);
+
+        if (i == 0UL) {
+            if (!osmgaStormWaitFifo(base, 11U)) goto fifo;
+            osmgaStormTrap(base, dwgTex, drawTop, drawLen,
+                           0L, OSMGA_D3_4B_SLOPE, (long)drawLen, 0L,
+                           (long)(dim - 1UL), 0L, (long)drawLen, 0L);
+        } else {
+            if (!osmgaStormWaitFifo(base, 4U)) goto fifo;
+            osmgaW32(base, MGA_DWGCTL,  dwgTex);
+            osmgaW32(base, MGA_FXBNDRY, (dim << 16) | 0UL);
+            osmgaW32(base, MGA_YDSTLEN + MGA_EXEC, (drawTop << 16) | drawLen);
+        }
+
+        if (!osmgaStormWaitIdle(base)) {
+            IOLog("OpenStepMGA D3-4c: band %lu did not finish\n", i);
+            osmgaW32(base, MGA_DSTORG, 0UL);
+            goto unmap;
+        }
+        osmgaW32(base, MGA_DSTORG, 0UL);
+    }
+
+    /* Band E: one fixed column, every sampled row.  x = 40 is inside the
+     * span for all of them, since the left edge reaches only 38. */
+    for (i = 0UL; i < 5UL; i++) {
+        unsigned long v = blk[sampleRow[i] * stride + 40UL];
+
+        uE[i] = (v == OSMGA_S1_SENTINEL) ? 0xFFFFUL : ((v >> 16) & 0xffUL);
+    }
+    /* Band F: v at the first, middle and last drawn row. */
+    vF[0] = (blk[(band + 5UL) * stride] >> 8) & 0xffUL;
+    vF[1] = (blk[(band + 10UL) * stride] >> 8) & 0xffUL;
+    vF[2] = (blk[(band + 14UL) * stride] >> 8) & 0xffUL;
+    /* Band G: any pixel holding something no texel can encode. */
+    for (row = 2UL * band; row < 3UL * band; row++)
+        for (col = 0UL; col < dim; col++) {
+            unsigned long v = blk[row * stride + col];
+
+            if (v == OSMGA_S1_SENTINEL) continue;
+            drewG++;
+            if ((v & 0xffUL) != 0x40UL || ((v >> 16) & 0xffUL) > 63UL ||
+                ((v >> 8) & 0xffUL) > 63UL || (v >> 24) != 0UL) {
+                if (alien == 0UL) alienVal = v;
+                alien++;
+            }
+        }
+
+    IOLog("OpenStepMGA D3-4c: E fixed column x=40, rows 0,5,10,15,19 -> "
+          "u %lu %lu %lu %lu %lu (one value = u depends on x alone)\n",
+          uE[0], uE[1], uE[2], uE[3], uE[4]);
+    IOLog("OpenStepMGA D3-4c: F clip top %lu, draw top %lu; v at draw rows "
+          "0,5,9 -> %lu %lu %lu (0,5,9 = primitive origin; 5,10,14 = clip "
+          "origin)\n", band, band + 5UL, vF[0], vF[1], vF[2]);
+    IOLog("OpenStepMGA D3-4c: G magnified 8x drew %lu, pixels holding a "
+          "non-texel value %lu (first %08lx, canary is %08lx)\n",
+          drewG, alien, alienVal, OSMGA_D3_CANARY);
+
+    if (alien != 0UL)
+        IOLog("OpenStepMGA D3-4c: STOP -- the texture unit fetched outside "
+              "its allocation; CLAMPUV bounds the coordinate but not the "
+              "address\n");
+    else if (uE[0] == uE[4] && uE[0] == 40UL)
+        IOLog("OpenStepMGA D3-4c: PASS -- u depends only on the pixel's x, "
+              "the address stays inside the texture, and the origin is "
+              "read from the v samples above\n");
+    else
+        IOLog("OpenStepMGA D3-4c: read the samples above\n");
+    goto unmap;
+
+fifo:
+    IOLog("OpenStepMGA D3-4c: fifo wait timed out in band %lu\n", i);
+    osmgaW32(base, MGA_DSTORG, 0UL);
+
+unmap:
+    if (aTex != 0) (void)IOUnmapPhysicalFromIOTask(aTex, lTex);
     if (aBlk != 0) (void)IOUnmapPhysicalFromIOTask(aBlk, lBlk);
 }
 

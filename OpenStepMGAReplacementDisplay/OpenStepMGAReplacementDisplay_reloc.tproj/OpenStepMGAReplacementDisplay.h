@@ -130,6 +130,7 @@
 - (void)runDepthEncodingTest;
 - (void)runTextureIdentityTest;
 - (void)runTextureSlopeTest;
+- (void)runTextureOriginTest;
 - (BOOL)stormBlitCheckSrcX:(unsigned)srcX srcY:(unsigned)srcY
                      width:(unsigned)w height:(unsigned)h
                       dstX:(unsigned)dstX dstY:(unsigned)dstY
