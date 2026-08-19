@@ -30,6 +30,7 @@
 #import <driverkit/IODeviceDescription.h>
 #import <driverkit/IOConfigTable.h>
 #import <driverkit/i386/ioPorts.h>
+#import <driverkit/i386/kernelDriver.h>   /* IOMallocLow / IOFreeLow */
 #import <driverkit/devsw.h>
 #import <mach/vm_param.h>
 #import <bsd/sys/mman.h>
@@ -200,6 +201,21 @@
 #define OSMGA_S1_FILL           0xDEADBEEFUL
 /* Only VRAM proven real by the working 1600x1200x32 scanout (7.32 MiB). */
 #define OSMGA_S1_VRAM_PROVEN    (7UL * 1024UL * 1024UL)
+
+/*
+ * D1-0 -- primary DMA ring memory (docs/D1_PRIMARY_DMA_RING_PLAN.md).
+ *
+ * IOMallocLow is the only physically contiguous allocator this kernel has,
+ * and it caps a single request at 64 KiB: dma_buf_alloc (0x18980c) refuses
+ * anything larger, and its pools are carved by alloc_cnvmem (0x18ad9c), a
+ * bump allocator over the conventional-memory arena.  That is why the ring
+ * is exactly 64 KiB and why the address is expected below 0xA0000.
+ *
+ * This step allocates and measures.  It writes no engine register, so a
+ * failure here costs nothing but a log line.
+ */
+#define OSMGA_DMA_RING_BYTES    0x10000UL
+#define OSMGA_CONVENTIONAL_END  0xA0000UL
 #define OSMGA_S1_SPIN_LIMIT     100000UL
 
 /*
@@ -1145,6 +1161,7 @@ static IODisplayInfo osmgaModeTemplate = {
     selectedFormatIndex = OSMGA_FMT_DEFAULT;
     paletteValid = NO;
     stormTestEnabled = NO;
+    dmaRingTestEnabled = NO;
     stormBlitReady = NO;
     stormBlitFailed = NO;
     stormBusy = NO;
@@ -1190,6 +1207,18 @@ static IODisplayInfo osmgaModeTemplate = {
             IOLog("OpenStepMGAReplacementDisplay: S1 Storm 2D test ENABLED "
                   "by configuration\n");
 
+    }
+
+    /* Opt-in D1 primary-DMA ring test; absent/anything-but-Yes means off. */
+    {
+        IOConfigTable *ct = [deviceDescription configTable];
+        const char *flag = (ct == nil) ? 0
+                         : (const char *)[ct valueForStringKey:"DMA Ring Test"];
+        dmaRingTestEnabled = (flag != 0 && osmgaTextContains(flag, "Yes"))
+                             ? YES : NO;
+        if (dmaRingTestEnabled)
+            IOLog("OpenStepMGAReplacementDisplay: D1 DMA ring test ENABLED "
+                  "by configuration\n");
     }
 
     if (frameBufferPhysical == 0 || mmioPhysical == 0) {
@@ -2373,7 +2402,117 @@ unmap:
     [self runStormLivenessTest];
     [self runStormBlitTest];
     [self runStormBlitApiTest];
+    [self runDmaRingAllocTest];
 }
+
+/*
+ * D1-0 -- prove the ring memory before touching the card.
+ *
+ * Answers three things and stops: does IOMallocLow resolve and succeed in a
+ * kernel loadable, where does the memory actually land, and is it really
+ * physically contiguous.  The contiguity check walks the buffer page by page
+ * with IOPhysicalFromVirtual instead of trusting the bump-allocator reading
+ * of alloc_cnvmem -- the analysis says it must be contiguous, so measure it.
+ *
+ * PAGE_SIZE here is 8192, not 4096 (S4a); the walk uses the kernel's own
+ * value rather than a literal for that reason.
+ *
+ * No engine register is written.  The buffer is released before returning:
+ * the card is never told about it, so nothing can still be reading it.  That
+ * is the opposite of D1-2, where release is gated on proven DMA quiescence.
+ */
+- (void)runDmaRingAllocTest
+{
+    void *virt;
+    unsigned phys = 0;
+    unsigned firstPhys = 0;
+    unsigned long off;
+    unsigned long pageSize = (unsigned long)PAGE_SIZE;
+    IOReturn r;
+    int gaps = 0;
+    int probes = 0;
+
+    if (!dmaRingTestEnabled)
+        return;
+
+    IOLog("OpenStepMGA D1-0: begin, requesting %u bytes from IOMallocLow\n",
+          (unsigned)OSMGA_DMA_RING_BYTES);
+
+    virt = IOMallocLow((int)OSMGA_DMA_RING_BYTES);
+    if (virt == 0) {
+        IOLog("OpenStepMGA D1-0: FAIL -- IOMallocLow returned 0 "
+              "(conventional-memory arena exhausted or size refused)\n");
+        return;
+    }
+
+    r = IOPhysicalFromVirtual(IOVmTaskSelf(), (vm_address_t)virt, &phys);
+    if (r != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA D1-0: FAIL -- IOPhysicalFromVirtual r=%d\n", (int)r);
+        IOFreeLow(virt, (int)OSMGA_DMA_RING_BYTES);
+        return;
+    }
+    firstPhys = phys;
+
+    IOLog("OpenStepMGA D1-0: virt=%08x phys=%08x pageSize=%u\n",
+          (unsigned)virt, phys, (unsigned)pageSize);
+
+    /* V0-1: alignment.  The low two bits of PRIMADDRESS/PRIMEND carry mode
+     * and access flags, so the ring must be at least dword aligned; report
+     * the largest power-of-two alignment we actually got. */
+    {
+        unsigned a = 1;
+        while (a < 0x10000U && (phys & a) == 0U)
+            a <<= 1;
+        IOLog("OpenStepMGA D1-0: alignment=%u bytes, dword-aligned=%s\n",
+              a, (phys & 3U) == 0U ? "yes" : "NO");
+    }
+
+    /* V0-2: does it land where the arena analysis says it should? */
+    if (phys >= (unsigned)OSMGA_CONVENTIONAL_END)
+        IOLog("OpenStepMGA D1-0: NOTE -- phys %08x is NOT below %08x; the "
+              "conventional-memory arena reading is wrong, re-analyse before "
+              "D1-1\n", phys, (unsigned)OSMGA_CONVENTIONAL_END);
+    else
+        IOLog("OpenStepMGA D1-0: phys is inside conventional memory "
+              "(below %08x), matching the alloc_cnvmem analysis\n",
+              (unsigned)OSMGA_CONVENTIONAL_END);
+
+    /* V0-3: contiguity, measured rather than assumed. */
+    for (off = pageSize; off < OSMGA_DMA_RING_BYTES; off += pageSize) {
+        unsigned p = 0;
+
+        probes++;
+        r = IOPhysicalFromVirtual(IOVmTaskSelf(),
+                                  (vm_address_t)((char *)virt + off), &p);
+        if (r != IO_R_SUCCESS) {
+            IOLog("OpenStepMGA D1-0: FAIL -- no mapping at +%u (r=%d)\n",
+                  (unsigned)off, (int)r);
+            gaps++;
+            break;
+        }
+        if (p != firstPhys + (unsigned)off) {
+            IOLog("OpenStepMGA D1-0: FAIL -- discontiguous at +%u: "
+                  "expected %08x got %08x\n",
+                  (unsigned)off, firstPhys + (unsigned)off, p);
+            gaps++;
+            break;
+        }
+    }
+
+    if (gaps == 0)
+        IOLog("OpenStepMGA D1-0: PASS -- %d page probes, physically "
+              "contiguous %08x..%08x\n",
+              probes, firstPhys,
+              firstPhys + (unsigned)OSMGA_DMA_RING_BYTES - 1U);
+    else
+        IOLog("OpenStepMGA D1-0: FAIL -- contiguity broken; do not proceed "
+              "to D1-1\n");
+
+    IOFreeLow(virt, (int)OSMGA_DMA_RING_BYTES);
+    IOLog("OpenStepMGA D1-0: end (buffer released; the card was never told "
+          "about it)\n");
+}
+
 
 /*
  * Load the window-server colormap.  The transfer table packs one 32-bit entry

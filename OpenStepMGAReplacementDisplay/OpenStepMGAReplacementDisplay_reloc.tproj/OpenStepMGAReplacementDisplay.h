@@ -50,6 +50,11 @@
      * Default NO: a normal boot never writes a drawing-engine register. */
     BOOL stormTestEnabled;
 
+    /* opt-in D1 primary-DMA ring test ("DMA Ring Test" = "Yes").
+     * Default NO: D1-0 only allocates, but it consumes 64 KiB of the
+     * conventional-memory arena that ISA DMA users share. */
+    BOOL dmaRingTestEnabled;
+
     /* S3 IODisplayDoBlit acceleration.
      *   stormBlitReady   -- accept IODisplayDoBlit requests at all
      *   stormBlitFailed  -- an execute timed out; the engine may still be
@@ -102,6 +107,7 @@
 - (void)runStormLivenessTest;
 - (void)runStormBlitTest;
 - (void)runStormBlitApiTest;
+- (void)runDmaRingAllocTest;
 - (BOOL)stormBlitCheckSrcX:(unsigned)srcX srcY:(unsigned)srcY
                      width:(unsigned)w height:(unsigned)h
                       dstX:(unsigned)dstX dstY:(unsigned)dstY
