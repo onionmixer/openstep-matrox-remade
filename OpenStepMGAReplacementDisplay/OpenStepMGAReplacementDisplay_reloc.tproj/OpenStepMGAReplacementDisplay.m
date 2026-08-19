@@ -6225,10 +6225,17 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
     unsigned long atype = (b->state.dwgctl >> 4) & 0x7UL;
     int ok = 1;
 
+    /* When the access type does not address depth, ZORG should still point
+     * somewhere harmless rather than at zero: zero is the visible
+     * framebuffer, so the one value that costs nothing to avoid is the one
+     * that would be worst if a depth write happened anyway.  The validator
+     * only checks this field for ZI, which is correct -- it is not
+     * addressed otherwise -- but "not addressed" is a claim about the
+     * hardware, and this makes it not matter. */
     ok = ok && osmgaDmaBlock(list, listDwords, &pos,
                              MGA_DSTORG,   b->state.dstorg,
                              MGA_ZORG,     (atype == 0x3UL) ? b->state.zorg
-                                                            : 0UL,
+                                                            : OSMGA_D3_ZORG,
                              MGA_ALPHACTRL, b->state.alphactrl,
                              MGA_DMAPAD,   0UL);
 
