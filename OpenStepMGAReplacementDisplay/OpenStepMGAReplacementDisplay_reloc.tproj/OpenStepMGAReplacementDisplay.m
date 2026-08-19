@@ -228,6 +228,10 @@
 #define MGA_PRIMADDRESS         0x1e58
 #define MGA_PRIMEND             0x1e5c
 #define MGA_PRIMPTR             0x1e50   /* pointer writeback enable */
+#define MGA_SECADDRESS          0x2c40
+#define MGA_SECEND              0x2c44
+#define MGA_SETUPADDRESS        0x2cd0
+#define MGA_SETUPEND            0x2cd4
 #define MGA_SOFTRAP             0x2c48
 #define MGA_DMAPAD              0x1c54
 #define MGA_ICLEAR              0x1e18
@@ -2961,6 +2965,16 @@ unmap:
 static int
 osmgaDmaIndex(unsigned long reg)
 {
+    /* The secondary and setup rings take addresses the same way the primary
+     * ring does, and unlike PRIMADDRESS and PRIMEND -- which sit at 0x1e58
+     * and 0x1e5c, outside both groups, so the group rule alone excludes
+     * them -- these four are inside group1 and the rule would encode them.
+     * No caller names them today, but the encoder should not be the thing
+     * standing between a future list-building caller and a register that
+     * makes the card walk memory of its choosing. */
+    if (reg == MGA_SECADDRESS || reg == MGA_SECEND ||
+        reg == MGA_SETUPADDRESS || reg == MGA_SETUPEND)
+        return -1;
     if (reg >= OSMGA_DWGREG0 && reg <= OSMGA_DWGREG0_END)
         return (int)((reg - OSMGA_DWGREG0) >> 2);
     if (reg >= OSMGA_DWGREG1 && reg <= OSMGA_DWGREG1_END)
