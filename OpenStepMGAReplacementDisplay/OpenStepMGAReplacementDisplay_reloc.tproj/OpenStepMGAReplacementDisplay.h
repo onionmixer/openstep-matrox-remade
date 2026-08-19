@@ -133,6 +133,7 @@
 - (void)runTextureOriginTest;
 - (void)runAlphaSourceTest;
 - (void)runAlphaBlendTest;
+- (void)runMmapWindowTest;
 - (BOOL)stormBlitCheckSrcX:(unsigned)srcX srcY:(unsigned)srcY
                      width:(unsigned)w height:(unsigned)h
                       dstX:(unsigned)dstX dstY:(unsigned)dstY

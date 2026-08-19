@@ -9,7 +9,7 @@
 "Display Mode" = "Height: 768 Width: 1024 Refresh: 60Hz ColorSpace: RGB:888/32";
 "MGA Memory Size" = "16";
 "Storm 2D Test" = "No";
-"VRAM Mmap" = "No";
+"VRAM Mmap" = "Yes";
 "DMA Ring Test" = "No";
 "WARP Test" = "No";
 "Raster Test" = "Yes";

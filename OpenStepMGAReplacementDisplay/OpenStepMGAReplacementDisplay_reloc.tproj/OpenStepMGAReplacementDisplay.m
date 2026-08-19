@@ -1105,6 +1105,31 @@ osmgaStormBlit(vm_address_t base, unsigned long stride,
  * and are never modified afterwards.  The handler's decision depends on
  * nothing else (see the determinism requirement above).
  */
+/*
+ * M1-0 -- a second mmap window, for the command ring in system RAM.
+ *
+ * The existing window maps VRAM, and the command buffer a userland Mesa
+ * would fill lives in system RAM, so one handler has to serve two
+ * physical bases.  Partitioning the offset space does that without
+ * touching the S4a contract: the handler stays a pure function of state
+ * that is immutable once the cdevsw entry is published, which matters
+ * because the kernel calls it twice for the same offset and ignores the
+ * second call's return -- a handler that changed its mind between the
+ * two would hand the kernel an arbitrary page frame.
+ *
+ * The command base is far above any VRAM offset (VRAM is at most 16 MiB)
+ * and well inside the positive range of the int the handler is given.
+ *
+ * The ring is allocated once here and never freed.  IOMallocLow draws on
+ * conventional memory, which is scarce, so this is gated behind the same
+ * development switch as the VRAM window rather than always held.
+ */
+#define OSMGA_CMD_MMAP_BASE     0x40000000UL
+
+static unsigned long osmgaMmapCmdPhysical;   /* 0 = no command window */
+static unsigned long osmgaMmapCmdBytes;
+static void *osmgaMmapCmdVirt;
+
 static unsigned long osmgaMmapWindowStart;   /* byte offset into VRAM */
 static unsigned long osmgaMmapWindowEnd;     /* exclusive */
 static unsigned long osmgaMmapFbPhysical;
@@ -1158,6 +1183,25 @@ osmgaDevMmap(int dev, int offset, int prot)
         return -1;
 
     off = (unsigned long)offset;
+
+    /* Command window first: its base is far above every VRAM offset, so
+     * the two ranges cannot overlap however the VRAM window is sized. */
+    if (osmgaMmapCmdPhysical != 0UL && off >= OSMGA_CMD_MMAP_BASE) {
+        unsigned long rel = off - OSMGA_CMD_MMAP_BASE;
+
+        if (osmgaMmapCmdBytes < (unsigned long)PAGE_SIZE ||
+            rel > osmgaMmapCmdBytes - (unsigned long)PAGE_SIZE)
+            return -1;
+        if (osmgaMmapCmdPhysical > 0xFFFFFFFFUL - rel)
+            return -1;
+        phys = osmgaMmapCmdPhysical + rel;
+        if ((phys & ((unsigned long)PAGE_SIZE - 1UL)) != 0UL)
+            return -1;
+        if ((phys >> PAGE_SHIFT) > 0x7FFFFFFFUL)
+            return -1;
+        return (int)(phys >> PAGE_SHIFT);
+    }
+
     /* Written so no expression can overflow. */
     if (osmgaMmapWindowStart >= osmgaMmapWindowEnd ||
         osmgaMmapWindowEnd - osmgaMmapWindowStart < (unsigned long)PAGE_SIZE ||
@@ -1852,7 +1896,47 @@ static IODisplayInfo osmgaModeTemplate = {
                       "mode (start=%lu end=%lu), device NOT registered\n",
                       start, end);
             } else {
-                /* Immutable state first, cdevsw entry published after. */
+                /* Immutable state first, cdevsw entry published after.
+                 * The ring is optional: without it the VRAM window still
+                 * works, and the handler simply refuses the command
+                 * range because its base stays zero. */
+                void *ring = 0;
+                unsigned int ringPhysRaw = 0U;
+                unsigned long ringPhys = 0UL;
+
+                /* The command branch is tried first, so a VRAM window that
+                 * ever reached the command base would be swallowed by it.
+                 * Today it cannot -- VRAM is at most 16 MiB and the base is
+                 * at 1 GiB -- but that is a property of the numbers, not of
+                 * the code, so make it a checked invariant instead. */
+                if (end > OSMGA_CMD_MMAP_BASE) {
+                    IOLog("OpenStepMGA M1-0: VRAM window reaches the command "
+                          "base, command window NOT offered\n");
+                } else {
+                    ring = IOMallocLow((int)OSMGA_DMA_RING_BYTES);
+                }
+                if (ring != 0) {
+                    IOReturn rr = IOPhysicalFromVirtual(IOVmTaskSelf(),
+                                      (vm_address_t)ring, &ringPhysRaw);
+
+                    ringPhys = (unsigned long)ringPhysRaw;
+                    if (rr != IO_R_SUCCESS ||
+                        (ringPhys & ((unsigned long)PAGE_SIZE - 1UL)) != 0UL) {
+                        IOLog("OpenStepMGA M1-0: ring physical address "
+                              "unusable (r=%d phys=%08lx), command window "
+                              "not offered\n", (int)rr, ringPhys);
+                        IOFreeLow(ring, (int)OSMGA_DMA_RING_BYTES);
+                        ring = 0;
+                        ringPhys = 0UL;
+                    }
+                } else {
+                    IOLog("OpenStepMGA M1-0: IOMallocLow failed, command "
+                          "window not offered\n");
+                }
+                osmgaMmapCmdVirt     = ring;
+                osmgaMmapCmdPhysical = ringPhys;
+                osmgaMmapCmdBytes    = (ring != 0) ? OSMGA_DMA_RING_BYTES : 0UL;
+
                 osmgaMmapWindowStart = start;
                 osmgaMmapWindowEnd   = end;
                 osmgaMmapFbPhysical  = frameBufferPhysical;
@@ -2935,6 +3019,7 @@ unmap:
     /* [self runRasterInterpolationTest]; */
     /* [self runDstorgOriginTest]; */
     [self runAlphaBlendTest];
+    [self runMmapWindowTest];
 }
 
 /*
@@ -5903,6 +5988,90 @@ fifo:
 unmap:
     if (aSrc != 0) (void)IOUnmapPhysicalFromIOTask(aSrc, lSrc);
     if (aBlk != 0) (void)IOUnmapPhysicalFromIOTask(aBlk, lBlk);
+}
+
+
+/*
+ * M1-0 -- exercise the mmap decision directly.
+ *
+ * osmgaDevMmap is a pure function, so every boundary can be checked by
+ * calling it rather than by mapping anything, which keeps a test of the
+ * one routine that can expose arbitrary physical memory entirely free of
+ * risk.  Repeated calls for one offset are included because the kernel
+ * makes them and does not check the second return.
+ */
+- (void)runMmapWindowTest
+{
+    unsigned long cmdBase = OSMGA_CMD_MMAP_BASE;
+    unsigned long vs = osmgaMmapWindowStart, ve = osmgaMmapWindowEnd;
+    unsigned long cb = osmgaMmapCmdBytes;
+    int bad = 0, n = 0;
+    struct { unsigned long off; int want; const char *what; } t[14];
+    int i;
+
+    if (!osmgaMmapRegistered)
+        return;
+
+    /* want: 1 accept, 0 refuse */
+    t[n].off = vs;                    t[n].want = 1; t[n++].what = "vram first";
+    t[n].off = vs + (unsigned long)PAGE_SIZE;
+                                      t[n].want = 1; t[n++].what = "vram +1pg";
+    t[n].off = ve - (unsigned long)PAGE_SIZE;
+                                      t[n].want = 1; t[n++].what = "vram last";
+    t[n].off = ve;                    t[n].want = 0; t[n++].what = "vram end";
+    t[n].off = ve + (unsigned long)PAGE_SIZE;
+                                      t[n].want = 0; t[n++].what = "past vram";
+    t[n].off = (vs >= (unsigned long)PAGE_SIZE)
+                   ? vs - (unsigned long)PAGE_SIZE : 0UL;
+                                      t[n].want = 0; t[n++].what = "before vram";
+    t[n].off = vs + 1UL;              t[n].want = 0; t[n++].what = "vram unaligned";
+    t[n].off = cmdBase - (unsigned long)PAGE_SIZE;
+                                      t[n].want = 0; t[n++].what = "below cmd";
+    t[n].off = cmdBase;               t[n].want = (cb != 0UL);
+                                                     t[n++].what = "cmd first";
+    t[n].off = cmdBase + cb - (unsigned long)PAGE_SIZE;
+                                      t[n].want = (cb != 0UL);
+                                                     t[n++].what = "cmd last";
+    t[n].off = cmdBase + cb;          t[n].want = 0; t[n++].what = "cmd end";
+    t[n].off = cmdBase + cb + (unsigned long)PAGE_SIZE;
+                                      t[n].want = 0; t[n++].what = "past cmd";
+    t[n].off = cmdBase + 1UL;         t[n].want = 0; t[n++].what = "cmd unaligned";
+    t[n].off = 0UL;                   t[n].want = (vs == 0UL);
+                                                     t[n++].what = "offset zero";
+
+    for (i = 0; i < n; i++) {
+        int a = osmgaDevMmap(0, (int)t[i].off, OSMGA_PROT_RW);
+        int b = osmgaDevMmap(0, (int)t[i].off, OSMGA_PROT_RW);
+        int accepted = (a >= 0);
+
+        if (a != b) {                       /* the kernel trusts the second */
+            IOLog("OpenStepMGA M1-0: NOT DETERMINISTIC at %s (%08lx): "
+                  "%d then %d\n", t[i].what, t[i].off, a, b);
+            bad++;
+        }
+        if (accepted != (t[i].want != 0)) {
+            IOLog("OpenStepMGA M1-0: %s (%08lx) -> %d, wanted %s\n",
+                  t[i].what, t[i].off, a, t[i].want ? "accept" : "refuse");
+            bad++;
+        }
+    }
+
+    /* A wrong protection must be refused wherever it is asked. */
+    if (osmgaDevMmap(0, (int)vs, PROT_READ) >= 0 ||
+        osmgaDevMmap(0, (int)cmdBase, PROT_READ) >= 0) {
+        IOLog("OpenStepMGA M1-0: read-only protection was accepted\n");
+        bad++;
+    }
+
+    IOLog("OpenStepMGA M1-0: vram %08lx..%08lx, cmd base %08lx bytes %lu "
+          "phys %08lx; %d cases, %d wrong\n",
+          vs, ve, cmdBase, cb, osmgaMmapCmdPhysical, n, bad);
+    if (bad == 0)
+        IOLog("OpenStepMGA M1-0: PASS -- both windows decide as specified "
+              "and repeat themselves\n");
+    else
+        IOLog("OpenStepMGA M1-0: FAIL -- see the cases above; do not map "
+              "anything until this is clean\n");
 }
 
 @end
