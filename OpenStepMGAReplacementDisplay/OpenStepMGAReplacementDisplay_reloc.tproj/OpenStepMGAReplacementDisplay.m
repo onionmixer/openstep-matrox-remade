@@ -249,6 +249,32 @@
                                  MGA_STATUS_ENDPRDMASTS)
 #define MGA_DMA_DONE_VALUE      (MGA_STATUS_SOFTRAPEN | \
                                  MGA_STATUS_ENDPRDMASTS)
+/*
+ * WARP registers (legacy MGA DRM mga_drv.h, MIT; X.Org mga_reg.h agrees).
+ *
+ * WIADDR2's low two bits are the pipe mode, and a pipe runs by writing
+ * WIADDR2 = microcode_phys | WMODE_START.  That is why this code never
+ * restores a previously-read WIADDR2: restoring a value that happens to
+ * end in 3 would start the WARP pipe at an address nobody chose.  The end
+ * state is the known one -- suspended -- not the prior one.
+ */
+#define MGA_WIADDR              0x1dc0
+#define MGA_WGETMSB             0x1dc8
+#define MGA_WVRTXSZ             0x1dcc
+#define MGA_WACCEPTSEQ          0x1dd4
+#define MGA_WIADDR2             0x1dd8
+#define MGA_WMODE_SUSPEND       0x00000000UL
+#define MGA_WMISC               0x1e70   /* MMIO only, like OPMODE */
+#define MGA_WUCODECACHE_ENABLE  0x00000001UL
+#define MGA_WMASTER_ENABLE      0x00000002UL
+#define MGA_WCACHEFLUSH_ENABLE  0x00000008UL
+/* Written: all three.  Read back: bit 3 is not expected to survive -- this
+ * is the DRM's own pass/fail test, not a criterion of ours. */
+#define MGA_WMISC_WRITE         (MGA_WUCODECACHE_ENABLE | \
+                                 MGA_WMASTER_ENABLE | \
+                                 MGA_WCACHEFLUSH_ENABLE)
+#define MGA_WMISC_EXPECTED      (MGA_WUCODECACHE_ENABLE | MGA_WMASTER_ENABLE)
+
 #define MGA_DMA_GENERAL         0x00     /* PRIMADDRESS mode bits */
 #define MGA_PRIMNOSTART         0x01     /* PRIMEND bit0: do NOT start */
 #define MGA_PAGPXFER            0x02     /* PRIMEND bit1: AGP; 0 for PCI */
@@ -1216,6 +1242,7 @@ static IODisplayInfo osmgaModeTemplate = {
     paletteValid = NO;
     stormTestEnabled = NO;
     dmaRingTestEnabled = NO;
+    warpTestEnabled = NO;
     stormBlitReady = NO;
     stormBlitFailed = NO;
     stormBusy = NO;
@@ -1272,6 +1299,18 @@ static IODisplayInfo osmgaModeTemplate = {
                              ? YES : NO;
         if (dmaRingTestEnabled)
             IOLog("OpenStepMGAReplacementDisplay: D1 DMA ring test ENABLED "
+                  "by configuration\n");
+    }
+
+    /* Opt-in D2 WARP configuration probe; absent/anything-but-Yes is off. */
+    {
+        IOConfigTable *ct = [deviceDescription configTable];
+        const char *flag = (ct == nil) ? 0
+                         : (const char *)[ct valueForStringKey:"WARP Test"];
+        warpTestEnabled = (flag != 0 && osmgaTextContains(flag, "Yes"))
+                          ? YES : NO;
+        if (warpTestEnabled)
+            IOLog("OpenStepMGAReplacementDisplay: D2 WARP test ENABLED "
                   "by configuration\n");
     }
 
@@ -2459,6 +2498,7 @@ unmap:
     [self runDmaRingAllocTest];
     [self runDmaRingBuildTest];
     [self runDmaRingStartTest];
+    [self runWarpConfigTest];
 }
 
 /*
@@ -3139,5 +3179,73 @@ unmap:
     IOLog("OpenStepMGA D1-2: end\n");
 }
 
+
+/*
+ * D2-0a -- does the WARP pipe accept configuration?
+ *
+ * The 3D counterpart of S1.  Two registers written, one read back: WMISC
+ * is the only hard pass/fail signal the DRM itself uses, and 0x3 is its
+ * expected value even though 0xB is what gets written.  No microcode, no
+ * DMA, no triangle -- if this fails there is no reason to upload 11,610
+ * lines of microcode.
+ *
+ * WIADDR2 is set to WMODE_SUSPEND before and after, so the pipe is
+ * standing still on both sides of the probe.  The three remaining WARP
+ * registers (WGETMSB, WVRTXSZ, WACCEPTSEQ) are deliberately untouched:
+ * nothing in the sources ever reads them back, so their read semantics
+ * are unproven and there is no need to find out here.
+ *
+ * Deviation worth remembering: the DRM installs microcode before calling
+ * warp_init.  We do not.  mga_warp_init never looks at the microcode
+ * buffer and leaves the pipe suspended, so the readback should stand on
+ * its own -- but if it does not, "the order differs" is the first
+ * suspicion, not "there is no WARP".
+ */
+- (void)runWarpConfigTest
+{
+    vm_address_t base = mmioBase;
+    unsigned long wmiscBefore, wiaddr2Before, wmiscAfter, wiaddr2After;
+
+    if (!warpTestEnabled || !linearModeActive || !mmioMapped)
+        return;
+
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA D2-0a: 2D engine BUSY at entry (timeout), "
+              "aborted\n");
+        return;
+    }
+
+    /* Logged for the record only.  Never written back -- see the note on
+     * MGA_WIADDR2 above. */
+    wmiscBefore   = osmgaR32(base, MGA_WMISC);
+    wiaddr2Before = osmgaR32(base, MGA_WIADDR2);
+    IOLog("OpenStepMGA D2-0a: begin, WMISC=%08lx WIADDR2=%08lx at entry\n",
+          wmiscBefore, wiaddr2Before);
+
+    osmgaW32(base, MGA_WIADDR2, MGA_WMODE_SUSPEND);
+    osmgaW32(base, MGA_WMISC, MGA_WMISC_WRITE);
+    wmiscAfter = osmgaR32(base, MGA_WMISC);
+    osmgaW32(base, MGA_WIADDR2, MGA_WMODE_SUSPEND);
+    wiaddr2After = osmgaR32(base, MGA_WIADDR2);
+
+    IOLog("OpenStepMGA D2-0a: wrote WMISC=%08lx, read %08lx (expected "
+          "%08lx)\n", MGA_WMISC_WRITE, wmiscAfter, MGA_WMISC_EXPECTED);
+
+    if (wmiscAfter == MGA_WMISC_EXPECTED)
+        IOLog("OpenStepMGA D2-0a: PASS -- the WARP pipe accepts "
+              "configuration\n");
+    else
+        IOLog("OpenStepMGA D2-0a: FAIL -- WMISC read %08lx.  Do not upload "
+              "microcode; suspect the ordering deviation first (the DRM "
+              "installs microcode before warp_init)\n", wmiscAfter);
+
+    if (wiaddr2After == MGA_WMODE_SUSPEND)
+        IOLog("OpenStepMGA D2-0a: end state ok, pipe suspended\n");
+    else
+        IOLog("OpenStepMGA D2-0a: WARNING -- WIADDR2 reads %08lx, not "
+              "suspended\n", wiaddr2After);
+}
+
 @end
+
 

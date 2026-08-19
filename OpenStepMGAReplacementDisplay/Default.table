@@ -12,6 +12,8 @@
  *   DMA Ring Test -- D1 primary-DMA bring-up (docs/D1_PRIMARY_DMA_RING_PLAN.md).
  *                    D1-0 only allocates 64 KiB of the conventional-memory
  *                    arena and measures it; no engine register is written.
+ *   WARP Test     -- D2 WARP configuration probe; writes two registers and
+ *                    reads one back, draws nothing.
  *   VRAM Mmap     -- publish the offscreen VRAM window as a character device.
  *                    Once enabled the driver must not be unloaded, because
  *                    client mappings outlive it (docs/S4A_VRAM_MMAP_PLAN.md).
@@ -31,6 +33,7 @@
 "Storm 2D Test" = "No";
 "VRAM Mmap" = "No";
 "DMA Ring Test" = "No";
+"WARP Test" = "No";
 "FB Address" = "";
 "Memory Maps" = "";
 "VGA Memory Maps" = "0xa0000-0xbffff 0xc0000-0xcffff";

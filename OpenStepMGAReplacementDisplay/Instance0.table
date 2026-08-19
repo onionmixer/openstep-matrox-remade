@@ -11,6 +11,7 @@
 "Storm 2D Test" = "No";
 "VRAM Mmap" = "No";
 "DMA Ring Test" = "Yes";
+"WARP Test" = "Yes";
 "FB Address" = "";
 "Memory Maps" = "";
 "VGA Memory Maps" = "0xa0000-0xbffff 0xc0000-0xcffff";
