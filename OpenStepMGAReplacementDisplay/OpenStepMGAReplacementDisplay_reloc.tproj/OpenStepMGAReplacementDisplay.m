@@ -2619,9 +2619,6 @@ osmgaDmaBlock(unsigned long *ring, unsigned long ringDwords, unsigned long *pos,
     if (!dmaRingTestEnabled)
         return;
 
-    IOLog("OpenStepMGA D1-0: begin, requesting %u bytes from IOMallocLow\n",
-          (unsigned)OSMGA_DMA_RING_BYTES);
-
     virt = IOMallocLow((int)OSMGA_DMA_RING_BYTES);
     if (virt == 0) {
         IOLog("OpenStepMGA D1-0: FAIL -- IOMallocLow returned 0 "
@@ -2637,29 +2634,18 @@ osmgaDmaBlock(unsigned long *ring, unsigned long ringDwords, unsigned long *pos,
     }
     firstPhys = phys;
 
-    IOLog("OpenStepMGA D1-0: virt=%08x phys=%08x pageSize=%u\n",
-          (unsigned)virt, phys, (unsigned)pageSize);
-
     /* V0-1: alignment.  The low two bits of PRIMADDRESS/PRIMEND carry mode
      * and access flags, so the ring must be at least dword aligned; report
      * the largest power-of-two alignment we actually got. */
-    {
-        unsigned a = 1;
-        while (a < 0x10000U && (phys & a) == 0U)
-            a <<= 1;
-        IOLog("OpenStepMGA D1-0: alignment=%u bytes, dword-aligned=%s\n",
-              a, (phys & 3U) == 0U ? "yes" : "NO");
-    }
+    if ((phys & 3U) != 0U)
+        IOLog("OpenStepMGA D1-0: WARNING -- phys %08x is not dword "
+              "aligned\n", phys);
 
     /* V0-2: does it land where the arena analysis says it should? */
     if (phys >= (unsigned)OSMGA_CONVENTIONAL_END)
         IOLog("OpenStepMGA D1-0: NOTE -- phys %08x is NOT below %08x; the "
               "conventional-memory arena reading is wrong, re-analyse before "
               "D1-1\n", phys, (unsigned)OSMGA_CONVENTIONAL_END);
-    else
-        IOLog("OpenStepMGA D1-0: phys is inside conventional memory "
-              "(below %08x), matching the alloc_cnvmem analysis\n",
-              (unsigned)OSMGA_CONVENTIONAL_END);
 
     /* V0-3: contiguity, measured rather than assumed. */
     for (off = pageSize; off < OSMGA_DMA_RING_BYTES; off += pageSize) {
@@ -2684,17 +2670,14 @@ osmgaDmaBlock(unsigned long *ring, unsigned long ringDwords, unsigned long *pos,
     }
 
     if (gaps == 0)
-        IOLog("OpenStepMGA D1-0: PASS -- %d page probes, physically "
-              "contiguous %08x..%08x\n",
-              probes, firstPhys,
-              firstPhys + (unsigned)OSMGA_DMA_RING_BYTES - 1U);
+        IOLog("OpenStepMGA D1-0: PASS %08x..%08x contiguous (%d probes)\n",
+              firstPhys, firstPhys + (unsigned)OSMGA_DMA_RING_BYTES - 1U,
+              probes);
     else
         IOLog("OpenStepMGA D1-0: FAIL -- contiguity broken; do not proceed "
               "to D1-1\n");
 
     IOFreeLow(virt, (int)OSMGA_DMA_RING_BYTES);
-    IOLog("OpenStepMGA D1-0: end (buffer released; the card was never told "
-          "about it)\n");
 }
 
 
@@ -2882,7 +2865,6 @@ osmgaDmaBuildFillList(unsigned long *ring, unsigned long ringDwords,
     unsigned long stride = (unsigned long)di->rowBytes / 4UL;
     unsigned long blockY = (unsigned long)di->height + OSMGA_S1_GUARD_ROWS;
     IOReturn r;
-    unsigned long i;
 
     if (!dmaRingTestEnabled)
         return;
@@ -2907,23 +2889,13 @@ osmgaDmaBuildFillList(unsigned long *ring, unsigned long ringDwords,
         return;
     }
 
-    IOLog("OpenStepMGA D1-1: built %u blocks, tail=+%u bytes, "
-          "padded to +%u, phys=%08x..%08x\n",
+    IOLog("OpenStepMGA D1-1: %u blocks, tail=+%u, padded to +%u\n",
           (unsigned)(pos / OSMGA_DMA_BLOCK_DWORDS),
-          (unsigned)(tailDwords * 4UL), (unsigned)(pos * 4UL),
-          phys, phys + (unsigned)(pos * 4UL) - 1U);
-    IOLog("OpenStepMGA D1-1: PRIMEND would be %08x (dword-aligned=%s), "
-          "PRIMADDRESS %08x\n",
-          phys + (unsigned)(tailDwords * 4UL),
-          ((phys + tailDwords * 4UL) & 3UL) == 0UL ? "yes" : "NO",
-          phys);
+          (unsigned)(tailDwords * 4UL), (unsigned)(pos * 4UL));
 
-    for (i = 0; i < pos; i += OSMGA_DMA_BLOCK_DWORDS)
-        IOLog("OpenStepMGA D1-1: blk%u hdr=%08x %08x %08x %08x %08x\n",
-              (unsigned)(i / OSMGA_DMA_BLOCK_DWORDS),
-              (unsigned)ring[i], (unsigned)ring[i + 1],
-              (unsigned)ring[i + 2], (unsigned)ring[i + 3],
-              (unsigned)ring[i + 4]);
+    /* The block-by-block dump that this step existed to produce has served
+     * its purpose -- the encoding was decoded by hand and matched.  Keeping
+     * it costs six log lines every boot, and the log drops bursts. */
 
     /* V1-3: the assembler must refuse OPMODE rather than mis-encode it. */
     {
@@ -2934,21 +2906,10 @@ osmgaDmaBuildFillList(unsigned long *ring, unsigned long ringDwords,
                           MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL))
             IOLog("OpenStepMGA D1-1: FAIL -- OPMODE was accepted; the "
                   "whitelist does not work\n");
-        else
-            IOLog("OpenStepMGA D1-1: OPMODE correctly refused (index=%d)\n",
-                  osmgaDmaIndex(MGA_OPMODE));
     }
 
     /* V1-2: index arithmetic against the values worked out by hand. */
-    IOLog("OpenStepMGA D1-1: idx DWGCTL=%02x MACCESS=%02x DMAPAD=%02x "
-          "SOFTRAP=%02x EXEC=%02x SRCORG=%02x\n",
-          osmgaDmaIndex(MGA_DWGCTL), osmgaDmaIndex(MGA_MACCESS),
-          osmgaDmaIndex(MGA_DMAPAD), osmgaDmaIndex(MGA_SOFTRAP),
-          osmgaDmaIndex(MGA_YDSTLEN + MGA_EXEC), osmgaDmaIndex(MGA_SRCORG));
-
     IOFreeLow(virt, (int)OSMGA_DMA_RING_BYTES);
-    IOLog("OpenStepMGA D1-1: end (nothing was started; PRIMADDRESS/PRIMEND "
-          "untouched)\n");
 }
 
 
@@ -3050,11 +3011,6 @@ osmgaDmaBuildFillList(unsigned long *ring, unsigned long ringDwords,
         return;
     }
 
-    IOLog("OpenStepMGA D1-2: begin, ring %08x..%08x tail=%08x, block y=%lu "
-          "bytes %lu..%lu\n",
-          phys, phys + (unsigned)(totalDwords * 4UL) - 1U,
-          phys + (unsigned)(tailDwords * 4UL), blockY, byteStart, byteEnd - 1UL);
-
     if (!osmgaStormWaitIdle(base)) {
         IOLog("OpenStepMGA D1-2: engine BUSY at entry (timeout), aborted\n");
         goto unmap;
@@ -3112,8 +3068,7 @@ osmgaDmaBuildFillList(unsigned long *ring, unsigned long ringDwords,
               "result would prove nothing.  Aborted.\n", mismatches);
         goto unmap;
     }
-    IOLog("OpenStepMGA D1-2: negative control ok (PRIMADDRESS alone wrote "
-          "nothing)\n");
+    /* Negative control passed: PRIMADDRESS alone wrote nothing. */
 
     /*
      * Make sure the list is in memory before the card is told to fetch it.
@@ -3147,11 +3102,6 @@ osmgaDmaBuildFillList(unsigned long *ring, unsigned long ringDwords,
     status = osmgaR32(base, MGA_ENGSTATUS);
     osmgaW32(base, MGA_ICLEAR, MGA_SOFTRAPICLR);   /* consume our trap */
 
-    IOLog("OpenStepMGA D1-2: after start, PRIMADDRESS %08x -> %08x "
-          "(expected %08x), STATUS=%08lx, spins=%lu\n",
-          primBefore, primAfter,
-          phys + (unsigned)(tailDwords * 4UL), status, spins);
-
     if (spins >= OSMGA_S1_SPIN_LIMIT) {
         IOLog("OpenStepMGA D1-2: FAIL -- DMA did not report idle "
               "(timeout).  Acceleration stays off and the ring buffer is "
@@ -3170,9 +3120,9 @@ osmgaDmaBuildFillList(unsigned long *ring, unsigned long ringDwords,
     }
 
     if (mismatches == 0UL && checksum == 0xDBEEF000UL) {
-        IOLog("OpenStepMGA D1-2: PASS -- the card fetched the list from "
-              "system memory and filled %lu px with %08lx, checksum %08lx\n",
-              OSMGA_S1_W * OSMGA_S1_H, OSMGA_S1_FILL, checksum);
+        IOLog("OpenStepMGA D1-2: PASS neg+start, PRIMADDRESS %08x->%08x, "
+              "checksum %08lx, spins=%lu\n",
+              primBefore, primAfter, checksum, spins);
     } else {
         IOLog("OpenStepMGA D1-2: FAIL -- %lu mismatched px, checksum %08lx "
               "(expected %08lx)\n", mismatches, checksum, 0xDBEEF000UL);
@@ -3189,8 +3139,6 @@ osmgaDmaBuildFillList(unsigned long *ring, unsigned long ringDwords,
     if (primAfter == phys + (unsigned)(tailDwords * 4UL) &&
         (status & MGA_DMA_DONE_MASK) == MGA_DMA_DONE_VALUE) {
         IOFreeLow(virt, (int)OSMGA_DMA_RING_BYTES);
-        IOLog("OpenStepMGA D1-2: ring released (read pointer reached the "
-              "tail, engine idle)\n");
     } else {
         IOLog("OpenStepMGA D1-2: ring KEPT for this boot (quiescence not "
               "provable)\n");
@@ -3205,7 +3153,6 @@ unmap:
         IOFreeLow(virt, (int)OSMGA_DMA_RING_BYTES);
     if (alias != 0)
         (void)IOUnmapPhysicalFromIOTask(alias, mapLen);
-    IOLog("OpenStepMGA D1-2: end\n");
 }
 
 
@@ -3248,29 +3195,21 @@ unmap:
      * MGA_WIADDR2 above. */
     wmiscBefore   = osmgaR32(base, MGA_WMISC);
     wiaddr2Before = osmgaR32(base, MGA_WIADDR2);
-    IOLog("OpenStepMGA D2-0a: begin, WMISC=%08lx WIADDR2=%08lx at entry\n",
-          wmiscBefore, wiaddr2Before);
-
     osmgaW32(base, MGA_WIADDR2, MGA_WMODE_SUSPEND);
     osmgaW32(base, MGA_WMISC, MGA_WMISC_WRITE);
     wmiscAfter = osmgaR32(base, MGA_WMISC);
     osmgaW32(base, MGA_WIADDR2, MGA_WMODE_SUSPEND);
     wiaddr2After = osmgaR32(base, MGA_WIADDR2);
 
-    IOLog("OpenStepMGA D2-0a: wrote WMISC=%08lx, read %08lx (expected "
-          "%08lx)\n", MGA_WMISC_WRITE, wmiscAfter, MGA_WMISC_EXPECTED);
-
     if (wmiscAfter == MGA_WMISC_EXPECTED)
-        IOLog("OpenStepMGA D2-0a: PASS -- the WARP pipe accepts "
-              "configuration\n");
+        IOLog("OpenStepMGA D2-0a: PASS (WMISC %08lx -> %08lx, WIADDR2 was "
+              "%08lx)\n", wmiscBefore, wmiscAfter, wiaddr2Before);
     else
         IOLog("OpenStepMGA D2-0a: FAIL -- WMISC read %08lx.  Do not upload "
               "microcode; suspect the ordering deviation first (the DRM "
               "installs microcode before warp_init)\n", wmiscAfter);
 
-    if (wiaddr2After == MGA_WMODE_SUSPEND)
-        IOLog("OpenStepMGA D2-0a: end state ok, pipe suspended\n");
-    else
+    if (wiaddr2After != MGA_WMODE_SUSPEND)
         IOLog("OpenStepMGA D2-0a: WARNING -- WIADDR2 reads %08lx, not "
               "suspended\n", wiaddr2After);
 
@@ -3287,8 +3226,6 @@ unmap:
      * made to invent one.  The end state is configured and suspended,
      * which is what D2-1 will need.
      */
-    IOLog("OpenStepMGA D2-0b: begin, full G400 warp_init sequence\n");
-
     osmgaW32(base, MGA_WIADDR2,    MGA_WMODE_SUSPEND);
     osmgaW32(base, MGA_WGETMSB,    MGA_WGETMSB_G400);
     osmgaW32(base, MGA_WVRTXSZ,    MGA_WVRTXSZ_G400);
@@ -3298,17 +3235,12 @@ unmap:
     wmiscAfter   = osmgaR32(base, MGA_WMISC);
     wiaddr2After = osmgaR32(base, MGA_WIADDR2);
 
-    IOLog("OpenStepMGA D2-0b: WMISC=%08lx (expected %08lx), "
-          "WIADDR2=%08lx\n",
-          wmiscAfter, MGA_WMISC_EXPECTED, wiaddr2After);
-
     if (wmiscAfter == MGA_WMISC_EXPECTED &&
         wiaddr2After == MGA_WMODE_SUSPEND)
-        IOLog("OpenStepMGA D2-0b: PASS -- WARP configured and suspended; "
-              "this is the state microcode upload needs\n");
+        IOLog("OpenStepMGA D2-0b: PASS (configured and suspended)\n");
     else
-        IOLog("OpenStepMGA D2-0b: FAIL -- the full sequence did not settle; "
-              "do not upload microcode\n");
+        IOLog("OpenStepMGA D2-0b: FAIL -- WMISC=%08lx WIADDR2=%08lx; do not "
+              "upload microcode\n", wmiscAfter, wiaddr2After);
 }
 
 
@@ -3518,11 +3450,6 @@ osmgaDmaBuildPipeList(unsigned long *ring, unsigned long ringDwords,
      * is 8192, not 4096 (S4a). */
     allocBytes = (OSMGA_WARP_TOTAL_BYTES + pageSize - 1UL) & ~(pageSize - 1UL);
 
-    IOLog("OpenStepMGA D2-1b: begin, %u pipes, %lu bytes aligned to %lu "
-          "-> requesting %lu\n",
-          (unsigned)OSMGA_WARP_PIPES, OSMGA_WARP_TOTAL_BYTES, pageSize,
-          allocBytes);
-
     virt = IOMallocLow((int)allocBytes);
     if (virt == 0) {
         IOLog("OpenStepMGA D2-1b: FAIL -- IOMallocLow returned 0.  The "
@@ -3538,9 +3465,6 @@ osmgaDmaBuildPipeList(unsigned long *ring, unsigned long ringDwords,
         return;
     }
     buf = (unsigned char *)virt;
-    IOLog("OpenStepMGA D2-1b: buffer virt=%08x phys=%08x\n",
-          (unsigned)virt, phys);
-
     /* Copy in pipe-index order, accumulating the offset by each pipe's own
      * rounded size.  Same arithmetic as the DRM's WARP_UCODE_INSTALL. */
     for (i = 0UL; i < OSMGA_WARP_PIPES; i++) {
@@ -3563,9 +3487,6 @@ osmgaDmaBuildPipeList(unsigned long *ring, unsigned long ringDwords,
         pipePhys[i] = (unsigned long)phys + off;
         off += rounded;
     }
-    IOLog("OpenStepMGA D2-1b: placed %lu bytes, %lu spare in the "
-          "allocation\n", off, allocBytes - off);
-
     /* V2-2: byte-for-byte, not a checksum. */
     for (i = 0UL; i < OSMGA_WARP_PIPES; i++) {
         const OSMGAWarpPipe *p = &osmgaWarpG400Pipes[i];
@@ -3580,9 +3501,6 @@ osmgaDmaBuildPipeList(unsigned long *ring, unsigned long ringDwords,
         IOFreeLow(virt, (int)allocBytes);
         return;
     }
-    IOLog("OpenStepMGA D2-1b: readback identical for all %u pipes\n",
-          (unsigned)OSMGA_WARP_PIPES);
-
     /* V2-3: alignment, ordering, spacing.  The spacing check is the point
      * -- it is what would catch an index-scaled address calculation. */
     for (i = 0UL; i < OSMGA_WARP_PIPES; i++) {
@@ -3608,11 +3526,9 @@ osmgaDmaBuildPipeList(unsigned long *ring, unsigned long ringDwords,
         }
     }
 
-    for (i = 0UL; i < OSMGA_WARP_PIPES; i += 4UL)
-        IOLog("OpenStepMGA D2-1b: pipe %2lu=%08lx %2lu=%08lx %2lu=%08lx "
-              "%2lu=%08lx\n",
-              i, pipePhys[i], i + 1UL, pipePhys[i + 1UL],
-              i + 2UL, pipePhys[i + 2UL], i + 3UL, pipePhys[i + 3UL]);
+    /* The pipe-address table was dumped and checked by hand once; the gap
+     * assertions above now carry that check every boot without the four
+     * log lines. */
 
     /* V2-4: contiguity, measured the same way D1-0 measured it. */
     for (off = pageSize; off < allocBytes; off += pageSize) {
@@ -3641,22 +3557,22 @@ osmgaDmaBuildPipeList(unsigned long *ring, unsigned long ringDwords,
     {
         unsigned long wmisc = osmgaR32(base, MGA_WMISC);
 
-        IOLog("OpenStepMGA D2-1b: warp_init after placement, WMISC=%08lx "
-              "(expected %08lx)\n", wmisc, MGA_WMISC_EXPECTED);
-        if (wmisc != MGA_WMISC_EXPECTED)
+        if (wmisc != MGA_WMISC_EXPECTED) {
+            IOLog("OpenStepMGA D2-1b: warp_init after placement gave "
+                  "WMISC=%08lx\n", wmisc);
             bad++;
+        }
     }
 
     if (bad == 0UL)
-        IOLog("OpenStepMGA D2-1b: PASS -- microcode placed at %08x, table "
-              "built, nothing started\n", phys);
+        IOLog("OpenStepMGA D2-1b: PASS placed at %08x (%lu bytes, %u "
+              "pipes)\n", phys, off, (unsigned)OSMGA_WARP_PIPES);
     else
         IOLog("OpenStepMGA D2-1b: FAIL -- %lu checks failed\n", bad);
 
     /* Safe to release: no pipe was ever pointed at this memory.  D2-2 must
      * not do this. */
     IOFreeLow(virt, (int)allocBytes);
-    IOLog("OpenStepMGA D2-1b: end (buffer released; no pipe was started)\n");
 }
 
 

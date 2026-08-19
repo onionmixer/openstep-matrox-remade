@@ -8,7 +8,7 @@
 "Auto Detect IDs" = "0x0525102B";
 "Display Mode" = "Height: 768 Width: 1024 Refresh: 60Hz ColorSpace: RGB:888/32";
 "MGA Memory Size" = "16";
-"Storm 2D Test" = "No";
+"Storm 2D Test" = "Yes";
 "VRAM Mmap" = "No";
 "DMA Ring Test" = "Yes";
 "WARP Test" = "Yes";
