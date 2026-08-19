@@ -114,6 +114,7 @@
 - (void)runDmaRingBuildTest;
 - (void)runDmaRingStartTest;
 - (void)runWarpConfigTest;
+- (void)runWarpUcodePlacementTest;
 - (BOOL)stormBlitCheckSrcX:(unsigned)srcX srcY:(unsigned)srcY
                      width:(unsigned)w height:(unsigned)h
                       dstX:(unsigned)dstX dstY:(unsigned)dstY

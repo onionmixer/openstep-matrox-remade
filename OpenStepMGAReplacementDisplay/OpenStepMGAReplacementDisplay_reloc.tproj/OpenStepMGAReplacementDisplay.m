@@ -38,6 +38,7 @@
 #import "OpenStepMGAReplacementDisplay.h"
 #import "OpenStepMGAManualConfig.h"
 #import "OpenStepMGAEDID.h"
+#import "OpenStepMGAWarpUcode.h"
 
 #define PCI_CFG_ADDR            0x0CF8
 #define PCI_CFG_DATA            0x0CFC
@@ -2509,6 +2510,7 @@ unmap:
     [self runDmaRingBuildTest];
     [self runDmaRingStartTest];
     [self runWarpConfigTest];
+    [self runWarpUcodePlacementTest];
 }
 
 /*
@@ -3292,6 +3294,190 @@ unmap:
               "do not upload microcode\n");
 }
 
+
+/*
+ * D2-1b -- place the WARP microcode where the card can fetch it.
+ *
+ * On a PCI card the microcode does not go into VRAM: the DRM maps it
+ * _DRM_CONSISTENT and _DRM_READ_ONLY at 256-byte alignment, which is the
+ * same contiguous-system-memory arrangement D1 already proved for the
+ * command ring.  So this reuses IOMallocLow and IOPhysicalFromVirtual and
+ * asks only whether the bytes stay put.
+ *
+ * No pipe is started.  WIADDR2 is never given WMODE_START here, which is
+ * why the buffer can be released at the end -- D2-2 will have to keep it,
+ * since the hardware reads microcode for as long as a pipe runs.
+ *
+ * Two things about the layout are easy to get wrong.  Pipe numbers are a
+ * bit combination (F=1 A=2 S=4 T2=8), and although the install order runs
+ * 0..15, the block sizes do not: 1024 bytes for pipes 0-7, 1280 for 8-15.
+ * An address computed as base + index * size would be wrong from pipe 8
+ * on, so offsets accumulate instead.
+ */
+- (void)runWarpUcodePlacementTest
+{
+    vm_address_t base = mmioBase;
+    unsigned long allocBytes;
+    unsigned long pageSize = (unsigned long)PAGE_SIZE;
+    unsigned long pipePhys[OSMGA_WARP_PIPES];
+    unsigned long pipeOff[OSMGA_WARP_PIPES];
+    unsigned char *buf;
+    void *virt;
+    unsigned phys = 0;
+    unsigned long off = 0UL;
+    unsigned long i, j;
+    unsigned long bad = 0UL;
+    IOReturn r;
+
+    if (!warpTestEnabled || !linearModeActive || !mmioMapped)
+        return;
+
+    /* The DRM rounds the microcode area up to a page; this kernel's page
+     * is 8192, not 4096 (S4a). */
+    allocBytes = (OSMGA_WARP_TOTAL_BYTES + pageSize - 1UL) & ~(pageSize - 1UL);
+
+    IOLog("OpenStepMGA D2-1b: begin, %u pipes, %lu bytes aligned to %lu "
+          "-> requesting %lu\n",
+          (unsigned)OSMGA_WARP_PIPES, OSMGA_WARP_TOTAL_BYTES, pageSize,
+          allocBytes);
+
+    virt = IOMallocLow((int)allocBytes);
+    if (virt == 0) {
+        IOLog("OpenStepMGA D2-1b: FAIL -- IOMallocLow returned 0.  The "
+              "conventional-memory arena did not have a second block; the "
+              "fallback is to share one buffer with the DMA ring\n");
+        return;
+    }
+    r = IOPhysicalFromVirtual(IOVmTaskSelf(), (vm_address_t)virt, &phys);
+    if (r != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA D2-1b: FAIL -- IOPhysicalFromVirtual r=%d\n",
+              (int)r);
+        IOFreeLow(virt, (int)allocBytes);
+        return;
+    }
+    buf = (unsigned char *)virt;
+    IOLog("OpenStepMGA D2-1b: buffer virt=%08x phys=%08x\n",
+          (unsigned)virt, phys);
+
+    /* Copy in pipe-index order, accumulating the offset by each pipe's own
+     * rounded size.  Same arithmetic as the DRM's WARP_UCODE_INSTALL. */
+    for (i = 0UL; i < OSMGA_WARP_PIPES; i++) {
+        const OSMGAWarpPipe *p = &osmgaWarpG400Pipes[i];
+        unsigned long rounded =
+            (p->length / OSMGA_WARP_ALIGN + 1UL) * OSMGA_WARP_ALIGN;
+
+        if (off + rounded > allocBytes) {
+            IOLog("OpenStepMGA D2-1b: FAIL -- pipe %lu overruns the "
+                  "buffer at offset %lu\n", i, off);
+            IOFreeLow(virt, (int)allocBytes);
+            return;
+        }
+        for (j = 0UL; j < p->length; j++)
+            buf[off + j] = p->bytes[j];
+        for (; j < rounded; j++)
+            buf[off + j] = 0;
+
+        pipeOff[i]  = off;
+        pipePhys[i] = (unsigned long)phys + off;
+        off += rounded;
+    }
+    IOLog("OpenStepMGA D2-1b: placed %lu bytes, %lu spare in the "
+          "allocation\n", off, allocBytes - off);
+
+    /* V2-2: byte-for-byte, not a checksum. */
+    for (i = 0UL; i < OSMGA_WARP_PIPES; i++) {
+        const OSMGAWarpPipe *p = &osmgaWarpG400Pipes[i];
+
+        for (j = 0UL; j < p->length; j++)
+            if (buf[pipeOff[i] + j] != p->bytes[j])
+                bad++;
+    }
+    if (bad != 0UL) {
+        IOLog("OpenStepMGA D2-1b: FAIL -- %lu bytes differ after copy\n",
+              bad);
+        IOFreeLow(virt, (int)allocBytes);
+        return;
+    }
+    IOLog("OpenStepMGA D2-1b: readback identical for all %u pipes\n",
+          (unsigned)OSMGA_WARP_PIPES);
+
+    /* V2-3: alignment, ordering, spacing.  The spacing check is the point
+     * -- it is what would catch an index-scaled address calculation. */
+    for (i = 0UL; i < OSMGA_WARP_PIPES; i++) {
+        if ((pipePhys[i] & (OSMGA_WARP_ALIGN - 1UL)) != 0UL) {
+            IOLog("OpenStepMGA D2-1b: FAIL -- pipe %lu at %08lx is not "
+                  "%u-aligned\n", i, pipePhys[i], (unsigned)OSMGA_WARP_ALIGN);
+            bad++;
+        }
+        if (i > 0UL && pipePhys[i] <= pipePhys[i - 1UL]) {
+            IOLog("OpenStepMGA D2-1b: FAIL -- pipe %lu address does not "
+                  "advance\n", i);
+            bad++;
+        }
+    }
+    for (i = 1UL; i < OSMGA_WARP_PIPES; i++) {
+        unsigned long gap = pipePhys[i] - pipePhys[i - 1UL];
+        unsigned long want = (i - 1UL) < 8UL ? 1024UL : 1280UL;
+
+        if (gap != want) {
+            IOLog("OpenStepMGA D2-1b: FAIL -- gap %lu..%lu is %lu, "
+                  "expected %lu\n", i - 1UL, i, gap, want);
+            bad++;
+        }
+    }
+
+    for (i = 0UL; i < OSMGA_WARP_PIPES; i += 4UL)
+        IOLog("OpenStepMGA D2-1b: pipe %2lu=%08lx %2lu=%08lx %2lu=%08lx "
+              "%2lu=%08lx\n",
+              i, pipePhys[i], i + 1UL, pipePhys[i + 1UL],
+              i + 2UL, pipePhys[i + 2UL], i + 3UL, pipePhys[i + 3UL]);
+
+    /* V2-4: contiguity, measured the same way D1-0 measured it. */
+    for (off = pageSize; off < allocBytes; off += pageSize) {
+        unsigned p2 = 0;
+
+        r = IOPhysicalFromVirtual(IOVmTaskSelf(),
+                                  (vm_address_t)(buf + off), &p2);
+        if (r != IO_R_SUCCESS || p2 != phys + (unsigned)off) {
+            IOLog("OpenStepMGA D2-1b: FAIL -- discontiguous at +%lu\n", off);
+            bad++;
+            break;
+        }
+    }
+
+    /*
+     * Re-run the WARP init sequence now that there is microcode to flush.
+     * D2-0b proved the sequence settles; it could not flush a cache over
+     * code that was not there yet.  This is the DRM's order: install, then
+     * warp_init.
+     */
+    osmgaW32(base, MGA_WIADDR2,    MGA_WMODE_SUSPEND);
+    osmgaW32(base, MGA_WGETMSB,    MGA_WGETMSB_G400);
+    osmgaW32(base, MGA_WVRTXSZ,    MGA_WVRTXSZ_G400);
+    osmgaW32(base, MGA_WACCEPTSEQ, MGA_WACCEPTSEQ_G400);
+    osmgaW32(base, MGA_WMISC,      MGA_WMISC_WRITE);
+    {
+        unsigned long wmisc = osmgaR32(base, MGA_WMISC);
+
+        IOLog("OpenStepMGA D2-1b: warp_init after placement, WMISC=%08lx "
+              "(expected %08lx)\n", wmisc, MGA_WMISC_EXPECTED);
+        if (wmisc != MGA_WMISC_EXPECTED)
+            bad++;
+    }
+
+    if (bad == 0UL)
+        IOLog("OpenStepMGA D2-1b: PASS -- microcode placed at %08x, table "
+              "built, nothing started\n", phys);
+    else
+        IOLog("OpenStepMGA D2-1b: FAIL -- %lu checks failed\n", bad);
+
+    /* Safe to release: no pipe was ever pointed at this memory.  D2-2 must
+     * not do this. */
+    IOFreeLow(virt, (int)allocBytes);
+    IOLog("OpenStepMGA D2-1b: end (buffer released; no pipe was started)\n");
+}
+
 @end
+
 
 
