@@ -58,6 +58,9 @@
     /* opt-in D2 WARP configuration probe ("WARP Test" = "Yes"). */
     BOOL warpTestEnabled;
 
+    /* opt-in D3 interpolating-rasteriser probe ("Raster Test" = "Yes"). */
+    BOOL rasterTestEnabled;
+
     /* S3 IODisplayDoBlit acceleration.
      *   stormBlitReady   -- accept IODisplayDoBlit requests at all
      *   stormBlitFailed  -- an execute timed out; the engine may still be
@@ -120,6 +123,7 @@
                ringVirt:(unsigned long *)ring
                ringPhys:(unsigned)ringPhys;
 - (void)runWarpPipeStartTest;
+- (void)runRasterInterpolationTest;
 - (BOOL)stormBlitCheckSrcX:(unsigned)srcX srcY:(unsigned)srcY
                      width:(unsigned)w height:(unsigned)h
                       dstX:(unsigned)dstX dstY:(unsigned)dstY

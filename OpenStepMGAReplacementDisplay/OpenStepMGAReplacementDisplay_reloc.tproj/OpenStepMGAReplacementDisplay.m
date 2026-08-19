@@ -302,6 +302,41 @@
 #define MGA_G400_WR56_MAGIC     0x46480000UL
 #define MGA_WMODE_START         0x00000003UL
 
+/*
+ * D3 -- the Storm engine's own interpolating rasteriser (mga_reg.h).
+ *
+ * DWGCTL atype selects it: RPL (0<<4) is the replace mode S1 used, I
+ * (7<<4) interpolates, ZI (3<<4) interpolates with Z.  DR4/DR8/DR12 hold
+ * the red/green/blue start values and the neighbouring registers their
+ * increments; ALPHASTART and the TMR/TEX group extend the same mechanism
+ * to alpha and texture.
+ *
+ * The Gouraud DWGCTL below is S1's solid fill with SOLID removed and the
+ * atype changed -- everything else, including the geometry registers,
+ * stays as S1 proved it.  Note that no source we have uses TRAP | I; what
+ * they use is TEXTURE_TRAP | I, for X Render acceleration.  So this
+ * combination is an experiment, and its failure would first mean "this
+ * combination is unsupported", not "interpolation does not work".
+ */
+#define MGA_DR4                 0x1cd0   /* red   start */
+#define MGA_DR6                 0x1cd8   /* red   increment a */
+#define MGA_DR7                 0x1cdc   /* red   increment b */
+#define MGA_DR8                 0x1ce0   /* green start */
+#define MGA_DR10                0x1ce8   /* green increment a */
+#define MGA_DR11                0x1cec   /* green increment b */
+#define MGA_DR12                0x1cf0   /* blue  start */
+#define MGA_DR14                0x1cf8   /* blue  increment a */
+#define MGA_DR15                0x1cfc   /* blue  increment b */
+#define MGA_DWGCTL_ATYPE_I      0x00000070UL   /* 7 << 4 */
+#define MGA_DWGCTL_SOLID        0x00000800UL   /* 1 << 11 */
+#define MGA_DWGCTL_GOURAUD      ((MGA_DWGCTL_SOLID_FILL & \
+                                  ~MGA_DWGCTL_SOLID) | MGA_DWGCTL_ATYPE_I)
+
+/* mga_storm.c writes colour start values as (component << 7); the rest of
+ * the fixed-point layout is not stated anywhere we can read, so the probe
+ * measures it instead of assuming it. */
+#define MGA_DR_SHIFT            7
+
 #define MGA_DMA_GENERAL         0x00     /* PRIMADDRESS mode bits */
 #define MGA_PRIMNOSTART         0x01     /* PRIMEND bit0: do NOT start */
 #define MGA_PAGPXFER            0x02     /* PRIMEND bit1: AGP; 0 for PCI */
@@ -1270,6 +1305,7 @@ static IODisplayInfo osmgaModeTemplate = {
     stormTestEnabled = NO;
     dmaRingTestEnabled = NO;
     warpTestEnabled = NO;
+    rasterTestEnabled = NO;
     stormBlitReady = NO;
     stormBlitFailed = NO;
     stormBusy = NO;
@@ -1338,6 +1374,18 @@ static IODisplayInfo osmgaModeTemplate = {
                           ? YES : NO;
         if (warpTestEnabled)
             IOLog("OpenStepMGAReplacementDisplay: D2 WARP test ENABLED "
+                  "by configuration\n");
+    }
+
+    /* Opt-in D3 rasteriser probe; absent/anything-but-Yes is off. */
+    {
+        IOConfigTable *ct = [deviceDescription configTable];
+        const char *flag = (ct == nil) ? 0
+                         : (const char *)[ct valueForStringKey:"Raster Test"];
+        rasterTestEnabled = (flag != 0 && osmgaTextContains(flag, "Yes"))
+                            ? YES : NO;
+        if (rasterTestEnabled)
+            IOLog("OpenStepMGAReplacementDisplay: D3 raster test ENABLED "
                   "by configuration\n");
     }
 
@@ -2528,6 +2576,7 @@ unmap:
     [self runWarpConfigTest];
     [self runWarpUcodePlacementTest];
     [self runWarpPipeStartTest];
+    [self runRasterInterpolationTest];
 }
 
 /*
@@ -3745,7 +3794,159 @@ osmgaDmaBuildPipeList(unsigned long *ring, unsigned long ringDwords,
     IOLog("OpenStepMGA D2-2a: end (ring released, microcode kept)\n");
 }
 
+
+/*
+ * D3-0 -- does the interpolating rasteriser run?
+ *
+ * This is a measurement, not a pass/fail against a formula.  The DR
+ * registers' fixed-point layout is not documented in any source we have --
+ * mga_storm.c writes (component << 7) with zero increments, which pins
+ * neither the fractional width nor which of the two increment registers is
+ * the x step.  So the probe writes a known start and a single non-zero
+ * increment, then prints the pixels it got.  What the numbers mean is
+ * derived afterwards, on paper.
+ *
+ * The only verdict taken here is the one that does not need the format:
+ * a constant block means interpolation did nothing.
+ *
+ * Geometry is S1's, unchanged and already proven -- same offscreen block,
+ * same clip, same FXBNDRY/YDSTLEN.  The one thing that differs is DWGCTL's
+ * atype and the DR registers, so a failure has one plausible cause.
+ */
+- (void)runRasterInterpolationTest
+{
+    /*
+     * D3-0 -- the ramp, now that the colour field is known.
+     *
+     * Walking a single bit through all 32 positions gave an unambiguous
+     * mapping: bits 15..22 of a DR register are bits 0..7 of the channel
+     * (bit15 -> 010101, bit16 -> 020202, ... bit22 -> 808080), bit 23
+     * overflows to full scale, and nothing outside 15..23 has any effect.
+     * So a DR register holds colour << 15.  Four earlier guesses at the
+     * scale were all wrong; the walk cost one boot and settled it.
+     *
+     * This run asks three questions at once, because each needs the same
+     * draw:
+     *
+     *   - does the field behave for multi-bit values, not just single bits
+     *     (red should sweep 0..255 rather than saturating or wrapping)
+     *   - is DR6 the x increment or the y increment -- the register names
+     *     do not say, so the answer is whichever axis the ramp appears on
+     *   - which DR register drives which byte of the pixel, which the bit
+     *     walk could not tell because it wrote all three the same
+     *
+     * Red ramps, green is held at 255 and blue at 64: three distinguishable
+     * values, so the sample lines identify the channels by inspection.
+     */
+    IODisplayInfo *di = [self displayInfo];
+    const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
+    vm_address_t base = mmioBase;
+    unsigned long stride, testY, startPixel, endPixel, byteStart, byteEnd;
+    vm_address_t alias = 0;
+    unsigned long mapLen = 0;
+    volatile unsigned long *blk = 0;
+    unsigned long row, col, varyX = 0UL, varyY = 0UL;
+    IOReturn r;
+
+    if (!rasterTestEnabled || !linearModeActive || !mmioMapped)
+        return;
+    if (f->bytesPerPixel != 4) {
+        IOLog("OpenStepMGA D3-0: not a 32bpp mode, skipped\n");
+        return;
+    }
+
+    stride     = (unsigned long)di->rowBytes / 4UL;
+    testY      = (unsigned long)di->height + OSMGA_S1_GUARD_ROWS;
+    startPixel = testY * stride;
+    endPixel   = (testY + OSMGA_S1_H - 1UL) * stride;
+    byteStart  = startPixel * 4UL;
+    byteEnd    = byteStart + (OSMGA_S1_H - 1UL) * stride * 4UL +
+                 OSMGA_S1_W * 4UL;
+
+    if (byteEnd > OSMGA_S1_VRAM_PROVEN) {
+        IOLog("OpenStepMGA D3-0: block past the proven VRAM bound, "
+              "skipped\n");
+        return;
+    }
+
+    r = osmgaMapUncachedBlock(frameBufferPhysical, byteStart, byteEnd,
+                              &alias, &mapLen, &blk);
+    if (r != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA D3-0: uncached alias map failed r=%d\n", (int)r);
+        return;
+    }
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA D3-0: engine BUSY at entry, aborted\n");
+        goto unmap;
+    }
+
+    for (row = 0UL; row < OSMGA_S1_H; row++)
+        for (col = 0UL; col < OSMGA_S1_W; col++)
+            blk[row * stride + col] = OSMGA_S1_SENTINEL;
+
+    if (!osmgaStormWaitFifo(base, 13U)) {
+        IOLog("OpenStepMGA D3-0: fifo timeout before init\n");
+        goto unmap;
+    }
+    osmgaStormInitState(base, stride,
+                        OSMGA_S1_X, OSMGA_S1_X + OSMGA_S1_W - 1UL,
+                        startPixel, endPixel);
+
+    if (!osmgaStormWaitFifo(base, 12U)) {
+        IOLog("OpenStepMGA D3-0: fifo timeout before interpolators\n");
+        goto unmap;
+    }
+    osmgaW32(base, MGA_DR4,  0UL);                    /* ramps from 0     */
+    osmgaW32(base, MGA_DR6,  (255UL << 15) / OSMGA_S1_W);
+    osmgaW32(base, MGA_DR7,  0UL);
+    osmgaW32(base, MGA_DR8,  255UL << 15);            /* flat 255         */
+    osmgaW32(base, MGA_DR10, 0UL);
+    osmgaW32(base, MGA_DR11, 0UL);
+    osmgaW32(base, MGA_DR12, 64UL << 15);             /* flat 64          */
+    osmgaW32(base, MGA_DR14, 0UL);
+    osmgaW32(base, MGA_DR15, 0UL);
+    osmgaW32(base, MGA_DWGCTL, MGA_DWGCTL_GOURAUD);
+
+    if (!osmgaStormWaitFifo(base, 3U)) {
+        IOLog("OpenStepMGA D3-0: fifo timeout before draw\n");
+        goto unmap;
+    }
+    osmgaW32(base, MGA_FXBNDRY,
+             ((OSMGA_S1_X + OSMGA_S1_W) << 16) | (OSMGA_S1_X & 0xffffUL));
+    osmgaW32(base, MGA_YDSTLEN + MGA_EXEC, (testY << 16) | OSMGA_S1_H);
+
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA D3-0: engine did NOT return idle -- FAIL\n");
+        goto unmap;
+    }
+
+    for (col = 1UL; col < OSMGA_S1_W; col++)
+        if (blk[col] != blk[0])
+            varyX++;
+    for (row = 1UL; row < OSMGA_S1_H; row++)
+        if (blk[row * stride] != blk[0])
+            varyY++;
+
+    IOLog("OpenStepMGA D3-0: DR4 ramp 0->255 step %06lx, DR8=255, DR12=64\n",
+          (255UL << 15) / OSMGA_S1_W);
+    IOLog("OpenStepMGA D3-0: row0 x=0,16,32,48,63: %06lx %06lx %06lx %06lx "
+          "%06lx\n", blk[0] & 0xFFFFFFUL, blk[16] & 0xFFFFFFUL,
+          blk[32] & 0xFFFFFFUL, blk[48] & 0xFFFFFFUL, blk[63] & 0xFFFFFFUL);
+    IOLog("OpenStepMGA D3-0: col0 y=0,16,32,48,63: %06lx %06lx %06lx %06lx "
+          "%06lx\n", blk[0] & 0xFFFFFFUL, blk[16 * stride] & 0xFFFFFFUL,
+          blk[32 * stride] & 0xFFFFFFUL, blk[48 * stride] & 0xFFFFFFUL,
+          blk[63 * stride] & 0xFFFFFFUL);
+    IOLog("OpenStepMGA D3-0: %lu of 63 columns vary, %lu of 63 rows vary "
+          "-> DR6 is the %s increment\n", varyX, varyY,
+          varyX > varyY ? "x" : (varyY > varyX ? "y" : "(neither)"));
+
+unmap:
+    if (alias != 0)
+        (void)IOUnmapPhysicalFromIOTask(alias, mapLen);
+}
+
 @end
+
 
 
 
