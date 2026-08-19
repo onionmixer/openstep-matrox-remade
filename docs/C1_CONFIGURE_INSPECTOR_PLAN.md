@@ -1,7 +1,8 @@
 # C1 — Configure.app 인스펙터로 `Storm 2D Test` / `VRAM Mmap` 노출
 
 기준일: 2026-08-19
-상태: 계획. **codex 교차검토 1회 완료(2026-08-19)** 후 개정판.
+상태: **완료(2026-08-19). C1-0 ~ C1-3 전부 실기 검증 통과.** 결과는 §7.
+아래 본문은 착수 전 계획(codex 교차검토 1회 완료 후 개정판)을 그대로 둔다.
 초판의 오류 3건을 이 개정판이 고쳤다 — §2-1(nib 없는 프로브는 거짓 음성),
 §1(스톡 디스플레이 인스펙터가 없다는 주장은 거짓, `MatroxInspector` 존재),
 §C1-2(파서는 `osmgaTextEquals` 정확 일치가 아니라 `osmgaTextContains`).
@@ -231,3 +232,47 @@ V3-5는 특히 중요하다. 드라이버는 켜졌을 때만 cdev를 공개하�
   추가할지. 지금은 두 스위치만.
 - 라이브 반영. 불가능하다고 판단했으나(§0), C1-3까지 끝난 뒤 `IODeviceMaster`
   기반 라이브 토글이 의미 있는 키가 생기면 그때 별도로 계획한다.
+
+## 7. 실행 결과 (2026-08-19)
+
+전 단계 통과. 커널 코드는 한 줄도 바뀌지 않았고 `*_reloc`은 매 빌드·설치에서
+`cmp` 바이트 동일이었다.
+
+| 검증 | 결과 |
+| --- | --- |
+| V0-1 클래스 링크 | `nm`에 `.objc_class_name_OSMGADisplayInspector` 정의, `IODisplayInspector`는 U(Configure 안에서 해석) |
+| V0-2 커널 불변 | 빌드·설치 전후 `cmp` RC=0 (매번) |
+| V0-3 패널 표시 | 스톡과 동일하게 표시 |
+| V0-4 런타임 인스턴스화 | `Configure[528]: OSMGADisplayInspector: setTable: ...` |
+| V1-1/2/3 nib | `nibroundtrip` 바이트 동일, XML 검증 통과, 이식 전후 객체 그래프 비교로 스톡 구조 보존 확인 |
+| V2-1 빌드 | 경고 0 |
+| V2-2 모드 선택 | 정상 동작 |
+| V2-3 테이블 기록 | `Storm 2D Test` 켬 → `"Yes"` 기록. **Configure가 `Instance0.table`을 통째로 재작성하면서도 우리 키 2개를 보존** |
+| V3-1/2 Storm 켬 | S1 PASS, S2 2/2 PASS, S3 6/6 PASS, `stormBlitReady == 1` |
+| V3-3 Storm 끔 | 자체시험 로그 **전무** |
+| V3-4 Mmap 켬 | cdev major 1 등록, 매핑 OK, 자기검사 0 bad, 가드 2종 정확히 거부 |
+| V3-5 Mmap 끔 | `S4a` 로그 **전무**, `character major = 4294967295`, `open failed errno=6`(ENXIO) |
+
+### 7-1. 계획이 틀렸던 곳 — `displayAccessoryHolder`가 아니었다
+
+계획의 C1-1은 스위치를 뷰 49(콘텐츠 뷰)에 상자 48과 **나란히** 두려 했다.
+그렇게 하니 **모드 UI는 보이는데 스위치는 보이지 않았다.**
+
+원인: `IODisplayInspector`는 이 nib의 콘텐츠 뷰 전체를 쓰지 않는다. **`displayMode`
+상자(48) 하나만** 꺼내 기반 인스펙터의 액세서리 영역에 설치하고 나머지는 버린다.
+따라서 그 상자 **바깥**에 놓인 컨트롤은 화면에 올라갈 통로가 없다.
+
+수정: 상자 48과 그 콘텐츠 뷰 52를 66 → 136으로 키우고 기존 자식(54, 55)을 위로
+올린 뒤, 스위치와 안내문을 상자 **안**에 넣었다. 그래서 늘어난 것은 창이 아니라
+상자다.
+
+`displayAccessoryHolder`(oid 54)는 끝내 쓰지 않았다 — `data.classes` 어디에도
+선언되지 않은 `SwitchView` 클래스의 CustomView이고, 362×19이며, Box 55 밑에
+깔려 있어 무엇도 보여주지 못하는 자리다.
+
+### 7-2. 두 스위치는 서로 독립적이다 (V3-4에서 부수적으로 확인)
+
+`Storm 2D Test`를 끄고 `VRAM Mmap`만 켠 부팅에서, mmap 프로브의 채우기 항목이
+`-702`(`IO_R_RESOURCE`)로 거부됐다. 이는 실패가 아니라 정확한 동작이다 —
+채우기는 mmap 등록 **과** `stormBlitReady`를 둘 다 요구하는데 후자가 0이었다.
+두 플래그가 서로 간섭하지 않고 각자의 경로만 여닫는다는 증거다.

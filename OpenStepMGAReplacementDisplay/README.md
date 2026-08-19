@@ -15,6 +15,7 @@ DriverKit 디스플레이 드라이버. `IOFrameBufferDisplay` 서브클래스�
 | `setTransferTable:count:` 팔레트 (8bpp PseudoColor, 그레이스케일) | 동작 |
 | Storm 2D 엔진 단색채우기 / BITBLT | 실증 완료(기본 비활성) |
 | 오프스크린 VRAM의 유저 태스크 매핑(cdevsw `d_mmap`) | 실증 완료(기본 비활성) |
+| Configure.app 인스펙터(개발 스위치 2종) | 동작 (`../docs/C1_CONFIGURE_INSPECTOR_PLAN.md`) |
 | 3D / WARP / DMA | **미착수** (`../docs/S5_HW3D_DMA_FEASIBILITY.md`) |
 
 지원 해상도는 640×480, 800×600, 1024×768, 1280×1024, 1600×1200 (전부 VESA DMT
@@ -28,6 +29,11 @@ DriverKit 디스플레이 드라이버. `IOFrameBufferDisplay` 서브클래스�
 | `MGA Memory Size` | `16` | VRAM MiB (보수적 고정값) |
 | `Storm 2D Test` | `No` | `Yes`면 `enterLinearMode` 끝에서 엔진 자체시험 실행 |
 | `VRAM Mmap` | `No` | `Yes`면 오프스크린 VRAM 창을 캐릭터 디바이스로 공개 |
+
+두 스위치는 Configure.app의 디스플레이 인스펙터에서도 켜고 끌 수 있다
+(`OSMGADisplayInspector`). 값은 설정 테이블에만 쓰이며, 드라이버가 초기화
+시점에 한 번만 읽으므로 **적용은 다음 재부팅부터**다 — 패널에도 그렇게 적혀
+있다. nib은 `nib-src/build-inspector-nib.py`가 `openstep-nibmaker`로 만든다.
 
 `Storm 2D Test`가 `No`인 기본 부팅은 **드로잉 엔진 레지스터를 한 번도 쓰지
 않는다.** `VRAM Mmap`을 켜면 클라이언트 매핑이 드라이버 수명보다 오래
