@@ -286,6 +286,22 @@
 #define MGA_WVRTXSZ_G400        0x00001807UL
 #define MGA_WACCEPTSEQ_G400     0x18000000UL
 
+/* Pipe emit registers and their magic values (mga_state.c, mga_drv.h). */
+#define MGA_WFLAG               0x1dc4
+#define MGA_WFLAG1              0x1de0
+#define MGA_WR49                0x2dc4
+#define MGA_WR52                0x2dd0
+#define MGA_WR53                0x2dd4
+#define MGA_WR54                0x2dd8
+#define MGA_WR56                0x2de0
+#define MGA_WR57                0x2de4
+#define MGA_WR60                0x2df0
+#define MGA_WR61                0x2df4
+#define MGA_WR62                0x2df8
+#define MGA_G400_WR_MAGIC       0x00000040UL   /* 1 << 6 */
+#define MGA_G400_WR56_MAGIC     0x46480000UL
+#define MGA_WMODE_START         0x00000003UL
+
 #define MGA_DMA_GENERAL         0x00     /* PRIMADDRESS mode bits */
 #define MGA_PRIMNOSTART         0x01     /* PRIMEND bit0: do NOT start */
 #define MGA_PAGPXFER            0x02     /* PRIMEND bit1: AGP; 0 for PCI */
@@ -2511,6 +2527,7 @@ unmap:
     [self runDmaRingStartTest];
     [self runWarpConfigTest];
     [self runWarpUcodePlacementTest];
+    [self runWarpPipeStartTest];
 }
 
 /*
@@ -3296,6 +3313,171 @@ unmap:
 
 
 /*
+ * Place the sixteen G400 pipes in a fresh low-memory buffer and fill in
+ * their physical addresses.  Shared by D2-1b, which verifies the layout
+ * and then frees, and by D2-2a, which keeps it because the card will be
+ * pointed at it -- so the code that D2-1b proved correct is the same code
+ * that runs when it matters.
+ *
+ * Offsets accumulate by each pipe's own rounded size.  Pipes 0-7 round to
+ * 1024 and 8-15 to 1280, so an address scaled from the index would be
+ * wrong from pipe 8 on, and wrong in a way alignment and range checks
+ * cannot see.
+ *
+ * On failure the buffer is released and 0 is returned; on success the
+ * caller owns it.
+ */
+static int
+osmgaWarpPlaceUcode(unsigned long *pipePhys, unsigned long *pipeOff,
+                    void **outVirt, unsigned *outPhys,
+                    unsigned long *outAllocBytes)
+{
+    unsigned long pageSize = (unsigned long)PAGE_SIZE;
+    unsigned long allocBytes =
+        (OSMGA_WARP_TOTAL_BYTES + pageSize - 1UL) & ~(pageSize - 1UL);
+    unsigned long off = 0UL;
+    unsigned long i, j, bad = 0UL;
+    unsigned char *buf;
+    void *virt;
+    unsigned phys = 0;
+    IOReturn r;
+
+    virt = IOMallocLow((int)allocBytes);
+    if (virt == 0) {
+        IOLog("OpenStepMGA warp: IOMallocLow(%lu) returned 0\n", allocBytes);
+        return 0;
+    }
+    r = IOPhysicalFromVirtual(IOVmTaskSelf(), (vm_address_t)virt, &phys);
+    if (r != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA warp: IOPhysicalFromVirtual r=%d\n", (int)r);
+        IOFreeLow(virt, (int)allocBytes);
+        return 0;
+    }
+    buf = (unsigned char *)virt;
+
+    for (i = 0UL; i < OSMGA_WARP_PIPES; i++) {
+        const OSMGAWarpPipe *p = &osmgaWarpG400Pipes[i];
+        unsigned long rounded =
+            (p->length / OSMGA_WARP_ALIGN + 1UL) * OSMGA_WARP_ALIGN;
+
+        if (off + rounded > allocBytes) {
+            IOLog("OpenStepMGA warp: pipe %lu overruns the buffer\n", i);
+            IOFreeLow(virt, (int)allocBytes);
+            return 0;
+        }
+        for (j = 0UL; j < p->length; j++)
+            buf[off + j] = p->bytes[j];
+        for (; j < rounded; j++)
+            buf[off + j] = 0;
+        pipeOff[i]  = off;
+        pipePhys[i] = (unsigned long)phys + off;
+        off += rounded;
+    }
+
+    for (i = 0UL; i < OSMGA_WARP_PIPES; i++) {
+        const OSMGAWarpPipe *p = &osmgaWarpG400Pipes[i];
+
+        for (j = 0UL; j < p->length; j++)
+            if (buf[pipeOff[i] + j] != p->bytes[j])
+                bad++;
+    }
+    if (bad != 0UL) {
+        IOLog("OpenStepMGA warp: %lu bytes differ after copy\n", bad);
+        IOFreeLow(virt, (int)allocBytes);
+        return 0;
+    }
+
+    *outVirt = virt;
+    *outPhys = phys;
+    *outAllocBytes = allocBytes;
+    return 1;
+}
+
+/*
+ * Assemble the G400 single-texture pipe emit (mga_g400_emit_pipe with the
+ * T2 flush branch not taken, which is the case from a cold start).
+ *
+ * `startPhys` non-zero starts the pipe; zero leaves the final WIADDR2 at
+ * WMODE_SUSPEND.  That is the negative control: identical encoding and
+ * ordering, one value different, so a difference in outcome can only come
+ * from having pointed WARP at microcode.
+ *
+ * When the pipe is started, a suspend block follows it before the SOFTRAP.
+ * That does not promise to rescue a wedged WARP; it keeps the intended run
+ * short if the command parser carries on regardless.
+ */
+static int
+osmgaDmaBuildPipeList(unsigned long *ring, unsigned long ringDwords,
+                      unsigned long startPhys,
+                      unsigned long *outTailDwords,
+                      unsigned long *outTotalDwords)
+{
+    unsigned long pos = 0UL;
+    int ok = 1;
+
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_WIADDR2, MGA_WMODE_SUSPEND,
+                             MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                             MGA_DMAPAD, 0UL);
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_WVRTXSZ, MGA_WVRTXSZ_G400,
+                             MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                             MGA_DMAPAD, 0UL);
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_WACCEPTSEQ, 0UL,
+                             MGA_WACCEPTSEQ, 0UL,
+                             MGA_WACCEPTSEQ, 0UL,
+                             MGA_WACCEPTSEQ, MGA_WACCEPTSEQ_G400);
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_WFLAG,  0UL,
+                             MGA_WFLAG1, 0UL,
+                             MGA_WR56,   MGA_G400_WR56_MAGIC,
+                             MGA_DMAPAD, 0UL);
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_WR49, 0UL, MGA_WR57, 0UL,
+                             MGA_WR53, 0UL, MGA_WR61, 0UL);
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_WR54, MGA_G400_WR_MAGIC,
+                             MGA_WR62, MGA_G400_WR_MAGIC,
+                             MGA_WR52, MGA_G400_WR_MAGIC,
+                             MGA_WR60, MGA_G400_WR_MAGIC);
+
+    /* The three 0xffffffff pads are the DRM's documented workaround for a
+     * hardware bug, and are not the same thing as the tail padding past
+     * PRIMEND that D1 needs. */
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_DMAPAD, 0xffffffffUL,
+                             MGA_DMAPAD, 0xffffffffUL,
+                             MGA_DMAPAD, 0xffffffffUL,
+                             MGA_WIADDR2,
+                                 startPhys != 0UL
+                                     ? (startPhys | MGA_WMODE_START)
+                                     : MGA_WMODE_SUSPEND);
+
+    if (startPhys != 0UL)
+        ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                                 MGA_WIADDR2, MGA_WMODE_SUSPEND,
+                                 MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                                 MGA_DMAPAD, 0UL);
+
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                             MGA_DMAPAD, 0UL, MGA_SOFTRAP, 0UL);
+    if (!ok)
+        return 0;
+
+    *outTailDwords = pos;
+
+    if (!osmgaDmaBlock(ring, ringDwords, &pos,
+                       MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                       MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL))
+        return 0;
+
+    *outTotalDwords = pos;
+    return 1;
+}
+
+/*
  * D2-1b -- place the WARP microcode where the card can fetch it.
  *
  * On a PCI card the microcode does not go into VRAM: the DRM maps it
@@ -3477,7 +3659,178 @@ unmap:
     IOLog("OpenStepMGA D2-1b: end (buffer released; no pipe was started)\n");
 }
 
+
+/*
+ * D2-2a -- start a WARP pipe, with no vertices.
+ *
+ * The negative control runs first and must pass: the same register list
+ * with WMODE_SUSPEND in place of the final START.  If that does not go
+ * through, the encoding or ordering is wrong and there is no point
+ * pointing WARP at microcode.  The real run then changes exactly one
+ * value.
+ *
+ * Nothing is drawn.  What this cannot claim is that nothing *can* be
+ * drawn: the DRM's vertex path is absent, but this is the first execution
+ * of opaque microcode from card-visible memory, and no source says what a
+ * wrong microcode/chip pairing does internally.  The plan says so too.
+ *
+ * The microcode buffer is not released -- the card has been given its
+ * address.
+ */
+- (BOOL)runWarpPipeOnce:(unsigned long)startPhys
+                  label:(const char *)label
+             ringVirt:(unsigned long *)ring
+             ringPhys:(unsigned)ringPhys
+{
+    vm_address_t base = mmioBase;
+    unsigned long ringDwords = OSMGA_DMA_RING_BYTES / 4UL;
+    unsigned long tailDwords = 0UL, totalDwords = 0UL;
+    unsigned long status, spins, sum, i;
+    unsigned primBefore, primAfter;
+
+    if (!osmgaDmaBuildPipeList(ring, ringDwords, startPhys,
+                               &tailDwords, &totalDwords)) {
+        IOLog("OpenStepMGA D2-2a/%s: FAIL -- list assembly rejected\n", label);
+        return NO;
+    }
+
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA D2-2a/%s: engine BUSY at entry, aborted\n", label);
+        return NO;
+    }
+    osmgaW32(base, MGA_ICLEAR, MGA_SOFTRAPICLR);
+
+    sum = 0UL;
+    for (i = 0UL; i < totalDwords; i++)
+        sum += ring[i];
+    (void)osmgaR32(base, MGA_ENGSTATUS);
+    if (sum == 0xFFFFFFFFUL)
+        IOLog("OpenStepMGA D2-2a: barrier %lu\n", sum);
+
+    primBefore = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
+    osmgaW32(base, MGA_PRIMADDRESS, (unsigned long)ringPhys | MGA_DMA_GENERAL);
+    osmgaW32(base, MGA_PRIMEND,
+             ((unsigned long)ringPhys + tailDwords * 4UL) | MGA_DMA_GENERAL);
+
+    for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
+        status = osmgaR32(base, MGA_ENGSTATUS);
+        if ((status & MGA_DMA_DONE_MASK) == MGA_DMA_DONE_VALUE)
+            break;
+    }
+    primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
+    status = osmgaR32(base, MGA_ENGSTATUS);
+    osmgaW32(base, MGA_ICLEAR, MGA_SOFTRAPICLR);
+
+    IOLog("OpenStepMGA D2-2a/%s: %u blocks, PRIMADDRESS %08x -> %08x "
+          "(expected %08x), STATUS=%08lx, spins=%lu\n",
+          label, (unsigned)(totalDwords / OSMGA_DMA_BLOCK_DWORDS),
+          primBefore, primAfter,
+          ringPhys + (unsigned)(tailDwords * 4UL), status, spins);
+
+    if (spins >= OSMGA_S1_SPIN_LIMIT) {
+        IOLog("OpenStepMGA D2-2a/%s: FAIL -- DMA did not complete\n", label);
+        return NO;
+    }
+
+    {
+        unsigned long wmisc   = osmgaR32(base, MGA_WMISC);
+        unsigned long wiaddr2 = osmgaR32(base, MGA_WIADDR2);
+
+        /* WIADDR2's read semantics are unproven, so it is observed, never
+         * used as a verdict. */
+        IOLog("OpenStepMGA D2-2a/%s: WMISC=%08lx (expected %08lx), "
+              "WIADDR2 reads %08lx (observation only)\n",
+              label, wmisc, MGA_WMISC_EXPECTED, wiaddr2);
+        if (wmisc != MGA_WMISC_EXPECTED) {
+            IOLog("OpenStepMGA D2-2a/%s: FAIL -- WARP configuration "
+                  "collapsed\n", label);
+            return NO;
+        }
+    }
+    return YES;
+}
+
+- (void)runWarpPipeStartTest
+{
+    vm_address_t base = mmioBase;
+    unsigned long pipePhys[OSMGA_WARP_PIPES];
+    unsigned long pipeOff[OSMGA_WARP_PIPES];
+    unsigned long allocBytes = 0UL;
+    void *ucodeVirt = 0;
+    unsigned ucodePhys = 0;
+    void *ringVirt;
+    unsigned ringPhys = 0;
+    IOReturn r;
+
+    if (!warpTestEnabled || !linearModeActive || !mmioMapped)
+        return;
+
+    if (!osmgaWarpPlaceUcode(pipePhys, pipeOff, &ucodeVirt, &ucodePhys,
+                             &allocBytes)) {
+        IOLog("OpenStepMGA D2-2a: FAIL -- could not place microcode\n");
+        return;
+    }
+    IOLog("OpenStepMGA D2-2a: microcode at %08x, pipe 0 at %08lx "
+          "(buffer kept for this boot)\n", ucodePhys, pipePhys[0]);
+
+    /* warp_init after placement, so its WCACHEFLUSH has code to flush. */
+    osmgaW32(base, MGA_WIADDR2,    MGA_WMODE_SUSPEND);
+    osmgaW32(base, MGA_WGETMSB,    MGA_WGETMSB_G400);
+    osmgaW32(base, MGA_WVRTXSZ,    MGA_WVRTXSZ_G400);
+    osmgaW32(base, MGA_WACCEPTSEQ, MGA_WACCEPTSEQ_G400);
+    osmgaW32(base, MGA_WMISC,      MGA_WMISC_WRITE);
+    if (osmgaR32(base, MGA_WMISC) != MGA_WMISC_EXPECTED) {
+        IOLog("OpenStepMGA D2-2a: FAIL -- warp_init did not settle after "
+              "placement\n");
+        return;                      /* buffer deliberately not released */
+    }
+
+    ringVirt = IOMallocLow((int)OSMGA_DMA_RING_BYTES);
+    if (ringVirt == 0) {
+        IOLog("OpenStepMGA D2-2a: FAIL -- no ring buffer (arena has the "
+              "microcode block already)\n");
+        return;
+    }
+    r = IOPhysicalFromVirtual(IOVmTaskSelf(), (vm_address_t)ringVirt,
+                              &ringPhys);
+    if (r != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA D2-2a: FAIL -- ring IOPhysicalFromVirtual r=%d\n",
+              (int)r);
+        IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
+        return;
+    }
+    IOLog("OpenStepMGA D2-2a: ring at %08x\n", ringPhys);
+
+    /* Negative control first: same list, WMODE_SUSPEND instead of START. */
+    if (![self runWarpPipeOnce:0UL label:"neg"
+                      ringVirt:(unsigned long *)ringVirt
+                      ringPhys:ringPhys]) {
+        IOLog("OpenStepMGA D2-2a: negative control FAILED -- not pointing "
+              "WARP at microcode\n");
+        IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
+        return;
+    }
+    IOLog("OpenStepMGA D2-2a: negative control ok (WARP register writes "
+          "carried by DMA, pipe not started)\n");
+
+    if ([self runWarpPipeOnce:pipePhys[0] label:"start"
+                     ringVirt:(unsigned long *)ringVirt
+                     ringPhys:ringPhys]) {
+        osmgaW32(base, MGA_WIADDR2, MGA_WMODE_SUSPEND);
+        IOLog("OpenStepMGA D2-2a: PASS -- pipe 0 started and the engine is "
+              "still alive; pipe suspended again\n");
+    } else {
+        IOLog("OpenStepMGA D2-2a: FAIL -- do not proceed to D2-2b\n");
+    }
+
+    /* The ring can go; the microcode cannot -- the card was given its
+     * address and nothing proves it has stopped reading. */
+    IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
+    IOLog("OpenStepMGA D2-2a: end (ring released, microcode kept)\n");
+}
+
 @end
+
 
 
 

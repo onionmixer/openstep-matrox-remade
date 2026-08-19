@@ -115,6 +115,11 @@
 - (void)runDmaRingStartTest;
 - (void)runWarpConfigTest;
 - (void)runWarpUcodePlacementTest;
+- (BOOL)runWarpPipeOnce:(unsigned long)startPhys
+                  label:(const char *)label
+               ringVirt:(unsigned long *)ring
+               ringPhys:(unsigned)ringPhys;
+- (void)runWarpPipeStartTest;
 - (BOOL)stormBlitCheckSrcX:(unsigned)srcX srcY:(unsigned)srcY
                      width:(unsigned)w height:(unsigned)h
                       dstX:(unsigned)dstX dstY:(unsigned)dstY
