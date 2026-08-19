@@ -275,6 +275,16 @@
                                  MGA_WCACHEFLUSH_ENABLE)
 #define MGA_WMISC_EXPECTED      (MGA_WUCODECACHE_ENABLE | MGA_WMASTER_ENABLE)
 
+/*
+ * The G400 init values, straight from mga_warp_init.  The DRM's own
+ * comment on them is "FIXME: Get rid of these damned magic numbers", so
+ * their derivation is not documented anywhere we can read; they are used
+ * because that is what shipped, not because we understand them.
+ */
+#define MGA_WGETMSB_G400        0x00000E00UL
+#define MGA_WVRTXSZ_G400        0x00001807UL
+#define MGA_WACCEPTSEQ_G400     0x18000000UL
+
 #define MGA_DMA_GENERAL         0x00     /* PRIMADDRESS mode bits */
 #define MGA_PRIMNOSTART         0x01     /* PRIMEND bit0: do NOT start */
 #define MGA_PAGPXFER            0x02     /* PRIMEND bit1: AGP; 0 for PCI */
@@ -3244,6 +3254,42 @@ unmap:
     else
         IOLog("OpenStepMGA D2-0a: WARNING -- WIADDR2 reads %08lx, not "
               "suspended\n", wiaddr2After);
+
+    if (wmiscAfter != MGA_WMISC_EXPECTED)
+        return;
+
+    /*
+     * D2-0b -- the full mga_warp_init sequence, run only because D2-0a
+     * just passed.  Order is the DRM's: suspend the pipe, set the three
+     * configuration registers, then enable WMISC and check it again.
+     *
+     * These three registers are the ones nothing in the sources ever reads
+     * back, so there is no readback to check them with and no attempt is
+     * made to invent one.  The end state is configured and suspended,
+     * which is what D2-1 will need.
+     */
+    IOLog("OpenStepMGA D2-0b: begin, full G400 warp_init sequence\n");
+
+    osmgaW32(base, MGA_WIADDR2,    MGA_WMODE_SUSPEND);
+    osmgaW32(base, MGA_WGETMSB,    MGA_WGETMSB_G400);
+    osmgaW32(base, MGA_WVRTXSZ,    MGA_WVRTXSZ_G400);
+    osmgaW32(base, MGA_WACCEPTSEQ, MGA_WACCEPTSEQ_G400);
+    osmgaW32(base, MGA_WMISC,      MGA_WMISC_WRITE);
+
+    wmiscAfter   = osmgaR32(base, MGA_WMISC);
+    wiaddr2After = osmgaR32(base, MGA_WIADDR2);
+
+    IOLog("OpenStepMGA D2-0b: WMISC=%08lx (expected %08lx), "
+          "WIADDR2=%08lx\n",
+          wmiscAfter, MGA_WMISC_EXPECTED, wiaddr2After);
+
+    if (wmiscAfter == MGA_WMISC_EXPECTED &&
+        wiaddr2After == MGA_WMODE_SUSPEND)
+        IOLog("OpenStepMGA D2-0b: PASS -- WARP configured and suspended; "
+              "this is the state microcode upload needs\n");
+    else
+        IOLog("OpenStepMGA D2-0b: FAIL -- the full sequence did not settle; "
+              "do not upload microcode\n");
 }
 
 @end
