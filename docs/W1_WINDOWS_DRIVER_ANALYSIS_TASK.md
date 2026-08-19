@@ -202,3 +202,33 @@ For each: what value reaches `DWGCTL`, and specifically —
     on Windows either.
 
 Do not assume 16 is false because it would be inconvenient.
+
+### 2B-1. Correction to the criterion (2026-08-19)
+
+Section 2B said "everything found so far has ARZERO and SGNZERO set". **That
+was wrong**, and any batch that took it at face value should be re-read with
+this correction.
+
+| value | opcode | ARZERO | SGNZERO |
+| --- | --- | --- | --- |
+| `0x040c4008` (this project's own BITBLT) | 8 BITBLT | CLEAR | CLEAR |
+| `0x840c4008` (HAL BITBLT) | 8 BITBLT | CLEAR | CLEAR |
+| `0x84004018` (HAL, baa41e3a base) | 8 BITBLT | CLEAR | CLEAR |
+| `0x000c7074` (this project's TRAP\|I) | 4 TRAP | set | set |
+| `0x000c7076` (HAL TEXTURE_TRAP\|I) | 6 TEXTURE_TRAP | set | set |
+| `0x000c7804` (this project's solid fill) | 4 TRAP | set | set |
+
+**BITBLT has ARZERO and SGNZERO clear by nature** — it walks the source
+address with the AR registers, so zeroing them would break it. The claim
+only ever held for the TRAP/TEXTURE_TRAP values.
+
+Corrected criterion for the remaining batches:
+
+> A sloped-edge draw requires **opcode 4 or 6 AND ARZERO clear AND SGNZERO
+> clear**, together. Clear bits on an opcode-8 BITBLT mean nothing here.
+
+Also learned from the batches so far: several sites in the list are not
+register writes at all. `0x1d00(%base)` is DWGCTL+EXEC only when the base is
+the MMIO aperture; where the base is a surface/context structure the same
+displacement is just a field. The recognisable tell is arithmetic such as
+`imul` against `[base+0x64]`, which behaves like a pitch.
