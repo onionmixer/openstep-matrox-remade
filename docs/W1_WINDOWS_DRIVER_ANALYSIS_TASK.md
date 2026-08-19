@@ -153,3 +153,52 @@ A single file, `docs/W1_WINDOWS_DRIVER_FINDINGS.md`, numbered to match section
   `0x2c00..0x2dff` as `((reg - 0x2c00) >> 2) | 0x80`.
 - B5 is an independent check against a hardware measurement, so it needs to be
   right rather than quick.
+
+## 2B. Run 2 — search by opcode, not by register
+
+Run 1 answered its questions accurately but reached a wrong conclusion,
+and the fault was in this briefing. It pre-labelled an address cluster
+"strongest candidate for sloped-trapezoid setup", and the analysis
+inherited the label: the function at `0xbaa418f0` writes SGN/AR3/AR0/AR5/
+FXBNDRY, but the next three instructions are LEN, YDST, and
+`DWGCTL+EXEC = 0x840c4008` — opcode 8, **BITBLT**. Not a trapezoid at all.
+
+The right discriminator is the `DWGCTL` opcode, not which registers appear
+nearby. Opcodes (low 4 bits): `0x4` TRAP, `0x6` TEXTURE_TRAP, `0x8` BITBLT,
+`0x9`/`0xd`/`0xe`/`0xf` ILOAD family, `0xa` IDUMP. atype is bits 4-6:
+`0` RPL, `1` RSTR, `3` ZI, `7` I. `ARZERO` is bit 12, `SGNZERO` bit 13,
+`CLIPDIS` bit 31.
+
+**Sloped edges require ARZERO and SGNZERO to be CLEAR.** Everything found
+so far in this binary has them set, i.e. axis-aligned.
+
+A census of *constant* writes to `DWGCTL` (0x1c00) and `DWGCTL+EXEC`
+(0x1d00) is complete: 13 sites, 7 distinct values, all BITBLT or ILOAD
+except one — `0xbaa620fb` writes `0x000c7076` (TEXTURE_TRAP, atype I,
+ARZERO and SGNZERO set).
+
+### The remaining question
+
+Eleven sites write `DWGCTL` from a **register**, so their opcode cannot be
+read statically:
+
+```
+baa156ca  baa184db  baa1ab4d  baa25f1d  baa28836  baa41e3a
+baa42c7c  baa4942b  baa49739  baa542c4  baa559cb
+```
+
+For each: what value reaches `DWGCTL`, and specifically —
+
+13. Which opcode(s) can each site emit? Where does the value come from
+    (constant table, computed, cached in a context field)?
+14. **Does any site emit a value with ARZERO or SGNZERO clear?** That is
+    the sloped-trapezoid path, and it is what this project needs.
+15. If such a site exists, what writes AR0/AR1/AR2/AR4/AR5/AR6/SGN before
+    it, and how are those values derived?
+16. If no such site exists — i.e. the HAL never draws sloped edges through
+    the DWG engine — say so. That is a real answer: it would mean the
+    shipping driver leaves all triangle setup to WARP, and that this
+    project's direct-rasteriser approach has no reference implementation
+    on Windows either.
+
+Do not assume 16 is false because it would be inconvenient.
