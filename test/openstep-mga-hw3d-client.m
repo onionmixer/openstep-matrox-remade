@@ -39,6 +39,7 @@ extern caddr_t mmap(caddr_t, int, int, int, int, long);
 #define CLIP_COLS       64UL
 #define BAND            20UL
 #define SLOPE           40L
+#define NTRI            3UL
 #define STRIDE_DW       1024UL          /* 1024x768x4 */
 #define SENTINEL        0x5A5A5A5AUL
 
@@ -148,9 +149,12 @@ main(void)
         printf("the command window will not map\n");
         return 1;
     }
-    /* One band of destination, plus a guard band above it. */
+    /* One band per triangle, plus a guard band above them all.  This has
+     * to match what the checks below touch: the first version mapped two
+     * bands and then wrote four, which faults rather than misbehaving
+     * quietly. */
     if ((win = mapDevice(fd, VRAM_BLOCK,
-                         (int)((2UL * BAND) * STRIDE_DW * 4UL))) ==
+                         (int)((NTRI + 1UL) * BAND * STRIDE_DW * 4UL))) ==
             (caddr_t)-1) {
         printf("the VRAM window will not map\n");
         return 1;
@@ -158,76 +162,113 @@ main(void)
     batch = (OSMGAHW3DBatch *)cmd;
     vram = (volatile unsigned long *)win;
 
-    printf("M1-2b: a userland client submits a batch\n");
+    printf("M1-2b/2d: a userland client submits a batch of %lu triangles\n",
+           NTRI);
 
-    for (row = 0UL; row < 2UL * BAND; row++)
+    for (row = 0UL; row < (NTRI + 1UL) * BAND; row++)
         for (col = 0UL; col < CLIP_COLS; col++)
             vram[row * STRIDE_DW + col] = SENTINEL;
 
     memset(batch, 0, sizeof *batch);
     batch->magic = OSMGA_HW3D_MAGIC;
     batch->version = OSMGA_HW3D_VERSION;
-    batch->triCount = 1;
+    batch->triCount = NTRI;
     batch->state.dstorg = VRAM_BLOCK;
     batch->state.dwgctl = 0x000C7074UL;         /* TRAP | atype I */
     batch->state.alphactrl = 0x00000101UL;      /* opaque replace */
-    fillTriangle(&batch->tri[0], 0UL, BAND, 0L, SLOPE, (long)(CLIP_COLS - 1UL), 0L);
+
+    /* Three different shapes, so a per-triangle loop that reused one
+     * triangle's values, or applied them in the wrong order, would show
+     * up as the wrong shape in a specific band rather than as a count. */
+    fillTriangle(&batch->tri[0], 0UL, BAND,
+                 0L, SLOPE, (long)(CLIP_COLS - 1UL), 0L);      /* narrows from the left */
+    fillTriangle(&batch->tri[1], BAND, BAND,
+                 0L, 0L, (long)(CLIP_COLS - 1UL), 0L);         /* full rectangle */
+    fillTriangle(&batch->tri[2], 2UL * BAND, BAND,
+                 0L, 0L, (long)(CLIP_COLS - 1UL), -SLOPE);     /* narrows from the right */
 
     r = [master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
                 objectNumber:objNum count:0];
     printf("   submit returned %d\n", (int)r);
     showStatus(master, objNum);
     if (r != IO_R_SUCCESS) {
-        printf("   FAIL -- a well-formed batch was refused\n");
+        printf("   FAIL -- a well-formed batch of %lu was refused\n", NTRI);
         return 1;
     }
 
-    /* The shape the slope describes, counted here rather than trusted. */
-    expect = 0UL;
-    for (row = 0UL; row < BAND; row++) {
-        long l = (long)(SLOPE * (long)row / (long)BAND);
-        long left = (l > (long)(CLIP_COLS - 1UL)) ? (long)CLIP_COLS : l;
+    /* Count each band against its own prediction, not against a total:
+     * three shapes summing correctly while individually wrong is exactly
+     * what a total would hide. */
+    {
+        unsigned long want[NTRI], have[NTRI], t, bad = 0UL;
 
-        expect += CLIP_COLS - (unsigned long)left;
+        for (t = 0UL; t < NTRI; t++) {
+            want[t] = 0UL;
+            for (row = 0UL; row < BAND; row++) {
+                long d = (long)(SLOPE * (long)row / (long)BAND);
+
+                if (t == 1UL) want[t] += CLIP_COLS;
+                else          want[t] += CLIP_COLS - (unsigned long)d;
+            }
+            have[t] = 0UL;
+            for (row = t * BAND; row < (t + 1UL) * BAND; row++)
+                for (col = 0UL; col < CLIP_COLS; col++)
+                    if (vram[row * STRIDE_DW + col] != SENTINEL) have[t]++;
+            printf("   triangle %lu: wanted %lu pixels, got %lu%s\n",
+                   t, want[t], have[t], (want[t] == have[t]) ? "" : "   <-- WRONG");
+            if (want[t] != have[t]) bad++;
+        }
+
+        /* Row 0 of each band says which direction each edge moved, which a
+         * pixel count alone cannot: the first and third shapes have equal
+         * areas and are mirror images. */
+        for (t = 0UL; t < NTRI; t++) {
+            unsigned long first = CLIP_COLS, last = 0UL, mid = t * BAND + 10UL;
+
+            for (col = 0UL; col < CLIP_COLS; col++)
+                if (vram[mid * STRIDE_DW + col] != SENTINEL) {
+                    if (first == CLIP_COLS) first = col;
+                    last = col;
+                }
+            printf("   triangle %lu row 10 spans x=%lu..%lu\n", t, first, last);
+        }
+
+        wrong = 0UL;
+        for (row = NTRI * BAND; row < (NTRI + 1UL) * BAND; row++)
+            for (col = 0UL; col < CLIP_COLS; col++)
+                if (vram[row * STRIDE_DW + col] != SENTINEL) wrong++;
+        printf("   guard band disturbed %lu\n", wrong);
+
+        /* A bad triangle in the middle: the verdict has to name it. */
+        batch->tri[1].y = (long)(120UL + 1UL);
+        r = [master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
+                    objectNumber:objNum count:0];
+        printf("   triangle 1 put past the clip -> returned %d\n", (int)r);
+        showStatus(master, objNum);
+        got = (r == IO_R_SUCCESS) ? 1UL : 0UL;
+
+        /* And the one thing the validator exists to stop. */
+        batch->tri[1].y = (long)BAND;
+        batch->state.dstorg = 0UL;
+        expect = [master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
+                         objectNumber:objNum count:0] == IO_R_SUCCESS ? 1UL : 0UL;
+        printf("   destination aimed at the visible framebuffer -> %s\n",
+               expect ? "ACCEPTED" : "refused");
+        showStatus(master, objNum);
+
+        if (wrong != 0UL)
+            printf("STOP -- a draw escaped its band\n");
+        else if (bad != 0UL)
+            printf("FAIL -- %lu of %lu triangles drew the wrong shape\n",
+                   bad, NTRI);
+        else if (got != 0UL)
+            printf("STOP -- a batch with a triangle past the clip was accepted\n");
+        else if (expect != 0UL)
+            printf("STOP -- a hostile destination was accepted\n");
+        else
+            printf("PASS -- %lu triangles in one batch each drew their own "
+                   "shape, and both bad batches were refused\n", NTRI);
     }
-    got = 0UL;
-    for (row = 0UL; row < BAND; row++)
-        for (col = 0UL; col < CLIP_COLS; col++)
-            if (vram[row * STRIDE_DW + col] != SENTINEL) got++;
-
-    wrong = 0UL;
-    for (row = BAND; row < 2UL * BAND; row++)
-        for (col = 0UL; col < CLIP_COLS; col++)
-            if (vram[row * STRIDE_DW + col] != SENTINEL) wrong++;
-
-    printf("   drew %lu pixels, guard band disturbed %lu\n", got, wrong);
-    printf("   first row spans: ");
-    for (row = 0UL; row < 20UL; row += 5UL) {
-        unsigned long n = 0UL;
-
-        for (col = 0UL; col < CLIP_COLS; col++)
-            if (vram[row * STRIDE_DW + col] != SENTINEL) n++;
-        printf("row%lu=%lu ", row, n);
-    }
-    printf("\n");
-
-    /* The one thing the validator exists to stop. */
-    batch->state.dstorg = 0UL;
-    r = [master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
-                objectNumber:objNum count:0];
-    printf("   destination aimed at the visible framebuffer -> returned %d\n",
-           (int)r);
-    showStatus(master, objNum);
-
-    if (wrong != 0UL)
-        printf("STOP -- the draw escaped its band\n");
-    else if (got == 0UL)
-        printf("FAIL -- nothing was drawn\n");
-    else if (r == IO_R_SUCCESS)
-        printf("STOP -- a hostile destination was accepted\n");
-    else
-        printf("PASS -- a userland batch drew %lu pixels and a hostile one "
-               "was refused\n", got);
     (void)close(fd);
     return 0;
 }
