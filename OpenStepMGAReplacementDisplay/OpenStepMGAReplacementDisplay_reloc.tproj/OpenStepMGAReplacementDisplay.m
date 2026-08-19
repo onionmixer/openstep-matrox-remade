@@ -3919,6 +3919,7 @@ osmgaStormTrap(vm_address_t base, unsigned long dwgctl,
     volatile unsigned long *blk = 0;
     unsigned long row, col, band, guard = 0UL;
     unsigned long firstX[3][5], lastX[3][5], count[3][5];
+    unsigned long stair[OSMGA_D3_BAND];
     static const unsigned long probeRow[5] = { 0UL, 5UL, 10UL, 15UL, 19UL };
     IOReturn r;
 
@@ -4026,6 +4027,28 @@ osmgaStormTrap(vm_address_t base, unsigned long dwgctl,
               firstX[band][2], lastX[band][2], count[band][2],
               firstX[band][3], lastX[band][3], count[band][3],
               firstX[band][4], lastX[band][4], count[band][4]);
+
+    /*
+     * Every row of the flat triangle, not just five of them.  The five
+     * probe rows leave the error term bounded only to 1..5 -- the whole
+     * staircase pins it, and costs one log line.
+     */
+    for (row = 0UL; row < OSMGA_D3_BAND; row++) {
+        unsigned long ry = OSMGA_D3_BAND + row;   /* band 1 */
+        unsigned long la = 0UL;
+
+        for (col = 0UL; col < OSMGA_S1_W; col++)
+            if (blk[ry * stride + col] != OSMGA_S1_SENTINEL)
+                la = col;
+        stair[row] = la;
+    }
+    IOLog("OpenStepMGA D3-2: band1 last-x per row: %lu %lu %lu %lu %lu %lu "
+          "%lu %lu %lu %lu\n", stair[0], stair[1], stair[2], stair[3],
+          stair[4], stair[5], stair[6], stair[7], stair[8], stair[9]);
+    IOLog("OpenStepMGA D3-2: band1 last-x rows 10-19: %lu %lu %lu %lu %lu "
+          "%lu %lu %lu %lu %lu\n", stair[10], stair[11], stair[12],
+          stair[13], stair[14], stair[15], stair[16], stair[17], stair[18],
+          stair[19]);
 
     /* Guard columns and the four undrawn rows: the only evidence that the
      * clip holds for a sloped span. */
