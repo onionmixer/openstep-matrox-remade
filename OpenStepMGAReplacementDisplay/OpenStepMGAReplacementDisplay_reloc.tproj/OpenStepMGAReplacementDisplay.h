@@ -126,6 +126,8 @@
 - (void)runRasterInterpolationTest;
 - (void)runDstorgOriginTest;
 - (void)runDepthCompareTest;
+- (void)runDepthIsolationTest;
+- (void)runDepthEncodingTest;
 - (BOOL)stormBlitCheckSrcX:(unsigned)srcX srcY:(unsigned)srcY
                      width:(unsigned)w height:(unsigned)h
                       dstX:(unsigned)dstX dstY:(unsigned)dstY

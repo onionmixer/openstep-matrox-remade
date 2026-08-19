@@ -421,6 +421,59 @@
 #define OSMGA_D3_ZORG           (5UL * 1024UL * 1024UL)
 #define OSMGA_D3_ZCLEAR         0x80008000UL
 
+/*
+ * D3-3a-1 -- why did the colour vanish?
+ *
+ * D3-3a drew nothing at all, not even its NOZCMP control band, yet the
+ * depth area changed.  The engine ran and wrote depth but no colour, so
+ * the colour path was misconfigured rather than the command ignored.
+ *
+ * Five bands turn one variable off at a time.  atype ZI has no precedent
+ * to copy -- MGADWG_ZI, MGA_ATYPE_ZI and DC_atype_zi are all defined and
+ * never used, and the DDX ROP tables carry only RPL/RSTR/BLK -- so the
+ * hypothesis that ZI is the Z-buffered form of atype I, and therefore
+ * needs SOLID cleared and the colour interpolators loaded exactly as I
+ * does, can only be settled by measurement.  Bands D and E separate the
+ * two halves of that hypothesis; without D they would stay welded.
+ *
+ * ZORG is programmed for every band including the atype RPL baselines,
+ * which the plan did not ask for.  Leaving it at zero would aim any
+ * unexpected depth write at the visible framebuffer, and RPL not touching
+ * depth is an assumption, not something we have measured.  The cost is
+ * that a broken ZORG would take the baseline down with it -- which V1
+ * still reports, just attributed one step earlier.
+ *
+ * Depth is 16-bit: MACCESS bits 3-4 are a depth-specific width whose zero
+ * value is MA_zwidth_16, and we only ever write the pixel-width field.
+ * There is no depth pitch register, so a depth row is PITCH elements of
+ * two bytes.  The readback below uses that layout.
+ */
+/*
+ * D3-3b -- the DR0 to depth encoding, and whether the compare engages.
+ *
+ * D3-3a reported a failure that was not one.  It counted destination
+ * pixels equal to FCOL, but atype ZI does not take colour from FCOL even
+ * with SOLID set, so every drawn pixel went uncounted; and it cleared the
+ * depth buffer through the colour buffer's geometry, which at a 2048-byte
+ * depth row covers only alternate rows' first 256 bytes, leaving the rest
+ * of the depth buffer holding whatever was there.  Both bugs came from
+ * writing a depth probe before the depth layout was known.
+ *
+ * So this probe counts pixels that changed rather than pixels matching a
+ * colour, reports the values it actually found, and addresses depth as
+ * 16-bit elements PITCH apart.
+ *
+ * The bit walk is the instrument that settled the colour interpolator
+ * format in one boot after four wrong guesses: one band per DR0 bit, read
+ * the depth value back, and the bit correspondence falls out.
+ */
+#define OSMGA_D3_ISO_BANDS      5UL
+#define OSMGA_D3_ISO_GUARDROWS  4UL
+#define OSMGA_D3_ZSENTINEL      0x8000U
+#define OSMGA_D3_WALK_ROWS      2UL
+#define OSMGA_D3_CMP_ROWS       8UL
+#define OSMGA_D3_CMP_BLUE       (200UL << 15)
+
 #define MGA_DMA_GENERAL         0x00     /* PRIMADDRESS mode bits */
 #define MGA_PRIMNOSTART         0x01     /* PRIMEND bit0: do NOT start */
 #define MGA_PAGPXFER            0x02     /* PRIMEND bit1: AGP; 0 for PCI */
@@ -2662,7 +2715,7 @@ unmap:
     [self runWarpPipeStartTest];
     [self runRasterInterpolationTest];
     [self runDstorgOriginTest];
-    [self runDepthCompareTest];
+    [self runDepthEncodingTest];
 }
 
 /*
@@ -4339,11 +4392,349 @@ unmap:
     if (aBlk != 0) (void)IOUnmapPhysicalFromIOTask(aBlk, lBlk);
 }
 
+
+/*
+ * D3-3a-1 -- see the note by OSMGA_D3_ISO_BANDS.
+ */
+- (void)runDepthIsolationTest
+{
+    IODisplayInfo *di = [self displayInfo];
+    const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
+    vm_address_t base = mmioBase;
+    unsigned long stride = (unsigned long)di->rowBytes / 4UL;
+    unsigned long drawRows = OSMGA_D3_ISO_BANDS * OSMGA_D3_BAND;
+    unsigned long allRows = drawRows + OSMGA_D3_ISO_GUARDROWS;
+    unsigned long guardW = 2UL * OSMGA_S1_W;
+    vm_address_t aBlk = 0, aZ = 0;
+    unsigned long lBlk = 0, lZ = 0;
+    volatile unsigned long *blk = 0, *zw = 0;
+    volatile unsigned short *z16;
+    unsigned long band, row, col;
+    unsigned long drew[OSMGA_D3_ISO_BANDS], zput[OSMGA_D3_ISO_BANDS];
+    unsigned long cGuard = 0UL, zGuard = 0UL;
+    unsigned long firstZ = 0xFFFFFFFFUL;
+    IOReturn r;
+
+    if (!rasterTestEnabled || !linearModeActive || !mmioMapped)
+        return;
+    if (f->bytesPerPixel != 4)
+        return;
+    if (OSMGA_S1_VRAM_BLOCK + allRows * stride * 4UL > OSMGA_D3_ZORG ||
+        OSMGA_D3_ZORG + allRows * stride * 2UL > OSMGA_S1_VRAM_PROVEN) {
+        IOLog("OpenStepMGA D3-3a-1: windows do not fit the proven VRAM "
+              "bound, skipped\n");
+        return;
+    }
+
+    r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_S1_VRAM_BLOCK,
+                              OSMGA_S1_VRAM_BLOCK + allRows * stride * 4UL,
+                              &aBlk, &lBlk, &blk);
+    if (r != IO_R_SUCCESS) goto unmap;
+    r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_D3_ZORG,
+                              OSMGA_D3_ZORG + allRows * stride * 2UL,
+                              &aZ, &lZ, &zw);
+    if (r != IO_R_SUCCESS) goto unmap;
+    z16 = (volatile unsigned short *)zw;
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA D3-3a-1: engine BUSY at entry\n");
+        goto unmap;
+    }
+
+    /* Sentinel over the drawn area and the guard margin alike, so a write
+     * that escapes either edge shows up as a change. */
+    for (row = 0UL; row < allRows; row++)
+        for (col = 0UL; col < guardW; col++) {
+            blk[row * stride + col] = OSMGA_S1_SENTINEL;
+            z16[row * stride + col] = OSMGA_D3_ZSENTINEL;
+        }
+
+    for (band = 0UL; band < OSMGA_D3_ISO_BANDS; band++) {
+        unsigned long y0 = band * OSMGA_D3_BAND;
+        unsigned long zi = (MGA_DWGCTL_SOLID_FILL & ~MGA_DWGCTL_ATYPE_I) |
+                           MGA_DWGCTL_ATYPE_ZI;
+        unsigned long dwgctl;
+
+        switch (band) {
+        case 0: case 1: dwgctl = MGA_DWGCTL_SOLID_FILL;      break;
+        case 2:         dwgctl = zi;                         break;
+        default:        dwgctl = zi & ~MGA_DWGCTL_SOLID;     break;
+        }
+
+        if (!osmgaStormWaitFifo(base, 13U)) goto unmap;
+        osmgaStormInitState(base, stride, 0UL, OSMGA_S1_W - 1UL,
+                            y0 * stride, (y0 + OSMGA_D3_BAND - 1UL) * stride);
+
+        if (!osmgaStormWaitFifo(base, 16U)) goto unmap;
+        osmgaW32(base, MGA_DSTORG, OSMGA_S1_VRAM_BLOCK);
+        osmgaW32(base, MGA_ZORG,   OSMGA_D3_ZORG);
+        if (band >= 1UL) {
+            osmgaW32(base, MGA_DR0, 0UL);
+            osmgaW32(base, MGA_DR2, 0UL);
+            osmgaW32(base, MGA_DR3, 0UL);
+        }
+        if (band == 4UL) {
+            osmgaW32(base, MGA_DR4,  0UL);
+            osmgaW32(base, MGA_DR6,  0UL);
+            osmgaW32(base, MGA_DR7,  0UL);
+            osmgaW32(base, MGA_DR8,  0UL);
+            osmgaW32(base, MGA_DR10, 0UL);
+            osmgaW32(base, MGA_DR11, 0UL);
+            osmgaW32(base, MGA_DR12, 64UL << 15);
+            osmgaW32(base, MGA_DR14, 0UL);
+            osmgaW32(base, MGA_DR15, 0UL);
+        }
+
+        if (!osmgaStormWaitFifo(base, 5U)) goto unmap;
+        osmgaW32(base, MGA_FCOL,    OSMGA_S1_FILL);
+        osmgaW32(base, MGA_DWGCTL,  dwgctl);
+        osmgaW32(base, MGA_FXBNDRY, (OSMGA_S1_W << 16) | 0UL);
+        osmgaW32(base, MGA_YDSTLEN + MGA_EXEC, (y0 << 16) | OSMGA_D3_BAND);
+
+        if (!osmgaStormWaitIdle(base)) {
+            IOLog("OpenStepMGA D3-3a-1: band %lu did not finish\n", band);
+            osmgaW32(base, MGA_DSTORG, 0UL);
+            osmgaW32(base, MGA_ZORG,   0UL);
+            goto unmap;
+        }
+        osmgaW32(base, MGA_DSTORG, 0UL);
+        osmgaW32(base, MGA_ZORG,   0UL);
+
+        /* Count what changed, not what matches a colour: bands D and E
+         * take their colour from the interpolators, not FCOL. */
+        drew[band] = 0UL;
+        zput[band] = 0UL;
+        for (row = y0; row < y0 + OSMGA_D3_BAND; row++)
+            for (col = 0UL; col < OSMGA_S1_W; col++) {
+                if (blk[row * stride + col] != OSMGA_S1_SENTINEL)
+                    drew[band]++;
+                if (z16[row * stride + col] != OSMGA_D3_ZSENTINEL) {
+                    if (firstZ == 0xFFFFFFFFUL)
+                        firstZ = (unsigned long)z16[row * stride + col];
+                    zput[band]++;
+                }
+            }
+    }
+
+    for (row = 0UL; row < allRows; row++)
+        for (col = 0UL; col < guardW; col++) {
+            if (row < drawRows && col < OSMGA_S1_W)
+                continue;                       /* the drawn area itself */
+            if (blk[row * stride + col] != OSMGA_S1_SENTINEL) cGuard++;
+            if (z16[row * stride + col] != OSMGA_D3_ZSENTINEL) zGuard++;
+        }
+
+    IOLog("OpenStepMGA D3-3a-1: drew A=%lu B=%lu C=%lu D=%lu E=%lu of %lu\n",
+          drew[0], drew[1], drew[2], drew[3], drew[4],
+          OSMGA_D3_BAND * OSMGA_S1_W);
+    IOLog("OpenStepMGA D3-3a-1: Z written A=%lu B=%lu C=%lu D=%lu E=%lu; "
+          "first Z value %lx\n",
+          zput[0], zput[1], zput[2], zput[3], zput[4], firstZ);
+    IOLog("OpenStepMGA D3-3a-1: guards disturbed -- colour %lu, depth %lu\n",
+          cGuard, zGuard);
+
+    if (zGuard != 0UL)
+        IOLog("OpenStepMGA D3-3a-1: STOP -- depth escaped the clip "
+              "rectangle; containment for depth cannot rely on clipping\n");
+    else if (cGuard != 0UL)
+        IOLog("OpenStepMGA D3-3a-1: STOP -- colour escaped the guard\n");
+    else if (drew[0] == 0UL)
+        IOLog("OpenStepMGA D3-3a-1: FAIL -- the RPL baseline drew nothing, "
+              "so this is not about depth; do not read the other bands\n");
+    else if (drew[1] == 0UL)
+        IOLog("OpenStepMGA D3-3a-1: writing DR0/DR2/DR3 alone stops the "
+              "draw -- the cause is those registers, not atype\n");
+    else if (drew[3] > 0UL)
+        IOLog("OpenStepMGA D3-3a-1: PASS -- atype ZI draws once SOLID is "
+              "cleared; the colour interpolators are not required for it\n");
+    else if (drew[4] > 0UL)
+        IOLog("OpenStepMGA D3-3a-1: PASS -- atype ZI needs SOLID cleared "
+              "AND the colour interpolators loaded, exactly like atype I\n");
+    else
+        IOLog("OpenStepMGA D3-3a-1: FAIL -- atype ZI drew nothing in any "
+              "configuration; the hypothesis is wrong and ZI wants "
+              "something further\n");
+
+unmap:
+    if (aZ != 0)   (void)IOUnmapPhysicalFromIOTask(aZ, lZ);
+    if (aBlk != 0) (void)IOUnmapPhysicalFromIOTask(aBlk, lBlk);
+}
+
+
+/*
+ * D3-3b -- see the note by OSMGA_D3_ISO_BANDS.
+ */
+- (void)runDepthEncodingTest
+{
+    IODisplayInfo *di = [self displayInfo];
+    const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
+    vm_address_t base = mmioBase;
+    unsigned long stride = (unsigned long)di->rowBytes / 4UL;
+    unsigned long walkRows = 32UL * OSMGA_D3_WALK_ROWS;      /* 64 */
+    unsigned long cmpRows = 3UL * OSMGA_D3_CMP_ROWS;         /* 24 */
+    unsigned long drawRows = walkRows + cmpRows;             /* 88 */
+    unsigned long allRows = drawRows + OSMGA_D3_ISO_GUARDROWS;
+    unsigned long guardW = 2UL * OSMGA_S1_W;
+    vm_address_t aBlk = 0, aZ = 0;
+    unsigned long lBlk = 0, lZ = 0;
+    volatile unsigned long *blk = 0, *zw = 0;
+    volatile unsigned short *z16;
+    unsigned long bit, band, row, col;
+    unsigned long zseen[32], drew[3], colour = 0UL;
+    unsigned long cGuard = 0UL, zGuard = 0UL;
+    unsigned long ziBase = (MGA_DWGCTL_SOLID_FILL & ~MGA_DWGCTL_ATYPE_I) |
+                           MGA_DWGCTL_ATYPE_ZI;
+    IOReturn r;
+
+    if (!rasterTestEnabled || !linearModeActive || !mmioMapped)
+        return;
+    if (f->bytesPerPixel != 4)
+        return;
+    if (OSMGA_S1_VRAM_BLOCK + allRows * stride * 4UL > OSMGA_D3_ZORG ||
+        OSMGA_D3_ZORG + allRows * stride * 2UL > OSMGA_S1_VRAM_PROVEN) {
+        IOLog("OpenStepMGA D3-3b: windows do not fit the proven VRAM "
+              "bound, skipped\n");
+        return;
+    }
+
+    r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_S1_VRAM_BLOCK,
+                              OSMGA_S1_VRAM_BLOCK + allRows * stride * 4UL,
+                              &aBlk, &lBlk, &blk);
+    if (r != IO_R_SUCCESS) goto unmap;
+    r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_D3_ZORG,
+                              OSMGA_D3_ZORG + allRows * stride * 2UL,
+                              &aZ, &lZ, &zw);
+    if (r != IO_R_SUCCESS) goto unmap;
+    z16 = (volatile unsigned short *)zw;
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA D3-3b: engine BUSY at entry\n");
+        goto unmap;
+    }
+
+    /* Depth addressed as 16-bit elements PITCH apart -- the geometry
+     * D3-3a got wrong. */
+    for (row = 0UL; row < allRows; row++)
+        for (col = 0UL; col < guardW; col++) {
+            blk[row * stride + col] = OSMGA_S1_SENTINEL;
+            z16[row * stride + col] = OSMGA_D3_ZSENTINEL;
+        }
+
+    /* Part 1 -- one band per DR0 bit, NOZCMP so nothing is rejected. */
+    for (bit = 0UL; bit < 32UL; bit++) {
+        unsigned long y0 = bit * OSMGA_D3_WALK_ROWS;
+
+        if (!osmgaStormWaitFifo(base, 13U)) goto unmap;
+        osmgaStormInitState(base, stride, 0UL, OSMGA_S1_W - 1UL,
+                            y0 * stride,
+                            (y0 + OSMGA_D3_WALK_ROWS - 1UL) * stride);
+        if (!osmgaStormWaitFifo(base, 9U)) goto unmap;
+        osmgaW32(base, MGA_DSTORG, OSMGA_S1_VRAM_BLOCK);
+        osmgaW32(base, MGA_ZORG,   OSMGA_D3_ZORG);
+        osmgaW32(base, MGA_DR0,    1UL << bit);
+        osmgaW32(base, MGA_DR2,    0UL);
+        osmgaW32(base, MGA_DR3,    0UL);
+        osmgaW32(base, MGA_DWGCTL, ziBase);
+        osmgaW32(base, MGA_FXBNDRY, (OSMGA_S1_W << 16) | 0UL);
+        osmgaW32(base, MGA_YDSTLEN + MGA_EXEC,
+                 (y0 << 16) | OSMGA_D3_WALK_ROWS);
+        if (!osmgaStormWaitIdle(base)) {
+            IOLog("OpenStepMGA D3-3b: walk bit %lu did not finish\n", bit);
+            osmgaW32(base, MGA_DSTORG, 0UL);
+            osmgaW32(base, MGA_ZORG, 0UL);
+            goto unmap;
+        }
+        osmgaW32(base, MGA_DSTORG, 0UL);
+        osmgaW32(base, MGA_ZORG,   0UL);
+        zseen[bit] = (unsigned long)z16[y0 * stride];
+    }
+
+    /* Part 2 -- with depth cleared correctly, does the compare engage? */
+    for (band = 0UL; band < 3UL; band++) {
+        unsigned long y0 = walkRows + band * OSMGA_D3_CMP_ROWS;
+        unsigned long cmp = (band == 0UL) ? MGA_DWGCTL_NOZCMP
+                                          : MGA_DWGCTL_ZLT;
+        unsigned long z = (band == 2UL) ? 0xFFFFFFFFUL : 0UL;
+
+        if (!osmgaStormWaitFifo(base, 13U)) goto unmap;
+        osmgaStormInitState(base, stride, 0UL, OSMGA_S1_W - 1UL,
+                            y0 * stride,
+                            (y0 + OSMGA_D3_CMP_ROWS - 1UL) * stride);
+        if (!osmgaStormWaitFifo(base, 16U)) goto unmap;
+        osmgaW32(base, MGA_DSTORG, OSMGA_S1_VRAM_BLOCK);
+        osmgaW32(base, MGA_ZORG,   OSMGA_D3_ZORG);
+        osmgaW32(base, MGA_DR0,    z);
+        osmgaW32(base, MGA_DR2,    0UL);
+        osmgaW32(base, MGA_DR3,    0UL);
+        osmgaW32(base, MGA_DR4,    0UL);
+        osmgaW32(base, MGA_DR6,    0UL);
+        osmgaW32(base, MGA_DR7,    0UL);
+        osmgaW32(base, MGA_DR8,    0UL);
+        osmgaW32(base, MGA_DR10,   0UL);
+        osmgaW32(base, MGA_DR11,   0UL);
+        osmgaW32(base, MGA_DR12,   OSMGA_D3_CMP_BLUE);
+        osmgaW32(base, MGA_DR14,   0UL);
+        osmgaW32(base, MGA_DR15,   0UL);
+        osmgaW32(base, MGA_DWGCTL, ziBase | cmp);
+        osmgaW32(base, MGA_FXBNDRY, (OSMGA_S1_W << 16) | 0UL);
+        osmgaW32(base, MGA_YDSTLEN + MGA_EXEC,
+                 (y0 << 16) | OSMGA_D3_CMP_ROWS);
+        if (!osmgaStormWaitIdle(base)) {
+            IOLog("OpenStepMGA D3-3b: compare band %lu did not finish\n",
+                  band);
+            osmgaW32(base, MGA_DSTORG, 0UL);
+            osmgaW32(base, MGA_ZORG, 0UL);
+            goto unmap;
+        }
+        osmgaW32(base, MGA_DSTORG, 0UL);
+        osmgaW32(base, MGA_ZORG,   0UL);
+
+        drew[band] = 0UL;
+        for (row = y0; row < y0 + OSMGA_D3_CMP_ROWS; row++)
+            for (col = 0UL; col < OSMGA_S1_W; col++)
+                if (blk[row * stride + col] != OSMGA_S1_SENTINEL) {
+                    if (band == 0UL && drew[0] == 0UL)
+                        colour = blk[row * stride + col];
+                    drew[band]++;
+                }
+    }
+
+    for (row = 0UL; row < allRows; row++)
+        for (col = 0UL; col < guardW; col++) {
+            if (row < drawRows && col < OSMGA_S1_W)
+                continue;
+            if (blk[row * stride + col] != OSMGA_S1_SENTINEL) cGuard++;
+            if (z16[row * stride + col] != OSMGA_D3_ZSENTINEL) zGuard++;
+        }
+
+    for (bit = 0UL; bit < 32UL; bit += 8UL)
+        IOLog("OpenStepMGA D3-3b: DR0 bits %2lu-%2lu -> Z %04lx %04lx %04lx "
+              "%04lx %04lx %04lx %04lx %04lx\n",
+              bit, bit + 7UL,
+              zseen[bit],      zseen[bit + 1UL], zseen[bit + 2UL],
+              zseen[bit + 3UL], zseen[bit + 4UL], zseen[bit + 5UL],
+              zseen[bit + 6UL], zseen[bit + 7UL]);
+    IOLog("OpenStepMGA D3-3b: compare drew NOZCMP=%lu ZLT(z=0)=%lu "
+          "ZLT(z=max)=%lu of %lu; control colour %08lx\n",
+          drew[0], drew[1], drew[2], OSMGA_D3_CMP_ROWS * OSMGA_S1_W, colour);
+    IOLog("OpenStepMGA D3-3b: guards disturbed -- colour %lu, depth %lu\n",
+          cGuard, zGuard);
+
+    if (cGuard != 0UL || zGuard != 0UL)
+        IOLog("OpenStepMGA D3-3b: STOP -- a write escaped the clip\n");
+    else if (drew[0] == 0UL)
+        IOLog("OpenStepMGA D3-3b: FAIL -- the NOZCMP control drew nothing; "
+              "do not read the compare bands\n");
+    else if (drew[1] > 0UL && drew[2] == 0UL)
+        IOLog("OpenStepMGA D3-3b: PASS -- ZLT accepts a near value and "
+              "rejects a far one; the depth compare works\n");
+    else if (drew[1] == drew[2])
+        IOLog("OpenStepMGA D3-3b: FAIL -- both ZLT bands behaved alike, so "
+              "the compare is not engaged\n");
+    else
+        IOLog("OpenStepMGA D3-3b: unexpected -- read the counts above\n");
+
+unmap:
+    if (aZ != 0)   (void)IOUnmapPhysicalFromIOTask(aZ, lZ);
+    if (aBlk != 0) (void)IOUnmapPhysicalFromIOTask(aBlk, lBlk);
+}
+
 @end
-
-
-
-
-
-
-
