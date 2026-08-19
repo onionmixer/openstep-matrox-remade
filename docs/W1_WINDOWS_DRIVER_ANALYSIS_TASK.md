@@ -76,6 +76,55 @@ Measured on the real card (`D3_RASTERISER_PATH_PLAN.md` §8, §9):
 12. Which `DWGCTL` values are used for triangle rasterisation, and what does
     each bit mean? We have `TRAP|I` = `0x000C7074` working on hardware.
 
+## 2A. Localisation already done (start here)
+
+A first attempt at this task timed out after 30 minutes with no output,
+almost certainly because the scope was too wide. The candidate sites have
+since been narrowed with objdump, so **start from these addresses** rather
+than searching the whole binary.
+
+Method used: disassembled `G400DD32.dll` with objdump, then separated
+**stores** (`mov %reg,disp(%base)`) from **loads**, because MMIO register
+programming appears as stores. Load-only sites are almost certainly driver
+context-structure fields, not registers.
+
+Store sites, by register offset:
+
+| Offset | Name | Store addresses |
+| --- | --- | --- |
+| 0x1c58 | SGN | baa41b17 baa41d80 baa4ccf7 baa4fd74 |
+| 0x1c60 | AR0 | baa1515f baa18015 baa1a364 baa41b23 baa41bba baa41d44 baa420b2 baa4280d |
+| 0x1c64 | AR1 | baa34006 |
+| 0x1c68 | AR2 | baa12fa5 baa15159 baa1800f baa1a35e |
+| 0x1c6c | AR3 | baa12fab baa22f2b baa22f6d baa22f97 baa33f64 baa33f92 baa33fae baa41b1d |
+| 0x1c70 | AR4 | baa12fb7 baa1518c baa18042 baa1a391 |
+| 0x1c74 | AR5 | baa12fbd baa41b2d baa41d4e baa420ec baa42837 baa42c5a baa4ccb5 baa4fd4f |
+| 0x1c78 | AR6 | baa12fc3 |
+| 0x1c84 | FXBNDRY | baa41b49 baa41bd0 baa41d67 baa420ce baa4281d baa42c2e baa49406 baa4970e |
+| 0x1c88 | YDSTLEN | baa41d76 baa49415 baa4971d |
+| 0x1cd8 | DR6 | baa22c9f baa22e37 |
+| 0x1cf0 | DR12 | baa0e265 baa0e293 baa13ba0 baa25ea7 baa28690 |
+| 0x1dcc | WVRTXSZ | baa355a3 baa356f5 |
+| 0x1dd8 | WIADDR2 | baa35724 |
+
+Clusters worth looking at first:
+
+1. **baa41b17..baa41b49** — SGN, AR3, AR0, AR5, FXBNDRY within ~50 bytes.
+   This is the strongest candidate for sloped-trapezoid setup, and it
+   includes an AR3 store, which bears directly on question A3.
+2. **baa41d44..baa41d80** — AR0, AR5, FXBNDRY, YDSTLEN, SGN.
+3. **baa355a3..baa35724** — WVRTXSZ twice then WIADDR2: WARP pipe selection.
+4. **baa12f73..baa12fd5** — a dense sweep of many nearby offsets including
+   `movl $0x1807,0x1df4(%esi)`. **Treat this one with suspicion**: 0x1807 is
+   the known G400 WVRTXSZ value, but it is being written to 0x1df4 while
+   WVRTXSZ is 0x1dcc, so this may be a shadow register file inside a driver
+   context structure rather than MMIO. Determining which it is would itself
+   be a useful result.
+
+**First thing to establish for any of these: is the base register the MMIO
+aperture, or a driver context structure?** Every conclusion below depends on
+that, and the answer is not assumed here.
+
 ## 3. Deliverable
 
 A single file, `docs/W1_WINDOWS_DRIVER_FINDINGS.md`, numbered to match section
