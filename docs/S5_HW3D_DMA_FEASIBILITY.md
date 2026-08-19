@@ -119,9 +119,21 @@ memory다. 연속성이라는 **결론은 맞고 범위 서술이 넓다.**
 
 ## 4. DMA보다 큰 장벽 — 3D 소프트웨어 스택이 통째로 없다
 
-### 4-1. X.Org의 3D 경로는 전부 AGP 전제
-`mga_dri.c`가 WARP 마이크로코드·primary DMA·버퍼·텍스처를 모두 `DRM_AGP`로
-매핑한다. PCI 전용 경로는 Linux DRM 커널 모듈 쪽에 있고 우리 참조 트리에 없다.
+### 4-1. 정정 — AGP 전제는 **DDX에만** 해당한다
+
+초판은 "X.Org의 3D 경로는 전부 AGP 전제"라고 적었다. DDX(`mga_dri.c`)에
+대해서는 맞다 — WARP 마이크로코드·primary DMA·버퍼·텍스처를 `DRM_AGP`로
+매핑하고, PCI면 `agpSize`를 0으로 강제하라고만 적어 둔다(`mga_dri.c:297`).
+
+**그러나 DRM에는 PCI 전용 경로가 따로 있다.** legacy DRM의
+`mga_do_pci_dma_bootstrap`이 그것이고, 끝에서 `dev_priv->dma_access = 0`으로
+두고 `"Initialized card for PCI DMA."`를 찍는다(`mga_dma.c:699` 부근).
+AGP 경로는 대비되게 `MGA_PAGPXFER`를 넣는다(`:596`).
+
+즉 **PCI 버스마스터 primary DMA는 당시 출하된 구성**이며, 우리가 없는 길을
+내는 것이 아니다. 초판이 "PCI 전용 경로는 우리 참조 트리에 없다"고 한 것도
+사실이었으나, 그것은 트리를 받지 않았기 때문이지 존재하지 않아서가 아니다.
+자세한 것은 `D1_PRIMARY_DMA_RING_PLAN.md`.
 
 ### 4-2. DDX는 3D를 실행하지 않는다
 `mga_dri.c`는 AGP 매핑을 잡아 offset을 DRM에 넘기는 것이 전부다
@@ -134,10 +146,21 @@ D3D·Allegro·DOS·BeOS·Windows·X·OSmesa만 있다. **MGA 없음.**
 MGA용 Mesa 하드웨어 드라이버는 DRI 트리(Mesa 3.5+)에 있고 **DRM ioctl·SAREA·
 DRI 락에 의존**한다 — OPENSTEP에 전부 없다. 따라서 **포팅이 아니라 신규 작성**이다.
 
-### 4-4. 쓸 수 있는 자산
-`xf86-video-mga-2.0.0/src/mga_ucode.h` — **WARP 마이크로코드 11,610줄**,
-MIT 라이선스("Permission is hereby granted, free of charge...")이므로 사용 가능.
-마이크로코드 자체는 다시 만들 필요가 없다.
+### 4-4. 쓸 수 있는 자산 (2026-08-19 재확인)
+
+초판이 이 항목을 적을 때 근거로 삼은 트리는 **워크스페이스에 없었다**
+(`scratch/`가 gitignore라 이전 세션의 다운로드가 사라졌고 git 이력에도 없다).
+즉 한동안 **재확인 불가능한 주장**이었다. 다시 받아 확인한 결과 **주장 자체는
+사실이었다**:
+
+| 자산 | 확인 |
+| --- | --- |
+| `xf86-video-mga-2.0.0/src/mga_ucode.h` | **11,610줄**, `Permission is hereby granted, free of charge...`, ⓒ1999 Matrox Graphics Inc. → MIT 계열, 사용 가능 |
+| legacy MGA DRM(`mga_drv.h`/`mga_dma.c`/`mga_state.c`/`mga_warp.c`/`mga_irq.c`) | Precision Insight/VA Linux, **MIT**(GPL 아님). primary DMA 레지스터·명령 인코딩·PCI 경로의 정본 |
+
+현재 위치는 `scratch/mga-drm/`과 `scratch/xf86-video-mga-2.0.0/`이며
+**`scratch/`는 gitignore라 다시 사라질 수 있다.** 착수 시 안정된 위치로
+옮기거나 재취득 절차를 문서화할 것. 취득 URL은 `refs/SOURCES.md`에 이미 있다.
 
 ## 5. 옵션 3의 실제 작업 목록
 
