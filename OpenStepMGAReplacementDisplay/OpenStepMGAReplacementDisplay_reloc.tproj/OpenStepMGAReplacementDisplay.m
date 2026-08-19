@@ -12,7 +12,8 @@
  * All register values are the X.Org-verified constants in
  * docs/R6_G450_FULL_LINEAR_MODESET.md.
  *
- * init maps BAR0 (framebuffer, mapMemoryRange range 0) and BAR1 (MMIO, via
+ * init maps BAR0 (framebuffer, via mapFrameBufferAtPhysicalAddress:length:)
+ * and BAR1 (MMIO, via
  * IOMapPhysicalIntoIOTask on the PCI-config BAR1 address), selects a
  * resolution+pixel-format from the config-table "Display Mode" string (see
  * osmgaRes/osmgaFmt and Display.modes for the Configure.app-visible list),
@@ -70,7 +71,6 @@
 #define MGA_PLLLOCK             0x40
 #define MGA_MMIO_LENGTH         0x4000
 #define MGA_VRAM_16MB           (16UL * 1024UL * 1024UL)
-#define MGA_BPP32_SHIFT         2      /* BppShift for 32 bpp */
 
 /*
  * ---- Storm 2D drawing engine (S1 liveness test only) ----
@@ -136,7 +136,7 @@
 /* ---- S3b-prep: telemetry + test-only blit parameter ---- */
 #define OSMGA_STATS_PARAM       "OSMGAStats"
 #define OSMGA_STATS_VERSION     1
-#define OSMGA_STATS_COUNT       26
+#define OSMGA_STATS_COUNT       19
 /*
  * displayDefs.h says callers must not use IO_DISPLAY_DO_BLIT unless
  * IO_DISPLAY_CAN_BLIT is set.  We have not set it, so our own probe client
@@ -156,7 +156,6 @@
 #define OSMGA_BLIT_R_BUSY       4
 #define OSMGA_BLIT_R_PREEXEC    5
 #define OSMGA_BLIT_R_POSTEXEC   6
-#define OSMGA_BLIT_R_OBSERVED   7   /* reject-only mode: recorded, not run */
 
 /*
  * ---- S4a: offscreen VRAM mapped into a user task (cdevsw mmap) ----
@@ -1135,8 +1134,6 @@ static IODisplayInfo osmgaModeTemplate = {
     if ([super initFromDeviceDescription:deviceDescription] == nil)
         return [super free];
 
-    chipVendorDevice = 0;
-    chipRevision = 0;
     chipIsG450 = NO;
     frameBufferMapped = NO;
     mmioMapped = NO;
@@ -1157,20 +1154,13 @@ static IODisplayInfo osmgaModeTemplate = {
     statRefusedPreExec = 0; statPostExecTimeout = 0;
     statCursorShow = 0; statCursorMove = 0; statCursorHide = 0;
     statCursorWhileBusy = 0; statThin1px = 0;
-    statEnterLinear = 0; statRevertVGA = 0;
-    stormObserveOnly = NO;
-    statObserved = 0; statObsOverlap = 0; statObsDirUp = 0; statObsDirLeft = 0;
-    statObsCursorNear = 0; statObsMaxW = 0; statObsMaxH = 0; statObsMinDim = 0;
-    obsLastCursorTotal = 0;
-    manualVideoMemoryConfigured = NO;
+    statEnterLinear = 0; statRevertVGA = 0; statTransferTable = 0;
     configuredVideoMemoryBytes = 0;
 
     if (!osmgaFindMGAFunction(&bus, &dev, &fn, &vendorDevice, &revision)) {
         IOLog("OpenStepMGAReplacementDisplay: MGA absent after probe, abort\n");
         return [super free];
     }
-    chipVendorDevice = vendorDevice;
-    chipRevision = revision;
     chipIsG450 = (revision >= MGA_G450_MIN_REVISION) ? YES : NO;
     /* Read BAR0 (framebuffer) and BAR1 (MMIO) from PCI config, like the
      * production MatroxMGA (empty Memory Maps / I/O Ports -> no resource
@@ -1200,16 +1190,6 @@ static IODisplayInfo osmgaModeTemplate = {
             IOLog("OpenStepMGAReplacementDisplay: S1 Storm 2D test ENABLED "
                   "by configuration\n");
 
-        /* Reject-only observation mode: advertise the capability but never
-         * run the engine for a standard request (plan section 10). */
-        flag = (ct == nil) ? 0
-             : (const char *)[ct valueForStringKey:"Storm Blit Observe"];
-        stormObserveOnly = (flag != 0 && osmgaTextContains(flag, "Yes"))
-                           ? YES : NO;
-        if (stormObserveOnly)
-            IOLog("OpenStepMGAReplacementDisplay: blit OBSERVE-ONLY mode "
-                  "(CAN_BLIT advertised, every request recorded and refused, "
-                  "engine untouched)\n");
     }
 
     if (frameBufferPhysical == 0 || mmioPhysical == 0) {
@@ -1242,14 +1222,17 @@ static IODisplayInfo osmgaModeTemplate = {
         displayInfo->screenWidth = r->width;
         displayInfo->screenHeight = r->height;
         /*
-         * The capability flag must be set where IODisplayInfo is published --
-         * once the window server has read flags, setting it later is too late.
-         * For now it is advertised ONLY in reject-only observation mode, where
-         * every standard request is recorded and refused without touching the
-         * engine (docs/S3B_PREP_INSTRUMENTATION_PLAN.md 10).
+         * Capability flags must be set where IODisplayInfo is published --
+         * once the window server has read them, setting them later is too
+         * late.  We advertise the hardware CLUT because we do have one and do
+         * implement setTransferTable:count:.
+         *
+         * IO_DISPLAY_CAN_BLIT is deliberately NOT advertised: measurement
+         * showed this OPENSTEP's window server never sends IODisplayDoBlit --
+         * the string does not appear in WindowServer or mach_kernel at all
+         * (docs/S3B_PREP_INSTRUMENTATION_PLAN.md 11).
          */
-        if (stormObserveOnly)
-            displayInfo->flags |= IO_DISPLAY_CAN_BLIT;
+        displayInfo->flags |= IO_DISPLAY_HAS_TRANSFER_TABLE;
     }
 
     /* map MMIO control aperture (BAR1) cache-inhibited (as MatroxMGA/MGAProbe) */
@@ -1369,7 +1352,6 @@ static IODisplayInfo osmgaModeTemplate = {
 {
     OSMGAManualMemoryStatus status;
 
-    manualVideoMemoryConfigured = NO;
     configuredVideoMemoryBytes = 0;
     if (configTable == nil) {
         IOLog("OpenStepMGAReplacementDisplay: no configuration table\n");
@@ -1387,7 +1369,6 @@ static IODisplayInfo osmgaModeTemplate = {
         IOLog("OpenStepMGAReplacementDisplay: MGA Memory Size != 16 MiB; clamping to 16\n");
         configuredVideoMemoryBytes = (unsigned int)MGA_VRAM_16MB;
     }
-    manualVideoMemoryConfigured = YES;
     return YES;
 }
 
@@ -1593,15 +1574,6 @@ static IODisplayInfo osmgaModeTemplate = {
           r->name, f->cspace);
     return YES;
 }
-
-/*
- * Set to 1 to program the hardware mode (PLL/CRTC/DAC) in enterLinearMode.
- * Kept 0 for the first activation test: this isolates the framebuffer-mapping
- * fix (mapFrameBufferAtPhysicalAddress) from the mode-programming sequence, so
- * a boot that completes proves the mapping fix without risking a mode-program
- * hang.  Once that is confirmed the mode program is re-enabled.
- */
-#define OSMGA_ENABLE_MODE_PROGRAM 1
 
 /*
  * S1: Storm 2D engine liveness test -- docs/S1_STORM_ENGINE_LIVENESS_PLAN.md.
@@ -2215,34 +2187,6 @@ unmap:
     if (p[2] == 1U || p[3] == 1U)
         statThin1px++;
 
-    /*
-     * Reject-only observation: characterise the caller's workload WITHOUT
-     * running the engine.  Everything here is arithmetic on the parameters;
-     * no MMIO, no framebuffer access, so this cannot corrupt the display.
-     * Refusing is the documented contract, so the caller does it in software.
-     */
-    if (stormObserveOnly) {
-        unsigned sx = p[0], sy = p[1], w = p[2], h = p[3], dx = p[4], dy = p[5];
-        unsigned cursorTotal = statCursorShow + statCursorMove + statCursorHide;
-
-        statObserved++;
-        if (sx < dx) statObsDirLeft++;
-        if (sy < dy) statObsDirUp++;
-        /* rectangle overlap test */
-        if (sx < dx + w && dx < sx + w && sy < dy + h && dy < sy + h)
-            statObsOverlap++;
-        if (w > statObsMaxW) statObsMaxW = w;
-        if (h > statObsMaxH) statObsMaxH = h;
-        if (statObsMinDim == 0U || w < statObsMinDim) statObsMinDim = w;
-        if (h < statObsMinDim) statObsMinDim = h;
-        /* Did the cursor move between the previous request and this one?
-         * A high ratio means cursor and blits genuinely interleave. */
-        if (cursorTotal != obsLastCursorTotal) {
-            statObsCursorNear++;
-            obsLastCursorTotal = cursorTotal;
-        }
-        return IO_R_RESOURCE;          /* recorded, engine untouched */
-    }
 
     rr = [self doDisplayBlitSrcX:p[0] srcY:p[1] width:p[2] height:p[3]
                             dstX:p[4] dstY:p[5] reason:&reason];
@@ -2319,14 +2263,7 @@ unmap:
         parameterArray[15] = statRevertVGA;
         parameterArray[16] = stormBlitReady ? 1U : 0U;
         parameterArray[17] = stormBlitFailed ? 1U : 0U;
-        parameterArray[18] = stormObserveOnly ? 1U : 0U;
-        parameterArray[19] = statObserved;
-        parameterArray[20] = statObsOverlap;
-        parameterArray[21] = statObsDirUp;
-        parameterArray[22] = statObsDirLeft;
-        parameterArray[23] = statObsCursorNear;
-        parameterArray[24] = (statObsMaxW << 16) | (statObsMaxH & 0xffffU);
-        parameterArray[25] = statObsMinDim;
+        parameterArray[18] = statTransferTable;
         *count = OSMGA_STATS_COUNT;
         return IO_R_SUCCESS;
     }
@@ -2425,7 +2362,6 @@ unmap:
 {
     statEnterLinear++;
     IOLog("OpenStepMGAReplacementDisplay: enterLinearMode begin\n");
-#if OSMGA_ENABLE_MODE_PROGRAM
     if (![self programLinearMode]) {
         IOLog("OpenStepMGAReplacementDisplay: enterLinearMode FAILED; recover via "
               "R5-VGA config-edit reboot (Active Drivers -> VGA)\n");
@@ -2437,10 +2373,6 @@ unmap:
     [self runStormLivenessTest];
     [self runStormBlitTest];
     [self runStormBlitApiTest];
-#else
-    IOLog("OpenStepMGAReplacementDisplay: enterLinearMode mode-program DISABLED "
-          "(FB-mapping isolation test); no register programming\n");
-#endif
 }
 
 /*
@@ -2459,6 +2391,8 @@ unmap:
     const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
     IOColorSpace cspace = [self displayInfo]->colorSpace;
     int k;
+
+    statTransferTable++;
 
     if (table == 0 || count <= 0)
         return self;
@@ -2524,7 +2458,6 @@ unmap:
 {
     [self teardownMappings];
     linearModeActive = NO;
-    manualVideoMemoryConfigured = NO;
     configuredVideoMemoryBytes = 0;
     return [super free];
 }

@@ -4,7 +4,7 @@
  * Programs a full X.Org-derived G450 linear mode directly in enterLinearMode
  * (generic VGA + depth-specific RAMDAC pixel format/palette + G450 pixel-PLL
  * candidate search, no mode-validation/transaction layer); init maps the
- * framebuffer (BAR0, mapMemoryRange range 0) and the MMIO control aperture
+ * framebuffer (BAR0, via mapFrameBufferAtPhysicalAddress:length:) and the MMIO control aperture
  * (BAR1, via IOMapPhysicalIntoIOTask), selects a resolution+pixel-format from
  * the config-table "Display Mode" string, and publishes the matching
  * IODisplayInfo.  Hardware register values are the X.Org-verified constants
@@ -21,20 +21,12 @@
 #import <driverkit/IOFrameBufferDisplay.h>
 #import <mach/machine/simple_lock.h>
 
-/* mapMemoryRange: indices, matching Default.table "Memory Maps" order. */
-#define OSMGA_RANGE_FRAMEBUFFER 0
-#define OSMGA_RANGE_VGA         1
-#define OSMGA_RANGE_BIOS        2
-
 @interface OpenStepMGAReplacementDisplay : IOFrameBufferDisplay
 {
-    /* manual configuration */
-    BOOL manualVideoMemoryConfigured;
+    /* manual configuration ("MGA Memory Size") */
     unsigned int configuredVideoMemoryBytes;
 
     /* chip classification (from PCI revision) */
-    unsigned int chipVendorDevice;
-    unsigned int chipRevision;
     BOOL chipIsG450;
 
     /* mapping state */
@@ -96,24 +88,8 @@
     volatile unsigned statThin1px;
     volatile unsigned statEnterLinear;
     volatile unsigned statRevertVGA;
+    volatile unsigned statTransferTable;  /* setTransferTable: calls */
 
-    /*
-     * Reject-only observation mode (docs/S3B_PREP_INSTRUMENTATION_PLAN.md 10).
-     * With "Storm Blit Observe" = "Yes" we advertise IO_DISPLAY_CAN_BLIT but
-     * RECORD AND REFUSE every standard request before touching hardware, so
-     * the window server's real workload can be characterised at zero risk.
-     */
-    BOOL stormObserveOnly;
-    volatile unsigned statObserved;        /* standard requests recorded */
-    volatile unsigned statObsOverlap;      /* source and destination overlap */
-    volatile unsigned statObsDirUp;        /* would need BLIT_UP   */
-    volatile unsigned statObsDirLeft;      /* would need BLIT_LEFT */
-    volatile unsigned statObsCursorNear;   /* a cursor call happened between
-                                            * this request and the previous */
-    volatile unsigned statObsMaxW;
-    volatile unsigned statObsMaxH;
-    volatile unsigned statObsMinDim;
-    volatile unsigned obsLastCursorTotal;  /* snapshot for the "near" test */
 
     /* lifecycle */
     BOOL linearModeActive;

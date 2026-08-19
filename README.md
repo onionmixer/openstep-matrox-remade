@@ -25,14 +25,28 @@ G450 PLL(픽셀 클럭 M/N/P 후보 탐색)과 15bpp RAMDAC 팔레트 인덱싱�
 [docs/R6_G450_PIXEL_PLL_ALGORITHM.md](docs/R6_G450_PIXEL_PLL_ALGORITHM.md)에,
 전체 검증 이력은 [docs/TEST_STATUS.md](docs/TEST_STATUS.md)에 있다.
 
-아래 "## 범위"부터 "## 초기 설계 결론"까지는 이 결과에 이르기 전, 2026-08-18
+모드셋 이후에는 **2D 엔진과 메모리 경로**를 실기에서 실증했다: Storm 2D
+단색채우기·BITBLT(S1/S2), 유저스페이스→커널 RPC로 엔진 구동(S3a, self-test
+6/6), 계측 19종 + 커서 오버라이드(S3b-prep), 오프스크린 VRAM의 유저 태스크
+매핑(S4a). 그 과정에서 **`IODisplayDoBlit`은 OPENSTEP 4.2에서 사문화됐음**을
+측정으로 확정했다(WindowServer가 보내지 않는다). **3D/OpenGL 가속은 아직
+착수하지 않았고**, 실현 가능성 조사만
+[docs/S5_HW3D_DMA_FEASIBILITY.md](docs/S5_HW3D_DMA_FEASIBILITY.md)에 있다.
+
+현재 사실의 정본은 [docs/TEST_STATUS.md](docs/TEST_STATUS.md), 인수인계는
+[HANDOFF.md](HANDOFF.md), 드라이버 사용법은
+[OpenStepMGAReplacementDisplay/README.md](OpenStepMGAReplacementDisplay/README.md)다.
+
+아래 "## 범위" 이후 문서 끝까지는 이 결과에 이르기 전, 2026-08-18
 기준으로 세운 **초기 설계 방향(폐기됨)** — `MatroxMGA`와 공존하는 별도
 Mesa/3D sidecar 서비스 — 의 기록이다. 실제로는 H1 방법론 전환(운영자가 target을
 generic SVGA 단독 소유로 재부팅해 MGA native 자원을 무소유 상태로 만듦) 이후
 `MatroxMGA`를 완전히 대체하는 display driver 자체를 새로 만드는 방향으로
 바뀌었고, 그 결과가 위 "현재 상태"다. 아래 내용은 탐색 과정의 근거·결정 기록으로
 남겨두되, 현재 아키텍처를 나타내지는 않는다. Mesa/3D 가속 경로는 이 replacement
-driver 위에서 아직 다시 설계되지 않았다.
+driver 위에서 아직 다시 설계되지 않았다. 이후 문단들이 현재형으로 서술하는
+P1/P2 MiG control plane, lease, sidecar service는 **모두 폐기된 경로**이며
+현재 드라이버는 그 코드를 링크하지 않는다.
 
 ## 범위 (2026-08-18 초기 설계, 폐기됨)
 

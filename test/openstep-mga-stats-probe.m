@@ -27,7 +27,7 @@
 #import <string.h>
 
 #define STATS_PARAM   "OSMGAStats"
-#define STATS_COUNT   26
+#define STATS_COUNT   19
 #define PROBE_PARAM   "OSMGAProbeBlit"
 #define PROBE_COUNT   6
 
@@ -36,11 +36,7 @@ static const char *statName[STATS_COUNT] = {
     "refusedDisabled", "refusedGeometry", "refusedBusy", "refusedPreExec",
     "postExecTimeout", "cursorShow", "cursorMove", "cursorHide",
     "cursorWhileStormBusy", "thin1px", "enterLinear", "revertVGA",
-    "stormBlitReady", "stormBlitFailed",
-    /* reject-only observation mode */
-    "observeOnly", "obsRequests", "obsOverlap", "obsWouldBlitUp",
-    "obsWouldBlitLeft", "obsCursorInterleaved", "obsMaxWxH(packed)",
-    "obsMinDim"
+    "stormBlitReady", "stormBlitFailed", "setTransferTable"
 };
 
 static int
@@ -137,12 +133,7 @@ main(int argc, char **argv)
         return 1;
     }
     printf("OSMGA_PROBE_STATS result=0 count=%u\n", count);
-    for (i = 0; i < (int)count && i < STATS_COUNT; i++) {
-        if (i == 24)
-            printf("  %-22s %ux%u\n", "obsMaxW x obsMaxH",
-                   values[i] >> 16, values[i] & 0xffffU);
-        else
-            printf("  %-22s %u\n", statName[i], values[i]);
-    }
+    for (i = 0; i < (int)count && i < STATS_COUNT; i++)
+        printf("  %-22s %u\n", statName[i], values[i]);
     return 0;
 }
