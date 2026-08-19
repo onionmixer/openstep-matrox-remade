@@ -474,6 +474,30 @@
 #define OSMGA_D3_CMP_ROWS       8UL
 #define OSMGA_D3_CMP_BLUE       (200UL << 15)
 
+/*
+ * D3-3c -- the compare, with values inside the range the bit walk found.
+ *
+ * D3-3b measured DR0 = Z << 15: DR0 bit 15 lands on depth bit 0 and the
+ * correspondence runs one-to-one up to DR0 bit 30, the same fixed-point
+ * position the colour interpolators use.  Only bit 31 is odd, and its
+ * raw value is reported here rather than left as a loose end.
+ *
+ * That makes D3-3b's compare result a bad test rather than a hardware
+ * fault: 0xFFFFFFFF is not a far depth, it reached the buffer as 0, so
+ * both ZLT bands were testing the same near value.  The depth the engine
+ * left behind proves the comparator accepted rather than ignored them --
+ * a rejected pixel would have left the clear value untouched.
+ *
+ * So the bands below use depths that sit in the linear range, one on
+ * each side of the cleared 0x8000, plus a reversed-sense band: if ZLT
+ * rejects the far depth and ZGTE accepts it, the comparator is working
+ * and its polarity is settled at the same time.
+ */
+#define OSMGA_D3_ZMID           0x40000000UL   /* depth 0x8000 */
+#define OSMGA_D3_ZNEAR          0x20000000UL   /* depth 0x4000 */
+#define OSMGA_D3_ZFAR           0x60000000UL   /* depth 0xC000 */
+#define MGA_DWGCTL_ZGTE         0x00000700UL   /* 7 << 8 */
+
 #define MGA_DMA_GENERAL         0x00     /* PRIMADDRESS mode bits */
 #define MGA_PRIMNOSTART         0x01     /* PRIMEND bit0: do NOT start */
 #define MGA_PAGPXFER            0x02     /* PRIMEND bit1: AGP; 0 for PCI */
@@ -2713,8 +2737,12 @@ unmap:
     [self runWarpConfigTest];
     [self runWarpUcodePlacementTest];
     [self runWarpPipeStartTest];
-    [self runRasterInterpolationTest];
-    [self runDstorgOriginTest];
+    /* D3-0/1/2 and D3-3a-0 are recorded in docs/ and their output costs
+     * about ten syslog lines.  syslog drops bursts, and it dropped the
+     * whole of D3-3b's first run, so leave them out while D3-3b is the
+     * measurement.  Restore both calls once depth is settled. */
+    /* [self runRasterInterpolationTest]; */
+    /* [self runDstorgOriginTest]; */
     [self runDepthEncodingTest];
 }
 
@@ -4570,7 +4598,7 @@ unmap:
     vm_address_t base = mmioBase;
     unsigned long stride = (unsigned long)di->rowBytes / 4UL;
     unsigned long walkRows = 32UL * OSMGA_D3_WALK_ROWS;      /* 64 */
-    unsigned long cmpRows = 3UL * OSMGA_D3_CMP_ROWS;         /* 24 */
+    unsigned long cmpRows = 4UL * OSMGA_D3_CMP_ROWS;         /* 32 */
     unsigned long drawRows = walkRows + cmpRows;             /* 88 */
     unsigned long allRows = drawRows + OSMGA_D3_ISO_GUARDROWS;
     unsigned long guardW = 2UL * OSMGA_S1_W;
@@ -4579,7 +4607,8 @@ unmap:
     volatile unsigned long *blk = 0, *zw = 0;
     volatile unsigned short *z16;
     unsigned long bit, band, row, col;
-    unsigned long zseen[32], drew[3], colour = 0UL;
+    unsigned long zseen[32], drew[4], zcmp[4], colour = 0UL;
+    char map[33];
     unsigned long cGuard = 0UL, zGuard = 0UL;
     unsigned long ziBase = (MGA_DWGCTL_SOLID_FILL & ~MGA_DWGCTL_ATYPE_I) |
                            MGA_DWGCTL_ATYPE_ZI;
@@ -4648,11 +4677,16 @@ unmap:
     }
 
     /* Part 2 -- with depth cleared correctly, does the compare engage? */
-    for (band = 0UL; band < 3UL; band++) {
+    for (band = 0UL; band < 4UL; band++) {
         unsigned long y0 = walkRows + band * OSMGA_D3_CMP_ROWS;
-        unsigned long cmp = (band == 0UL) ? MGA_DWGCTL_NOZCMP
-                                          : MGA_DWGCTL_ZLT;
-        unsigned long z = (band == 2UL) ? 0xFFFFFFFFUL : 0UL;
+        unsigned long cmp, z;
+
+        switch (band) {
+        case 0:  cmp = MGA_DWGCTL_NOZCMP; z = OSMGA_D3_ZMID;  break;
+        case 1:  cmp = MGA_DWGCTL_ZLT;    z = OSMGA_D3_ZNEAR; break;
+        case 2:  cmp = MGA_DWGCTL_ZLT;    z = OSMGA_D3_ZFAR;  break;
+        default: cmp = MGA_DWGCTL_ZGTE;   z = OSMGA_D3_ZFAR;  break;
+        }
 
         if (!osmgaStormWaitFifo(base, 13U)) goto unmap;
         osmgaStormInitState(base, stride, 0UL, OSMGA_S1_W - 1UL,
@@ -4688,6 +4722,7 @@ unmap:
         osmgaW32(base, MGA_ZORG,   0UL);
 
         drew[band] = 0UL;
+        zcmp[band] = (unsigned long)z16[y0 * stride];
         for (row = y0; row < y0 + OSMGA_D3_CMP_ROWS; row++)
             for (col = 0UL; col < OSMGA_S1_W; col++)
                 if (blk[row * stride + col] != OSMGA_S1_SENTINEL) {
@@ -4705,16 +4740,32 @@ unmap:
             if (z16[row * stride + col] != OSMGA_D3_ZSENTINEL) zGuard++;
         }
 
-    for (bit = 0UL; bit < 32UL; bit += 8UL)
-        IOLog("OpenStepMGA D3-3b: DR0 bits %2lu-%2lu -> Z %04lx %04lx %04lx "
-              "%04lx %04lx %04lx %04lx %04lx\n",
-              bit, bit + 7UL,
-              zseen[bit],      zseen[bit + 1UL], zseen[bit + 2UL],
-              zseen[bit + 3UL], zseen[bit + 4UL], zseen[bit + 5UL],
-              zseen[bit + 6UL], zseen[bit + 7UL]);
-    IOLog("OpenStepMGA D3-3b: compare drew NOZCMP=%lu ZLT(z=0)=%lu "
-          "ZLT(z=max)=%lu of %lu; control colour %08lx\n",
-          drew[0], drew[1], drew[2], OSMGA_D3_CMP_ROWS * OSMGA_S1_W, colour);
+    /* One character per DR0 bit, so the whole table survives as a single
+     * syslog line: '.' means that bit reached no depth bit, a lowercase
+     * hex digit means it reached exactly that depth bit, and an uppercase
+     * digit means it reached that bit and others too. */
+    for (bit = 0UL; bit < 32UL; bit++) {
+        unsigned long v = zseen[bit], j = 0UL;
+
+        if (v == 0UL) { map[bit] = '.'; continue; }
+        while ((v & 1UL) == 0UL) { v >>= 1; j++; }
+        map[bit] = "0123456789abcdef"[j & 15UL];
+        if (v != 1UL && map[bit] >= 'a')
+            map[bit] = (char)(map[bit] - 'a' + 'A');
+        else if (v != 1UL)
+            map[bit] = (char)(map[bit] - '0' + 'G');
+    }
+    map[32] = '\0';
+    IOLog("OpenStepMGA D3-3b: DR0 bit 0..31 -> depth bit  %s\n", map);
+    IOLog("OpenStepMGA D3-3b: DR0 bit30=%04lx bit31=%04lx (bit31 is the "
+          "one the map cannot express)\n", zseen[30], zseen[31]);
+    IOLog("OpenStepMGA D3-3c: drew NOZCMP=%lu ZLT/near=%lu ZLT/far=%lu "
+          "ZGTE/far=%lu of %lu\n",
+          drew[0], drew[1], drew[2], drew[3],
+          OSMGA_D3_CMP_ROWS * OSMGA_S1_W);
+    IOLog("OpenStepMGA D3-3c: depth left %04lx/%04lx/%04lx/%04lx "
+          "(clear was %04x); control colour %08lx\n",
+          zcmp[0], zcmp[1], zcmp[2], zcmp[3], OSMGA_D3_ZSENTINEL, colour);
     IOLog("OpenStepMGA D3-3b: guards disturbed -- colour %lu, depth %lu\n",
           cGuard, zGuard);
 
@@ -4723,14 +4774,17 @@ unmap:
     else if (drew[0] == 0UL)
         IOLog("OpenStepMGA D3-3b: FAIL -- the NOZCMP control drew nothing; "
               "do not read the compare bands\n");
-    else if (drew[1] > 0UL && drew[2] == 0UL)
-        IOLog("OpenStepMGA D3-3b: PASS -- ZLT accepts a near value and "
-              "rejects a far one; the depth compare works\n");
-    else if (drew[1] == drew[2])
-        IOLog("OpenStepMGA D3-3b: FAIL -- both ZLT bands behaved alike, so "
-              "the compare is not engaged\n");
+    else if (drew[1] > 0UL && drew[2] == 0UL && drew[3] > 0UL &&
+             zcmp[2] == (unsigned long)OSMGA_D3_ZSENTINEL)
+        IOLog("OpenStepMGA D3-3c: PASS -- ZLT takes the near depth and "
+              "rejects the far one, ZGTE takes the far one, and the "
+              "rejected band left the depth buffer untouched\n");
+    else if (drew[1] == drew[2] && drew[2] == drew[3])
+        IOLog("OpenStepMGA D3-3c: FAIL -- every compare mode behaved "
+              "alike, so the comparator is not engaged at all\n");
     else
-        IOLog("OpenStepMGA D3-3b: unexpected -- read the counts above\n");
+        IOLog("OpenStepMGA D3-3c: partial -- the modes differ but not as "
+              "predicted; read the counts and the depth left above\n");
 
 unmap:
     if (aZ != 0)   (void)IOUnmapPhysicalFromIOTask(aZ, lZ);
