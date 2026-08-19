@@ -337,6 +337,43 @@
  * measures it instead of assuming it. */
 #define MGA_DR_SHIFT            7
 
+/*
+ * D3-2 -- sloped trapezoid edges.
+ *
+ * The AR registers walk both edges once ARZERO and SGNZERO are cleared;
+ * with them set the engine ignores AR/SGN entirely, which is why every
+ * probe so far produced an axis-aligned rectangle.  The recipe is X.Org
+ * XAA's mgaSubsequentSolidFillTrap, corroborated by a second independent
+ * implementation in the same file (mgaSubsequentPatternFillTrap) writing
+ * the identical registers.
+ *
+ * AR3 is deliberately not written.  It is a BITBLT/ILOAD source-address
+ * register: the DDX's trapezoid path never touches it, the shipping
+ * Windows HAL uses it only in blits, and both interleave blits and
+ * trapezoids without clearing it in between.
+ *
+ * Containment note: with ARZERO clear, FXBNDRY and YDSTLEN are the edge
+ * seed and the row count, not a bounding rectangle.  A wrong edge walks
+ * out of them.  The real guard is CXBNDRY/YTOP/YBOT, which
+ * osmgaStormInitState narrows before every draw -- and whether that guard
+ * holds for sloped spans has never been measured, which is why this probe
+ * insets x and checks guard columns.
+ */
+#define MGA_AR1                 0x1c64
+#define MGA_AR2                 0x1c68
+#define MGA_AR4                 0x1c70
+#define MGA_AR6                 0x1c78
+#define MGA_DWGCTL_ARZERO       0x00001000UL
+#define MGA_DWGCTL_SGNZERO      0x00002000UL
+#define MGA_DWGCTL_SLOPED(base) ((base) & ~(MGA_DWGCTL_ARZERO | \
+                                            MGA_DWGCTL_SGNZERO))
+
+/* Probe geometry: inset from the block edge so a runaway edge has
+ * somewhere to be caught, with guard columns either side. */
+#define OSMGA_D3_INSET          8UL
+#define OSMGA_D3_WIDTH          48UL
+#define OSMGA_D3_BAND           20UL
+
 #define MGA_DMA_GENERAL         0x00     /* PRIMADDRESS mode bits */
 #define MGA_PRIMNOSTART         0x01     /* PRIMEND bit0: do NOT start */
 #define MGA_PAGPXFER            0x02     /* PRIMEND bit1: AGP; 0 for PCI */
@@ -3813,58 +3850,93 @@ osmgaDmaBuildPipeList(unsigned long *ring, unsigned long ringDwords,
  * same clip, same FXBNDRY/YDSTLEN.  The one thing that differs is DWGCTL's
  * atype and the DR registers, so a failure has one plausible cause.
  */
+/*
+ * Emit one trapezoid with the XAA edge parameters.  `dxL/dyL/eL` describe
+ * the left edge, `dxR/dyR/eR` the right; `left`/`right` are the starting x
+ * of each edge on the first row.  Setting both dx to zero gives vertical
+ * edges, i.e. a rectangle -- which is how the control band checks that
+ * clearing ARZERO/SGNZERO has not broken drawing on its own.
+ *
+ * DWGCTL is restored afterwards so the cleared bits cannot leak into the
+ * next draw, matching what the DDX does.
+ */
+static void
+osmgaStormTrap(vm_address_t base, unsigned long dwgctl,
+               unsigned long y, unsigned long h,
+               long left,  long dxL, long dyL, long eL,
+               long right, long dxR, long dyR, long eR)
+{
+    int sdxl = (dxL < 0) ? 1 : 0;
+    int sdxr = (dxR < 0) ? 1 : 0;
+    long ar2 = sdxl ? dxL : -dxL;
+    long ar5 = sdxr ? dxR : -dxR;
+
+    osmgaW32(base, MGA_DWGCTL, MGA_DWGCTL_SLOPED(dwgctl));
+    osmgaW32(base, MGA_AR0, (unsigned long)dyL);
+    osmgaW32(base, MGA_AR1, (unsigned long)(ar2 - eL));
+    osmgaW32(base, MGA_AR2, (unsigned long)ar2);
+    osmgaW32(base, MGA_AR4, (unsigned long)(ar5 - eR));
+    osmgaW32(base, MGA_AR5, (unsigned long)ar5);
+    osmgaW32(base, MGA_AR6, (unsigned long)dyR);
+    osmgaW32(base, MGA_SGN,
+             ((unsigned long)sdxl << 1) | ((unsigned long)sdxr << 5));
+    osmgaW32(base, MGA_FXBNDRY,
+             (((unsigned long)(right + 1)) << 16) |
+             ((unsigned long)left & 0xffffUL));
+    osmgaW32(base, MGA_YDSTLEN + MGA_EXEC, (y << 16) | h);
+    osmgaW32(base, MGA_DWGCTL, dwgctl);
+}
+
+/*
+ * D3-2 -- can the engine draw a sloped edge, and does the clip still hold
+ * when it does?
+ *
+ * Three bands in one boot, ordered so a failure is attributable:
+ *
+ *   rows  0-19   sloped mode, both edges vertical  -> must be a rectangle
+ *   rows 20-39   flat colour right triangle
+ *   rows 40-59   Gouraud right triangle
+ *   rows 60-63   never drawn -- vertical guard
+ *
+ * The control band is the point of the ordering.  If it does not come out
+ * a full-width rectangle then clearing ARZERO/SGNZERO has broken drawing
+ * by itself, and nothing about the triangles would be interpretable.
+ *
+ * x is inset by 8 with guard columns either side, because a sloped edge
+ * can walk in the negative direction and nothing so far has ever given it
+ * room to be caught doing so.
+ */
 - (void)runRasterInterpolationTest
 {
-    /*
-     * D3-0 -- the ramp, now that the colour field is known.
-     *
-     * Walking a single bit through all 32 positions gave an unambiguous
-     * mapping: bits 15..22 of a DR register are bits 0..7 of the channel
-     * (bit15 -> 010101, bit16 -> 020202, ... bit22 -> 808080), bit 23
-     * overflows to full scale, and nothing outside 15..23 has any effect.
-     * So a DR register holds colour << 15.  Four earlier guesses at the
-     * scale were all wrong; the walk cost one boot and settled it.
-     *
-     * This run asks three questions at once, because each needs the same
-     * draw:
-     *
-     *   - does the field behave for multi-bit values, not just single bits
-     *     (red should sweep 0..255 rather than saturating or wrapping)
-     *   - is DR6 the x increment or the y increment -- the register names
-     *     do not say, so the answer is whichever axis the ramp appears on
-     *   - which DR register drives which byte of the pixel, which the bit
-     *     walk could not tell because it wrote all three the same
-     *
-     * Red ramps, green is held at 255 and blue at 64: three distinguishable
-     * values, so the sample lines identify the channels by inspection.
-     */
     IODisplayInfo *di = [self displayInfo];
     const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
     vm_address_t base = mmioBase;
-    unsigned long stride, testY, startPixel, endPixel, byteStart, byteEnd;
+    unsigned long stride, testY, byteStart, byteEnd;
+    unsigned long x0 = OSMGA_D3_INSET;
+    unsigned long x1 = OSMGA_D3_INSET + OSMGA_D3_WIDTH - 1UL;
     vm_address_t alias = 0;
     unsigned long mapLen = 0;
     volatile unsigned long *blk = 0;
-    unsigned long row, col, varyX = 0UL, varyY = 0UL;
+    unsigned long row, col, band, guard = 0UL;
+    unsigned long firstX[3][5], lastX[3][5], count[3][5];
+    static const unsigned long probeRow[5] = { 0UL, 5UL, 10UL, 15UL, 19UL };
     IOReturn r;
 
     if (!rasterTestEnabled || !linearModeActive || !mmioMapped)
         return;
     if (f->bytesPerPixel != 4) {
-        IOLog("OpenStepMGA D3-0: not a 32bpp mode, skipped\n");
+        IOLog("OpenStepMGA D3-2: not a 32bpp mode, skipped\n");
         return;
     }
 
-    stride     = (unsigned long)di->rowBytes / 4UL;
-    testY      = (unsigned long)di->height + OSMGA_S1_GUARD_ROWS;
-    startPixel = testY * stride;
-    endPixel   = (testY + OSMGA_S1_H - 1UL) * stride;
-    byteStart  = startPixel * 4UL;
-    byteEnd    = byteStart + (OSMGA_S1_H - 1UL) * stride * 4UL +
-                 OSMGA_S1_W * 4UL;
+    stride    = (unsigned long)di->rowBytes / 4UL;
+    testY     = (unsigned long)di->height + OSMGA_S1_GUARD_ROWS;
+    byteStart = testY * stride * 4UL;
+    byteEnd   = byteStart + (OSMGA_S1_H - 1UL) * stride * 4UL +
+                OSMGA_S1_W * 4UL;
 
     if (byteEnd > OSMGA_S1_VRAM_PROVEN) {
-        IOLog("OpenStepMGA D3-0: block past the proven VRAM bound, "
+        IOLog("OpenStepMGA D3-2: block past the proven VRAM bound, "
               "skipped\n");
         return;
     }
@@ -3872,11 +3944,11 @@ osmgaDmaBuildPipeList(unsigned long *ring, unsigned long ringDwords,
     r = osmgaMapUncachedBlock(frameBufferPhysical, byteStart, byteEnd,
                               &alias, &mapLen, &blk);
     if (r != IO_R_SUCCESS) {
-        IOLog("OpenStepMGA D3-0: uncached alias map failed r=%d\n", (int)r);
+        IOLog("OpenStepMGA D3-2: uncached alias map failed r=%d\n", (int)r);
         return;
     }
     if (!osmgaStormWaitIdle(base)) {
-        IOLog("OpenStepMGA D3-0: engine BUSY at entry, aborted\n");
+        IOLog("OpenStepMGA D3-2: engine BUSY at entry, aborted\n");
         goto unmap;
     }
 
@@ -3884,81 +3956,98 @@ osmgaDmaBuildPipeList(unsigned long *ring, unsigned long ringDwords,
         for (col = 0UL; col < OSMGA_S1_W; col++)
             blk[row * stride + col] = OSMGA_S1_SENTINEL;
 
-    if (!osmgaStormWaitFifo(base, 13U)) {
-        IOLog("OpenStepMGA D3-0: fifo timeout before init\n");
-        goto unmap;
+    for (band = 0UL; band < 3UL; band++) {
+        unsigned long y0 = testY + band * OSMGA_D3_BAND;
+        long          rightStart = (band == 0UL) ? (long)x1 : (long)x0;
+        long          dxR        = (band == 0UL) ? 0L : (long)(OSMGA_D3_WIDTH - 1UL);
+
+        if (!osmgaStormWaitFifo(base, 13U)) {
+            IOLog("OpenStepMGA D3-2: fifo timeout before band %lu\n", band);
+            goto unmap;
+        }
+        osmgaStormInitState(base, stride, x0, x1,
+                            y0 * stride, (y0 + OSMGA_D3_BAND - 1UL) * stride);
+
+        if (!osmgaStormWaitFifo(base, 12U)) {
+            IOLog("OpenStepMGA D3-2: fifo timeout in band %lu\n", band);
+            goto unmap;
+        }
+        if (band == 2UL) {
+            osmgaW32(base, MGA_DR4,  0UL);
+            osmgaW32(base, MGA_DR6,  (255UL << 15) / OSMGA_D3_WIDTH);
+            osmgaW32(base, MGA_DR7,  0UL);
+            osmgaW32(base, MGA_DR8,  0UL);
+            osmgaW32(base, MGA_DR10, 0UL);
+            osmgaW32(base, MGA_DR11, (255UL << 15) / OSMGA_D3_BAND);
+            osmgaW32(base, MGA_DR12, 64UL << 15);
+            osmgaW32(base, MGA_DR14, 0UL);
+            osmgaW32(base, MGA_DR15, 0UL);
+        } else {
+            osmgaW32(base, MGA_FCOL, 0x00FF8040UL);
+        }
+
+        if (!osmgaStormWaitFifo(base, 11U)) {
+            IOLog("OpenStepMGA D3-2: fifo timeout before band %lu draw\n",
+                  band);
+            goto unmap;
+        }
+        osmgaStormTrap(base,
+                       band == 2UL ? MGA_DWGCTL_GOURAUD
+                                   : MGA_DWGCTL_SOLID_FILL,
+                       y0, OSMGA_D3_BAND,
+                       (long)x0, 0L, (long)OSMGA_D3_BAND, 0L,
+                       rightStart, dxR, (long)OSMGA_D3_BAND, 0L);
+
+        if (!osmgaStormWaitIdle(base)) {
+            IOLog("OpenStepMGA D3-2: band %lu did not finish -- FAIL\n",
+                  band);
+            goto unmap;
+        }
+
+        for (row = 0UL; row < 5UL; row++) {
+            unsigned long ry = band * OSMGA_D3_BAND + probeRow[row];
+            unsigned long fi = 0xFFFFUL, la = 0xFFFFUL, n = 0UL;
+
+            for (col = 0UL; col < OSMGA_S1_W; col++)
+                if (blk[ry * stride + col] != OSMGA_S1_SENTINEL) {
+                    if (fi == 0xFFFFUL) fi = col;
+                    la = col; n++;
+                }
+            firstX[band][row] = fi; lastX[band][row] = la; count[band][row] = n;
+        }
     }
-    osmgaStormInitState(base, stride,
-                        OSMGA_S1_X, OSMGA_S1_X + OSMGA_S1_W - 1UL,
-                        startPixel, endPixel);
 
-    if (!osmgaStormWaitFifo(base, 12U)) {
-        IOLog("OpenStepMGA D3-0: fifo timeout before interpolators\n");
-        goto unmap;
-    }
-    /*
-     * Red gets the x increment (already identified), green the register
-     * that should be the y increment, blue neither.  One draw then says
-     * whether DR7/DR11/DR15 are the y steps and whether both axes can
-     * interpolate at once -- red must vary left to right, green top to
-     * bottom, blue not at all.
-     */
-    osmgaW32(base, MGA_DR4,  0UL);                    /* red: x ramp      */
-    osmgaW32(base, MGA_DR6,  (255UL << 15) / OSMGA_S1_W);
-    osmgaW32(base, MGA_DR7,  0UL);
-    osmgaW32(base, MGA_DR8,  0UL);                    /* green: y ramp    */
-    osmgaW32(base, MGA_DR10, 0UL);
-    osmgaW32(base, MGA_DR11, (255UL << 15) / OSMGA_S1_H);
-    osmgaW32(base, MGA_DR12, 64UL << 15);             /* blue: flat 64    */
-    osmgaW32(base, MGA_DR14, 0UL);
-    osmgaW32(base, MGA_DR15, 0UL);
-    osmgaW32(base, MGA_DWGCTL, MGA_DWGCTL_GOURAUD);
+    for (band = 0UL; band < 3UL; band++)
+        IOLog("OpenStepMGA D3-2: band%lu rows 0/5/10/15/19 first..last(n): "
+              "%lu..%lu(%lu) %lu..%lu(%lu) %lu..%lu(%lu) %lu..%lu(%lu) "
+              "%lu..%lu(%lu)\n", band,
+              firstX[band][0], lastX[band][0], count[band][0],
+              firstX[band][1], lastX[band][1], count[band][1],
+              firstX[band][2], lastX[band][2], count[band][2],
+              firstX[band][3], lastX[band][3], count[band][3],
+              firstX[band][4], lastX[band][4], count[band][4]);
 
-    if (!osmgaStormWaitFifo(base, 3U)) {
-        IOLog("OpenStepMGA D3-0: fifo timeout before draw\n");
-        goto unmap;
-    }
-    osmgaW32(base, MGA_FXBNDRY,
-             ((OSMGA_S1_X + OSMGA_S1_W) << 16) | (OSMGA_S1_X & 0xffffUL));
-    osmgaW32(base, MGA_YDSTLEN + MGA_EXEC, (testY << 16) | OSMGA_S1_H);
+    /* Guard columns and the four undrawn rows: the only evidence that the
+     * clip holds for a sloped span. */
+    for (row = 0UL; row < OSMGA_S1_H; row++)
+        for (col = 0UL; col < OSMGA_S1_W; col++) {
+            int inBand  = row < 3UL * OSMGA_D3_BAND;
+            int inCols  = col >= x0 && col <= x1;
 
-    if (!osmgaStormWaitIdle(base)) {
-        IOLog("OpenStepMGA D3-0: engine did NOT return idle -- FAIL\n");
-        goto unmap;
-    }
+            if ((!inBand || !inCols) &&
+                blk[row * stride + col] != OSMGA_S1_SENTINEL)
+                guard++;
+        }
+    IOLog("OpenStepMGA D3-2: guard columns/rows disturbed in %lu px\n",
+          guard);
 
-    for (col = 1UL; col < OSMGA_S1_W; col++)
-        if (blk[col] != blk[0])
-            varyX++;
-    for (row = 1UL; row < OSMGA_S1_H; row++)
-        if (blk[row * stride] != blk[0])
-            varyY++;
-
-    IOLog("OpenStepMGA D3-1: red x-ramp via DR6, green y-ramp via DR11, "
-          "blue flat 64\n");
-    IOLog("OpenStepMGA D3-1: row0 x=0,16,32,48,63: %06lx %06lx %06lx %06lx "
-          "%06lx\n", blk[0] & 0xFFFFFFUL, blk[16] & 0xFFFFFFUL,
-          blk[32] & 0xFFFFFFUL, blk[48] & 0xFFFFFFUL, blk[63] & 0xFFFFFFUL);
-    IOLog("OpenStepMGA D3-1: col0 y=0,16,32,48,63: %06lx %06lx %06lx %06lx "
-          "%06lx\n", blk[0] & 0xFFFFFFUL, blk[16 * stride] & 0xFFFFFFUL,
-          blk[32 * stride] & 0xFFFFFFUL, blk[48 * stride] & 0xFFFFFFUL,
-          blk[63 * stride] & 0xFFFFFFUL);
-    IOLog("OpenStepMGA D3-1: diag (0,0),(21,21),(42,42),(63,63): %06lx "
-          "%06lx %06lx %06lx\n", blk[0] & 0xFFFFFFUL,
-          blk[21 * stride + 21] & 0xFFFFFFUL,
-          blk[42 * stride + 42] & 0xFFFFFFUL,
-          blk[63 * stride + 63] & 0xFFFFFFUL);
-    IOLog("OpenStepMGA D3-1: %lu of 63 columns vary, %lu of 63 rows vary\n",
-          varyX, varyY);
-    if (varyX > 0UL && varyY > 0UL)
-        IOLog("OpenStepMGA D3-1: PASS -- DR7/DR11/DR15 are the y "
-              "increments; both axes interpolate together\n");
-    else if (varyX > 0UL)
-        IOLog("OpenStepMGA D3-1: FAIL -- only x varies; DR11 is not the y "
-              "increment\n");
+    if (count[0][0] == OSMGA_D3_WIDTH && count[0][4] == OSMGA_D3_WIDTH &&
+        guard == 0UL)
+        IOLog("OpenStepMGA D3-2: control band is a full-width rectangle and "
+              "the clip held -- the triangle bands above are meaningful\n");
     else
-        IOLog("OpenStepMGA D3-1: FAIL -- x stopped varying too; something "
-              "other than the y increment changed\n");
+        IOLog("OpenStepMGA D3-2: control band or clip FAILED -- do not read "
+              "the triangle bands\n");
 
 unmap:
     if (alias != 0)
