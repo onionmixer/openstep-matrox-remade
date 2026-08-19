@@ -707,6 +707,47 @@
 #define OSMGA_M1C_SLOPE         800L
 #define OSMGA_M1C_CANARY        0xC0DEC0DEUL
 
+/*
+ * ---- M1-2b: a userland client submits the batch ----
+ *
+ * The client writes only into the shared batch, which it reaches through
+ * the command mmap window, and then asks the kernel to run it.  It never
+ * names a register and never sees MMIO.  What the kernel decides, and the
+ * client cannot influence, is the clip and the pitch -- so the walls a
+ * batch is drawn inside are not part of what the batch can say.
+ *
+ * Diagnostics come back through a separate read parameter rather than the
+ * IOReturn, because a client that is refused should be able to say which
+ * field was wrong; a bare failure code would send the next person to the
+ * kernel log for something they could have been told.
+ */
+#define OSMGA_HW3D_SUBMIT_PARAM "OSMGAHW3DSubmit"
+#define OSMGA_HW3D_STATUS_PARAM "OSMGAHW3DStatus"
+#define OSMGA_HW3D_CLIP_ROWS    120UL
+#define OSMGA_HW3D_CLIP_COLS    64UL
+
+static unsigned osmgaHW3DLast[4];   /* verdict, bad triangle, dwords, spins */
+
+/*
+ * The batch the kernel actually trusts.
+ *
+ * The shared batch stays mapped writable in the client, and the kernel
+ * reads it twice -- once to validate, once to encode.  Between those two
+ * reads another thread can rewrite it, and then the values that were
+ * checked are not the values that reach the card.  The busy flag does not
+ * help: it serialises submissions against each other, not a writer against
+ * a submission.
+ *
+ * So the submit path copies first and works only from the copy.  Nothing
+ * downstream of the copy can be changed by anyone but us.
+ */
+static OSMGAHW3DBatch osmgaHW3DSnapshot;
+
+static unsigned long osmgaHW3DEncode(unsigned long *list,
+                                     unsigned long listDwords,
+                                     const OSMGAHW3DBatch *b,
+                                     unsigned long *outTail);
+
 #define MGA_DMA_GENERAL         0x00     /* PRIMADDRESS mode bits */
 #define MGA_PRIMNOSTART         0x01     /* PRIMEND bit0: do NOT start */
 #define MGA_PAGPXFER            0x02     /* PRIMEND bit1: AGP; 0 for PCI */
@@ -2932,6 +2973,19 @@ unmap:
         *count = OSMGA_STATS_COUNT;
         return IO_R_SUCCESS;
     }
+    if (osmgaTextEquals(parameterName, OSMGA_HW3D_STATUS_PARAM)) {
+        unsigned i;
+
+        /* count is a POINTER here, unlike in setIntValues; the exact-size
+         * contract is the one the stats parameter above already uses. */
+        if (parameterArray == 0 || count == 0 || *count != 4U)
+            return IO_R_INVALID_ARG;
+        for (i = 0U; i < 4U; i++)
+            parameterArray[i] = osmgaHW3DLast[i];
+        *count = 4U;
+        return IO_R_SUCCESS;
+    }
+
     return [super getIntValues:parameterArray
                   forParameter:parameterName
                          count:count];
@@ -3007,6 +3061,130 @@ unmap:
         stormBusy = NO;
         simple_unlock(&stormLock);
         return (rc == 1) ? IO_R_SUCCESS : IO_R_RESOURCE;
+    }
+
+    if (osmgaTextEquals(parameterName, OSMGA_HW3D_SUBMIT_PARAM)) {
+        OSMGAHW3DBatch *batch;
+        OSMGAHW3DLimits lim;
+        IODisplayInfo *di3 = [self displayInfo];
+        const OSMGAFormat *f3 = &osmgaFmt[selectedFormatIndex];
+        unsigned long stride3, total3, tail3, listPhys3, spins3, status3;
+        unsigned long *list3, listDwords3, badTri3 = 0UL;
+        int v3, rc3 = 0;
+
+        (void)parameterArray;
+        (void)count;
+        if (!osmgaMmapRegistered || !mmioMapped || !linearModeActive)
+            return IO_R_RESOURCE;
+        if (f3->bytesPerPixel != 4)
+            return IO_R_RESOURCE;
+        if (osmgaMmapCmdVirt == 0 || osmgaMmapCmdPhysical == 0UL)
+            return IO_R_RESOURCE;
+
+        stride3 = (unsigned long)di3->rowBytes / 4UL;
+        batch = (OSMGAHW3DBatch *)osmgaMmapCmdVirt;
+        list3 = (unsigned long *)((char *)osmgaMmapCmdVirt +
+                                  OSMGA_HW3D_RING_OFFSET);
+        listDwords3 = (OSMGA_DMA_RING_BYTES - OSMGA_HW3D_RING_OFFSET) / 4UL;
+        listPhys3 = osmgaMmapCmdPhysical + OSMGA_HW3D_RING_OFFSET;
+
+        /* Every one of these comes from the kernel.  Nothing a client can
+         * write reaches this structure. */
+        lim.pitchBytes  = (unsigned long)di3->rowBytes;
+        lim.clipY1      = OSMGA_HW3D_CLIP_ROWS - 1UL;
+        lim.clipX1      = OSMGA_HW3D_CLIP_COLS - 1UL;
+        lim.colourStart = OSMGA_S1_VRAM_BLOCK;
+        lim.colourEnd   = OSMGA_D3_ZORG;
+        lim.depthStart  = OSMGA_D3_ZORG;
+        lim.depthEnd    = OSMGA_D3_TEXORG;
+        lim.texStart    = OSMGA_D3_TEXORG;
+        lim.texEnd      = OSMGA_S1_VRAM_PROVEN;
+        lim.texMaxBytes = 256UL * 1024UL;
+        lim.batchBytes  = OSMGA_HW3D_BATCH_BYTES;
+        lim.maxEdgeWalk = OSMGA_HW3D_EDGE_WALK;
+
+        /* Copy before checking.  triCount is read exactly once, because
+         * reading it again after the copy would reintroduce the same
+         * window it is here to close. */
+        {
+            unsigned long n3 = batch->triCount;
+            unsigned long fixed3 = sizeof(OSMGAHW3DBatch) -
+                       sizeof(OSMGAHW3DTri) * OSMGA_HW3D_MAX_TRI;
+            unsigned long words3, i4;
+            const unsigned long *src3 = (const unsigned long *)batch;
+            unsigned long *dst3 = (unsigned long *)&osmgaHW3DSnapshot;
+
+            if (n3 > OSMGA_HW3D_MAX_TRI) {
+                osmgaHW3DLast[0] = (unsigned)OSMGA_HW3D_E_COUNT;
+                osmgaHW3DLast[1] = 0U;
+                osmgaHW3DLast[2] = 0U;
+                osmgaHW3DLast[3] = 0U;
+                return IO_R_INVALID_ARG;
+            }
+            words3 = (fixed3 + n3 * sizeof(OSMGAHW3DTri)) / 4UL;
+            for (i4 = 0UL; i4 < words3; i4++)
+                dst3[i4] = src3[i4];
+            osmgaHW3DSnapshot.triCount = n3;
+        }
+
+        v3 = osmgaHW3DValidate(&osmgaHW3DSnapshot, &lim, &badTri3);
+        osmgaHW3DLast[0] = (unsigned)v3;
+        osmgaHW3DLast[1] = (unsigned)badTri3;
+        osmgaHW3DLast[2] = 0U;
+        osmgaHW3DLast[3] = 0U;
+        if (v3 != OSMGA_HW3D_OK)
+            return IO_R_INVALID_ARG;
+
+        simple_lock(&stormLock);
+        if (stormBusy) { simple_unlock(&stormLock); return IO_R_BUSY; }
+        stormBusy = YES;
+        simple_unlock(&stormLock);
+
+        total3 = osmgaHW3DEncode(list3, listDwords3, &osmgaHW3DSnapshot,
+                                 &tail3);
+        osmgaHW3DLast[2] = (unsigned)total3;
+        if (total3 != 0UL &&
+            osmgaStormWaitIdle(mmioBase) &&
+            osmgaStormWaitFifo(mmioBase, 13U)) {
+            osmgaStormInitState(mmioBase, stride3, 0UL,
+                                OSMGA_HW3D_CLIP_COLS - 1UL, 0UL,
+                                (OSMGA_HW3D_CLIP_ROWS - 1UL) * stride3);
+            osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
+            for (spins3 = 0UL; spins3 < OSMGA_S1_SPIN_LIMIT; spins3++) {
+                status3 = osmgaR32(mmioBase, MGA_ENGSTATUS) &
+                          MGA_DMA_DONE_MASK;
+                if (status3 == MGA_STATUS_ENDPRDMASTS) break;
+            }
+            if (spins3 < OSMGA_S1_SPIN_LIMIT) {
+                unsigned long sum3 = 0UL, i3;
+
+                for (i3 = 0UL; i3 < total3; i3++) sum3 += list3[i3];
+                (void)osmgaR32(mmioBase, MGA_ENGSTATUS);
+                if (sum3 == 0xFFFFFFFFUL) IOLog("barrier %lu\n", sum3);
+
+                osmgaW32(mmioBase, MGA_PRIMADDRESS,
+                         listPhys3 | MGA_DMA_GENERAL);
+                osmgaW32(mmioBase, MGA_PRIMEND,
+                         (listPhys3 + tail3 * 4UL) | MGA_DMA_GENERAL);
+                for (spins3 = 0UL; spins3 < OSMGA_S1_SPIN_LIMIT; spins3++) {
+                    status3 = osmgaR32(mmioBase, MGA_ENGSTATUS);
+                    if ((status3 & MGA_DMA_DONE_MASK) == MGA_DMA_DONE_VALUE)
+                        break;
+                }
+                osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
+                osmgaHW3DLast[3] = (unsigned)spins3;
+                if (spins3 < OSMGA_S1_SPIN_LIMIT &&
+                    osmgaStormWaitIdle(mmioBase))
+                    rc3 = 1;
+                else
+                    IOLog("OpenStepMGA M1-2b: submission did not complete "
+                          "(status %08lx, spins %lu)\n", status3, spins3);
+            }
+        }
+        simple_lock(&stormLock);
+        stormBusy = NO;
+        simple_unlock(&stormLock);
+        return (rc3 == 1) ? IO_R_SUCCESS : IO_R_RESOURCE;
     }
 
     if (osmgaTextEquals(parameterName, IO_DISPLAY_DO_BLIT) ||
