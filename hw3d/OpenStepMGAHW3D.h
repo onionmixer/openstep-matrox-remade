@@ -29,6 +29,17 @@
 #define OSMGA_HW3D_RING_OFFSET  OSMGA_HW3D_BATCH_BYTES
 #define OSMGA_HW3D_MAX_TRI      250UL
 
+/*
+ * Pixels of x travel an edge may accumulate over one triangle.  Chosen to
+ * be far larger than any real triangle needs -- a 768-row edge at one
+ * pixel per row is 768 -- and far smaller than the margin between the
+ * offscreen window and anything else.  The proper form derives it from
+ * the distance between the destination origin and the window edges;
+ * until the origin is client-chosen at runtime this constant is both
+ * simpler and stricter.
+ */
+#define OSMGA_HW3D_EDGE_WALK    16384UL
+
 /* Rejection reasons.  A client that is refused should be told which field
  * was wrong rather than just "no". */
 #define OSMGA_HW3D_OK           0
@@ -41,6 +52,7 @@
 #define OSMGA_HW3D_E_DWGCTL     7
 #define OSMGA_HW3D_E_TRIROW     8
 #define OSMGA_HW3D_E_TRICOL     9
+#define OSMGA_HW3D_E_TRISLOPE  10
 
 typedef struct {
     unsigned long dstorg;          /* colour origin, byte offset into VRAM */
@@ -93,6 +105,14 @@ typedef struct {
     unsigned long texStart, texEnd;
     unsigned long texMaxBytes;     /* largest texture we will address */
     unsigned long batchBytes;
+    /* Largest |x| an edge may accumulate over a triangle, in pixels.  The
+     * hardware clip clamps the span per pixel and a measurement showed it
+     * holding for an edge walking 800 px/row outside the window, but AR2
+     * and AR5 are 18-bit fields, so a client can ask for 131071 px/row and
+     * that magnitude has never been tried -- trying it would put the
+     * unclipped address in the visible framebuffer.  Bounding the slope
+     * here means containment does not rest on the clip alone. */
+    unsigned long maxEdgeWalk;
 } OSMGAHW3DLimits;
 
 /*

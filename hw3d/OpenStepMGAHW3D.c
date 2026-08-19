@@ -107,6 +107,25 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
             return OSMGA_HW3D_E_TRIROW;
         if ((unsigned long)t->h > lim->clipY1 + 1UL - (unsigned long)t->y)
             return OSMGA_HW3D_E_TRIROW;
+        {   /* How far the two edges can travel over this triangle.  ar1
+             * and ar4 carry the same slope with the error term folded in,
+             * so take whichever is larger of each pair. */
+            unsigned long h = (unsigned long)t->h;
+            unsigned long sl = (t->ar2 < 0L) ? (unsigned long)(-t->ar2)
+                                             : (unsigned long)t->ar2;
+            unsigned long s1 = (t->ar1 < 0L) ? (unsigned long)(-t->ar1)
+                                             : (unsigned long)t->ar1;
+            unsigned long sr = (t->ar5 < 0L) ? (unsigned long)(-t->ar5)
+                                             : (unsigned long)t->ar5;
+            unsigned long s4 = (t->ar4 < 0L) ? (unsigned long)(-t->ar4)
+                                             : (unsigned long)t->ar4;
+
+            if (s1 > sl) sl = s1;
+            if (s4 > sr) sr = s4;
+            if (sr > sl) sl = sr;
+            if (h != 0UL && sl > lim->maxEdgeWalk / h)
+                return OSMGA_HW3D_E_TRISLOPE;
+        }
         {
             unsigned long left  = t->fxbndry & 0xFFFFUL;
             unsigned long right = (t->fxbndry >> 16) & 0xFFFFUL;

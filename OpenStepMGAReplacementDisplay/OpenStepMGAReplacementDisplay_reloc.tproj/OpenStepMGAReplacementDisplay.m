@@ -676,6 +676,37 @@
 #define OSMGA_D3_BLEND_COLOUR   0x00C0A080UL
 #define OSMGA_D3_BLEND_ROWS     4UL
 
+/*
+ * ---- M1-2c: push the containment, not the draw ----
+ *
+ * The validator bounds the origins and the row and column extents, but it
+ * does not bound the AR edge slopes at all -- a batch may ask for an edge
+ * that walks far outside the window.  The whole containment argument then
+ * rests on the hardware clip, and that has only ever been exercised with
+ * geometry that stays inside it.  This asks what happens when it does not.
+ *
+ * Four bands that all start at the clip edge would be vacuous: an edge
+ * walking outward and an edge ignored entirely both produce the full
+ * rectangle, so the result would be consistent with the AR machinery
+ * never having run.  Bands 4 and 5 start INSIDE the clip and walk out,
+ * which separates them -- engaged gives a narrow first row and full rows
+ * after, ignored gives a narrow row every time (1248 against 640,
+ * scratchpad/m1_2c.py).
+ *
+ * The slope magnitudes are deliberately modest.  Clipping clamps the span
+ * to CXLEFT..CXRIGHT per pixel, so if it works at all it works regardless
+ * of how far the unclipped edge would have wandered; a larger slope tells
+ * us nothing more.  It does, however, decide where an ESCAPE would land,
+ * and at 2^17 per row the unclipped address goes negative and reaches the
+ * visible framebuffer.  These values keep even an unclipped walk inside
+ * the canary, which is the difference between a measurement and a gamble.
+ */
+#define OSMGA_M1C_DSTORG        (5UL * 1024UL * 1024UL)
+#define OSMGA_M1C_MARGIN_ROWS   64UL
+#define OSMGA_M1C_BAND          20UL
+#define OSMGA_M1C_SLOPE         800L
+#define OSMGA_M1C_CANARY        0xC0DEC0DEUL
+
 #define MGA_DMA_GENERAL         0x00     /* PRIMADDRESS mode bits */
 #define MGA_PRIMNOSTART         0x01     /* PRIMEND bit0: do NOT start */
 #define MGA_PAGPXFER            0x02     /* PRIMEND bit1: AGP; 0 for PCI */
@@ -3022,6 +3053,7 @@ unmap:
     [self runAlphaBlendTest];
     [self runMmapWindowTest];
     [self runHW3DBatchTest];
+    [self runHW3DContainmentTest];
 }
 
 /*
@@ -6248,6 +6280,7 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
     lim.texEnd      = OSMGA_S1_VRAM_PROVEN;
     lim.texMaxBytes = 256UL * 1024UL;
     lim.batchBytes  = OSMGA_HW3D_BATCH_BYTES;
+    lim.maxEdgeWalk = OSMGA_HW3D_EDGE_WALK;
 
     /* Reference: MMIO, rows 0..19. */
     if (!osmgaStormWaitFifo(base, 13U)) goto unmap;
@@ -6428,6 +6461,235 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
 
 unmap:
     if (aBlk != 0) (void)IOUnmapPhysicalFromIOTask(aBlk, lBlk);
+}
+
+
+/* Fill a batch triangle the way osmgaStormTrap derives its registers, so a
+ * hostile edge is expressed exactly as a client would express it. */
+static void
+osmgaM1cTri(OSMGAHW3DTri *t, unsigned long y, unsigned long h,
+            long left, long dxL, long dyL, long right, long dxR, long dyR)
+{
+    int sdxl = (dxL < 0) ? 1 : 0;
+    int sdxr = (dxR < 0) ? 1 : 0;
+    long ar2 = sdxl ? dxL : -dxL;
+    long ar5 = sdxr ? dxR : -dxR;
+    unsigned long i;
+
+    for (i = 0UL; i < sizeof(OSMGAHW3DTri) / 4UL; i++)
+        ((unsigned long *)t)[i] = 0UL;
+    t->y = (long)y;
+    t->h = (long)h;
+    t->ar0 = dyL;
+    t->ar1 = ar2;
+    t->ar2 = ar2;
+    t->ar4 = ar5;
+    t->ar5 = ar5;
+    t->ar6 = dyR;
+    t->sgn = ((long)sdxl << 1) | ((long)sdxr << 5);
+    t->fxbndry = (((unsigned long)(right + 1L)) << 16) |
+                 ((unsigned long)left & 0xffffUL);
+    t->dr[0] = 200UL << 15;
+    t->dr[3] = 100UL << 15;
+    t->dr[6] =  50UL << 15;
+}
+
+/*
+ * M1-2c -- see the note by OSMGA_M1C_DSTORG.
+ */
+- (void)runHW3DContainmentTest
+{
+    IODisplayInfo *di = [self displayInfo];
+    const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
+    vm_address_t base = mmioBase;
+    unsigned long stride = (unsigned long)di->rowBytes / 4UL;
+    unsigned long bands = 6UL, band = OSMGA_M1C_BAND;
+    unsigned long drawRows = bands * band;
+    unsigned long lo = OSMGA_M1C_DSTORG - OSMGA_M1C_MARGIN_ROWS * stride * 4UL;
+    unsigned long hi = OSMGA_M1C_DSTORG +
+                       (drawRows + OSMGA_M1C_MARGIN_ROWS) * stride * 4UL;
+    unsigned long winRows = (hi - lo) / (stride * 4UL);
+    unsigned long dstRow = OSMGA_M1C_MARGIN_ROWS;      /* DSTORG row in the map */
+    OSMGAHW3DBatch *batch;
+    OSMGAHW3DLimits lim;
+    unsigned long *list, listDwords, listPhys, total, tail;
+    vm_address_t aWin = 0;
+    unsigned long lWin = 0;
+    volatile unsigned long *win = 0;
+    unsigned long b, row, col, spins, status;
+    unsigned long inside[6], outside = 0UL, firstBad = 0xFFFFFFFFUL;
+    unsigned long row0[6];
+    unsigned long badTri = 0UL;
+    int v;
+    IOReturn r;
+
+    if (!rasterTestEnabled || !linearModeActive || !mmioMapped)
+        return;
+    if (f->bytesPerPixel != 4)
+        return;
+    if (osmgaMmapCmdVirt == 0 || osmgaMmapCmdPhysical == 0UL) {
+        IOLog("OpenStepMGA M1-2c: no command ring, skipped\n");
+        return;
+    }
+    if (lo < OSMGA_S1_VRAM_BLOCK || hi > OSMGA_S1_VRAM_PROVEN) {
+        IOLog("OpenStepMGA M1-2c: canary would leave the proven window, "
+              "skipped\n");
+        return;
+    }
+
+    batch = (OSMGAHW3DBatch *)osmgaMmapCmdVirt;
+    list = (unsigned long *)((char *)osmgaMmapCmdVirt +
+                             OSMGA_HW3D_RING_OFFSET);
+    listDwords = (OSMGA_DMA_RING_BYTES - OSMGA_HW3D_RING_OFFSET) / 4UL;
+    listPhys = osmgaMmapCmdPhysical + OSMGA_HW3D_RING_OFFSET;
+
+    r = osmgaMapUncachedBlock(frameBufferPhysical, lo, hi, &aWin, &lWin, &win);
+    if (r != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA M1-2c: could not map the canary window (%d)\n",
+              (int)r);
+        return;
+    }
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA M1-2c: engine BUSY at entry\n");
+        goto unmap;
+    }
+
+    /* Canary the FULL row width, not just the drawn columns: an escape in x
+     * lands further along the same row, which a narrow check would miss. */
+    for (row = 0UL; row < winRows; row++)
+        for (col = 0UL; col < stride; col++)
+            win[row * stride + col] = OSMGA_M1C_CANARY;
+
+    lim.pitchBytes  = (unsigned long)di->rowBytes;
+    lim.clipY1      = drawRows - 1UL;
+    lim.clipX1      = OSMGA_S1_W - 1UL;
+    lim.colourStart = OSMGA_S1_VRAM_BLOCK;
+    lim.colourEnd   = OSMGA_S1_VRAM_PROVEN;
+    lim.depthStart  = OSMGA_S1_VRAM_BLOCK;
+    lim.depthEnd    = OSMGA_S1_VRAM_PROVEN;
+    lim.texStart    = OSMGA_S1_VRAM_BLOCK;
+    lim.texEnd      = OSMGA_S1_VRAM_PROVEN;
+    lim.texMaxBytes = 4096UL;
+    lim.batchBytes  = OSMGA_HW3D_BATCH_BYTES;
+    lim.maxEdgeWalk = OSMGA_HW3D_EDGE_WALK;
+
+    for (b = 0UL; b < bands; b++) {
+        unsigned long y0 = b * band;
+        long dxL = (b == 1UL || b == 3UL || b == 4UL) ? -OSMGA_M1C_SLOPE : 0L;
+        long dxR = (b == 2UL || b == 3UL || b == 5UL) ?  OSMGA_M1C_SLOPE : 0L;
+        long left0  = (b == 4UL) ? 32L : 0L;
+        long right0 = (b == 5UL) ? 31L : (long)(OSMGA_S1_W - 1UL);
+
+        for (col = 0UL; col < sizeof(OSMGAHW3DBatch) / 4UL; col++)
+            ((unsigned long *)batch)[col] = 0UL;
+        batch->magic = OSMGA_HW3D_MAGIC;
+        batch->version = OSMGA_HW3D_VERSION;
+        batch->triCount = 1UL;
+        batch->state.dstorg = OSMGA_M1C_DSTORG;
+        batch->state.dwgctl = MGA_DWGCTL_GOURAUD;
+        batch->state.alphactrl = MGA_ALPHACTRL_OPAQUE;
+        osmgaM1cTri(&batch->tri[0], y0, band,
+                    left0, dxL, (long)band, right0, dxR, (long)band);
+
+        v = osmgaHW3DValidate(batch, &lim, &badTri);
+        if (v != OSMGA_HW3D_OK) {
+            IOLog("OpenStepMGA M1-2c: band %lu refused (%d) -- the hostile "
+                  "edge must PASS validation for this test to mean "
+                  "anything\n", b, v);
+            goto unmap;
+        }
+        total = osmgaHW3DEncode(list, listDwords, batch, &tail);
+        if (total == 0UL) {
+            IOLog("OpenStepMGA M1-2c: encoding failed\n");
+            goto unmap;
+        }
+
+        if (!osmgaStormWaitFifo(base, 13U)) goto unmap;
+        osmgaStormInitState(base, stride, 0UL, OSMGA_S1_W - 1UL,
+                            y0 * stride, (y0 + band - 1UL) * stride);
+        osmgaW32(base, MGA_ICLEAR, MGA_SOFTRAPICLR);
+        for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
+            status = osmgaR32(base, MGA_ENGSTATUS) & MGA_DMA_DONE_MASK;
+            if (status == MGA_STATUS_ENDPRDMASTS) break;
+        }
+        if (spins >= OSMGA_S1_SPIN_LIMIT) {
+            IOLog("OpenStepMGA M1-2c: DMA not quiescent before band %lu\n", b);
+            goto unmap;
+        }
+        {   unsigned long sum = 0UL, i;
+
+            for (i = 0UL; i < total; i++) sum += list[i];
+            (void)osmgaR32(base, MGA_ENGSTATUS);
+            if (sum == 0xFFFFFFFFUL) IOLog("barrier %lu\n", sum);
+        }
+        osmgaW32(base, MGA_PRIMADDRESS, listPhys | MGA_DMA_GENERAL);
+        osmgaW32(base, MGA_PRIMEND, (listPhys + tail * 4UL) | MGA_DMA_GENERAL);
+        for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
+            status = osmgaR32(base, MGA_ENGSTATUS);
+            if ((status & MGA_DMA_DONE_MASK) == MGA_DMA_DONE_VALUE) break;
+        }
+        osmgaW32(base, MGA_ICLEAR, MGA_SOFTRAPICLR);
+        if (spins >= OSMGA_S1_SPIN_LIMIT) {
+            IOLog("OpenStepMGA M1-2c: band %lu did not complete (%08lx)\n",
+                  b, status);
+            goto unmap;
+        }
+        if (!osmgaStormWaitIdle(base)) goto unmap;
+
+        inside[b] = 0UL;
+        row0[b] = 0UL;
+        for (row = y0; row < y0 + band; row++)
+            for (col = 0UL; col < OSMGA_S1_W; col++)
+                if (win[(dstRow + row) * stride + col] != OSMGA_M1C_CANARY) {
+                    inside[b]++;
+                    if (row == y0) row0[b]++;
+                }
+    }
+
+    for (row = 0UL; row < winRows; row++)
+        for (col = 0UL; col < stride; col++) {
+            if (row >= dstRow && row < dstRow + drawRows &&
+                col < OSMGA_S1_W)
+                continue;                       /* the intended rectangle */
+            if (win[row * stride + col] != OSMGA_M1C_CANARY) {
+                if (firstBad == 0xFFFFFFFFUL)
+                    firstBad = row * 10000UL + col;
+                outside++;
+            }
+        }
+
+    IOLog("OpenStepMGA M1-2c: slope %ld px/row; drew inside the clip "
+          "%lu %lu %lu %lu %lu %lu of %lu each\n",
+          OSMGA_M1C_SLOPE, inside[0], inside[1], inside[2], inside[3],
+          inside[4], inside[5], band * OSMGA_S1_W);
+    IOLog("OpenStepMGA M1-2c: bands 4,5 start inside and walk out -- drew "
+          "%lu and %lu (engaged wants 1248, ignored would be 640); their "
+          "first rows %lu and %lu (want 32)\n",
+          inside[4], inside[5], row0[4], row0[5]);
+    IOLog("OpenStepMGA M1-2c: canary %lu rows x %lu cols; words changed "
+          "outside the intended rectangle: %lu\n",
+          winRows, stride, outside);
+    if (outside != 0UL)
+        IOLog("OpenStepMGA M1-2c: first escape at window row %lu col %lu\n",
+              firstBad / 10000UL, firstBad % 10000UL);
+
+    if (outside != 0UL)
+        IOLog("OpenStepMGA M1-2c: STOP -- a hostile edge escaped the clip. "
+              "Containment cannot rest on clipping and the validator must "
+              "bound the AR values itself\n");
+    else if (inside[0] == 0UL)
+        IOLog("OpenStepMGA M1-2c: FAIL -- the benign control drew nothing, "
+              "so the hostile bands prove nothing\n");
+    else if (row0[4] != 32UL || row0[5] != 32UL)
+        IOLog("OpenStepMGA M1-2c: FAIL -- the edges that start inside did "
+              "not narrow the first row, so the AR walk may not have run "
+              "and the hostile bands prove nothing\n");
+    else
+        IOLog("OpenStepMGA M1-2c: PASS -- edges that walk far outside the "
+              "clip wrote nothing outside it\n");
+
+unmap:
+    if (aWin != 0) (void)IOUnmapPhysicalFromIOTask(aWin, lWin);
 }
 
 @end

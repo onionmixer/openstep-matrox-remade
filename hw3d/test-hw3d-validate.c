@@ -70,6 +70,7 @@ main(void)
     lim.texEnd      = 7UL * 1024 * 1024;
     lim.texMaxBytes = 256UL * 1024;
     lim.batchBytes  = OSMGA_HW3D_BATCH_BYTES;
+    lim.maxEdgeWalk = 16384;          /* pixels of x travel per triangle */
     rows = lim.clipY1 + 1;
     pitch = lim.pitchBytes;
 
@@ -165,6 +166,22 @@ main(void)
     reset(); b.triCount = 3; b.tri[1].h = 1; b.tri[2].h = 1;
              b.tri[1].fxbndry = b.tri[2].fxbndry = (64UL << 16);
              b.tri[2].y = lim.clipY1 + 1;       expect("a bad triangle late in the batch", OSMGA_HW3D_E_TRIROW);
+
+    printf("edge slopes -- bounded so containment does not rest on the clip alone\n");
+    reset(); b.tri[0].h = 20; b.tri[0].ar2 = -(long)(lim.maxEdgeWalk / 20);
+                                                expect("slope at the walk limit", OSMGA_HW3D_OK);
+    reset(); b.tri[0].h = 20; b.tri[0].ar2 = -(long)(lim.maxEdgeWalk / 20) - 1;
+                                                expect("slope one past the limit", OSMGA_HW3D_E_TRISLOPE);
+    reset(); b.tri[0].h = 20; b.tri[0].ar5 = (long)(lim.maxEdgeWalk / 20) + 1;
+                                                expect("right edge past the limit", OSMGA_HW3D_E_TRISLOPE);
+    reset(); b.tri[0].h = 20; b.tri[0].ar1 = -(long)(lim.maxEdgeWalk / 20) - 1;
+                                                expect("ar1 carries the slope too", OSMGA_HW3D_E_TRISLOPE);
+    reset(); b.tri[0].h = 20; b.tri[0].ar2 = -131071L;
+                                                expect("the widest an 18-bit field holds", OSMGA_HW3D_E_TRISLOPE);
+    reset(); b.tri[0].h = 1;  b.tri[0].ar2 = -(long)lim.maxEdgeWalk;
+                                                expect("one row, the whole budget", OSMGA_HW3D_OK);
+    reset(); b.tri[0].h = 1;  b.tri[0].ar2 = -(long)lim.maxEdgeWalk - 1;
+                                                expect("one row, one past it", OSMGA_HW3D_E_TRISLOPE);
 
     printf("\n%s (%d failing)\n", failures ? "FAILURES" : "all cases behave as specified",
            failures);
