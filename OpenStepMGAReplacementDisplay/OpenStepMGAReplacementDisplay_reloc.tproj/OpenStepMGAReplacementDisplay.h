@@ -108,6 +108,7 @@
 - (void)runStormBlitTest;
 - (void)runStormBlitApiTest;
 - (void)runDmaRingAllocTest;
+- (void)runDmaRingBuildTest;
 - (BOOL)stormBlitCheckSrcX:(unsigned)srcX srcY:(unsigned)srcY
                      width:(unsigned)w height:(unsigned)h
                       dstX:(unsigned)dstX dstY:(unsigned)dstY
