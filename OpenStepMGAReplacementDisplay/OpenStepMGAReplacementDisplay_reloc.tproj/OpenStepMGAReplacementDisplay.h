@@ -131,6 +131,8 @@
 - (void)runTextureIdentityTest;
 - (void)runTextureSlopeTest;
 - (void)runTextureOriginTest;
+- (void)runAlphaSourceTest;
+- (void)runAlphaBlendTest;
 - (BOOL)stormBlitCheckSrcX:(unsigned)srcX srcY:(unsigned)srcY
                      width:(unsigned)w height:(unsigned)h
                       dstX:(unsigned)dstX dstY:(unsigned)dstY

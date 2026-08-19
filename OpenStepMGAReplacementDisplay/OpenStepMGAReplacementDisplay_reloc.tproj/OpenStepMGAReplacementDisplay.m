@@ -608,6 +608,69 @@
 #define OSMGA_D3_CANARY         0xCAFE0000UL
 #define OSMGA_D3_CANARY_BYTES   (512UL * 1024UL)
 
+/*
+ * D3-5a -- where does the source alpha come from, and in what format?
+ *
+ * Every shipped ALPHACTRL recipe is a texture path, so the alpha comes
+ * from a texture's alpha channel.  Mesa's commonest blend is textureless
+ * per-vertex alpha, which has to arrive through the ALPHASTART
+ * interpolator instead, and MGA_DIFFUSEDALPHA reads like the bit that
+ * selects it -- but nothing in either tree ever writes that bit.  Same
+ * situation as atype ZI and DR0, both of which worked once measured.
+ *
+ * The trick that makes this cheap: draw with SRC_ALPHA and DST_ZERO from
+ * a pure white source, and the result is 255 * alpha / 255, so the pixel
+ * read back IS the alpha.  No separate readback path is needed, and a
+ * pre-multiplied pipeline would show up as alpha squared, which the
+ * bit-walk map reports as impure bits rather than a clean power of two.
+ *
+ * Bands 34..37 are a two-by-two of DIFFUSEDALPHA against the extremes of
+ * ALPHASTART.  Toggling the bit alone cannot distinguish "the bit is not
+ * needed" from "alpha arrived as zero from somewhere else"; watching
+ * whether the output follows the register in each state can.
+ */
+#define MGA_ALPHASTART          0x2c70
+#define MGA_ALPHAXINC           0x2c74
+#define MGA_ALPHAYINC           0x2c78
+#define MGA_ALPHA_SRC_ONE       0x00000001UL
+#define MGA_ALPHA_SRC_ALPHA     0x00000004UL
+#define MGA_ALPHA_DST_ZERO      0x00000000UL
+#define MGA_ALPHA_CHANNEL       0x00000100UL
+#define MGA_ALPHA_DIFFUSED      0x01000000UL
+#define OSMGA_D3_ALPHA_BANDS    38UL
+#define OSMGA_D3_ALPHA_ROWS     2UL
+
+/*
+ * D3-5b -- linearity, the alpha source, and which origin the blend reads.
+ *
+ * D3-5a settled the format (ALPHASTART = alpha << 15, eight bits,
+ * saturating above bit 22) but the cross-review was right that two of its
+ * conclusions rested on samples that could not carry them.
+ *
+ * A one-hot walk proves eight basis vectors, not linearity: a function
+ * like 1 << min(msb - 15, 7) reproduces the same table.  Mixed-bit alphas
+ * separate them, since only a linear path returns the bits it was given.
+ *
+ * And the DIFFUSEDALPHA comparison used only 0 and 255, exactly the two
+ * values at which a different alpha source would agree by accident -- a
+ * white source carries 255 in its own colour channels.  The walk itself
+ * ran with the bit SET throughout, so the cleared case had no interior
+ * evidence at all.  Here both states get the same six interior alphas.
+ *
+ * The second half then blends over a known destination.  SRCORG points at
+ * a third offscreen block holding a different colour, so the result names
+ * which origin the read followed.  Our shared engine state leaves SRCORG
+ * at zero, which would aim that read at the visible framebuffer, and no
+ * source settles the question: EXA's composite path sets DSTORG and never
+ * SRCORG, and the DRM context has no SRCORG field at all.
+ */
+#define MGA_ALPHA_DST_1MSA      0x00000050UL   /* 5 << 4 */
+#define OSMGA_D3_BLEND_SRCORG   (5UL * 1024UL * 1024UL + 512UL * 1024UL)
+#define OSMGA_D3_BLEND_DSTVAL   0x00204060UL
+#define OSMGA_D3_BLEND_SRCVAL   0x00807060UL
+#define OSMGA_D3_BLEND_COLOUR   0x00C0A080UL
+#define OSMGA_D3_BLEND_ROWS     4UL
+
 #define MGA_DMA_GENERAL         0x00     /* PRIMADDRESS mode bits */
 #define MGA_PRIMNOSTART         0x01     /* PRIMEND bit0: do NOT start */
 #define MGA_PAGPXFER            0x02     /* PRIMEND bit1: AGP; 0 for PCI */
@@ -2867,7 +2930,7 @@ unmap:
      * measurement.  Restore both calls once depth is settled. */
     /* [self runRasterInterpolationTest]; */
     /* [self runDstorgOriginTest]; */
-    [self runTextureOriginTest];
+    [self runAlphaBlendTest];
 }
 
 /*
@@ -5469,6 +5532,362 @@ fifo:
 
 unmap:
     if (aTex != 0) (void)IOUnmapPhysicalFromIOTask(aTex, lTex);
+    if (aBlk != 0) (void)IOUnmapPhysicalFromIOTask(aBlk, lBlk);
+}
+
+
+/*
+ * D3-5a -- see the note by MGA_ALPHASTART.
+ */
+- (void)runAlphaSourceTest
+{
+    IODisplayInfo *di = [self displayInfo];
+    const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
+    vm_address_t base = mmioBase;
+    unsigned long stride = (unsigned long)di->rowBytes / 4UL;
+    unsigned long drawRows = OSMGA_D3_ALPHA_BANDS * OSMGA_D3_ALPHA_ROWS;
+    unsigned long allRows = drawRows + OSMGA_D3_ISO_GUARDROWS;
+    unsigned long guardW = 2UL * OSMGA_S1_W;
+    unsigned long blend = MGA_ALPHA_SRC_ALPHA | MGA_ALPHA_DST_ZERO |
+                          MGA_ALPHA_CHANNEL;
+    vm_address_t aBlk = 0;
+    unsigned long lBlk = 0;
+    volatile unsigned long *blk = 0;
+    unsigned long b, row, col, seen[OSMGA_D3_ALPHA_BANDS];
+    unsigned long cGuard = 0UL;
+    char map[33];
+    IOReturn r;
+
+    if (!rasterTestEnabled || !linearModeActive || !mmioMapped)
+        return;
+    if (f->bytesPerPixel != 4)
+        return;
+    if (OSMGA_S1_VRAM_BLOCK + allRows * stride * 4UL > OSMGA_D3_ZORG) {
+        IOLog("OpenStepMGA D3-5a: window does not fit, skipped\n");
+        return;
+    }
+
+    r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_S1_VRAM_BLOCK,
+                              OSMGA_S1_VRAM_BLOCK + allRows * stride * 4UL,
+                              &aBlk, &lBlk, &blk);
+    if (r != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA D3-5a: could not map the window (%d)\n", (int)r);
+        goto unmap;
+    }
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA D3-5a: engine BUSY at entry\n");
+        goto unmap;
+    }
+
+    for (row = 0UL; row < allRows; row++)
+        for (col = 0UL; col < guardW; col++)
+            blk[row * stride + col] = OSMGA_S1_SENTINEL;
+
+    for (b = 0UL; b < OSMGA_D3_ALPHA_BANDS; b++) {
+        unsigned long y0 = b * OSMGA_D3_ALPHA_ROWS;
+        unsigned long ctrl, astart;
+
+        if (b < 32UL)      { ctrl = blend | MGA_ALPHA_DIFFUSED;
+                             astart = 1UL << b; }
+        else if (b == 32UL){ ctrl = MGA_ALPHA_SRC_ONE | MGA_ALPHA_DST_ZERO |
+                                    MGA_ALPHA_CHANNEL;  astart = 0UL; }
+        else if (b == 33UL){ ctrl = 0UL;                astart = 0UL; }
+        else if (b == 34UL){ ctrl = blend | MGA_ALPHA_DIFFUSED; astart = 0UL; }
+        else if (b == 35UL){ ctrl = blend | MGA_ALPHA_DIFFUSED;
+                             astart = 255UL << 15; }
+        else if (b == 36UL){ ctrl = blend;              astart = 0UL; }
+        else               { ctrl = blend;              astart = 255UL << 15; }
+
+        if (!osmgaStormWaitFifo(base, 13U)) goto fifo;
+        osmgaStormInitState(base, stride, 0UL, OSMGA_S1_W - 1UL,
+                            y0 * stride,
+                            (y0 + OSMGA_D3_ALPHA_ROWS - 1UL) * stride);
+
+        if (!osmgaStormWaitFifo(base, 16U)) goto fifo;
+        osmgaW32(base, MGA_DSTORG,      OSMGA_S1_VRAM_BLOCK);
+        /* White source, so the result reads back as the alpha itself. */
+        osmgaW32(base, MGA_DR4,  255UL << 15);
+        osmgaW32(base, MGA_DR6,  0UL);
+        osmgaW32(base, MGA_DR7,  0UL);
+        osmgaW32(base, MGA_DR8,  255UL << 15);
+        osmgaW32(base, MGA_DR10, 0UL);
+        osmgaW32(base, MGA_DR11, 0UL);
+        osmgaW32(base, MGA_DR12, 255UL << 15);
+        osmgaW32(base, MGA_DR14, 0UL);
+        osmgaW32(base, MGA_DR15, 0UL);
+        osmgaW32(base, MGA_ALPHASTART, astart);
+        osmgaW32(base, MGA_ALPHAXINC,  0UL);
+        osmgaW32(base, MGA_ALPHAYINC,  0UL);
+        /* Explicit, so a value left by the texture probes cannot take
+         * part in selecting the alpha. */
+        osmgaW32(base, MGA_TDUALSTAGE0, 0UL);
+        osmgaW32(base, MGA_TDUALSTAGE1, 0UL);
+        osmgaW32(base, MGA_ALPHACTRL,   ctrl);
+
+        if (!osmgaStormWaitFifo(base, 4U)) goto fifo;
+        osmgaW32(base, MGA_DWGCTL,  MGA_DWGCTL_GOURAUD);
+        osmgaW32(base, MGA_FXBNDRY, (OSMGA_S1_W << 16) | 0UL);
+        osmgaW32(base, MGA_YDSTLEN + MGA_EXEC,
+                 (y0 << 16) | OSMGA_D3_ALPHA_ROWS);
+
+        if (!osmgaStormWaitIdle(base)) {
+            IOLog("OpenStepMGA D3-5a: band %lu did not finish\n", b);
+            osmgaW32(base, MGA_DSTORG, 0UL);
+            goto unmap;
+        }
+        osmgaW32(base, MGA_DSTORG, 0UL);
+        seen[b] = blk[y0 * stride] & 0xffUL;      /* blue channel = alpha */
+    }
+
+    /* Leave the blend unit off for whatever runs next. */
+    if (osmgaStormWaitFifo(base, 1U))
+        osmgaW32(base, MGA_ALPHACTRL, 0UL);
+
+    for (row = 0UL; row < allRows; row++)
+        for (col = 0UL; col < guardW; col++) {
+            if (row < drawRows && col < OSMGA_S1_W) continue;
+            if (blk[row * stride + col] != OSMGA_S1_SENTINEL) cGuard++;
+        }
+
+    for (b = 0UL; b < 32UL; b++) {
+        unsigned long v = seen[b], j = 0UL;
+
+        if (v == 0UL) { map[b] = '.'; continue; }
+        while ((v & 1UL) == 0UL) { v >>= 1; j++; }
+        map[b] = "0123456789abcdef"[j & 15UL];
+        if (v != 1UL && map[b] >= 'a')
+            map[b] = (char)(map[b] - 'a' + 'A');
+        else if (v != 1UL)
+            map[b] = (char)(map[b] - '0' + 'G');
+    }
+    map[32] = '\0';
+
+    IOLog("OpenStepMGA D3-5a: ALPHASTART bit 0..31 -> alpha bit  %s\n", map);
+    IOLog("OpenStepMGA D3-5a: SRC_ONE %lu, blending off %lu (both want "
+          "255)\n", seen[32], seen[33]);
+    IOLog("OpenStepMGA D3-5a: DIFFUSED on a=0/255 -> %lu %lu; DIFFUSED off "
+          "a=0/255 -> %lu %lu; colour guard %lu\n",
+          seen[34], seen[35], seen[36], seen[37], cGuard);
+
+    if (cGuard != 0UL)
+        IOLog("OpenStepMGA D3-5a: STOP -- colour escaped the clip\n");
+    else if (seen[33] != 255UL)
+        IOLog("OpenStepMGA D3-5a: FAIL -- the band with blending off is not "
+              "white, so the draw itself is wrong; ignore the rest\n");
+    else if (seen[32] != 255UL)
+        IOLog("OpenStepMGA D3-5a: FAIL -- SRC_ONE did not pass the source "
+              "through, so the blend unit is not behaving as read\n");
+    else if (seen[34] == 0UL && seen[35] == 255UL &&
+             !(seen[36] == 0UL && seen[37] == 255UL))
+        IOLog("OpenStepMGA D3-5a: PASS -- DIFFUSEDALPHA selects the "
+              "ALPHASTART interpolator as the source alpha\n");
+    else if (seen[34] == 0UL && seen[35] == 255UL &&
+             seen[36] == 0UL && seen[37] == 255UL)
+        IOLog("OpenStepMGA D3-5a: PASS -- the interpolator is always the "
+              "source alpha; DIFFUSEDALPHA makes no difference here\n");
+    else
+        IOLog("OpenStepMGA D3-5a: the alpha does not follow ALPHASTART in "
+              "either state -- read the four values above\n");
+    goto unmap;
+
+fifo:
+    IOLog("OpenStepMGA D3-5a: fifo wait timed out in band %lu\n", b);
+    osmgaW32(base, MGA_DSTORG, 0UL);
+
+unmap:
+    if (aBlk != 0) (void)IOUnmapPhysicalFromIOTask(aBlk, lBlk);
+}
+
+
+/*
+ * D3-5b -- see the note by MGA_ALPHA_DST_1MSA.
+ */
+- (void)runAlphaBlendTest
+{
+    IODisplayInfo *di = [self displayInfo];
+    const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
+    vm_address_t base = mmioBase;
+    unsigned long stride = (unsigned long)di->rowBytes / 4UL;
+    unsigned long linRows = 12UL * OSMGA_D3_ALPHA_ROWS;          /* 24 */
+    unsigned long blendRows = 5UL * OSMGA_D3_BLEND_ROWS;         /* 20 */
+    unsigned long drawRows = linRows + blendRows;                /* 44 */
+    unsigned long allRows = drawRows + OSMGA_D3_ISO_GUARDROWS;
+    unsigned long guardW = 2UL * OSMGA_S1_W;
+    unsigned long blend = MGA_ALPHA_SRC_ALPHA | MGA_ALPHA_DST_ZERO |
+                          MGA_ALPHA_CHANNEL;
+    vm_address_t aBlk = 0, aSrc = 0;
+    unsigned long lBlk = 0, lSrc = 0;
+    volatile unsigned long *blk = 0, *src = 0;
+    unsigned long b, row, col;
+    unsigned long lin[12], mix[5], cGuard = 0UL;
+    static const unsigned long interior[6] =
+        { 3UL, 5UL, 0x55UL, 0xAAUL, 0x7FUL, 0xFEUL };
+    static const unsigned long blendA[5] = { 0UL, 64UL, 128UL, 192UL, 255UL };
+    IOReturn r;
+
+    if (!rasterTestEnabled || !linearModeActive || !mmioMapped)
+        return;
+    if (f->bytesPerPixel != 4)
+        return;
+    if (OSMGA_S1_VRAM_BLOCK + allRows * stride * 4UL > OSMGA_D3_ZORG ||
+        OSMGA_D3_BLEND_SRCORG + allRows * stride * 4UL > OSMGA_D3_TEXORG) {
+        IOLog("OpenStepMGA D3-5b: windows do not fit, skipped\n");
+        return;
+    }
+
+    r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_S1_VRAM_BLOCK,
+                              OSMGA_S1_VRAM_BLOCK + allRows * stride * 4UL,
+                              &aBlk, &lBlk, &blk);
+    if (r == IO_R_SUCCESS)
+        r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_D3_BLEND_SRCORG,
+                                  OSMGA_D3_BLEND_SRCORG +
+                                  allRows * stride * 4UL,
+                                  &aSrc, &lSrc, &src);
+    if (r != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA D3-5b: could not map the windows (%d)\n", (int)r);
+        goto unmap;
+    }
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA D3-5b: engine BUSY at entry\n");
+        goto unmap;
+    }
+
+    for (row = 0UL; row < allRows; row++)
+        for (col = 0UL; col < guardW; col++) {
+            blk[row * stride + col] = (row >= linRows && row < drawRows)
+                                    ? OSMGA_D3_BLEND_DSTVAL
+                                    : OSMGA_S1_SENTINEL;
+            src[row * stride + col] = OSMGA_D3_BLEND_SRCVAL;
+        }
+
+    /* Part 1 -- six interior alphas under each DIFFUSEDALPHA state. */
+    for (b = 0UL; b < 12UL; b++) {
+        unsigned long y0 = b * OSMGA_D3_ALPHA_ROWS;
+        unsigned long ctrl = blend | ((b < 6UL) ? MGA_ALPHA_DIFFUSED : 0UL);
+        unsigned long a = interior[b % 6UL];
+
+        if (!osmgaStormWaitFifo(base, 13U)) goto fifo;
+        osmgaStormInitState(base, stride, 0UL, OSMGA_S1_W - 1UL,
+                            y0 * stride,
+                            (y0 + OSMGA_D3_ALPHA_ROWS - 1UL) * stride);
+        if (!osmgaStormWaitFifo(base, 16U)) goto fifo;
+        osmgaW32(base, MGA_DSTORG, OSMGA_S1_VRAM_BLOCK);
+        osmgaW32(base, MGA_DR4,  255UL << 15);
+        osmgaW32(base, MGA_DR6,  0UL);
+        osmgaW32(base, MGA_DR7,  0UL);
+        osmgaW32(base, MGA_DR8,  255UL << 15);
+        osmgaW32(base, MGA_DR10, 0UL);
+        osmgaW32(base, MGA_DR11, 0UL);
+        osmgaW32(base, MGA_DR12, 255UL << 15);
+        osmgaW32(base, MGA_DR14, 0UL);
+        osmgaW32(base, MGA_DR15, 0UL);
+        osmgaW32(base, MGA_ALPHASTART,  a << 15);
+        osmgaW32(base, MGA_ALPHAXINC,   0UL);
+        osmgaW32(base, MGA_ALPHAYINC,   0UL);
+        osmgaW32(base, MGA_TDUALSTAGE0, 0UL);
+        osmgaW32(base, MGA_TDUALSTAGE1, 0UL);
+        osmgaW32(base, MGA_ALPHACTRL,   ctrl);
+
+        if (!osmgaStormWaitFifo(base, 4U)) goto fifo;
+        osmgaW32(base, MGA_DWGCTL,  MGA_DWGCTL_GOURAUD);
+        osmgaW32(base, MGA_FXBNDRY, (OSMGA_S1_W << 16) | 0UL);
+        osmgaW32(base, MGA_YDSTLEN + MGA_EXEC,
+                 (y0 << 16) | OSMGA_D3_ALPHA_ROWS);
+        if (!osmgaStormWaitIdle(base)) goto busy;
+        osmgaW32(base, MGA_DSTORG, 0UL);
+        lin[b] = blk[y0 * stride] & 0xffUL;
+    }
+
+    /* Part 2 -- blend over a known destination, with SRCORG aimed at a
+     * third block so the result says which origin the read followed. */
+    for (b = 0UL; b < 5UL; b++) {
+        unsigned long y0 = linRows + b * OSMGA_D3_BLEND_ROWS;
+
+        if (!osmgaStormWaitFifo(base, 13U)) goto fifo;
+        osmgaStormInitState(base, stride, 0UL, OSMGA_S1_W - 1UL,
+                            y0 * stride,
+                            (y0 + OSMGA_D3_BLEND_ROWS - 1UL) * stride);
+        if (!osmgaStormWaitFifo(base, 16U)) goto fifo;
+        osmgaW32(base, MGA_DSTORG, OSMGA_S1_VRAM_BLOCK);
+        osmgaW32(base, MGA_SRCORG, OSMGA_D3_BLEND_SRCORG);
+        osmgaW32(base, MGA_DR4,  ((OSMGA_D3_BLEND_COLOUR >> 16) & 0xffUL) << 15);
+        osmgaW32(base, MGA_DR6,  0UL);
+        osmgaW32(base, MGA_DR7,  0UL);
+        osmgaW32(base, MGA_DR8,  ((OSMGA_D3_BLEND_COLOUR >> 8) & 0xffUL) << 15);
+        osmgaW32(base, MGA_DR10, 0UL);
+        osmgaW32(base, MGA_DR11, 0UL);
+        osmgaW32(base, MGA_DR12, (OSMGA_D3_BLEND_COLOUR & 0xffUL) << 15);
+        osmgaW32(base, MGA_DR14, 0UL);
+        osmgaW32(base, MGA_DR15, 0UL);
+        osmgaW32(base, MGA_ALPHASTART,  blendA[b] << 15);
+        osmgaW32(base, MGA_ALPHAXINC,   0UL);
+        osmgaW32(base, MGA_ALPHAYINC,   0UL);
+        osmgaW32(base, MGA_ALPHACTRL,   MGA_ALPHA_SRC_ALPHA |
+                                        MGA_ALPHA_DST_1MSA |
+                                        MGA_ALPHA_CHANNEL);
+
+        if (!osmgaStormWaitFifo(base, 4U)) goto fifo;
+        osmgaW32(base, MGA_DWGCTL,  MGA_DWGCTL_GOURAUD);
+        osmgaW32(base, MGA_FXBNDRY, (OSMGA_S1_W << 16) | 0UL);
+        osmgaW32(base, MGA_YDSTLEN + MGA_EXEC,
+                 (y0 << 16) | OSMGA_D3_BLEND_ROWS);
+        if (!osmgaStormWaitIdle(base)) goto busy;
+        osmgaW32(base, MGA_DSTORG, 0UL);
+        osmgaW32(base, MGA_SRCORG, 0UL);
+        mix[b] = blk[y0 * stride] & 0xffffffUL;
+    }
+
+    if (osmgaStormWaitFifo(base, 1U))
+        osmgaW32(base, MGA_ALPHACTRL, 0UL);
+
+    for (row = 0UL; row < allRows; row++)
+        for (col = 0UL; col < guardW; col++) {
+            unsigned long want = (row >= linRows && row < drawRows)
+                               ? OSMGA_D3_BLEND_DSTVAL : OSMGA_S1_SENTINEL;
+
+            if (row < drawRows && col < OSMGA_S1_W) continue;
+            if (blk[row * stride + col] != want) cGuard++;
+        }
+
+    IOLog("OpenStepMGA D3-5b: interior alphas 3,5,55,aa,7f,fe -- DIFFUSED "
+          "on -> %lx %lx %lx %lx %lx %lx\n",
+          lin[0], lin[1], lin[2], lin[3], lin[4], lin[5]);
+    IOLog("OpenStepMGA D3-5b: the same six, DIFFUSED off -> %lx %lx %lx "
+          "%lx %lx %lx\n",
+          lin[6], lin[7], lin[8], lin[9], lin[10], lin[11]);
+    IOLog("OpenStepMGA D3-5b: blend a=0,64,128,192,255 -> %06lx %06lx "
+          "%06lx %06lx %06lx\n", mix[0], mix[1], mix[2], mix[3], mix[4]);
+    IOLog("OpenStepMGA D3-5b: src %06lx over dst %06lx; SRCORG block holds "
+          "%06lx; guard %lu\n", OSMGA_D3_BLEND_COLOUR,
+          OSMGA_D3_BLEND_DSTVAL, OSMGA_D3_BLEND_SRCVAL, cGuard);
+
+    if (cGuard != 0UL)
+        IOLog("OpenStepMGA D3-5b: STOP -- a write escaped the clip\n");
+    else if (lin[0] != interior[0] || lin[5] != interior[5])
+        IOLog("OpenStepMGA D3-5b: FAIL -- mixed-bit alphas do not come back "
+              "unchanged, so the alpha path is not linear\n");
+    else if (mix[0] != OSMGA_D3_BLEND_DSTVAL ||
+             mix[4] != OSMGA_D3_BLEND_COLOUR)
+        IOLog("OpenStepMGA D3-5b: FAIL -- the blend endpoints are wrong; "
+              "a=0 must leave the destination and a=255 must replace it\n");
+    else
+        IOLog("OpenStepMGA D3-5b: endpoints hold; compare the interior "
+              "values and the two DIFFUSED rows above\n");
+    goto unmap;
+
+busy:
+    IOLog("OpenStepMGA D3-5b: band %lu did not finish\n", b);
+    osmgaW32(base, MGA_DSTORG, 0UL);
+    osmgaW32(base, MGA_SRCORG, 0UL);
+    goto unmap;
+
+fifo:
+    IOLog("OpenStepMGA D3-5b: fifo wait timed out in band %lu\n", b);
+    osmgaW32(base, MGA_DSTORG, 0UL);
+    osmgaW32(base, MGA_SRCORG, 0UL);
+
+unmap:
+    if (aSrc != 0) (void)IOUnmapPhysicalFromIOTask(aSrc, lSrc);
     if (aBlk != 0) (void)IOUnmapPhysicalFromIOTask(aBlk, lBlk);
 }
 
