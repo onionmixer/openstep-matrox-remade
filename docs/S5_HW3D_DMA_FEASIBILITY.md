@@ -107,8 +107,15 @@ MGA primary DMA는 `PRIMADDRESS`~`PRIMEND`로 연속 물리 영역을 요구하�
 이는 결함이 아니라 구조다. PCI 버스마스터 장치는 자체 DMA 엔진을 갖고, 각
 드라이버가 디스크립터를 만들어 장치 레지스터에 물리주소를 써 넣는 방식이
 당대의 정상 패턴이었다 — OPENSTEP 정식 드라이버 중 DEC 21040/21140,
-AMD PCnet32, 3Com 3C90x, Intel PIIX IDE가 모두 그렇게 했다
-(저장소 루트 `openstep_pci_bus_master_driver_research.md`, 미추적 파일).
+AMD PCnet32, 3Com 3C90x, Intel PIIX IDE가 모두 그렇게 했다.
+
+출처는 **저장소 루트의 `openstep_pci_bus_master_driver_research.md`** 이다.
+특정 드라이버에 종속되는 내용이 아니라 플랫폼 전반의 사실이므로 루트에 두는
+것이 의도된 배치다 — 이 프로젝트 폴더 안으로 옮기지 말 것.
+
+단, 그 문서가 `IOMallocLow`를 "low 16MB physically contiguous"라고 적은 것은
+헤더 주석을 옮긴 것이고, 실제 아레나는 위에서 확인한 대로 conventional
+memory다. 연속성이라는 **결론은 맞고 범위 서술이 넓다.**
 
 ## 4. DMA보다 큰 장벽 — 3D 소프트웨어 스택이 통째로 없다
 
