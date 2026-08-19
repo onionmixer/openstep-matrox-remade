@@ -3,3 +3,8 @@ LOCALMAKEFILE = Makefile.local_preamble
 -include $(LOCALMAKEFILEDIR)/$(LOCALMAKEFILE)
 
 BUNDLE_EXTENSION = config
+
+# <driverkit/IODeviceInspector.h> imports <appkit/appkit.h>, which the
+# OPENSTEP 4.2 developer tree does not ship; compat/ declares the little
+# of it the inspector uses.  Same approach as openstep-spacesaver2ps2.
+OTHER_CFLAGS = -I./compat

@@ -1,0 +1,55 @@
+IODeviceInspector = {
+    ACTIONS = {
+    	"channelOrInterruptPicked:" = "channelOrInterruptPicked:"; 
+	"rangeDidChange:" = "rangeDidChange:"; 
+	"showInfo:" = "showInfo:"; 
+    }; 
+    OUTLETS = {
+    	accessoryHolder = accessoryHolder; 
+	dmaBox = dmaBox; 
+	dmaMatrix = dmaMatrix; 
+	infoButton = infoButton; 
+	infoPanel = infoPanel; 
+	infoText = infoText; 
+	inspectionView = inspectionView; 
+	irqBox = irqBox; 
+	irqMatrix = irqMatrix; 
+	memoryBox = memoryBox; 
+	memoryController = memoryController; 
+	origWindow = origWindow; 
+	portsBox = portsBox; 
+	portsController = portsController; 
+	statusTitle = statusTitle; 
+    }; 
+    SUPERCLASS = Object; 
+};
+FirstResponder = {ACTIONS = {}; SUPERCLASS = Object; };
+IODisplayInspector = {
+    ACTIONS = {
+    	"cancel:" = "cancel:"; 
+	"doubleClicked:" = "doubleClicked:"; 
+	"panelDone:" = "panelDone:"; 
+	"runPanel:" = "runPanel:"; 
+    }; 
+    OUTLETS = {
+    	displayAccessoryHolder = displayAccessoryHolder; 
+	displayMode = displayMode; 
+	modeText = modeText; 
+	modes = modes; 
+	okButton = okButton; 
+	panel = panel; 
+	selectButton = selectButton; 
+    }; 
+    SUPERCLASS = IODeviceInspector; 
+};
+OSMGADisplayInspector = {
+    ACTIONS = {
+	"toggleMmap:" = "toggleMmap:"; 
+	"toggleStorm:" = "toggleStorm:"; 
+    }; 
+    OUTLETS = {
+	mmapSwitch = mmapSwitch; 
+	stormSwitch = stormSwitch; 
+    }; 
+    SUPERCLASS = IODisplayInspector; 
+};
