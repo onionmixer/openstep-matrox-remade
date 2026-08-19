@@ -18,9 +18,11 @@ CLASSES = OpenStepMGAReplacementDisplay.m
 # OpenStepMGAReplacementDisplay.m and does not link them.
 #
 CFILES = OpenStepMGAManualConfig.c \
-         OpenStepMGAEDID.c
+         OpenStepMGAEDID.c \
+         OpenStepMGAWarpUcode.c
 HFILES = OpenStepMGAReplacementDisplay.h OpenStepMGAManualConfig.h \
-         OpenStepMGAEDID.h
+         OpenStepMGAEDID.h \
+         OpenStepMGAWarpUcode.h
 OTHERSRCS = Makefile Makefile.preamble Makefile.postamble\
             Makefile.driver_preamble Load_Commands.sect
 

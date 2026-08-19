@@ -67,6 +67,28 @@
 확인한다. GPL 자료는 동작/하드웨어 순서 이해용으로만 사용하며, 이 프로젝트의
 배포 코드로 복사하지 않는다.
 
+### D2 — WARP 마이크로코드 (저장소 반입 예외)
+
+원칙은 "제3자 source를 이 저장소에 복사하지 않는다"이나, WARP 마이크로코드는
+**예외로 반입한다.** 근거와 경계:
+
+- 대상: X.Org `xf86-video-mga-2.0.0/src/mga_ucode.h`의 **G400 16종만**.
+  G200 8종은 이 카드가 실행할 수 없어 제외한다.
+- 라이선스: MIT 계열(`Permission is hereby granted, free of charge...`,
+  ⓒ1999 Matrox Graphics Inc.). 복사·수정·배포가 허용되며 **원문 고지를
+  생성 파일 상단에 그대로 보존**한다.
+- 왜 예외인가: 이것은 분석용 참고 자료가 아니라 **드라이버가 하드웨어에
+  올려야 하는 데이터**다. 링크되지 않으면 3D가 성립하지 않는다.
+  분석 자료(register/알고리즘)를 코드로 옮기지 않는다는 기존 원칙은
+  그대로 유효하며, 이 예외는 데이터에만 적용된다.
+- 재현성: 반입은 손으로 하지 않고 `warp/extract-warp-ucode.py`가 하며,
+  스크립트도 함께 커밋한다. 생성물은 `warp/OpenStepMGAWarpUcode.{h,c}`.
+- 검증: 추출본 16개 배열이 원본과 **바이트 단위로 일치**함을 확인했고,
+  정렬 후 합계 18,432바이트가 `mga_warp.c`의 `WARP_UCODE_SIZE` 계산과
+  맞는다. 상세는 `docs/D2_1_WARP_MICROCODE_PLAN.md`.
+- 취득 URL은 위 R2.1 항목과 같은 X.Org 공식 아카이브다. `scratch/`는
+  gitignore이므로 그곳의 사본은 언제든 사라진다(실제로 한 번 잃었다).
+
 ### R6 — Storm 2D source audit
 
 - local official X.Org `xf86-video-mga-2.0.0` archive — `mga_storm.c`의
