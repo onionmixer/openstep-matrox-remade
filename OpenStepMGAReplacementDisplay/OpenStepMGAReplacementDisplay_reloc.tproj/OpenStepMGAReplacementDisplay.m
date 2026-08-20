@@ -1207,6 +1207,16 @@ static unsigned long osmgaMmapWindowStart;   /* byte offset into VRAM */
 static unsigned long osmgaMmapWindowEnd;     /* exclusive */
 static unsigned long osmgaMmapFbPhysical;
 static int osmgaMmapRegistered;              /* class-level, register once */
+static int osmgaMesaAccelEnabled;             /* M1-3a: Configure.app switch */
+/*
+ * M1-3a: the ioctl handler is a plain C function with no instance, and the
+ * state it must report lives in instance variables.  Rather than mirror that
+ * state into file scope, where the copy could fall behind, keep the instance
+ * and ask it.  Set where the cdevsw entry is published, so it is never
+ * non-nil for a device that cannot be opened; the driver already must not be
+ * unloaded once that device exists (S4a), which is what makes this safe.
+ */
+static id osmgaCapsInstance;
 
 /* Unused switch slots: refuse rather than leaving a NULL pointer behind. */
 static int
@@ -1237,6 +1247,33 @@ osmgaDevClose(int dev, int flag, int devtype)
     (void)dev;
     (void)flag;
     (void)devtype;
+    return 0;
+}
+
+/*
+ * M1-3a: report the 3D capabilities to a caller that cannot use Objective-C.
+ *
+ * The kernel has already copied the caller's block in and will copy our
+ * answer back out, sized from the encoded command, so this only fills it.
+ */
+static int
+osmgaDevIoctl(int dev, int cmd, caddr_t data, int flag)
+{
+    OSMGAHW3DCapsBlock *blk = (OSMGAHW3DCapsBlock *)data;
+    unsigned words[OSMGA_HW3D_CAPS_COUNT];
+    unsigned i;
+
+    (void)flag;
+    if (OSMGA_DEV_MINOR(dev) != 0)
+        return ENXIO;
+    if ((unsigned long)cmd != OSMGA_IOC_CAPS)
+        return ENOTTY;
+    if (blk == 0 || osmgaCapsInstance == nil)
+        return ENXIO;
+
+    [osmgaCapsInstance osmgaFillHW3DCaps:words];
+    for (i = 0U; i < OSMGA_HW3D_CAPS_COUNT; i++)
+        blk->caps[i] = (unsigned long)words[i];
     return 0;
 }
 
@@ -1945,6 +1982,22 @@ static IODisplayInfo osmgaModeTemplate = {
      */
     {
         IOConfigTable *ct = [deviceDescription configTable];
+        const char *accel = (ct == nil) ? 0
+                          : (const char *)[ct valueForStringKey:
+                                              "Mesa Acceleration"];
+
+        /* M1-3a: read it here but gate nothing here.  Unlike "VRAM Mmap",
+         * which decides whether a device is published at all, this switch is
+         * only reported through the capability parameter -- the library is
+         * what declines to accelerate.  Keeping the driver's behaviour
+         * identical either way means the switch cannot break the display. */
+        osmgaMesaAccelEnabled =
+            (accel != 0 && osmgaTextContains(accel, "Yes")) ? 1 : 0;
+        IOLog("OpenStepMGA M1-3a: Mesa acceleration switch is %s\n",
+              osmgaMesaAccelEnabled ? "Yes" : "No");
+    }
+    {
+        IOConfigTable *ct = [deviceDescription configTable];
         const char *flag = (ct == nil) ? 0
                          : (const char *)[ct valueForStringKey:"VRAM Mmap"];
         if (flag != 0 && osmgaTextContains(flag, "Yes") && !osmgaMmapRegistered) {
@@ -2019,7 +2072,7 @@ static IODisplayInfo osmgaModeTemplate = {
                          close:(IOSwitchFunc)osmgaDevClose
                           read:(IOSwitchFunc)osmgaDevNotSupported
                          write:(IOSwitchFunc)osmgaDevNotSupported
-                         ioctl:(IOSwitchFunc)osmgaDevNotSupported
+                         ioctl:(IOSwitchFunc)osmgaDevIoctl
                           stop:(IOSwitchFunc)osmgaDevNotSupported
                          reset:(IOSwitchFunc)osmgaDevNotSupported
                         select:(IOSwitchFunc)osmgaDevNotSupported
@@ -2027,6 +2080,7 @@ static IODisplayInfo osmgaModeTemplate = {
                           getc:(IOSwitchFunc)osmgaDevNotSupported
                           putc:(IOSwitchFunc)osmgaDevNotSupported]) {
                     osmgaMmapRegistered = 1;
+                    osmgaCapsInstance = self;
                     IOLog("OpenStepMGA S4a: PAGE_SIZE=%lu PAGE_SHIFT=%lu "
                           "fbPhys=%08lx firstPFN=%lx\n",
                           (unsigned long)PAGE_SIZE, (unsigned long)PAGE_SHIFT,
@@ -2942,6 +2996,37 @@ unmap:
     return [super showCursor:cursorLoc frame:frame token:t];
 }
 
+- (void)osmgaFillHW3DCaps:(unsigned *)capsOut
+{
+    unsigned long flags = 0UL;
+
+    /*
+     * MMAP, CMD and READY together are exactly the condition the submit path
+     * tests before it returns IO_R_RESOURCE.  They are written to match it
+     * deliberately: a caller that saw all of REQUIRED and was then refused
+     * anyway would be a contradiction impossible to diagnose from a log.
+     */
+    if (osmgaMmapRegistered)
+        flags |= OSMGA_HW3D_CAP_MMAP;
+    if (osmgaMmapCmdVirt != 0 && osmgaMmapCmdPhysical != 0UL)
+        flags |= OSMGA_HW3D_CAP_CMD;
+    if (mmioMapped && linearModeActive &&
+        osmgaFmt[selectedFormatIndex].bytesPerPixel == 4)
+        flags |= OSMGA_HW3D_CAP_READY;
+    if (osmgaMesaAccelEnabled)
+        flags |= OSMGA_HW3D_CAP_ENABLED;
+
+    capsOut[OSMGA_HW3D_CAP_MAGIC]   = (unsigned)OSMGA_HW3D_MAGIC;
+    capsOut[OSMGA_HW3D_CAP_VERSION] = (unsigned)OSMGA_HW3D_VERSION;
+    capsOut[OSMGA_HW3D_CAP_FLAGS]   = (unsigned)flags;
+    capsOut[OSMGA_HW3D_CAP_MAXTRI]  = (unsigned)OSMGA_HW3D_MAX_TRI;
+    capsOut[OSMGA_HW3D_CAP_BATCH]   = (unsigned)OSMGA_HW3D_BATCH_BYTES;
+    capsOut[OSMGA_HW3D_CAP_MAJOR]   = (unsigned)[[self class] characterMajor];
+    capsOut[OSMGA_HW3D_CAP_VRAMOFF] = (unsigned)osmgaMmapWindowStart;
+    capsOut[OSMGA_HW3D_CAP_VRAMLEN] =
+        (unsigned)(osmgaMmapWindowEnd - osmgaMmapWindowStart);
+}
+
 - (IOReturn)getIntValues:(unsigned *)parameterArray
             forParameter:(IOParameterName)parameterName
                    count:(unsigned *)count
@@ -2971,6 +3056,14 @@ unmap:
         parameterArray[17] = stormBlitFailed ? 1U : 0U;
         parameterArray[18] = statTransferTable;
         *count = OSMGA_STATS_COUNT;
+        return IO_R_SUCCESS;
+    }
+    if (osmgaTextEquals(parameterName, OSMGA_HW3D_CAPS_PARAM)) {
+        if (parameterArray == 0 || count == 0 ||
+            *count != OSMGA_HW3D_CAPS_COUNT)
+            return IO_R_INVALID_ARG;
+        [self osmgaFillHW3DCaps:parameterArray];
+        *count = OSMGA_HW3D_CAPS_COUNT;
         return IO_R_SUCCESS;
     }
     if (osmgaTextEquals(parameterName, OSMGA_HW3D_STATUS_PARAM)) {

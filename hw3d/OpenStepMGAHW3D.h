@@ -214,6 +214,86 @@ typedef int OSMGAHW3DFitsCheck[
     (sizeof(OSMGAHW3DBatch) <= OSMGA_HW3D_BATCH_BYTES) ? 1 : -1];
 typedef int OSMGAHW3DWordCheck[(sizeof(unsigned long) == 4) ? 1 : -1];
 
+/*
+ * M1-3a: the capability parameter the Mesa backend probes.
+ *
+ * Identity is established by the parameter itself.  Another display driver
+ * does not know this name, so its getIntValues fails and the backend falls
+ * back to software without needing any other way to tell whose card it is.
+ *
+ * The driver answers this parameter even when acceleration is switched off,
+ * because "not our driver" and "our driver, switch off" are different things
+ * to a person reading a log, and reporting them the same way would make the
+ * switch impossible to diagnose.  The backend gates on ENABLED.
+ */
+#define OSMGA_HW3D_CAPS_PARAM   "OSMGAHW3DCaps"
+#define OSMGA_HW3D_CAPS_COUNT   8U
+
+/* caps[OSMGA_HW3D_CAP_FLAGS] */
+#define OSMGA_HW3D_CAP_ENABLED  0x00000001UL /* Configure.app switch is on */
+#define OSMGA_HW3D_CAP_MMAP     0x00000002UL /* the VRAM window is published */
+#define OSMGA_HW3D_CAP_CMD      0x00000004UL /* the command window exists */
+#define OSMGA_HW3D_CAP_READY    0x00000008UL /* linear mode, engine usable */
+
+/*
+ * All four are required before the backend may accelerate.  ENABLED alone is
+ * not enough: without the VRAM window there is nowhere to put a batch, and
+ * without the command window there is no list to submit.
+ */
+#define OSMGA_HW3D_CAP_REQUIRED (OSMGA_HW3D_CAP_ENABLED | \
+                                 OSMGA_HW3D_CAP_MMAP    | \
+                                 OSMGA_HW3D_CAP_CMD     | \
+                                 OSMGA_HW3D_CAP_READY)
+
+#define OSMGA_HW3D_CAP_MAGIC    0U  /* OSMGA_HW3D_MAGIC */
+#define OSMGA_HW3D_CAP_VERSION  1U  /* OSMGA_HW3D_VERSION */
+#define OSMGA_HW3D_CAP_FLAGS    2U
+#define OSMGA_HW3D_CAP_MAXTRI   3U  /* OSMGA_HW3D_MAX_TRI */
+#define OSMGA_HW3D_CAP_BATCH    4U  /* OSMGA_HW3D_BATCH_BYTES */
+#define OSMGA_HW3D_CAP_MAJOR    5U  /* character major of the VRAM device */
+#define OSMGA_HW3D_CAP_VRAMOFF  6U  /* window start, byte offset into VRAM */
+#define OSMGA_HW3D_CAP_VRAMLEN  7U  /* window length in bytes */
+
+/*
+ * The same capabilities, reachable from plain C.
+ *
+ * The parameter above needs IODeviceMaster, which is Objective-C.  An archive
+ * holding it cannot be linked by a C program: measured on the target, a C main
+ * linking such an archive fails with
+ *
+ *     /bin/ld: Undefined symbols:
+ *     .objc_class_name_IODeviceMaster
+ *
+ * and libGL has to be usable from an unmodified C application given nothing
+ * but -lGL.  So the library asks through the character device it must open
+ * for mmap anyway, and never links Objective-C.
+ *
+ * The parameter form stays, because Objective-C tools -- the Configure.app
+ * inspector above all -- already speak it, and both forms report the same
+ * flags from the same state.
+ */
+typedef struct {
+    unsigned long caps[OSMGA_HW3D_CAPS_COUNT];
+} OSMGAHW3DCapsBlock;
+
+/*
+ * Encoding taken from the target's <sys/ioctl.h>, not from memory of a more
+ * recent BSD: on this system IOCPARM_MASK is 0x7f, so a parameter block must
+ * stay under 128 bytes.  Assuming the modern 0x1fff would have encoded a
+ * length the kernel then truncated, and the copyout would have been short
+ * rather than refused.
+ */
+#define OSMGA_IOC_OUT_BIT   0x40000000UL
+#define OSMGA_IOC_PARM_MASK 0x7fUL
+#define OSMGA_IOC_GROUP     'M'
+#define OSMGA_IOC_CAPS      ((unsigned long)(OSMGA_IOC_OUT_BIT | \
+    ((sizeof(OSMGAHW3DCapsBlock) & OSMGA_IOC_PARM_MASK) << 16) | \
+    ((unsigned long)OSMGA_IOC_GROUP << 8) | 1UL))
+
+/* If the block ever outgrows the mask the encoded length wraps silently. */
+typedef int OSMGAHW3DCapsFits[
+    (sizeof(OSMGAHW3DCapsBlock) <= OSMGA_IOC_PARM_MASK) ? 1 : -1];
+
 int osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                       unsigned long *badTri);
 

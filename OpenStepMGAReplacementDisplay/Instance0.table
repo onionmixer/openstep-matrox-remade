@@ -10,6 +10,7 @@
 "MGA Memory Size" = "16";
 "Storm 2D Test" = "No";
 "VRAM Mmap" = "Yes";
+"Mesa Acceleration" = "Yes";
 "DMA Ring Test" = "No";
 "WARP Test" = "No";
 "Raster Test" = "Yes";

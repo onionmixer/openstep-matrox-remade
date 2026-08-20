@@ -164,6 +164,13 @@
 - (void)revertToVGAMode;
 - (unsigned int)displayMemorySize;
 - (unsigned int)ramdacSpeed;
+
+/*
+ * M1-3a: fill OSMGA_HW3D_CAPS_COUNT words describing what the 3D path can do
+ * right now.  Both the parameter and the ioctl call this, so the Objective-C
+ * answer and the plain-C answer cannot drift apart.
+ */
+- (void)osmgaFillHW3DCaps:(unsigned *)capsOut;
 - setBrightness:(int)level token:(int)token;
 - free;
 
