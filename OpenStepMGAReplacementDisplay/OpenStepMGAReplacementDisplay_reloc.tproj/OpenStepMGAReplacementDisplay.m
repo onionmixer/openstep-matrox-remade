@@ -1219,6 +1219,20 @@ static int osmgaMesaAccelEnabled;             /* M1-3a: Configure.app switch */
 static id osmgaCapsInstance;
 
 /*
+ * M1-3g DIAGNOSTIC, not a mechanism.
+ *
+ * One page of the window, aliased uncached, so the driver can look at the
+ * first pixel of a destination the moment its completion test says the
+ * submission is done.  Nobody has measured whether the result is there at
+ * that moment; everything so far measured only whether a read from here
+ * repaired someone else's view, which is a different question.
+ *
+ * Bounded to a few lines because syslog drops bursts.
+ */
+static volatile unsigned long *osmgaProbeAlias;
+static unsigned long osmgaProbeLeft = 8UL;
+
+/*
  * REMAINING_WORK 3-10.  The submit path claims stormBusy, but mode changes
  * never did, so nothing stopped a mode from being reprogrammed while a batch
  * was setting up DMA -- the two would have been writing engine registers at
@@ -2146,6 +2160,16 @@ static IODisplayInfo osmgaModeTemplate = {
                      * means nobody can be inside ioctl before the receiver
                      * exists.  The other order leaves a window in which an
                      * open succeeds and the probe immediately fails. */
+                    {
+                        vm_address_t pa = 0;
+                        unsigned long pl = 0UL;
+                        volatile unsigned long *pp = 0;
+
+                        if (osmgaMapUncachedBlock(frameBufferPhysical, start,
+                                                  start + (unsigned long)PAGE_SIZE,
+                                                  &pa, &pl, &pp) == IO_R_SUCCESS)
+                            osmgaProbeAlias = pp;
+                    }
                     osmgaCapsInstance = self;
                     osmgaMmapRegistered = 1;
                     IOLog("OpenStepMGA S4a: PAGE_SIZE=%lu PAGE_SHIFT=%lu "
@@ -3534,6 +3558,27 @@ unmap:
                  * does not do what it claims is worse than none.  See
                  * REMAINING_WORK 3-18 for where it actually is.
                  */
+                /*
+                 * M1-3g: what does an uncached alias see, right here?
+                 *
+                 * A client's first read after this returns can hold pre-draw
+                 * data.  It was put down to the client's mapping until the
+                 * S4a gate was re-read, which had already shown that mapping
+                 * coherent with engine writes -- through a 2D blit, where
+                 * this is primary DMA.  So the suspicion moved to the
+                 * completion test: the end bit says the command stream was
+                 * consumed, which is not the same as its writes having
+                 * landed.  This says which, and reads nothing a client owns.
+                 */
+                if (osmgaProbeAlias != 0 && osmgaProbeLeft > 0UL &&
+                    osmgaHW3DSnapshot.state.dstorg == osmgaMmapWindowStart) {
+                    unsigned long a1 = osmgaProbeAlias[0];
+                    unsigned long a2 = osmgaProbeAlias[0];
+
+                    osmgaProbeLeft--;
+                    IOLog("OpenStepMGA M1-3g: at completion the alias reads "
+                          "%08lx, and again %08lx\n", a1, a2);
+                }
                 rc3 = 1;
             }
             else
