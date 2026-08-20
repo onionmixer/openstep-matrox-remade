@@ -16,7 +16,6 @@
  */
 #define OSMGA_TRI_DWGCTL    (0x4UL | (0x7UL << 4))   /* TRAP, access type I */
 #define OSMGA_TRI_DWGCTL_Z  (0x4UL | (0x3UL << 4))   /* TRAP, access type ZI */
-#define OSMGA_TRI_OPAQUE    0x00000101UL   /* replace, no blending */
 
 /*
  * A colour component as a plane over the triangle: its rate along x, its
@@ -101,7 +100,8 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
                long left, long dxL, long right, long dxR,
                const OSMGAMesaVertex *flat,
                const OSMGAColourPlane *plane, const OSMGAMesaVertex *a,
-               unsigned long zmode, const OSMGAColourPlane *zplane)
+               unsigned long zmode, const OSMGAColourPlane *zplane,
+               unsigned long blend, const OSMGAColourPlane *aplane)
 {
     int sdxl = (dxL < 0L) ? 1 : 0;
     int sdxr = (dxR < 0L) ? 1 : 0;
@@ -109,7 +109,7 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
     memset(t, 0, sizeof *t);
     t->dwgctl   = (zmode != 0UL) ? (OSMGA_TRI_DWGCTL_Z | zmode)
                                 : OSMGA_TRI_DWGCTL;
-    t->alphactrl = OSMGA_TRI_OPAQUE;
+    t->alphactrl = blend;
     t->y = y;
     t->h = h;
 
@@ -147,6 +147,22 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
      */
     t->fxbndry = (((unsigned long)right) << 16) |
                  ((unsigned long)left & 0xffffUL);
+
+    if (blend != OSMGA_MESA_BLEND_OPAQUE && aplane != 0) {
+        /*
+         * Alpha is a plane too, and at the same scale.  It only matters when
+         * something blends with it -- an opaque triangle's alpha reaches the
+         * destination's fourth byte and nothing reads it -- so it is solved
+         * only when it is going to be used.
+         */
+        double ox = (double)left - (double)a->x;
+        double oy = (double)y    - (double)a->y;
+
+        t->a0  = osmgaStartFixed(aplane->at_a + aplane->dx * ox
+                                 + aplane->dy * oy);
+        t->adx = osmgaFixed(osmgaClampSlope(aplane->dx));
+        t->ady = osmgaFixed(osmgaClampSlope(aplane->dy));
+    }
 
     if (zmode != 0UL && zplane != 0) {
         /*
@@ -199,11 +215,12 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
                        const OSMGAMesaVertex *c,
                        const OSMGAMesaVertex *flat,
                        unsigned long zmode,
+                       unsigned long blend,
                        OSMGAHW3DTri *out)
 {
     const OSMGAMesaVertex *t, *m, *lo, *tmp;
     OSMGAColourPlane plane[3];
-    OSMGAColourPlane zplane;
+    OSMGAColourPlane zplane, aplane;
     const OSMGAMesaVertex *shade = flat;
     long hTop, hBot, span, xSplit;
     int n = 0;
@@ -234,6 +251,8 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
      */
     zplane.dx = zplane.dy = 0.0;
     zplane.at_a = 0.0;
+    aplane.dx = aplane.dy = 0.0;
+    aplane.at_a = 255.0;
     if (zmode != 0UL) {
         double x1 = (double)(b->x - a->x), y1 = (double)(b->y - a->y);
         double x2 = (double)(c->x - a->x), y2 = (double)(c->y - a->y);
@@ -260,6 +279,18 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
             zplane.dx = 0.0;
             zplane.dy = 0.0;
         }
+    }
+
+    if (blend != OSMGA_MESA_BLEND_OPAQUE) {
+        double x1 = (double)(b->x - a->x), y1 = (double)(b->y - a->y);
+        double x2 = (double)(c->x - a->x), y2 = (double)(c->y - a->y);
+        double den = x1 * y2 - x2 * y1;
+        double d1 = (double)b->a - (double)a->a;
+        double d2 = (double)c->a - (double)a->a;
+
+        aplane.dx   = (d1 * y2 - d2 * y1) / den;
+        aplane.dy   = (d2 * x1 - d1 * x2) / den;
+        aplane.at_a = (double)a->a;
     }
 
     if (shade == 0) {
@@ -316,7 +347,7 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
 
         osmgaTrapezoid(&out[n], t->y, hTop,
                        t->x, l1 - t->x, t->x, r1 - t->x, shade, plane, a,
-                       zmode, &zplane);
+                       zmode, &zplane, blend, &aplane);
         n++;
     }
 
@@ -327,7 +358,7 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
 
         osmgaTrapezoid(&out[n], m->y, hBot,
                        l0, lo->x - l0, r0, lo->x - r0, shade, plane, a,
-                       zmode, &zplane);
+                       zmode, &zplane, blend, &aplane);
         n++;
     }
     return n;

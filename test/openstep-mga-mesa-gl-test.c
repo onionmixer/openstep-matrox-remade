@@ -291,6 +291,46 @@ main(void)
                px2 == 0x00ff00UL);
     }
 
+    /*
+     * Blending.  An opaque red ground, then blue at half alpha over it: the
+     * engine computes (a*src + (255-a)*dst)/255 with a true divide, so the
+     * answer is worked out rather than eyeballed.
+     *
+     * That it reads the destination at all is the point -- and the
+     * destination alpha has to be the fourth byte of the surface, not a
+     * buffer beside it, or the engine would blend against alpha it never
+     * wrote.
+     */
+    {
+        unsigned long before3 = OSMGAMesaHookDrawn();
+        unsigned long px3;
+
+        glDisable(GL_DEPTH_TEST);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBegin(GL_TRIANGLES);              /* opaque red ground */
+          glColor4ub(255, 0, 0, 255);
+          glVertex2f( 0.0f,  0.0f);
+          glVertex2f(40.0f,  0.0f);
+          glVertex2f( 0.0f, 40.0f);
+        glEnd();
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glBegin(GL_TRIANGLES);              /* blue at half alpha over it */
+          glColor4ub(0, 0, 255, 128);
+          glVertex2f( 0.0f,  0.0f);
+          glVertex2f(40.0f,  0.0f);
+          glVertex2f( 0.0f, 40.0f);
+        glEnd();
+        glDisable(GL_BLEND);
+        glFinish();
+
+        px3 = ((unsigned long *)appbuf)[5UL * W + 5UL] & 0xffffffUL;
+        printf("   blended pixel %06lx (want 7f0080)\n", px3);
+        expect("the blend is what the formula says", px3 == 0x7f0080UL);
+        expect("both blended triangles went to the hardware",
+               OSMGAMesaHookDrawn() == before3 + 2UL);
+    }
+
     printf("   hook drew %lu, declined %lu\n",
            OSMGAMesaHookDrawn(), OSMGAMesaHookDeclined());
     printf("%s\n", failures ? "FAIL"

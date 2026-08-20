@@ -133,7 +133,8 @@ main(void)
             p1.x = nothing[i].bx; p1.y = nothing[i].by;
             p2.x = nothing[i].cx; p2.y = nothing[i].cy;
             got = OSMGAMesaBuildTriangle(&p0, &p1, &p2, &p0,
-                               OSMGA_MESA_ZMODE_NONE, scratch);
+                               OSMGA_MESA_ZMODE_NONE,
+                                     OSMGA_MESA_BLEND_OPAQUE, scratch);
             printf("   %-22s -> %d trapezoid(s)  %s\n",
                    nothing[i].what, got, (got == 0) ? "ok" : "FAIL");
             if (got != 0)
@@ -157,7 +158,8 @@ main(void)
     batch->state.dstPitch  = 1024UL;   /* the display stride, as before */
 
     n = OSMGAMesaBuildTriangle(&v0, &v1, &v2, &v0,
-                               OSMGA_MESA_ZMODE_NONE, batch->tri);
+                               OSMGA_MESA_ZMODE_NONE,
+                               OSMGA_MESA_BLEND_OPAQUE, batch->tri);
     batch->triCount = (unsigned long)n;
     printf("   built %d trapezoid(s)\n", n);
     for (i = 0; i < n; i++)
@@ -211,7 +213,8 @@ main(void)
             vram[row * STRIDE_DW + col] = SENTINEL;
 
     n = OSMGAMesaBuildTriangle(&v0, &v1, &v2, (OSMGAMesaVertex *)0,
-                               OSMGA_MESA_ZMODE_NONE, batch->tri);
+                               OSMGA_MESA_ZMODE_NONE,
+                               OSMGA_MESA_BLEND_OPAQUE, batch->tri);
     batch->triCount = (unsigned long)n;
     r = [master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
                 objectNumber:objNum count:0];

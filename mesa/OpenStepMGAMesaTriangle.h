@@ -20,7 +20,7 @@
 
 typedef struct {
     long x, y;                  /* pixels, in the destination's own space */
-    unsigned long r, g, b;      /* 0..255 */
+    unsigned long r, g, b, a;   /* 0..255 */
     unsigned long z;            /* 0..65535; ignored unless a z mode is asked */
 } OSMGAMesaVertex;
 
@@ -31,6 +31,15 @@ typedef struct {
  * engine behaviour and inventing a second vocabulary for it would only make
  * two things to keep in step.
  */
+/*
+ * Blending, likewise in the engine's own encoding.  OPAQUE is what every
+ * triangle has used so far -- source times one, destination times nothing.
+ * OVER is source alpha against one minus it, which is the only blend the
+ * engine performs and therefore the only one worth naming.
+ */
+#define OSMGA_MESA_BLEND_OPAQUE  0x00000101UL
+#define OSMGA_MESA_BLEND_OVER    0x01000154UL
+
 #define OSMGA_MESA_ZMODE_NONE  0UL
 #define OSMGA_MESA_ZMODE_LT    0x400UL
 #define OSMGA_MESA_ZMODE_GTE   0x700UL
@@ -56,6 +65,7 @@ int OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
                            const OSMGAMesaVertex *c,
                            const OSMGAMesaVertex *flat,
                            unsigned long zmode,
+                           unsigned long blend,
                            OSMGAHW3DTri *out);
 
 #endif /* OPENSTEP_MGA_MESA_TRIANGLE_H */

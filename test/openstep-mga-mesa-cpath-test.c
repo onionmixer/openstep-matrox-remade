@@ -100,7 +100,8 @@ main(void)
     v2.x = 40L; v2.y = 20L; v2.r =   0UL; v2.g =   0UL; v2.b = 255UL;
 
     n = OSMGAMesaBuildTriangle(&v0, &v1, &v2, (OSMGAMesaVertex *)0,
-                               OSMGA_MESA_ZMODE_NONE, batch->tri);
+                               OSMGA_MESA_ZMODE_NONE,
+                               OSMGA_MESA_BLEND_OPAQUE, batch->tri);
     batch->triCount = (unsigned long)n;
 
     rc = OSMGAMesaProbeSubmit(&res);
@@ -215,7 +216,8 @@ main(void)
             /* put the good geometry back for the next case */
             n = OSMGAMesaBuildTriangle(&v0, &v1, &v2,
                                        (OSMGAMesaVertex *)0,
-                                       OSMGA_MESA_ZMODE_NONE, batch->tri);
+                                       OSMGA_MESA_ZMODE_NONE,
+                               OSMGA_MESA_BLEND_OPAQUE, batch->tri);
         }
     }
 

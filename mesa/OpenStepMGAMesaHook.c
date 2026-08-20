@@ -36,7 +36,7 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     OSMGAHW3DBatch *batch = OSMGAMesaProbeBatch();
     OSMGAHW3DSubmitBlock res;
     OSMGAMesaVertex a, b, c, prov;
-    unsigned long zmode;
+    unsigned long zmode, blend;
     int n;
 
     if (batch == 0) {
@@ -55,6 +55,7 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         (dst).r = (unsigned long)VB->ColorPtr->data[idx][0];             \
         (dst).g = (unsigned long)VB->ColorPtr->data[idx][1];             \
         (dst).b = (unsigned long)VB->ColorPtr->data[idx][2];             \
+        (dst).a = (unsigned long)VB->ColorPtr->data[idx][3];             \
     } while (0)
 
     OSMGA_LOAD(a, v0);
@@ -75,6 +76,13 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     zmode = (ctx->Depth.Test && ctx->Visual->DepthBits > 0)
             ? OSMGA_MESA_ZMODE_LT : OSMGA_MESA_ZMODE_NONE;
 
+    /*
+     * The engine performs one blend and the chooser accepts only that one, so
+     * the state has already been agreed to by the time this runs.
+     */
+    blend = ctx->Color.BlendEnabled ? OSMGA_MESA_BLEND_OVER
+                                    : OSMGA_MESA_BLEND_OPAQUE;
+
     if (ctx->Light.ShadeModel == GL_FLAT) {
         prov.x = (long)VB->Win.data[pv][0];
         prov.y = (long)VB->Win.data[pv][1];
@@ -82,10 +90,11 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         prov.r = (unsigned long)VB->ColorPtr->data[pv][0];
         prov.g = (unsigned long)VB->ColorPtr->data[pv][1];
         prov.b = (unsigned long)VB->ColorPtr->data[pv][2];
-        n = OSMGAMesaBuildTriangle(&a, &b, &c, &prov, zmode, batch->tri);
+        prov.a = (unsigned long)VB->ColorPtr->data[pv][3];
+        n = OSMGAMesaBuildTriangle(&a, &b, &c, &prov, zmode, blend, batch->tri);
     } else {
         n = OSMGAMesaBuildTriangle(&a, &b, &c, (const OSMGAMesaVertex *)0,
-                                   zmode, batch->tri);
+                                   zmode, blend, batch->tri);
     }
     if (n == 0)
         return;                 /* no area; nothing to draw and no error */
@@ -213,6 +222,25 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
      */
     if (ctx->Polygon.OffsetFill)      return NULL;
 
+    /*
+     * The engine computes (a*src + (255-a)*dst)/255 and nothing else, which
+     * is source alpha against one minus it.  Any other pair of factors, any
+     * other equation, is refused rather than approximated -- a blend that is
+     * nearly right is a picture that is wrong.
+     */
+    if ((ctx->RasterMask & BLEND_BIT) != 0) {
+        if (ctx->Color.BlendSrcRGB != GL_SRC_ALPHA)           return NULL;
+        if (ctx->Color.BlendDstRGB != GL_ONE_MINUS_SRC_ALPHA) return NULL;
+        if (ctx->Color.BlendEquation != GL_FUNC_ADD_EXT)      return NULL;
+        /*
+         * And the destination alpha has to be where the engine puts it.  If
+         * Mesa is keeping a software alpha buffer it reads alpha from there
+         * instead of from the surface, and would blend against alpha this
+         * back end never wrote.
+         */
+        if (ctx->DrawBuffer->UseSoftwareAlphaBuffers)         return NULL;
+    }
+
     if ((ctx->RasterMask & DEPTH_BIT) != 0) {
         if (ctx->Depth.Func != GL_LESS)             return NULL;
         if (ctx->Depth.Mask != GL_TRUE)             return NULL;
@@ -220,7 +248,8 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
         if (OSMGAMesaBufferDepthOrigin() == 0UL)    return NULL;
     }
 
-    if ((ctx->RasterMask & ~(GLuint)(ALPHABUF_BIT | DEPTH_BIT)) != 0)
+    if ((ctx->RasterMask &
+         ~(GLuint)(ALPHABUF_BIT | DEPTH_BIT | BLEND_BIT)) != 0)
         return NULL;
 
     return osmgaMesaTriangle;
