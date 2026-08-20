@@ -119,8 +119,14 @@ texState(OSMGAHW3DBatch *b)
 }
 
 int
-main(void)
+main(int argc, char **argv)
 {
+    /*
+     * "trust-driver" leaves out the two discarded reads, so the run shows
+     * whether the driver's own read-back is enough on its own.  That is the
+     * whole point of putting one there: a client should not have to know.
+     */
+    int noSettle = (argc > 1 && strcmp(argv[1], "trust-driver") == 0);
     IODeviceMaster *master;
     IOObjectNumber objNum;
     IOString kind;
@@ -220,8 +226,10 @@ main(void)
      *
      * This belongs in the driver rather than here; see REMAINING_WORK.
      */
-    (void)colour[40UL * STRIDE_DW + 40UL];
-    (void)colour[50UL * STRIDE_DW + 50UL];
+    if (!noSettle) {
+        (void)colour[40UL * STRIDE_DW + 40UL];
+        (void)colour[50UL * STRIDE_DW + 50UL];
+    }
     for (row = 0UL; row < DIM; row++)
         for (col = 0UL; col < DIM; col++) {
             unsigned long got = colour[row * STRIDE_DW + col];
