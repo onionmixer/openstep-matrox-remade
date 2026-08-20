@@ -30,18 +30,34 @@ typedef enum {
     OSMGA_PROBE_STALE_NODE      /* /dev node names a major this driver is not */
 } OSMGAProbeVerdict;
 
+/*
+ * No file descriptor here, deliberately.  An earlier version returned the
+ * open device in this structure, and because the structure is copied to every
+ * caller, they all held the same number with no rule about who owned it: one
+ * caller closing it left the others using a descriptor that the next open()
+ * in the process could hand to an unrelated file.  The descriptor stays
+ * private and is reached through the accessor below, which lends it.
+ */
 typedef struct {
     OSMGAProbeVerdict verdict;
     unsigned long caps[OSMGA_HW3D_CAPS_COUNT];
     unsigned long missing;      /* required bits absent, when UNAVAILABLE */
     unsigned long nodeMajor;    /* major of the node we opened, 0 if unknown */
-    int fd;                     /* the open device, or -1 */
 } OSMGAMesaProbe;
 
 /*
  * Runs at most once per process and caches the answer; later calls copy it.
  * Never fails: an unusable card is a verdict, not an error, because every
  * caller's response to failure is the same -- render in software.
+ *
+ * The environment override is therefore sampled at the FIRST call, not at
+ * some defined moment of library loading, and is fixed from then on.  An
+ * application that wants to force software has to set the variable before any
+ * GL call, which in practice means before it starts.
+ *
+ * Across fork() the answer is recomputed rather than inherited, because the
+ * parent's open device came along with the child and two processes sharing
+ * one submission channel is not something the driver contract allows.
  */
 void OSMGAMesaProbeRun(OSMGAMesaProbe *out_probe);
 
@@ -51,6 +67,12 @@ void OSMGAMesaProbeRun(OSMGAMesaProbe *out_probe);
  * in a known state, and nothing that has just gone wrong can prove that.
  */
 void OSMGAMesaProbeRevoke(const char *why);
+
+/*
+ * The open device, or -1.  Borrowed, never owned: the module closes it and
+ * the caller must not.  Only libGL's own backend has any business with it.
+ */
+int OSMGAMesaProbeDeviceFd(void);
 
 const char *OSMGAMesaProbeVerdictString(OSMGAProbeVerdict v);
 

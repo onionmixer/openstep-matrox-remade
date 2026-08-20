@@ -13,11 +13,14 @@
 #include <sys/types.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/fcntl.h>
 
 #include "OpenStepMGAMesaProbe.h"
 
 extern int open(const char *, int, ...);
 extern int close(int);
+extern int fcntl(int, int, ...);
+extern int getpid(void);
 /* Exactly as <libc.h> declares it.  A locally invented prototype would
  * conflict with the real one, and "it is ABI-compatible on this target"
  * is not the same as "it is a valid declaration". */
@@ -41,6 +44,18 @@ extern int ioctl(int, long, ...);
 
 static int probeDone;
 static OSMGAMesaProbe probeCached;
+static int probeFd = -1;        /* private; see the header */
+static int probePid = -1;       /* which process decided this */
+
+/*
+ * Revocation lives in its own one-way flag rather than in the cached verdict.
+ * Sharing the verdict lost it: a thread revoking while another was still
+ * inside the probe would set REVOKED, and the probe would then finish and
+ * overwrite it with HARDWARE, so a failure that asked for software got
+ * hardware instead.  Checked last, after the copy, this cannot be undone by
+ * anything that finishes later.
+ */
+static int probeRevoked;
 
 static int
 osmgaProbeForcedOff(void)
@@ -62,7 +77,6 @@ osmgaProbePerform(OSMGAMesaProbe *p)
     unsigned i;
     int fd;
 
-    p->fd = -1;
     p->missing = 0UL;
     p->nodeMajor = 0UL;
     for (i = 0U; i < OSMGA_HW3D_CAPS_COUNT; i++)
@@ -80,6 +94,9 @@ osmgaProbePerform(OSMGAMesaProbe *p)
     /* Written out rather than using major(), which <sys/types.h> defines
      * inside a conditional; the shift and mask are that macro's own:
      *   #define major(x) ((int)(((unsigned)(x)>>8)&0377)) */
+    /* An exec'd program has no business holding the card open, and would
+     * keep the device busy for a process that does not know it has it. */
+    (void)fcntl(fd, F_SETFD, 1);
     if (fstat(fd, &st) == 0)
         p->nodeMajor = (unsigned long)(((unsigned)st.st_rdev >> 8) & 0xFFU);
 
@@ -129,6 +146,21 @@ osmgaProbePerform(OSMGAMesaProbe *p)
         return;
     }
 
+    /*
+     * The version is meant to guarantee the shared layout, but the driver
+     * reports these two precisely so the guarantee can be checked rather than
+     * assumed.  A driver that agrees about the version and disagrees about
+     * how big a batch is, or how many triangles fit, disagrees about the
+     * layout -- and the contract says that has to fail before drawing, not be
+     * discovered during it.
+     */
+    if (p->caps[OSMGA_HW3D_CAP_MAXTRI] != OSMGA_HW3D_MAX_TRI ||
+        p->caps[OSMGA_HW3D_CAP_BATCH]  != OSMGA_HW3D_BATCH_BYTES) {
+        (void)close(fd);
+        p->verdict = OSMGA_PROBE_VERSION;
+        return;
+    }
+
     flags = p->caps[OSMGA_HW3D_CAP_FLAGS];
     if ((flags & OSMGA_HW3D_CAP_ENABLED) == 0UL) {
         (void)close(fd);
@@ -142,40 +174,69 @@ osmgaProbePerform(OSMGAMesaProbe *p)
         return;
     }
 
-    p->fd = fd;
+    probeFd = fd;
     p->verdict = OSMGA_PROBE_HARDWARE;
 }
 
 void
 OSMGAMesaProbeRun(OSMGAMesaProbe *out_probe)
 {
+    int pid = getpid();
+
     if (out_probe == 0)
         return;
+
+    /*
+     * fork() copied both the decision and the open device into the child.
+     * Two processes submitting through one channel is not something the
+     * driver contract allows, so the child starts again -- after letting go
+     * of the descriptor it inherited, which is its own copy to close.
+     */
+    if (probeDone && pid != probePid) {
+        if (probeFd >= 0) {
+            (void)close(probeFd);
+            probeFd = -1;
+        }
+        probeDone = 0;
+    }
+
     if (!probeDone) {
         osmgaProbePerform(&probeCached);
+        probePid = pid;
         probeDone = 1;
     }
     *out_probe = probeCached;
+
+    /* Last, so that nothing finishing later can undo it. */
+    if (probeRevoked)
+        out_probe->verdict = OSMGA_PROBE_REVOKED;
 }
 
 void
 OSMGAMesaProbeRevoke(const char *why)
 {
-    /*
-     * Revoking before the probe has run still has to stick, so mark it done
-     * rather than leaving a later probe free to decide hardware.
-     */
-    if (probeDone && probeCached.verdict != OSMGA_PROBE_HARDWARE)
+    if (probeRevoked)
         return;
-    if (probeDone && probeCached.fd >= 0) {
-        (void)close(probeCached.fd);
-        probeCached.fd = -1;
+    probeRevoked = 1;
+
+    /*
+     * Closing here is safe in a way returning the number never was: nothing
+     * outside this file ever held it, so no caller can be using it and no
+     * later open() can hand our number to somebody who thinks it is ours.
+     */
+    if (probeFd >= 0) {
+        (void)close(probeFd);
+        probeFd = -1;
     }
-    probeCached.verdict = OSMGA_PROBE_REVOKED;
-    probeDone = 1;
     fprintf(stderr, "OpenStepMGA: hardware acceleration revoked (%s); "
                     "rendering in software from here on\n",
             (why != 0) ? why : "no reason given");
+}
+
+int
+OSMGAMesaProbeDeviceFd(void)
+{
+    return probeRevoked ? -1 : probeFd;
 }
 
 const char *
