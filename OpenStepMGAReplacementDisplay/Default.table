@@ -14,10 +14,12 @@
  *                    arena and measures it; no engine register is written.
  *   WARP Test     -- D2 WARP configuration probe; writes two registers and
  *                    reads one back, draws nothing.
- *   Mesa Acceleration -- let the Mesa backend use the 3D engine.  The driver
- *                    behaves identically either way; it only reports the
- *                    switch through OSMGAHW3DCaps, and the library is what
- *                    declines.  "No" therefore cannot break the display.
+ *   Mesa Acceleration -- let the 3D engine be used.  "No" is enforced, not
+ *                    merely advertised: the submit parameter refuses, and the
+ *                    driver's own 3D tests do not run either, so a machine
+ *                    with this off starts no 3D DMA of its own accord.  It
+ *                    changes nothing the display depends on -- the refusal is
+ *                    the one that already happens when 3D is unusable.
  *   VRAM Mmap     -- publish the offscreen VRAM window as a character device.
  *                    Once enabled the driver must not be unloaded, because
  *                    client mappings outlive it (docs/S4A_VRAM_MMAP_PLAN.md).

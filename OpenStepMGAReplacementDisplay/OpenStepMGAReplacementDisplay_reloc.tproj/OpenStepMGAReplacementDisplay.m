@@ -3180,6 +3180,19 @@ unmap:
 
         (void)parameterArray;
         (void)count;
+        /*
+         * The switch is enforced here and not only reported.  Reporting alone
+         * left an honest gap: "No" meant a cooperating library declined, but
+         * anything written against this parameter could submit regardless, so
+         * the switch did not mean what a person setting it would think.  A
+         * library built against a different contract, or left behind by a
+         * partial upgrade, would have gone straight past a cleared bit.
+         *
+         * Refusing costs nothing the display depends on: it is the same
+         * refusal that already happens whenever the 3D path is not usable.
+         */
+        if (!osmgaMesaAccelEnabled)
+            return IO_R_UNSUPPORTED;
         if (!osmgaMmapRegistered || !mmioMapped || !linearModeActive)
             return IO_R_RESOURCE;
         if (f3->bytesPerPixel != 4)
@@ -6613,6 +6626,13 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
     int v;
     IOReturn r;
 
+    /* "Raster Test" asks for engine probes; "Mesa Acceleration" decides
+     * whether the 3D client path runs at all.  This test drives that path,
+     * so it answers to both -- otherwise a machine with acceleration turned
+     * off would still start 3D DMA of its own accord at every boot, which
+     * is exactly what the switch is supposed to stop. */
+    if (!osmgaMesaAccelEnabled)
+        return;
     if (!rasterTestEnabled || !linearModeActive || !mmioMapped)
         return;
     if (f->bytesPerPixel != 4)
@@ -6903,6 +6923,13 @@ osmgaM1cTri(OSMGAHW3DTri *t, unsigned long y, unsigned long h,
     int v;
     IOReturn r;
 
+    /* "Raster Test" asks for engine probes; "Mesa Acceleration" decides
+     * whether the 3D client path runs at all.  This test drives that path,
+     * so it answers to both -- otherwise a machine with acceleration turned
+     * off would still start 3D DMA of its own accord at every boot, which
+     * is exactly what the switch is supposed to stop. */
+    if (!osmgaMesaAccelEnabled)
+        return;
     if (!rasterTestEnabled || !linearModeActive || !mmioMapped)
         return;
     if (f->bytesPerPixel != 4)
