@@ -275,6 +275,25 @@ M1-3b를 "축 정렬 삼각형만 처리"로 잡았는데, **축 정렬 여부�
 소프트웨어겠지"가 틀린 가정이다. M1-3a의 호출 횟수 검증에 `GL_QUADS`를
 넣어 이것을 실측한다.
 
+### 4-7. 교차검토 주장을 원본으로 재확인했다
+
+§4-3b·§4-5·§4-6은 교차검토가 새로 짚은 것이고, **처음엔 인용을 확인하지
+않고 계획서에 넣었다.** 이 저장소의 규칙은 그 반대다. 확인한 결과:
+
+| 주장 | 확인 | 비고 |
+| --- | --- | --- |
+| `ctx->TriangleFunc`가 `Driver.TriangleFunc`와 별개 | **참** | `types.h:1825`, 주석이 "driver **or indirect** triangle func" |
+| `basic_quad`가 `Driver.TriangleFunc`를 두 번 부름 | **참** | `quads.c:53-54` |
+| `RenderStart`/`Finish`가 **VB마다** 불림 | **참** | `gl_render_vb()`(`vbrender.c:667`) 안의 `:699`·`:728` |
+| 드라이버가 렌더 단계를 교체하면 안 불림 | **참** | FX가 `PIPE_OP_RENDER`에 `fxDDMergeAndRender`를 등록(`fxpipeline.c:131-135`)하고, FX 안에서 `RenderStart`는 **대입만 있고 호출이 없다** |
+
+**행 번호는 어긋났다**(예: `quads.c:44,75` → 실제 53-54). 내용은 맞았다.
+인용을 그대로 옮기지 않고 **주소를 직접 찾아 확인**해야 하는 이유다.
+
+부수로 `vbrender.c:698`에 주석 처리된 조건
+`/* ctx->Current.Primitive == GL_POLYGON+1 && */`이 보인다 — 헤더가 인정한
+"a bit broken"의 일부로 보이나 **확인하지 않았다.**
+
 ## 5. 검증 방법 — 소프트웨어 렌더러가 대조군이다
 
 **같은 Mesa가 같은 장면을 두 번 그린다** — 한 번은 소프트웨어로, 한 번은
