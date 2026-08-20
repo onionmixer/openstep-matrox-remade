@@ -53,6 +53,22 @@ main(void)
     }
     (void)close(fd);
 
+    /*
+     * A command we never registered must be refused rather than answered
+     * from whatever the previous caller left behind.  This costs nothing to
+     * check here and would be invisible in the positive test above.
+     */
+    if ((fd = open(DEV_PATH, O_RDWR)) >= 0) {
+        unsigned long bogus = (unsigned long)OSMGA_IOC_CAPS ^ 0x00000002UL;
+        int rc = ioctl(fd, bogus, &blk);
+
+        printf("caps: unknown command %08lx -> %s (errno %d)\n",
+               bogus, (rc < 0) ? "refused" : "ANSWERED, WRONG", errno);
+        (void)close(fd);
+        if (rc >= 0)
+            printf("FAIL: an unregistered command was answered\n");
+    }
+
     printf("caps: cmd=%08lx size=%lu\n",
            (unsigned long)OSMGA_IOC_CAPS,
            (unsigned long)sizeof(OSMGAHW3DCapsBlock));
