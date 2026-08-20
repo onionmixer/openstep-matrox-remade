@@ -228,6 +228,69 @@ main(void)
         }
     }
 
+    /*
+     * The claim the whole design rests on: within ONE frame, a triangle the
+     * engine drew and a triangle the software rasteriser drew must see each
+     * other's depths.  Nothing so far tested that -- each half was checked
+     * against itself.
+     *
+     * Both directions, because seeing is not symmetric by construction: the
+     * engine must respect what software wrote, and software must respect
+     * what the engine wrote, and either could fail alone.
+     */
+    if (OSMGAMesaBufferDepthOrigin() != 0UL) {
+        unsigned long px1, px2;
+
+        /* hardware lays down the near one; software tries to paint over it */
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_DEPTH_TEST);
+        glBegin(GL_TRIANGLES);              /* accelerated, depth 0.25 */
+          glColor3ub(0, 0, 255);
+          glVertex3f( 0.0f,  0.0f,  0.5f);
+          glVertex3f(40.0f,  0.0f,  0.5f);
+          glVertex3f( 0.0f, 40.0f,  0.5f);
+        glEnd();
+        glEnable(GL_SCISSOR_TEST);          /* refused -> software */
+        glScissor(0, 0, W, H);
+        glBegin(GL_TRIANGLES);              /* software, depth 0.75 */
+          glColor3ub(255, 0, 0);
+          glVertex3f( 0.0f,  0.0f, -0.5f);
+          glVertex3f(40.0f,  0.0f, -0.5f);
+          glVertex3f( 0.0f, 40.0f, -0.5f);
+        glEnd();
+        glDisable(GL_SCISSOR_TEST);
+        glFinish();
+        px1 = ((unsigned long *)appbuf)[5UL * W + 5UL] & 0xffffffUL;
+
+        /* and the other way round */
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(0, 0, W, H);
+        glBegin(GL_TRIANGLES);              /* software, depth 0.25 */
+          glColor3ub(0, 255, 0);
+          glVertex3f( 0.0f,  0.0f,  0.5f);
+          glVertex3f(40.0f,  0.0f,  0.5f);
+          glVertex3f( 0.0f, 40.0f,  0.5f);
+        glEnd();
+        glDisable(GL_SCISSOR_TEST);
+        glBegin(GL_TRIANGLES);              /* accelerated, depth 0.75 */
+          glColor3ub(255, 0, 0);
+          glVertex3f( 0.0f,  0.0f, -0.5f);
+          glVertex3f(40.0f,  0.0f, -0.5f);
+          glVertex3f( 0.0f, 40.0f, -0.5f);
+        glEnd();
+        glFinish();
+        glDisable(GL_DEPTH_TEST);
+        px2 = ((unsigned long *)appbuf)[5UL * W + 5UL] & 0xffffffUL;
+
+        printf("   software over hardware: %06lx (want 0000ff)\n", px1);
+        printf("   hardware over software: %06lx (want 00ff00)\n", px2);
+        expect("software respected the depth the engine wrote",
+               px1 == 0x0000ffUL);
+        expect("the engine respected the depth software wrote",
+               px2 == 0x00ff00UL);
+    }
+
     printf("   hook drew %lu, declined %lu\n",
            OSMGAMesaHookDrawn(), OSMGAMesaHookDeclined());
     printf("%s\n", failures ? "FAIL"
