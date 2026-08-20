@@ -175,6 +175,9 @@
 /* 3-10: mode changes take the engine the same way a batch does. */
 - (int)claimEngineForMode;
 - (void)releaseEngineAfterMode:(int)claimed;
+
+/* M1-3b-3: run the batch in the command window. */
+- (IOReturn)runHW3DSubmit;
 - setBrightness:(int)level token:(int)token;
 - free;
 

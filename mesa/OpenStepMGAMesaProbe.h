@@ -74,6 +74,24 @@ void OSMGAMesaProbeRevoke(const char *why);
  */
 int OSMGAMesaProbeDeviceFd(void);
 
+/*
+ * The shared command window, or NULL.  Mapped once and returned to every
+ * caller thereafter; the batch lives at its start.  Only meaningful after a
+ * probe has said hardware.
+ */
+OSMGAHW3DBatch *OSMGAMesaProbeBatch(void);
+
+/*
+ * Run whatever is in that batch.  Returns 0 on success, or an errno; `result`
+ * is filled either way, so a refusal names the triangle and the reason.
+ *
+ * A refusal is the caller's cue to stop asking: this does not revoke by
+ * itself, because a batch the library built wrongly is a different thing
+ * from hardware that has stopped working, and only the caller knows which
+ * it just did.
+ */
+int OSMGAMesaProbeSubmit(OSMGAHW3DSubmitBlock *result);
+
 const char *OSMGAMesaProbeVerdictString(OSMGAProbeVerdict v);
 
 #endif /* OPENSTEP_MGA_MESA_PROBE_H */

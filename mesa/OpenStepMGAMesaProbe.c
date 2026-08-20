@@ -14,6 +14,7 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/fcntl.h>
+#include <mach/mach.h>
 
 #include "OpenStepMGAMesaProbe.h"
 
@@ -21,6 +22,15 @@ extern int open(const char *, int, ...);
 extern int close(int);
 extern int fcntl(int, int, ...);
 extern int getpid(void);
+extern caddr_t mmap(caddr_t, int, int, int, int, long);
+
+#define PROT_READ   0x01
+#define PROT_WRITE  0x02
+#define MAP_SHARED  0x0001
+
+/* Must match the driver's second window. */
+#define OSMGA_CMD_WINDOW_BASE 0x40000000UL
+#define OSMGA_CMD_WINDOW_LEN  (64 * 1024)
 /* Exactly as <libc.h> declares it.  A locally invented prototype would
  * conflict with the real one, and "it is ABI-compatible on this target"
  * is not the same as "it is a valid declaration". */
@@ -237,6 +247,62 @@ int
 OSMGAMesaProbeDeviceFd(void)
 {
     return probeRevoked ? -1 : probeFd;
+}
+
+/*
+ * 4.2BSD mmap has neither MAP_FIXED nor "pick an address": it checks that the
+ * caller already owns the range and maps over it, so the placeholder has to
+ * be allocated first.  Established the hard way by the S4a probe.
+ */
+static caddr_t
+osmgaMapWindow(int fd, unsigned long offset, int len)
+{
+    vm_address_t addr = 0;
+
+    if (vm_allocate(task_self(), &addr, (vm_size_t)len, TRUE) != KERN_SUCCESS)
+        return (caddr_t)-1;
+    if ((int)mmap((caddr_t)addr, len, PROT_READ | PROT_WRITE, MAP_SHARED,
+                  fd, (long)offset) == -1) {
+        (void)vm_deallocate(task_self(), addr, (vm_size_t)len);
+        return (caddr_t)-1;
+    }
+    return (caddr_t)addr;
+}
+
+OSMGAHW3DBatch *
+OSMGAMesaProbeBatch(void)
+{
+    static OSMGAHW3DBatch *batch;
+    caddr_t p;
+
+    if (batch != 0)
+        return batch;
+    if (probeRevoked || probeFd < 0)
+        return 0;
+    p = osmgaMapWindow(probeFd, OSMGA_CMD_WINDOW_BASE, OSMGA_CMD_WINDOW_LEN);
+    if (p == (caddr_t)-1)
+        return 0;
+    batch = (OSMGAHW3DBatch *)p;
+    return batch;
+}
+
+int
+OSMGAMesaProbeSubmit(OSMGAHW3DSubmitBlock *result)
+{
+    OSMGAHW3DSubmitBlock scratch;
+
+    if (result == 0)
+        result = &scratch;
+    result->verdict = 0UL;
+    result->triangle = 0UL;
+    result->dwords = 0UL;
+    result->spins = 0UL;
+
+    if (probeRevoked || probeFd < 0)
+        return ENXIO;
+    if (ioctl(probeFd, (long)OSMGA_IOC_SUBMIT, result) < 0)
+        return (errno != 0) ? errno : EIO;
+    return 0;
 }
 
 const char *

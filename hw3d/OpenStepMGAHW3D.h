@@ -290,6 +290,30 @@ typedef struct {
     ((sizeof(OSMGAHW3DCapsBlock) & OSMGA_IOC_PARM_MASK) << 16) | \
     ((unsigned long)OSMGA_IOC_GROUP << 8) | 1UL))
 
+/*
+ * Running a batch, from plain C, for the same reason the capabilities are
+ * reachable that way: the parameter form needs IODeviceMaster and libGL
+ * cannot link Objective-C.
+ *
+ * Nothing goes in -- the batch is already in the mapped command window --
+ * and what comes back is the same four words the status parameter reports,
+ * so a caller learns which triangle was refused and why without a second
+ * call that could race another client's submission.
+ */
+typedef struct {
+    unsigned long verdict;   /* OSMGA_HW3D_OK or one of the E_ codes */
+    unsigned long triangle;  /* which one, when the verdict names one */
+    unsigned long dwords;    /* the encoded list's length */
+    unsigned long spins;     /* how long the engine was waited for */
+} OSMGAHW3DSubmitBlock;
+
+#define OSMGA_IOC_SUBMIT    ((unsigned long)(OSMGA_IOC_OUT_BIT | \
+    ((sizeof(OSMGAHW3DSubmitBlock) & OSMGA_IOC_PARM_MASK) << 16) | \
+    ((unsigned long)OSMGA_IOC_GROUP << 8) | 2UL))
+
+typedef int OSMGAHW3DSubmitFits[
+    (sizeof(OSMGAHW3DSubmitBlock) <= OSMGA_IOC_PARM_MASK) ? 1 : -1];
+
 /* If the block ever outgrows the mask the encoded length wraps silently. */
 typedef int OSMGAHW3DCapsFits[
     (sizeof(OSMGAHW3DCapsBlock) <= OSMGA_IOC_PARM_MASK) ? 1 : -1];

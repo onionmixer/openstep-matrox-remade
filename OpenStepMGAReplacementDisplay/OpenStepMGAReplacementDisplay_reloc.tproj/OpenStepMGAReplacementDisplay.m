@@ -1286,15 +1286,42 @@ osmgaDevIoctl(int dev, int cmd, caddr_t data, int flag)
     (void)flag;
     if (OSMGA_DEV_MINOR(dev) != 0)
         return ENXIO;
-    if ((unsigned long)cmd != OSMGA_IOC_CAPS)
-        return ENOTTY;
     if (blk == 0 || osmgaCapsInstance == nil)
         return ENXIO;
 
-    [osmgaCapsInstance osmgaFillHW3DCaps:words];
-    for (i = 0U; i < OSMGA_HW3D_CAPS_COUNT; i++)
-        blk->caps[i] = (unsigned long)words[i];
-    return 0;
+    if ((unsigned long)cmd == OSMGA_IOC_CAPS) {
+        [osmgaCapsInstance osmgaFillHW3DCaps:words];
+        for (i = 0U; i < OSMGA_HW3D_CAPS_COUNT; i++)
+            blk->caps[i] = (unsigned long)words[i];
+        return 0;
+    }
+
+    if ((unsigned long)cmd == OSMGA_IOC_SUBMIT) {
+        OSMGAHW3DSubmitBlock *sub = (OSMGAHW3DSubmitBlock *)data;
+        IOReturn rc = [osmgaCapsInstance runHW3DSubmit];
+
+        /*
+         * The four words come from the same place the status parameter
+         * reads, so a caller that submits and then asks gets one answer, not
+         * two -- and it gets it without a second call another client's
+         * submission could land in the middle of.
+         */
+        sub->verdict  = (unsigned long)osmgaHW3DLast[0];
+        sub->triangle = (unsigned long)osmgaHW3DLast[1];
+        sub->dwords   = (unsigned long)osmgaHW3DLast[2];
+        sub->spins    = (unsigned long)osmgaHW3DLast[3];
+        if (rc == IO_R_SUCCESS)
+            return 0;
+        if (rc == IO_R_UNSUPPORTED)
+            return ENODEV;     /* acceleration is switched off */
+        if (rc == IO_R_INVALID_ARG)
+            return EINVAL;     /* the batch was refused; see verdict */
+        if (rc == IO_R_BUSY)
+            return EBUSY;
+        return EIO;
+    }
+
+    return ENOTTY;
 }
 
 /*
@@ -3190,168 +3217,9 @@ unmap:
     }
 
     if (osmgaTextEquals(parameterName, OSMGA_HW3D_SUBMIT_PARAM)) {
-        OSMGAHW3DBatch *batch;
-        OSMGAHW3DLimits lim;
-        IODisplayInfo *di3 = [self displayInfo];
-        const OSMGAFormat *f3 = &osmgaFmt[selectedFormatIndex];
-        unsigned long stride3, total3, tail3, listPhys3, spins3, status3;
-        unsigned long epoch3;
-        unsigned long *list3, listDwords3, badTri3 = 0UL;
-        int v3, rc3 = 0;
-
         (void)parameterArray;
         (void)count;
-        /*
-         * The switch is enforced here and not only reported.  Reporting alone
-         * left an honest gap: "No" meant a cooperating library declined, but
-         * anything written against this parameter could submit regardless, so
-         * the switch did not mean what a person setting it would think.  A
-         * library built against a different contract, or left behind by a
-         * partial upgrade, would have gone straight past a cleared bit.
-         *
-         * Refusing costs nothing the display depends on: it is the same
-         * refusal that already happens whenever the 3D path is not usable.
-         */
-        if (!osmgaMesaAccelEnabled)
-            return IO_R_UNSUPPORTED;
-        if (!osmgaMmapRegistered || !mmioMapped || !linearModeActive)
-            return IO_R_RESOURCE;
-        if (f3->bytesPerPixel != 4)
-            return IO_R_RESOURCE;
-        if (osmgaMmapCmdVirt == 0 || osmgaMmapCmdPhysical == 0UL)
-            return IO_R_RESOURCE;
-
-        stride3 = (unsigned long)di3->rowBytes / 4UL;
-        batch = (OSMGAHW3DBatch *)osmgaMmapCmdVirt;
-        list3 = (unsigned long *)((char *)osmgaMmapCmdVirt +
-                                  OSMGA_HW3D_RING_OFFSET);
-        listDwords3 = (OSMGA_DMA_RING_BYTES - OSMGA_HW3D_RING_OFFSET) / 4UL;
-        listPhys3 = osmgaMmapCmdPhysical + OSMGA_HW3D_RING_OFFSET;
-
-        /* Every one of these comes from the kernel.  Nothing a client can
-         * write reaches this structure. */
-        lim.pitchBytes  = (unsigned long)di3->rowBytes;
-        lim.clipY1      = OSMGA_HW3D_CLIP_ROWS - 1UL;
-        lim.clipX1      = OSMGA_HW3D_CLIP_COLS - 1UL;
-        lim.colourStart = OSMGA_S1_VRAM_BLOCK;
-        lim.colourEnd   = OSMGA_D3_ZORG;
-        lim.depthStart  = OSMGA_D3_ZORG;
-        lim.depthEnd    = OSMGA_D3_TEXORG;
-        lim.texStart    = OSMGA_D3_TEXORG;
-        lim.texEnd      = OSMGA_S1_VRAM_PROVEN;
-        lim.batchBytes  = OSMGA_HW3D_BATCH_BYTES;
-        lim.maxEdgeWalk = OSMGA_HW3D_EDGE_WALK;
-
-        /* Copy before checking.  triCount is read exactly once, because
-         * reading it again after the copy would reintroduce the same
-         * window it is here to close. */
-        {
-            unsigned long n3 = batch->triCount;
-            unsigned long fixed3 = sizeof(OSMGAHW3DBatch) -
-                       sizeof(OSMGAHW3DTri) * OSMGA_HW3D_MAX_TRI;
-            unsigned long words3, i4;
-            const unsigned long *src3 = (const unsigned long *)batch;
-            unsigned long *dst3 = (unsigned long *)&osmgaHW3DSnapshot;
-
-            if (n3 > OSMGA_HW3D_MAX_TRI) {
-                osmgaHW3DLast[0] = (unsigned)OSMGA_HW3D_E_COUNT;
-                osmgaHW3DLast[1] = 0U;
-                osmgaHW3DLast[2] = 0U;
-                osmgaHW3DLast[3] = 0U;
-                return IO_R_INVALID_ARG;
-            }
-            words3 = (fixed3 + n3 * sizeof(OSMGAHW3DTri)) / 4UL;
-            for (i4 = 0UL; i4 < words3; i4++)
-                dst3[i4] = src3[i4];
-            osmgaHW3DSnapshot.triCount = n3;
-        }
-
-        v3 = osmgaHW3DValidate(&osmgaHW3DSnapshot, &lim, &badTri3);
-        osmgaHW3DLast[0] = (unsigned)v3;
-        osmgaHW3DLast[1] = (unsigned)badTri3;
-        osmgaHW3DLast[2] = 0U;
-        osmgaHW3DLast[3] = 0U;
-        if (v3 != OSMGA_HW3D_OK)
-            return IO_R_INVALID_ARG;
-
-        simple_lock(&stormLock);
-        if (stormBusy) { simple_unlock(&stormLock); return IO_R_BUSY; }
-        stormBusy = YES;
-        epoch3 = osmgaModeEpoch;
-        simple_unlock(&stormLock);
-
-        /*
-         * Everything checked above was checked before we owned the engine.  A
-         * mode change could have finished in between, which would leave us
-         * drawing with a stride belonging to a mode that no longer exists.
-         * Ask again now that nothing else can be programming registers, and
-         * take the geometry from here rather than from before the claim.
-         */
-        if (!mmioMapped || !linearModeActive ||
-            osmgaFmt[selectedFormatIndex].bytesPerPixel != 4) {
-            simple_lock(&stormLock);
-            stormBusy = NO;
-            simple_unlock(&stormLock);
-            return IO_R_RESOURCE;
-        }
-        stride3 = (unsigned long)[self displayInfo]->rowBytes / 4UL;
-
-        total3 = osmgaHW3DEncode(list3, listDwords3, &osmgaHW3DSnapshot,
-                                 &tail3);
-        osmgaHW3DLast[2] = (unsigned)total3;
-        if (total3 != 0UL &&
-            osmgaStormWaitIdle(mmioBase) &&
-            osmgaStormWaitFifo(mmioBase, 13U)) {
-            osmgaStormInitState(mmioBase, stride3, 0UL,
-                                OSMGA_HW3D_CLIP_COLS - 1UL, 0UL,
-                                (OSMGA_HW3D_CLIP_ROWS - 1UL) * stride3);
-            osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
-            for (spins3 = 0UL; spins3 < OSMGA_S1_SPIN_LIMIT; spins3++) {
-                status3 = osmgaR32(mmioBase, MGA_ENGSTATUS) &
-                          MGA_DMA_DONE_MASK;
-                if (status3 == MGA_STATUS_ENDPRDMASTS) break;
-            }
-            if (spins3 < OSMGA_S1_SPIN_LIMIT) {
-                unsigned long sum3 = 0UL, i3;
-
-                for (i3 = 0UL; i3 < total3; i3++) sum3 += list3[i3];
-                (void)osmgaR32(mmioBase, MGA_ENGSTATUS);
-                if (sum3 == 0xFFFFFFFFUL) IOLog("barrier %lu\n", sum3);
-
-                osmgaW32(mmioBase, MGA_PRIMADDRESS,
-                         listPhys3 | MGA_DMA_GENERAL);
-                osmgaW32(mmioBase, MGA_PRIMEND,
-                         (listPhys3 + tail3 * 4UL) | MGA_DMA_GENERAL);
-                for (spins3 = 0UL; spins3 < OSMGA_S1_SPIN_LIMIT; spins3++) {
-                    status3 = osmgaR32(mmioBase, MGA_ENGSTATUS);
-                    if ((status3 & MGA_DMA_DONE_MASK) == MGA_DMA_DONE_VALUE)
-                        break;
-                }
-                osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
-                osmgaHW3DLast[3] = (unsigned)spins3;
-                if (spins3 < OSMGA_S1_SPIN_LIMIT &&
-                    osmgaStormWaitIdle(mmioBase))
-                    rc3 = 1;
-                else
-                    IOLog("OpenStepMGA M1-2b: submission did not complete "
-                          "(status %08lx, spins %lu)\n", status3, spins3);
-            }
-        }
-        simple_lock(&stormLock);
-        stormBusy = NO;
-        /*
-         * A mode change that could not claim the engine goes ahead regardless
-         * (see -claimEngineForMode).  If one did that while we were
-         * drawing, whatever we drew went somewhere we can no longer describe,
-         * so it is reported as a failure rather than a success.
-         */
-        if (osmgaModeEpoch != epoch3)
-            rc3 = 0;
-        simple_unlock(&stormLock);
-        if (rc3 == 0 && osmgaModeEpoch != epoch3)
-            IOLog("OpenStepMGA 3-10: the mode changed while a batch was "
-                  "drawing; reporting it as failed\n");
-        return (rc3 == 1) ? IO_R_SUCCESS : IO_R_RESOURCE;
+        return [self runHW3DSubmit];
     }
 
     if (osmgaTextEquals(parameterName, IO_DISPLAY_DO_BLIT) ||
@@ -3368,6 +3236,177 @@ unmap:
                          count:count];
 }
 
+/*
+ * M1-3b-3: one implementation of a submission, reached two ways.
+ *
+ * The parameter form needs IODeviceMaster, which is Objective-C, and libGL
+ * cannot link that -- so the library reaches this through an ioctl on the
+ * character device instead.  Both call here, so the two cannot drift, and
+ * neither can quietly acquire a check the other lacks.
+ */
+- (IOReturn)runHW3DSubmit
+{
+    OSMGAHW3DBatch *batch;
+    OSMGAHW3DLimits lim;
+    IODisplayInfo *di3 = [self displayInfo];
+    const OSMGAFormat *f3 = &osmgaFmt[selectedFormatIndex];
+    unsigned long stride3, total3, tail3, listPhys3, spins3, status3;
+    unsigned long epoch3;
+    unsigned long *list3, listDwords3, badTri3 = 0UL;
+    int v3, rc3 = 0;
+
+    /*
+     * The switch is enforced here and not only reported.  Reporting alone
+     * left an honest gap: "No" meant a cooperating library declined, but
+     * anything written against this parameter could submit regardless, so
+     * the switch did not mean what a person setting it would think.  A
+     * library built against a different contract, or left behind by a
+     * partial upgrade, would have gone straight past a cleared bit.
+     *
+     * Refusing costs nothing the display depends on: it is the same
+     * refusal that already happens whenever the 3D path is not usable.
+     */
+    if (!osmgaMesaAccelEnabled)
+        return IO_R_UNSUPPORTED;
+    if (!osmgaMmapRegistered || !mmioMapped || !linearModeActive)
+        return IO_R_RESOURCE;
+    if (f3->bytesPerPixel != 4)
+        return IO_R_RESOURCE;
+    if (osmgaMmapCmdVirt == 0 || osmgaMmapCmdPhysical == 0UL)
+        return IO_R_RESOURCE;
+
+    stride3 = (unsigned long)di3->rowBytes / 4UL;
+    batch = (OSMGAHW3DBatch *)osmgaMmapCmdVirt;
+    list3 = (unsigned long *)((char *)osmgaMmapCmdVirt +
+                              OSMGA_HW3D_RING_OFFSET);
+    listDwords3 = (OSMGA_DMA_RING_BYTES - OSMGA_HW3D_RING_OFFSET) / 4UL;
+    listPhys3 = osmgaMmapCmdPhysical + OSMGA_HW3D_RING_OFFSET;
+
+    /* Every one of these comes from the kernel.  Nothing a client can
+     * write reaches this structure. */
+    lim.pitchBytes  = (unsigned long)di3->rowBytes;
+    lim.clipY1      = OSMGA_HW3D_CLIP_ROWS - 1UL;
+    lim.clipX1      = OSMGA_HW3D_CLIP_COLS - 1UL;
+    lim.colourStart = OSMGA_S1_VRAM_BLOCK;
+    lim.colourEnd   = OSMGA_D3_ZORG;
+    lim.depthStart  = OSMGA_D3_ZORG;
+    lim.depthEnd    = OSMGA_D3_TEXORG;
+    lim.texStart    = OSMGA_D3_TEXORG;
+    lim.texEnd      = OSMGA_S1_VRAM_PROVEN;
+    lim.batchBytes  = OSMGA_HW3D_BATCH_BYTES;
+    lim.maxEdgeWalk = OSMGA_HW3D_EDGE_WALK;
+
+    /* Copy before checking.  triCount is read exactly once, because
+     * reading it again after the copy would reintroduce the same
+     * window it is here to close. */
+    {
+        unsigned long n3 = batch->triCount;
+        unsigned long fixed3 = sizeof(OSMGAHW3DBatch) -
+                   sizeof(OSMGAHW3DTri) * OSMGA_HW3D_MAX_TRI;
+        unsigned long words3, i4;
+        const unsigned long *src3 = (const unsigned long *)batch;
+        unsigned long *dst3 = (unsigned long *)&osmgaHW3DSnapshot;
+
+        if (n3 > OSMGA_HW3D_MAX_TRI) {
+            osmgaHW3DLast[0] = (unsigned)OSMGA_HW3D_E_COUNT;
+            osmgaHW3DLast[1] = 0U;
+            osmgaHW3DLast[2] = 0U;
+            osmgaHW3DLast[3] = 0U;
+            return IO_R_INVALID_ARG;
+        }
+        words3 = (fixed3 + n3 * sizeof(OSMGAHW3DTri)) / 4UL;
+        for (i4 = 0UL; i4 < words3; i4++)
+            dst3[i4] = src3[i4];
+        osmgaHW3DSnapshot.triCount = n3;
+    }
+
+    v3 = osmgaHW3DValidate(&osmgaHW3DSnapshot, &lim, &badTri3);
+    osmgaHW3DLast[0] = (unsigned)v3;
+    osmgaHW3DLast[1] = (unsigned)badTri3;
+    osmgaHW3DLast[2] = 0U;
+    osmgaHW3DLast[3] = 0U;
+    if (v3 != OSMGA_HW3D_OK)
+        return IO_R_INVALID_ARG;
+
+    simple_lock(&stormLock);
+    if (stormBusy) { simple_unlock(&stormLock); return IO_R_BUSY; }
+    stormBusy = YES;
+    epoch3 = osmgaModeEpoch;
+    simple_unlock(&stormLock);
+
+    /*
+     * Everything checked above was checked before we owned the engine.  A
+     * mode change could have finished in between, which would leave us
+     * drawing with a stride belonging to a mode that no longer exists.
+     * Ask again now that nothing else can be programming registers, and
+     * take the geometry from here rather than from before the claim.
+     */
+    if (!mmioMapped || !linearModeActive ||
+        osmgaFmt[selectedFormatIndex].bytesPerPixel != 4) {
+        simple_lock(&stormLock);
+        stormBusy = NO;
+        simple_unlock(&stormLock);
+        return IO_R_RESOURCE;
+    }
+    stride3 = (unsigned long)[self displayInfo]->rowBytes / 4UL;
+
+    total3 = osmgaHW3DEncode(list3, listDwords3, &osmgaHW3DSnapshot,
+                             &tail3);
+    osmgaHW3DLast[2] = (unsigned)total3;
+    if (total3 != 0UL &&
+        osmgaStormWaitIdle(mmioBase) &&
+        osmgaStormWaitFifo(mmioBase, 13U)) {
+        osmgaStormInitState(mmioBase, stride3, 0UL,
+                            OSMGA_HW3D_CLIP_COLS - 1UL, 0UL,
+                            (OSMGA_HW3D_CLIP_ROWS - 1UL) * stride3);
+        osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
+        for (spins3 = 0UL; spins3 < OSMGA_S1_SPIN_LIMIT; spins3++) {
+            status3 = osmgaR32(mmioBase, MGA_ENGSTATUS) &
+                      MGA_DMA_DONE_MASK;
+            if (status3 == MGA_STATUS_ENDPRDMASTS) break;
+        }
+        if (spins3 < OSMGA_S1_SPIN_LIMIT) {
+            unsigned long sum3 = 0UL, i3;
+
+            for (i3 = 0UL; i3 < total3; i3++) sum3 += list3[i3];
+            (void)osmgaR32(mmioBase, MGA_ENGSTATUS);
+            if (sum3 == 0xFFFFFFFFUL) IOLog("barrier %lu\n", sum3);
+
+            osmgaW32(mmioBase, MGA_PRIMADDRESS,
+                     listPhys3 | MGA_DMA_GENERAL);
+            osmgaW32(mmioBase, MGA_PRIMEND,
+                     (listPhys3 + tail3 * 4UL) | MGA_DMA_GENERAL);
+            for (spins3 = 0UL; spins3 < OSMGA_S1_SPIN_LIMIT; spins3++) {
+                status3 = osmgaR32(mmioBase, MGA_ENGSTATUS);
+                if ((status3 & MGA_DMA_DONE_MASK) == MGA_DMA_DONE_VALUE)
+                    break;
+            }
+            osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
+            osmgaHW3DLast[3] = (unsigned)spins3;
+            if (spins3 < OSMGA_S1_SPIN_LIMIT &&
+                osmgaStormWaitIdle(mmioBase))
+                rc3 = 1;
+            else
+                IOLog("OpenStepMGA M1-2b: submission did not complete "
+                      "(status %08lx, spins %lu)\n", status3, spins3);
+        }
+    }
+    simple_lock(&stormLock);
+    stormBusy = NO;
+    /*
+     * A mode change that could not claim the engine goes ahead regardless
+     * (see -claimEngineForMode).  If one did that while we were
+     * drawing, whatever we drew went somewhere we can no longer describe,
+     * so it is reported as a failure rather than a success.
+     */
+    if (osmgaModeEpoch != epoch3)
+        rc3 = 0;
+    simple_unlock(&stormLock);
+    if (rc3 == 0 && osmgaModeEpoch != epoch3)
+        IOLog("OpenStepMGA 3-10: the mode changed while a batch was "
+              "drawing; reporting it as failed\n");
+    return (rc3 == 1) ? IO_R_SUCCESS : IO_R_RESOURCE;
+}
 - (int)claimEngineForMode
 {
     unsigned long spins;
