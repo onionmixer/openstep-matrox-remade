@@ -147,6 +147,10 @@ main(void)
     batch->magic = OSMGA_HW3D_MAGIC;
     batch->version = OSMGA_HW3D_VERSION;
     batch->state.dstorg = VRAM_BLOCK;
+    /* The batch declares what it may touch; the kernel proves that lies
+     * inside the window it owns and clips to it. */
+    batch->state.dstWidth  = 64UL;
+    batch->state.dstHeight = 120UL;
 
     n = OSMGAMesaBuildTriangle(&v0, &v1, &v2, &v0, batch->tri);
     batch->triCount = (unsigned long)n;

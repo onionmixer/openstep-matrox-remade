@@ -87,6 +87,10 @@ main(void)
     batch->magic = OSMGA_HW3D_MAGIC;
     batch->version = OSMGA_HW3D_VERSION;
     batch->state.dstorg = VRAM_BLOCK;
+    /* The batch declares what it may touch; the kernel proves that lies
+     * inside the window it owns and clips to it. */
+    batch->state.dstWidth  = 64UL;
+    batch->state.dstHeight = 120UL;
 
     /* The same right triangle the Objective-C test draws, so the two can be
      * compared directly: 400 pixels, and the colours of its corners. */

@@ -20,7 +20,14 @@
 #define OPENSTEP_MGA_HW3D_H
 
 #define OSMGA_HW3D_MAGIC        0x4D474133UL   /* 'MGA3' */
-#define OSMGA_HW3D_VERSION      1UL
+/*
+ * 2: the batch declares how big its destination is.  Before this the kernel
+ * clipped every batch to a fixed 64 by 120, which was a development bound
+ * and far too small for a real drawing surface.  The layout changed, so the
+ * version had to move -- the probe demands an exact match precisely so that
+ * a library and a driver disagreeing about where the fields are cannot draw.
+ */
+#define OSMGA_HW3D_VERSION      2UL
 
 /* The 64 KiB IOMallocLow block is split: the client writes the batch at the
  * start, the kernel builds the command list after it.  28 KiB and 36 KiB
@@ -56,6 +63,8 @@
 #define OSMGA_HW3D_E_ALPHA     11
 #define OSMGA_HW3D_E_TEXSIZE   12
 #define OSMGA_HW3D_E_TEXCOORD  13
+#define OSMGA_HW3D_E_DSTSIZE   14   /* destination not inside the window */
+#define OSMGA_HW3D_E_EDGEDIV   15   /* AR0/AR6 are not the trapezoid's height */
 
 /*
  * What a client may say in DWGCTL, and what the kernel says for it.
@@ -138,6 +147,17 @@
 
 typedef struct {
     unsigned long dstorg;          /* colour origin, byte offset into VRAM */
+    /*
+     * How much of the destination this batch may touch, in pixels.  The
+     * kernel clips to it, so a client cannot reach past what it declared;
+     * and it proves the declared rectangle lies inside the window it owns
+     * before believing any of it, so a client cannot declare its way out
+     * either.  The row stride is NOT here -- that stays the display's,
+     * because the engine takes the destination pitch from one register and
+     * letting a client name it would be one more thing to contain.
+     */
+    unsigned long dstWidth;        /* columns; must be <= the display stride */
+    unsigned long dstHeight;       /* rows */
     unsigned long zorg;            /* depth origin; ignored unless depth is on */
     unsigned long texorg;          /* texture origin; ignored unless textured */
     unsigned long texW, texH;      /* texels; need not be powers of two */

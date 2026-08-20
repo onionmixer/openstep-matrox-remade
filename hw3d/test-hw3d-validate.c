@@ -42,6 +42,7 @@ reset(void)
     b.tri[0].alphactrl = 0x0101UL;          /* ALPHACHANNEL | SRC_ONE */
     b.tri[0].y = 0;
     b.tri[0].h = 1;
+    b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h;
     b.tri[0].fxbndry = (64UL << 16) | 0UL;
 }
 
@@ -101,6 +102,7 @@ main(void)
         for (k = 0; k < OSMGA_HW3D_MAX_TRI; k++) {
             b.tri[k] = b.tri[0];        /* dwgctl and alphactrl included */
             b.tri[k].y = 0; b.tri[k].h = 1;
+ b.tri[k].ar0 = b.tri[k].ar6 = b.tri[k].h;
             b.tri[k].fxbndry = (64UL << 16) | 0UL;
         }
         expect("triCount at the cap", OSMGA_HW3D_OK);
@@ -259,13 +261,17 @@ main(void)
 
     printf("per-triangle geometry\n");
     reset(); b.tri[0].y = lim.clipY1; b.tri[0].h = 1;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h;
                                                 expect("last row, one row tall", OSMGA_HW3D_OK);
     reset(); b.tri[0].y = lim.clipY1; b.tri[0].h = 2;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h;
                                                 expect("one row past the clip", OSMGA_HW3D_E_TRIROW);
     reset(); b.tri[0].y = lim.clipY1 + 1;       expect("first row past the clip", OSMGA_HW3D_E_TRIROW);
     reset(); b.tri[0].y = -1;                   expect("negative first row", OSMGA_HW3D_E_TRIROW);
-    reset(); b.tri[0].h = 0;                    expect("zero rows", OSMGA_HW3D_E_TRIROW);
-    reset(); b.tri[0].h = -1;                   expect("negative rows", OSMGA_HW3D_E_TRIROW);
+    reset(); b.tri[0].h = 0;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h;                    expect("zero rows", OSMGA_HW3D_E_TRIROW);
+    reset(); b.tri[0].h = -1;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h;                   expect("negative rows", OSMGA_HW3D_E_TRIROW);
     reset(); b.tri[0].fxbndry = ((lim.clipX1 + 1) << 16) | 0;
                                                 expect("span to the clip edge", OSMGA_HW3D_OK);
     reset(); b.tri[0].fxbndry = ((lim.clipX1 + 2) << 16) | 0;
@@ -276,20 +282,47 @@ main(void)
              b.tri[2].y = lim.clipY1 + 1;       expect("a bad triangle late in the batch", OSMGA_HW3D_E_TRIROW);
 
     printf("edge slopes -- bounded so containment does not rest on the clip alone\n");
-    reset(); b.tri[0].h = 20; b.tri[0].ar2 = -(long)(lim.maxEdgeWalk / 20);
+    reset(); b.tri[0].h = 20;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar2 = -(long)(lim.maxEdgeWalk / 20);
                                                 expect("slope at the walk limit", OSMGA_HW3D_OK);
-    reset(); b.tri[0].h = 20; b.tri[0].ar2 = -(long)(lim.maxEdgeWalk / 20) - 1;
+    reset(); b.tri[0].h = 20;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar2 = -(long)(lim.maxEdgeWalk / 20) - 1;
                                                 expect("slope one past the limit", OSMGA_HW3D_E_TRISLOPE);
-    reset(); b.tri[0].h = 20; b.tri[0].ar5 = (long)(lim.maxEdgeWalk / 20) + 1;
+    reset(); b.tri[0].h = 20;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar5 = (long)(lim.maxEdgeWalk / 20) + 1;
                                                 expect("right edge past the limit", OSMGA_HW3D_E_TRISLOPE);
-    reset(); b.tri[0].h = 20; b.tri[0].ar1 = -(long)(lim.maxEdgeWalk / 20) - 1;
+    reset(); b.tri[0].h = 20;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar1 = -(long)(lim.maxEdgeWalk / 20) - 1;
                                                 expect("ar1 carries the slope too", OSMGA_HW3D_E_TRISLOPE);
-    reset(); b.tri[0].h = 20; b.tri[0].ar2 = -131071L;
+    reset(); b.tri[0].h = 20;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar2 = -131071L;
                                                 expect("the widest an 18-bit field holds", OSMGA_HW3D_E_TRISLOPE);
-    reset(); b.tri[0].h = 1;  b.tri[0].ar2 = -(long)lim.maxEdgeWalk;
+    reset(); b.tri[0].h = 1;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h;  b.tri[0].ar2 = -(long)lim.maxEdgeWalk;
                                                 expect("one row, the whole budget", OSMGA_HW3D_OK);
-    reset(); b.tri[0].h = 1;  b.tri[0].ar2 = -(long)lim.maxEdgeWalk - 1;
+    reset(); b.tri[0].h = 1;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h;  b.tri[0].ar2 = -(long)lim.maxEdgeWalk - 1;
                                                 expect("one row, one past it", OSMGA_HW3D_E_TRISLOPE);
+
+
+    /*
+     * The edge accumulator divides by AR0 and AR6, and the slope bound above
+     * assumes the edge advances by its displacement over that height.  A zero
+     * divisor stops the accumulator decreasing, so the edge walks on without
+     * limit and a displacement of one is enough to leave the rectangle -- the
+     * bound stops meaning anything.  These exist because nothing checked the
+     * divisors at all.
+     */
+    reset(); b.tri[0].ar6 = 0;
+                                                expect("a zero right-edge divisor", OSMGA_HW3D_E_EDGEDIV);
+    reset(); b.tri[0].ar0 = 0;
+                                                expect("a zero left-edge divisor", OSMGA_HW3D_E_EDGEDIV);
+    reset(); b.tri[0].h = 8;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar6 = 4;
+                                                expect("a divisor that is not the height", OSMGA_HW3D_E_EDGEDIV);
+    reset(); b.tri[0].h = 8;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h;
+                                                expect("divisors that are the height", OSMGA_HW3D_OK);
 
     printf("\n%s (%d failing)\n", failures ? "FAILURES" : "all cases behave as specified",
            failures);

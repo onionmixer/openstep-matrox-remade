@@ -3266,7 +3266,7 @@ unmap:
     IODisplayInfo *di3 = [self displayInfo];
     const OSMGAFormat *f3 = &osmgaFmt[selectedFormatIndex];
     unsigned long stride3, total3, tail3, listPhys3, spins3, status3;
-    unsigned long epoch3;
+    unsigned long epoch3, dstW3, dstH3, avail3;
     unsigned long *list3, listDwords3, badTri3 = 0UL;
     int v3, rc3 = 0;
 
@@ -3302,6 +3302,27 @@ unmap:
     if (osmgaMmapCmdVirt == 0 || osmgaMmapCmdPhysical == 0UL)
         return IO_R_RESOURCE;
 
+    /*
+     * Claim the engine BEFORE copying the client's batch, not after
+     * validating it.
+     *
+     * The snapshot is one global.  Taking it outside the claim meant a second
+     * caller could overwrite it between the moment this one validated it and
+     * the moment it was encoded -- so the batch that was proved and the batch
+     * that was drawn were not the same batch, which is the whole thing the
+     * snapshot was introduced to prevent.  Holding the engine across the copy,
+     * the proof, the encoding and the drawing makes them one object again.
+     *
+     * It also settles the stride: everything below reads it once, under the
+     * claim, so nothing derived from it can be left over from a mode that has
+     * since changed.
+     */
+    simple_lock(&stormLock);
+    if (stormBusy) { simple_unlock(&stormLock); return IO_R_BUSY; }
+    stormBusy = YES;
+    epoch3 = osmgaModeEpoch;
+    simple_unlock(&stormLock);
+
     stride3 = (unsigned long)di3->rowBytes / 4UL;
     batch = (OSMGAHW3DBatch *)osmgaMmapCmdVirt;
     list3 = (unsigned long *)((char *)osmgaMmapCmdVirt +
@@ -3312,8 +3333,9 @@ unmap:
     /* Every one of these comes from the kernel.  Nothing a client can
      * write reaches this structure. */
     lim.pitchBytes  = (unsigned long)di3->rowBytes;
-    lim.clipY1      = OSMGA_HW3D_CLIP_ROWS - 1UL;
-    lim.clipX1      = OSMGA_HW3D_CLIP_COLS - 1UL;
+    /* clipX1 and clipY1 come from the batch and are set below, once the
+     * snapshot exists and the rectangle it declares has been proved to lie
+     * inside the window. */
     lim.colourStart = OSMGA_S1_VRAM_BLOCK;
     lim.colourEnd   = OSMGA_D3_ZORG;
     lim.depthStart  = OSMGA_D3_ZORG;
@@ -3339,6 +3361,9 @@ unmap:
             osmgaHW3DLast[1] = 0U;
             osmgaHW3DLast[2] = 0U;
             osmgaHW3DLast[3] = 0U;
+            simple_lock(&stormLock);
+            stormBusy = NO;
+            simple_unlock(&stormLock);
             return IO_R_INVALID_ARG;
         }
         words3 = (fixed3 + n3 * sizeof(OSMGAHW3DTri)) / 4UL;
@@ -3347,19 +3372,55 @@ unmap:
         osmgaHW3DSnapshot.triCount = n3;
     }
 
+    /*
+     * The batch says how big its destination is; this is where that is
+     * proved rather than believed.  Nothing here forms a product: a height
+     * times a row of bytes leaves 32 bits long before it stops being a
+     * plausible request, and a check that overflows is not a check.
+     *
+     * The width cannot exceed the stride, because the engine takes the
+     * destination pitch from a single register holding the display's, and a
+     * wider rectangle would simply wrap onto the row below.
+     */
+    dstW3 = osmgaHW3DSnapshot.state.dstWidth;
+    dstH3 = osmgaHW3DSnapshot.state.dstHeight;
+    if (dstW3 == 0UL || dstH3 == 0UL || dstW3 > stride3) {
+        osmgaHW3DLast[0] = (unsigned)OSMGA_HW3D_E_DSTSIZE;
+        simple_lock(&stormLock);
+        stormBusy = NO;
+        simple_unlock(&stormLock);
+        return IO_R_INVALID_ARG;
+    }
+    if (osmgaHW3DSnapshot.state.dstorg < osmgaMmapWindowStart ||
+        osmgaHW3DSnapshot.state.dstorg >= osmgaMmapWindowEnd) {
+        osmgaHW3DLast[0] = (unsigned)OSMGA_HW3D_E_DSTORG;
+        simple_lock(&stormLock);
+        stormBusy = NO;
+        simple_unlock(&stormLock);
+        return IO_R_INVALID_ARG;
+    }
+    avail3 = osmgaMmapWindowEnd - osmgaHW3DSnapshot.state.dstorg;
+    if (dstH3 > avail3 / (unsigned long)di3->rowBytes) {
+        osmgaHW3DLast[0] = (unsigned)OSMGA_HW3D_E_DSTSIZE;
+        simple_lock(&stormLock);
+        stormBusy = NO;
+        simple_unlock(&stormLock);
+        return IO_R_INVALID_ARG;
+    }
+    lim.clipX1 = dstW3 - 1UL;
+    lim.clipY1 = dstH3 - 1UL;
+
     v3 = osmgaHW3DValidate(&osmgaHW3DSnapshot, &lim, &badTri3);
     osmgaHW3DLast[0] = (unsigned)v3;
     osmgaHW3DLast[1] = (unsigned)badTri3;
     osmgaHW3DLast[2] = 0U;
     osmgaHW3DLast[3] = 0U;
     if (v3 != OSMGA_HW3D_OK)
+        simple_lock(&stormLock);
+        stormBusy = NO;
+        simple_unlock(&stormLock);
         return IO_R_INVALID_ARG;
 
-    simple_lock(&stormLock);
-    if (stormBusy) { simple_unlock(&stormLock); return IO_R_BUSY; }
-    stormBusy = YES;
-    epoch3 = osmgaModeEpoch;
-    simple_unlock(&stormLock);
 
     /*
      * Everything checked above was checked before we owned the engine.  A
@@ -3377,15 +3438,24 @@ unmap:
     }
     stride3 = (unsigned long)[self displayInfo]->rowBytes / 4UL;
 
+    /* The stride may have moved with the mode; the width was proved against
+     * the old one, so prove it again against this one. */
+    if (dstW3 > stride3) {
+        osmgaHW3DLast[0] = (unsigned)OSMGA_HW3D_E_DSTSIZE;
+        simple_lock(&stormLock);
+        stormBusy = NO;
+        simple_unlock(&stormLock);
+        return IO_R_INVALID_ARG;
+    }
+
     total3 = osmgaHW3DEncode(list3, listDwords3, &osmgaHW3DSnapshot,
                              &tail3);
     osmgaHW3DLast[2] = (unsigned)total3;
     if (total3 != 0UL &&
         osmgaStormWaitIdle(mmioBase) &&
         osmgaStormWaitFifo(mmioBase, 13U)) {
-        osmgaStormInitState(mmioBase, stride3, 0UL,
-                            OSMGA_HW3D_CLIP_COLS - 1UL, 0UL,
-                            (OSMGA_HW3D_CLIP_ROWS - 1UL) * stride3);
+        osmgaStormInitState(mmioBase, stride3, 0UL, dstW3 - 1UL, 0UL,
+                            (dstH3 - 1UL) * stride3);
         osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
         for (spins3 = 0UL; spins3 < OSMGA_S1_SPIN_LIMIT; spins3++) {
             status3 = osmgaR32(mmioBase, MGA_ENGSTATUS) &

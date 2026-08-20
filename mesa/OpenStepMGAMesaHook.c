@@ -87,6 +87,14 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     batch->version = OSMGA_HW3D_VERSION;
     batch->triCount = (unsigned long)n;
     batch->state.dstorg = OSMGA_HOOK_DSTORG;
+    /*
+     * The destination is the drawing surface Mesa is working on, and saying
+     * so is what lets the kernel clip to it: before the batch declared this,
+     * the kernel clipped every submission to a fixed sixty-four by a hundred
+     * and twenty, which no real surface fits inside.
+     */
+    batch->state.dstWidth  = (unsigned long)ctx->DrawBuffer->Width;
+    batch->state.dstHeight = (unsigned long)ctx->DrawBuffer->Height;
 
     if (OSMGAMesaProbeSubmit(&res) != 0) {
         /*

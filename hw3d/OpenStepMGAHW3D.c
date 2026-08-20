@@ -194,6 +194,20 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
             if (h != 0UL && sl > lim->maxEdgeWalk / h)
                 return OSMGA_HW3D_E_TRISLOPE;
         }
+        /*
+         * AR0 and AR6 are what the edge accumulator divides by, and the
+         * bound just above assumes the edge advances by its displacement
+         * over that height.  Nothing checked them.  A zero divisor makes the
+         * accumulator stop decreasing, so the edge walks on and on and the
+         * slope bound stops meaning anything -- a client could pass a
+         * displacement of one and still leave the rectangle.
+         *
+         * Requiring exactly the height is tighter than requiring non-zero,
+         * and costs nothing: it is what every caller already writes, because
+         * it is what makes the slope the ratio the geometry describes.
+         */
+        if (t->ar0 != t->h || t->ar6 != t->h)
+            return OSMGA_HW3D_E_EDGEDIV;
         {
             unsigned long left  = t->fxbndry & 0xFFFFUL;
             unsigned long right = (t->fxbndry >> 16) & 0xFFFFUL;

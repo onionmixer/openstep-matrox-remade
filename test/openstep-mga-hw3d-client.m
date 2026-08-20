@@ -180,6 +180,10 @@ main(void)
     batch->version = OSMGA_HW3D_VERSION;
     batch->triCount = NTRI;
     batch->state.dstorg = VRAM_BLOCK;
+    /* The batch declares what it may touch; the kernel proves that lies
+     * inside the window it owns and clips to it. */
+    batch->state.dstWidth  = 64UL;
+    batch->state.dstHeight = 120UL;
 
     /* Three different shapes, so a per-triangle loop that reused one
      * triangle's values, or applied them in the wrong order, would show

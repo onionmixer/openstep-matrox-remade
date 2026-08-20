@@ -105,6 +105,10 @@ main(void)
     batch->version = OSMGA_HW3D_VERSION;
     batch->triCount = 1UL;
     batch->state.dstorg = VRAM_BLOCK;
+    /* The batch declares what it may touch; the kernel proves that lies
+     * inside the window it owns and clips to it. */
+    batch->state.dstWidth  = 64UL;
+    batch->state.dstHeight = 120UL;
 
     t = &batch->tri[0];
     t->dwgctl = 0x4UL | (0x7UL << 4);       /* TRAP, access type I */

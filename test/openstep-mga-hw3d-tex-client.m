@@ -164,6 +164,10 @@ main(void)
     batch->version = OSMGA_HW3D_VERSION;
     batch->triCount = 2;
     batch->state.dstorg = COLOUR_ORG;
+    /* The batch declares what it may touch; the kernel proves that lies
+     * inside the window it owns and clips to it. */
+    batch->state.dstWidth  = 64UL;
+    batch->state.dstHeight = 120UL;
     texState(batch);
     rect(&batch->tri[0], 0UL, DIM, DWG_TEX);
     rect(&batch->tri[1], DIM, FLATH, DWG_FLAT);
