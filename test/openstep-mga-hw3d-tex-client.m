@@ -122,9 +122,10 @@ int
 main(int argc, char **argv)
 {
     /*
-     * "trust-driver" leaves out the two discarded reads, so the run shows
-     * whether the driver's own read-back is enough on its own.  That is the
-     * whole point of putting one there: a client should not have to know.
+     * "trust-driver" leaves out every read this program makes on its own
+     * behalf -- before the submission as well as after it.  With them it
+     * passes; without them it loses a pixel, and that difference is the
+     * control against which the ioctl path is compared.
      */
     int noSettle = (argc > 1 && strcmp(argv[1], "trust-driver") == 0);
     IODeviceMaster *master;
@@ -207,8 +208,10 @@ main(int argc, char **argv)
      * they land afterwards and put the sentinel back over what was drawn.
      * A read of the same memory should not let that happen.
      */
-    (void)colour[0];
-    (void)colour[(DIM - 1UL) * STRIDE_DW];
+    if (!noSettle) {
+        (void)colour[0];
+        (void)colour[(DIM - 1UL) * STRIDE_DW];
+    }
 
     (void)[master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
                   objectNumber:objNum count:0];
@@ -404,6 +407,99 @@ main(int argc, char **argv)
                 fails++;
             }
         }
+    }
+
+    /*
+     * The same count the ioctl path reports, so the two are comparable.
+     *
+     * The fault is intermittent -- this program gave every pixel on one run
+     * and lost one on the next -- so a few passes settle nothing.  Forty
+     * trials of exactly the shape the C client runs: lay sentinels, submit,
+     * count, with no read of the destination in between when the driver is
+     * being trusted on its own.  The repetition lives here rather than in a
+     * shell loop because loops over this link do not survive.
+     */
+    {
+        unsigned long trial, shortRuns = 0UL, worst = DIM * DIM;
+        unsigned long lost[40], nlost = 0UL;
+
+        memset(batch, 0, sizeof *batch);
+        batch->magic = OSMGA_HW3D_MAGIC;
+        batch->version = OSMGA_HW3D_VERSION;
+        batch->triCount = 1;
+        batch->state.dstorg = COLOUR_ORG;
+        batch->state.dstWidth  = 64UL;
+        batch->state.dstHeight = 120UL;
+        batch->state.dstPitch  = 1024UL;
+        texState(batch);
+        rect(&batch->tri[0], 0UL, DIM, DWG_TEX);
+
+        for (trial = 0UL; trial < 40UL; trial++) {
+            unsigned long n = 0UL;
+
+            for (row = 0UL; row < DIM; row++)
+                for (col = 0UL; col < DIM; col++)
+                    colour[row * STRIDE_DW + col] = SENTINEL;
+            if (!noSettle) {
+                (void)colour[0];
+                (void)colour[(DIM - 1UL) * STRIDE_DW];
+            }
+            (void)[master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
+                          objectNumber:objNum count:0];
+            if (verdict(master, objNum) != OSMGA_HW3D_OK) {
+                printf("      trial %lu was refused\n", trial);
+                fails++;
+                continue;
+            }
+            /*
+             * Record where, in the same pass that counts.
+             *
+             * A second look was no good: by the time it ran, the counting
+             * pass had already been over every word and they all read
+             * correctly.  Whatever settles this happens on first contact, so
+             * the offsets have to be taken on first contact too.
+             */
+            nlost = 0UL;
+            for (row = 0UL; row < DIM; row++)
+                for (col = 0UL; col < DIM; col++) {
+                    unsigned long idx = row * STRIDE_DW + col;
+
+                    if (colour[idx] != SENTINEL) { n++; continue; }
+                    if (nlost < 40UL) lost[nlost] = idx;
+                    nlost++;
+                }
+            if (n != DIM * DIM) {
+                shortRuns++;
+                if (n < worst) worst = n;
+                /* The trial number matters on its own: the counting pass
+                 * leaves every line of the rectangle resident, so trial 0 is
+                 * the only one whose fill writes to cold lines -- and every
+                 * single-run observation that ever showed this fault was a
+                 * cold one. */
+                {
+                    unsigned long k, runs = 0UL, cap = nlost;
+
+                    if (cap > 40UL) cap = 40UL;
+                    printf("      trial %lu came up %lu short, at:\n",
+                           trial, nlost);
+                    for (k = 0UL; k < cap; k++) {
+                        unsigned long off = lost[k] * 4UL;
+
+                        if (k == 0UL || lost[k] != lost[k - 1UL] + 1UL)
+                            runs++;
+                        printf("         byte %7lu  x=%2lu y=%2lu  "
+                               "mod32=%2lu mod64=%2lu\n", off,
+                               lost[k] % STRIDE_DW, lost[k] / STRIDE_DW,
+                               off & 31UL, off & 63UL);
+                    }
+                    printf("         in %lu contiguous stretch(es)\n", runs);
+                }
+            }
+        }
+        printf("   through the RPC, %s: %lu of 40 runs short, worst %lu of "
+               "%lu\n", noSettle ? "no read between fill and submit"
+                                 : "with the client settling too",
+               shortRuns, worst, DIM * DIM);
     }
 
     if (dirty != 0UL)

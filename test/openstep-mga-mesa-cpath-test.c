@@ -113,6 +113,103 @@ main(void)
         return 1;
     }
 
+    /*
+     * The same shape again, over freshly written sentinels, with NOTHING
+     * read in between -- which is the pattern that loses a pixel when the
+     * submission goes through IODeviceMaster.
+     *
+     * The point of doing it here is that this path submits by ioctl, which
+     * the kernel dispatches on the calling thread, where the Objective-C
+     * path is a Mach round trip into the driver's task and runs somewhere
+     * else.  If the symptom follows the submission mechanism rather than the
+     * drawing, it will be absent here.
+     */
+    /*
+     * Repeated inside the program rather than by running it again, because
+     * the fault is intermittent: on the Objective-C path the same run gave
+     * every pixel once and lost one the next time.  A handful of passes
+     * proves nothing about a fault that shows up sometimes.
+     */
+    {
+        unsigned long trial, short_runs = 0UL, worst = 380UL;
+        /*
+         * Only 380 of the rectangle's 2560 pixels belong to the triangle, so
+         * "still holding the sentinel" is not the same as "lost" here the way
+         * it is for a band that covers everything.  The first trial's result
+         * becomes the reference: after that, a lost pixel is one the triangle
+         * covered before and does not cover now.
+         */
+        static unsigned char covered[ROWS * COLS];
+        int haveRef = 0;
+
+        for (trial = 0UL; trial < 40UL; trial++) {
+            for (row = 0UL; row < ROWS; row++)
+                for (col = 0UL; col < COLS; col++)
+                    vram[row * STRIDE_DW + col] = SENTINEL;
+            rc = OSMGAMesaProbeSubmit(&res);
+            if (rc != 0) {
+                printf("   FAIL -- a repeat batch was refused\n");
+                return 1;
+            }
+            drawn = 0UL;
+            for (row = 0UL; row < ROWS; row++)
+                for (col = 0UL; col < COLS; col++)
+                    if (vram[row * STRIDE_DW + col] != SENTINEL)
+                        drawn++;
+            if (drawn == 380UL && !haveRef) {
+                for (row = 0UL; row < ROWS; row++)
+                    for (col = 0UL; col < COLS; col++)
+                        covered[row * COLS + col] =
+                            (vram[row * STRIDE_DW + col] != SENTINEL);
+                haveRef = 1;
+            }
+            if (drawn != 380UL) {
+                short_runs++;
+                if (drawn < worst) worst = drawn;
+                if (haveRef) {
+                    /* Where, and in what shape.  A stretch that starts on a
+                     * 64-byte boundary belongs to something that moves memory
+                     * in those units; one that starts at a particular x, or
+                     * steps by the pitch, belongs to the drawing. */
+                    unsigned long shown = 0UL, prev = 0UL, runs = 0UL;
+                    int first = 1;
+
+                    printf("      trial %lu came up %lu short:\n",
+                           trial, 380UL - drawn);
+                    for (row = 0UL; row < ROWS; row++)
+                        for (col = 0UL; col < COLS; col++) {
+                            unsigned long idx = row * STRIDE_DW + col;
+                            unsigned long off;
+
+                            if (!covered[row * COLS + col]) continue;
+                            if (vram[idx] != SENTINEL) continue;
+                            off = idx * 4UL;
+                            if (first || idx != prev + 1UL) runs++;
+                            first = 0;
+                            prev = idx;
+                            if (shown < 24UL) {
+                                printf("         byte %7lu  x=%2lu y=%2lu  "
+                                       "mod32=%2lu mod64=%2lu\n", off, col,
+                                       row, off & 31UL, off & 63UL);
+                                shown++;
+                            }
+                        }
+                    if (first)
+                        printf("         nothing stale now -- late, "
+                               "not lost\n");
+                    else
+                        printf("         in %lu contiguous stretch(es)\n",
+                               runs);
+                }
+            }
+        }
+        printf("   through the ioctl, no read between fill and submit: "
+               "%lu of 40 runs short, worst %lu of 380\n",
+               short_runs, worst);
+        if (short_runs != 0UL)
+            failures++;
+    }
+
     drawn = 0UL;
     for (row = 0UL; row < ROWS; row++)
         for (col = 0UL; col < COLS; col++)
