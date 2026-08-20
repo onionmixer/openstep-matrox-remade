@@ -12,12 +12,16 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 
 #include "OpenStepMGAMesaProbe.h"
 
 extern int open(const char *, int, ...);
 extern int close(int);
-extern int ioctl(int, unsigned long, void *);
+/* Exactly as <libc.h> declares it.  A locally invented prototype would
+ * conflict with the real one, and "it is ABI-compatible on this target"
+ * is not the same as "it is a valid declaration". */
+extern int ioctl(int, long, ...);
 
 #define OSMGA_PROBE_DEV "/dev/osmgavram"
 
@@ -53,12 +57,14 @@ static void
 osmgaProbePerform(OSMGAMesaProbe *p)
 {
     OSMGAHW3DCapsBlock blk;
+    struct stat st;
     unsigned long flags;
     unsigned i;
     int fd;
 
     p->fd = -1;
     p->missing = 0UL;
+    p->nodeMajor = 0UL;
     for (i = 0U; i < OSMGA_HW3D_CAPS_COUNT; i++)
         p->caps[i] = 0UL;
 
@@ -71,13 +77,18 @@ osmgaProbePerform(OSMGAMesaProbe *p)
         p->verdict = OSMGA_PROBE_NO_DEVICE;
         return;
     }
+    /* Written out rather than using major(), which <sys/types.h> defines
+     * inside a conditional; the shift and mask are that macro's own:
+     *   #define major(x) ((int)(((unsigned)(x)>>8)&0377)) */
+    if (fstat(fd, &st) == 0)
+        p->nodeMajor = (unsigned long)(((unsigned)st.st_rdev >> 8) & 0xFFU);
 
     /*
      * Asking is the identity check.  Another display driver does not know
      * this command, so it refuses, and no separate way of telling whose card
      * this is has to exist or be kept correct.
      */
-    if (ioctl(fd, (unsigned long)OSMGA_IOC_CAPS, &blk) < 0) {
+    if (ioctl(fd, (long)OSMGA_IOC_CAPS, &blk) < 0) {
         (void)close(fd);
         p->verdict = OSMGA_PROBE_NOT_OURS;
         return;
@@ -100,6 +111,21 @@ osmgaProbePerform(OSMGAMesaProbe *p)
     if (p->caps[OSMGA_HW3D_CAP_VERSION] != OSMGA_HW3D_VERSION) {
         (void)close(fd);
         p->verdict = OSMGA_PROBE_VERSION;
+        return;
+    }
+
+    /*
+     * The device node is created by hand and its major is assigned
+     * dynamically, so a node left over from an earlier boot can name a major
+     * that now belongs to something else.  We have been bitten by exactly
+     * that.  If the driver we reached reports a major other than the one we
+     * opened, the node is not describing this driver and nothing built on it
+     * can be trusted.
+     */
+    if (p->nodeMajor != 0UL &&
+        p->caps[OSMGA_HW3D_CAP_MAJOR] != p->nodeMajor) {
+        (void)close(fd);
+        p->verdict = OSMGA_PROBE_STALE_NODE;
         return;
     }
 
@@ -165,6 +191,7 @@ OSMGAMesaProbeVerdictString(OSMGAProbeVerdict v)
     case OSMGA_PROBE_UNAVAILABLE: return "software: 3D path unavailable";
     case OSMGA_PROBE_OVERRIDE:    return "software: forced by environment";
     case OSMGA_PROBE_REVOKED:     return "software: revoked after a failure";
+    case OSMGA_PROBE_STALE_NODE:  return "software: stale /dev node";
     }
     return "software: unknown verdict";
 }

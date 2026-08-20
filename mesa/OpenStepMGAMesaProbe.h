@@ -26,13 +26,15 @@ typedef enum {
     OSMGA_PROBE_DISABLED,       /* Configure.app switch is off */
     OSMGA_PROBE_UNAVAILABLE,    /* switch on, but the 3D path is not usable */
     OSMGA_PROBE_OVERRIDE,       /* forced off through the environment */
-    OSMGA_PROBE_REVOKED         /* was accelerating; something went wrong */
+    OSMGA_PROBE_REVOKED,        /* was accelerating; something went wrong */
+    OSMGA_PROBE_STALE_NODE      /* /dev node names a major this driver is not */
 } OSMGAProbeVerdict;
 
 typedef struct {
     OSMGAProbeVerdict verdict;
     unsigned long caps[OSMGA_HW3D_CAPS_COUNT];
     unsigned long missing;      /* required bits absent, when UNAVAILABLE */
+    unsigned long nodeMajor;    /* major of the node we opened, 0 if unknown */
     int fd;                     /* the open device, or -1 */
 } OSMGAMesaProbe;
 

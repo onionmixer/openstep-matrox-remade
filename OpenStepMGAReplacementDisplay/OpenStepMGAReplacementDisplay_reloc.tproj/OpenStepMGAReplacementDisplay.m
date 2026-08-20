@@ -2079,8 +2079,13 @@ static IODisplayInfo osmgaModeTemplate = {
                           mmap:(IOSwitchFunc)osmgaDevMmap
                           getc:(IOSwitchFunc)osmgaDevNotSupported
                           putc:(IOSwitchFunc)osmgaDevNotSupported]) {
-                    osmgaMmapRegistered = 1;
+                    /* Instance first, then the gate.  open() refuses
+                     * while osmgaMmapRegistered is zero, so setting it last
+                     * means nobody can be inside ioctl before the receiver
+                     * exists.  The other order leaves a window in which an
+                     * open succeeds and the probe immediately fails. */
                     osmgaCapsInstance = self;
+                    osmgaMmapRegistered = 1;
                     IOLog("OpenStepMGA S4a: PAGE_SIZE=%lu PAGE_SHIFT=%lu "
                           "fbPhys=%08lx firstPFN=%lx\n",
                           (unsigned long)PAGE_SIZE, (unsigned long)PAGE_SHIFT,
@@ -3001,10 +3006,18 @@ unmap:
     unsigned long flags = 0UL;
 
     /*
-     * MMAP, CMD and READY together are exactly the condition the submit path
-     * tests before it returns IO_R_RESOURCE.  They are written to match it
-     * deliberately: a caller that saw all of REQUIRED and was then refused
-     * anyway would be a contradiction impossible to diagnose from a log.
+     * MMAP, CMD and READY are the same predicate the submit path tests before
+     * it returns IO_R_RESOURCE, so the two cannot disagree about what the
+     * state means.
+     *
+     * They are NOT atomic with respect to it.  revertToVGAMode clears
+     * linearModeActive under no lock, so a caller can read READY here, lose
+     * the mode, and be refused by submit -- and that is the intended outcome,
+     * not a contradiction.  What the matching predicate buys is narrower than
+     * it looks: a refusal after a positive answer means the state changed in
+     * between, never that the two disagree.  (The larger hazard, submit
+     * passing its own gate and then racing a mode change while it programs
+     * DMA, is older than this parameter; see REMAINING_WORK.)
      */
     if (osmgaMmapRegistered)
         flags |= OSMGA_HW3D_CAP_MMAP;
@@ -3568,6 +3581,12 @@ osmgaDmaBlock(unsigned long *ring, unsigned long ringDwords, unsigned long *pos,
 
 - free
 {
+    /* The character device outlives us by design (S4a), so the ioctl handler
+     * can still be entered after this.  Drop the receiver rather than let it
+     * message freed memory; the handler answers ENXIO, the probe reads that
+     * as "not our driver", and the caller renders in software. */
+    if (osmgaCapsInstance == self)
+        osmgaCapsInstance = nil;
     [self teardownMappings];
     linearModeActive = NO;
     configuredVideoMemoryBytes = 0;

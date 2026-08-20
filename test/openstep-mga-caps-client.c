@@ -20,7 +20,10 @@
 
 extern int open(const char *, int, ...);
 extern int close(int);
-extern int ioctl(int, unsigned long, void *);
+/* Exactly as <libc.h> declares it.  A locally invented prototype would
+ * conflict with the real one, and "it is ABI-compatible on this target"
+ * is not the same as "it is a valid declaration". */
+extern int ioctl(int, long, ...);
 
 #define DEV_PATH "/dev/osmgavram"
 
@@ -45,7 +48,7 @@ main(void)
         printf("VERDICT: software (no device)\n");
         return 1;
     }
-    if (ioctl(fd, (unsigned long)OSMGA_IOC_CAPS, &blk) < 0) {
+    if (ioctl(fd, (long)OSMGA_IOC_CAPS, &blk) < 0) {
         printf("caps: ioctl failed (errno %d)\n", errno);
         printf("VERDICT: software (not our driver)\n");
         (void)close(fd);
@@ -60,7 +63,7 @@ main(void)
      */
     if ((fd = open(DEV_PATH, O_RDWR)) >= 0) {
         unsigned long bogus = (unsigned long)OSMGA_IOC_CAPS ^ 0x00000002UL;
-        int rc = ioctl(fd, bogus, &blk);
+        int rc = ioctl(fd, (long)bogus, &blk);
 
         printf("caps: unknown command %08lx -> %s (errno %d)\n",
                bogus, (rc < 0) ? "refused" : "ANSWERED, WRONG", errno);
