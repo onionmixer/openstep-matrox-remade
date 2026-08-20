@@ -236,6 +236,20 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
         zplane.dx   = (d1 * y2 - d2 * y1) / den;
         zplane.dy   = (d2 * x1 - d1 * x2) / den;
         zplane.at_a = (double)a->z;
+
+        /*
+         * The same rule the software rasteriser uses for slivers: a slope
+         * steeper than the whole depth range in one pixel means the triangle
+         * is too thin for the plane to mean anything, and Mesa answers by
+         * flattening BOTH derivatives.  Doing anything else here would have
+         * the two paths writing wildly different depths for the same thin
+         * triangle -- and, at that magnitude, would overflow the fixed point
+         * as well.
+         */
+        if (zplane.dx > 65535.0 || zplane.dx < -65535.0) {
+            zplane.dx = 0.0;
+            zplane.dy = 0.0;
+        }
     }
 
     if (shade == 0) {

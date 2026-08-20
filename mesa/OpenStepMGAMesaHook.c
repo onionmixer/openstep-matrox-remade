@@ -204,6 +204,15 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
      * would be testing against different depths, which is worse than not
      * accelerating at all.
      */
+    /*
+     * Polygon offset never reaches RasterMask, so it would have slipped
+     * through every check above.  Mesa adds its offset to each fragment's
+     * depth; the engine knows nothing about it and would write unoffset
+     * depths into a buffer the software path is offsetting -- which is
+     * exactly the disagreement the shared buffer exists to prevent.
+     */
+    if (ctx->Polygon.OffsetFill)      return NULL;
+
     if ((ctx->RasterMask & DEPTH_BIT) != 0) {
         if (ctx->Depth.Func != GL_LESS)             return NULL;
         if (ctx->Depth.Mask != GL_TRUE)             return NULL;

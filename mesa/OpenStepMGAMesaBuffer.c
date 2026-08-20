@@ -50,6 +50,17 @@ OpenStepMesaAccelDepthBuffer(void *ctx, int width, int height,
      */
     if (bufMapped == 0 || bufCtx != ctx || bytesPerValue != 2)
         return 0;
+    /*
+     * Only when the surface's pitch IS its width.  The engine reads depth at
+     * the pitch the batch declares, and Mesa addresses depth rows by the
+     * framebuffer's width and nothing else -- so a caller that asked for a
+     * longer row through OSMesaPixelStore would leave the two counting rows
+     * differently from the second row onwards, sharing a buffer while
+     * disagreeing about where everything in it is.  Colour survives that,
+     * because there the row length is honoured on both sides; depth does not.
+     */
+    if (bufStride != bufWidth)
+        return 0;
     if ((unsigned long)width != bufWidth ||
         (unsigned long)height != bufHeight)
         return 0;
