@@ -106,6 +106,25 @@ main(void)
            (drewB > drewA) ? "YES -- the comparison is meaningless" : "no");
     snap(sw, ctx);
 
+    /*
+     * The spans each path actually produced, row by row.  Modelling the two
+     * rules and comparing the models was tried first and did not reproduce
+     * what the hardware does, which means a model was wrong -- so this reads
+     * the answer instead of predicting it.
+     */
+    printf("   row   hw span      sw span\n");
+    for (y = 1; y < 42; y++) {
+        int hl = -1, hr = -1, sl = -1, sr = -1;
+
+        for (x = 0; x < W; x++) {
+            if (hw[y * W + x] != 65535) { if (hl < 0) hl = x; hr = x; }
+            if (sw[y * W + x] != 65535) { if (sl < 0) sl = x; sr = x; }
+        }
+        if (hl >= 0 || sl >= 0)
+            printf("   %3d   %3d..%-3d    %3d..%-3d%s\n", y, hl, hr, sl, sr,
+                   (hl == sl && hr == sr) ? "" : "   <-- differs");
+    }
+
     for (x = 0; x < 6; x++)
         hist[x] = 0;
     for (y = 2; y < 38; y++) {
@@ -125,8 +144,14 @@ main(void)
             if (a == 65535L && b == 65535L)
                 continue;                       /* neither covered it */
             if (a == 65535L || b == 65535L) {
+                /* Where, and which path had it -- a count alone cannot say
+                 * whether the difference is a left edge, a right edge, or a
+                 * row, and those want different corrections. */
+                if (cover < 24L)
+                    printf("   only %s covers (%2d,%2d)\n",
+                           (b == 65535L) ? "hw" : "sw", x, y);
                 cover++;
-                continue;                       /* only one did */
+                continue;
             }
             d = a - b;
             if (d < 0) d = -d;

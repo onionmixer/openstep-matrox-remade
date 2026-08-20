@@ -133,9 +133,19 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
     t->ar6 = h;
     t->sgn = ((long)sdxl << 1) | ((long)sdxr << 5);
 
-    /* FXBNDRY is exclusive on the right, so the last column drawn is
-     * `right`, not `right + 1`. */
-    t->fxbndry = (((unsigned long)(right + 1L)) << 16) |
+    /*
+     * FXBNDRY is exclusive on the right, and `right` is handed in as the
+     * boundary rather than the last column -- so it goes in as it is.
+     *
+     * It used to have one added to it, which drew one column more than the
+     * software rasteriser on every single row.  Measured: the same triangle
+     * through both paths gave spans 1..40 against 1..39, 1..39 against 1..38,
+     * and so on for all thirty-nine rows, with the left edge and the row
+     * extent identical throughout.  Mesa's span is [left, right) -- it takes
+     * FixedToInt of each edge and draws right minus left pixels -- and this
+     * is what makes ours the same.
+     */
+    t->fxbndry = (((unsigned long)right) << 16) |
                  ((unsigned long)left & 0xffffUL);
 
     if (zmode != 0UL && zplane != 0) {

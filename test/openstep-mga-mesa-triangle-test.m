@@ -90,8 +90,10 @@ main(void)
     /*
      * A right triangle with the square corner at the top left.  Its exact
      * pixel set can be worked out by hand: the left edge stays at 0 and the
-     * right edge walks 40 columns over 20 rows, so row r spans 0..2r and the
-     * whole shape is 1+3+...+39 = 400 pixels.  That is a shape chosen
+     * right edge walks 40 columns over 20 rows, and the span is [left,right)
+     * -- the same half-open rule the software rasteriser uses, which is what
+     * makes the two agree pixel for pixel.  So row r spans 0..2r-1, row 0 is
+     * empty, and the whole shape is 0+2+4+...+38 = 380 pixels.  That is a shape chosen
      * because it is checkable, not because it is easy to build.
      */
     v0.x = 0L;  v0.y = 0L;
@@ -184,8 +186,8 @@ main(void)
         if (row < 6UL || (row >= 18UL && row <= 21UL))
             printf("     row %2lu: %lu px\n", row, w);
     }
-    printf("   drew %lu pixels, wanted 400\n", drawn);
-    if (drawn != 400UL) {
+    printf("   drew %lu pixels, wanted 380\n", drawn);
+    if (drawn != 380UL) {
         printf("   FAIL -- wrong pixel count\n");
         failures++;
     }
@@ -218,16 +220,21 @@ main(void)
         return 1;
     }
     {
-        static const struct { unsigned long x, y, r, g, b; } want[5] = {
-            {  0UL,  0UL, 255UL,   0UL,   0UL },
-            {  0UL, 10UL, 127UL, 127UL,   0UL },
-            { 20UL, 10UL, 127UL,   0UL, 127UL },
+        /*
+         * Sample points inside the shape under the half-open rule.  Three of
+         * the old ones -- row 0 at all, and the last column of rows 10 and
+         * 19 -- are outside it now, and read the sentinel rather than a
+         * colour, which is the rule working rather than failing.
+         */
+        static const struct { unsigned long x, y, r, g, b; } want[4] = {
+            {  0UL,  1UL, 242UL,  12UL,   0UL },
+            { 19UL, 10UL, 127UL,   6UL, 121UL },
             {  0UL, 19UL,  12UL, 242UL,   0UL },
-            { 38UL, 19UL,  12UL,   0UL, 242UL }
+            { 37UL, 19UL,  12UL,   6UL, 235UL }
         };
         int i;
 
-        for (i = 0; i < 5; i++) {
+        for (i = 0; i < 4; i++) {
             unsigned long px = vram[want[i].y * STRIDE_DW + want[i].x];
             unsigned long gr = (px >> 16) & 0xffUL;
             unsigned long gg = (px >>  8) & 0xffUL;

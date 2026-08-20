@@ -117,15 +117,17 @@ main(void)
         for (col = 0UL; col < COLS; col++)
             if (vram[row * STRIDE_DW + col] != SENTINEL)
                 drawn++;
-    printf("   drew %lu pixels, wanted 400\n", drawn);
-    if (drawn != 400UL)
+    printf("   drew %lu pixels, wanted 380\n", drawn);
+    if (drawn != 380UL)
         failures++;
 
     {
+        /* Inside the half-open span: row 0 is empty and column 20 is past
+         * the end of row 10, both of which are the rule working. */
         static const struct { unsigned long x, y, r, g, b; } want[3] = {
-            {  0UL,  0UL, 255UL,   0UL,   0UL },
+            {  0UL,  1UL, 242UL,  12UL,   0UL },
             {  0UL, 10UL, 127UL, 127UL,   0UL },
-            { 20UL, 10UL, 127UL,   0UL, 127UL }
+            { 19UL, 10UL, 127UL,   6UL, 121UL }
         };
         int i;
 
@@ -212,7 +214,8 @@ main(void)
                 failures++;
             /* put the good geometry back for the next case */
             n = OSMGAMesaBuildTriangle(&v0, &v1, &v2,
-                                       (OSMGAMesaVertex *)0, batch->tri);
+                                       (OSMGAMesaVertex *)0,
+                                       OSMGA_MESA_ZMODE_NONE, batch->tri);
         }
     }
 
