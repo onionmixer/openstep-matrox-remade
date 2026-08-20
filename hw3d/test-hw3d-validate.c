@@ -324,6 +324,31 @@ main(void)
  b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h;
                                                 expect("divisors that are the height", OSMGA_HW3D_OK);
 
+
+    /*
+     * The edge budget covers four registers and only one of them had ever
+     * been pushed past it.  The bound is what keeps an edge from walking out
+     * of the rectangle, so a field it nominally covers but nobody has tested
+     * is a field that might not be covered at all.
+     */
+    reset(); b.tri[0].h = 1;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar1 = -(long)lim.maxEdgeWalk - 1;
+                                                expect("ar1 one past the budget", OSMGA_HW3D_E_TRISLOPE);
+    reset(); b.tri[0].h = 1;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar4 = -(long)lim.maxEdgeWalk - 1;
+                                                expect("ar4 one past the budget", OSMGA_HW3D_E_TRISLOPE);
+    reset(); b.tri[0].h = 1;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar5 = -(long)lim.maxEdgeWalk - 1;
+                                                expect("ar5 one past the budget", OSMGA_HW3D_E_TRISLOPE);
+
+    /*
+     * The V coordinate's X increment is bounded by the same check as the U
+     * coordinate's, and had never been given a value to reject.
+     */
+    reset(); b.tri[0].dwgctl |= 0x0002UL;   /* textured */
+ b.state.tmr[1] = -1L;
+                                                expect("a negative V increment in x", OSMGA_HW3D_E_TEXCOORD);
+
     printf("\n%s (%d failing)\n", failures ? "FAILURES" : "all cases behave as specified",
            failures);
     return failures != 0;
