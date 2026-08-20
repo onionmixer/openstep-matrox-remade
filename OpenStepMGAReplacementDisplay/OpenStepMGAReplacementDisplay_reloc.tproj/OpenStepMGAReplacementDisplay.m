@@ -1218,10 +1218,6 @@ static int osmgaMesaAccelEnabled;             /* M1-3a: Configure.app switch */
  */
 static id osmgaCapsInstance;
 
-/* One uncached word of the window, kept so a submission can settle a read
- * without mapping anything.  See where it is used. */
-static volatile unsigned long *osmgaSettleAlias;
-
 /*
  * REMAINING_WORK 3-10.  The submit path claims stormBusy, but mode changes
  * never did, so nothing stopped a mode from being reprogrammed while a batch
@@ -2150,27 +2146,6 @@ static IODisplayInfo osmgaModeTemplate = {
                      * means nobody can be inside ioctl before the receiver
                      * exists.  The other order leaves a window in which an
                      * open succeeds and the probe immediately fails. */
-                    /*
-                     * One page of the window, aliased uncached and kept, so
-                     * that every submission can read video memory without
-                     * mapping anything.  Only used to settle a read; if it
-                     * cannot be made, submissions still work and the client
-                     * is the one that notices.
-                     */
-                    {
-                        vm_address_t sa = 0;
-                        unsigned long sl = 0UL;
-                        volatile unsigned long *sp = 0;
-
-                        if (osmgaMapUncachedBlock(frameBufferPhysical, start,
-                                                  start + (unsigned long)PAGE_SIZE,
-                                                  &sa, &sl, &sp) == IO_R_SUCCESS)
-                            osmgaSettleAlias = sp;
-                        else
-                            IOLog("OpenStepMGA 3-18: no uncached alias; a "
-                                  "client's first read after a submission may "
-                                  "see what was there before\n");
-                    }
                     osmgaCapsInstance = self;
                     osmgaMmapRegistered = 1;
                     IOLog("OpenStepMGA S4a: PAGE_SIZE=%lu PAGE_SHIFT=%lu "
@@ -3551,29 +3526,14 @@ unmap:
             if (spins3 < OSMGA_S1_SPIN_LIMIT &&
                 osmgaStormWaitIdle(mmioBase)) {
                 /*
-                 * Read the destination back before saying it is done.
-                 *
-                 * Waiting for the DMA to reach its end and then for the
-                 * engine to report idle does not settle what a client will
-                 * see: measured, the first read a client made after this
-                 * returned came back holding what was there before the draw,
-                 * and the next read a moment later was correct.  It was not
-                 * an address -- the word next door behaved the same way and
-                 * then stopped -- and register reads do not help, since this
-                 * path already makes many.  A read across the same memory
-                 * did help, so the driver makes one and a client no longer
-                 * has to know to.
-                 *
-                 * Through the UNCACHED alias, not through displayInfo's
-                 * framebuffer pointer.  The comment on osmgaMapUncachedBlock
-                 * says why, and it was written before this: that mapping's
-                 * read cache attribute is unproven and volatile does not make
-                 * a cached read coherent with an engine write.  Reading there
-                 * could be answered from cache and settle nothing -- which is
-                 * what the first version of this did.
+                 * No read-back here.  One was added and measured useless:
+                 * an uncached read of the same physical memory from this
+                 * side, before returning, left a client's first read still
+                 * showing what was there before the draw.  So the staleness
+                 * is not on the device's side of the bus, and machinery that
+                 * does not do what it claims is worse than none.  See
+                 * REMAINING_WORK 3-18 for where it actually is.
                  */
-                if (osmgaSettleAlias != 0)
-                    (void)osmgaSettleAlias[0];
                 rc3 = 1;
             }
             else
