@@ -180,21 +180,31 @@ main(void)
         printf("   FAIL -- no shared depth buffer\n");
         failures++;
     } else {
+        unsigned long drewZ;
+
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
+        drewZ = OSMGAMesaHookDrawn();
 
-        glBegin(GL_TRIANGLES);            /* window depth 0.75 -- loses */
-          glColor3ub(255, 0, 0);
-          glVertex3f( 0.0f,  0.0f, -0.5f);
-          glVertex3f(40.0f,  0.0f, -0.5f);
-          glVertex3f( 0.0f, 40.0f, -0.5f);
-        glEnd();
-        glBegin(GL_TRIANGLES);            /* window depth 0.25 -- wins */
+        /*
+         * The nearer one FIRST, the further one second.  Drawn the other way
+         * round -- as this was at first -- the second triangle wins whether
+         * or not any depth testing happens, so the test could not tell a
+         * working depth buffer from none at all.  This order can: without
+         * the comparison the second would simply overwrite the first.
+         */
+        glBegin(GL_TRIANGLES);            /* window depth 0.25 -- must win */
           glColor3ub(0, 0, 255);
           glVertex3f( 0.0f,  0.0f,  0.5f);
           glVertex3f(40.0f,  0.0f,  0.5f);
           glVertex3f( 0.0f, 40.0f,  0.5f);
+        glEnd();
+        glBegin(GL_TRIANGLES);            /* window depth 0.75 -- must lose */
+          glColor3ub(255, 0, 0);
+          glVertex3f( 0.0f,  0.0f, -0.5f);
+          glVertex3f(40.0f,  0.0f, -0.5f);
+          glVertex3f( 0.0f, 40.0f, -0.5f);
         glEnd();
         glFinish();
         glDisable(GL_DEPTH_TEST);
@@ -203,10 +213,18 @@ main(void)
             unsigned long p2 = ((unsigned long *)appbuf)[5UL * W + 5UL]
                                & 0xffffffUL;
 
-            printf("   depth-tested pixel %06lx (want 0000ff, depth 0.25)\n",
-                   p2);
-            expect("the deeper triangle lost the depth test",
+            printf("   depth-tested pixel %06lx (want 0000ff -- red would "
+                   "mean no comparison happened)\n", p2);
+            expect("the deeper triangle, drawn second, was rejected",
                    p2 == 0x0000ffUL);
+            /*
+             * And that the engine did it.  Without this the test passes
+             * just as well when depth quietly falls back to software --
+             * the answer is the same either way, which is exactly why the
+             * answer alone cannot tell us the hardware was used.
+             */
+            expect("both depth triangles went to the hardware",
+                   OSMGAMesaHookDrawn() == drewZ + 2UL);
         }
     }
 
