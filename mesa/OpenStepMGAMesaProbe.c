@@ -220,7 +220,7 @@ OSMGAMesaProbeRun(OSMGAMesaProbe *out_probe)
         }
         /* The drawing surface came across too, and describes memory reached
          * through a descriptor that is about to be the parent's alone. */
-        OpenStepMesaAccelReleaseBuffer();
+        OpenStepMesaAccelReleaseBuffer(0);
         if (probeFd >= 0) {
             (void)close(probeFd);
             probeFd = -1;

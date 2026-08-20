@@ -22,6 +22,7 @@ extern unsigned long OSMGAMesaHookDrawn(void);
 extern unsigned long OSMGAMesaHookDeclined(void);
 extern unsigned long OSMGAMesaBufferOrigin(void);
 extern unsigned long OSMGAMesaBufferStride(void);
+extern unsigned long OSMGAMesaBufferDepthOrigin(void);
 
 #define W 64
 #define H 64
@@ -157,6 +158,56 @@ main(void)
         expect("the accelerated triangle reached the caller's buffer",
                hw == 0x7f3f3fUL);
         expect("so did the software one", sw == 0x00ffffUL);
+    }
+
+    /*
+     * Depth.  The buffer Mesa tests against is in video memory too now, and
+     * the first thing to establish is that the software rasteriser still
+     * gets the right answer out of it -- this back end refuses depth-tested
+     * states for the moment, so both triangles below go through software and
+     * what is being checked is the substitution, not the acceleration.
+     *
+     * Two triangles over the same pixels at different depths.  Which one
+     * wins is worked out rather than guessed: this projection is
+     * glOrtho(0,W,0,H,-1,1), whose z maps to normalised -z, so a vertex at
+     * z = -0.5 ends up at window depth 0.75 and one at z = +0.5 at 0.25.
+     * GL_LESS keeps the smaller, so the SECOND triangle wins -- which is the
+     * opposite of what the naming would suggest, and is why it is computed.
+     */
+    printf("   depth buffer at video-memory offset %lu\n",
+           OSMGAMesaBufferDepthOrigin());
+    if (OSMGAMesaBufferDepthOrigin() == 0UL) {
+        printf("   FAIL -- no shared depth buffer\n");
+        failures++;
+    } else {
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+
+        glBegin(GL_TRIANGLES);            /* window depth 0.75 -- loses */
+          glColor3ub(255, 0, 0);
+          glVertex3f( 0.0f,  0.0f, -0.5f);
+          glVertex3f(40.0f,  0.0f, -0.5f);
+          glVertex3f( 0.0f, 40.0f, -0.5f);
+        glEnd();
+        glBegin(GL_TRIANGLES);            /* window depth 0.25 -- wins */
+          glColor3ub(0, 0, 255);
+          glVertex3f( 0.0f,  0.0f,  0.5f);
+          glVertex3f(40.0f,  0.0f,  0.5f);
+          glVertex3f( 0.0f, 40.0f,  0.5f);
+        glEnd();
+        glFinish();
+        glDisable(GL_DEPTH_TEST);
+
+        {
+            unsigned long p2 = ((unsigned long *)appbuf)[5UL * W + 5UL]
+                               & 0xffffffUL;
+
+            printf("   depth-tested pixel %06lx (want 0000ff, depth 0.25)\n",
+                   p2);
+            expect("the deeper triangle lost the depth test",
+                   p2 == 0x0000ffUL);
+        }
     }
 
     printf("   hook drew %lu, declined %lu\n",

@@ -41,6 +41,19 @@ unsigned long OSMGAMesaBufferHeight(void);
 unsigned long OSMGAMesaBufferStride(void);
 
 /*
+ * Depth for the same surface, laid out as Mesa addresses it: one value per
+ * pixel, `width` values per row -- which is the surface's pitch, and the
+ * reason the batch had to be allowed to declare that pitch at all.  Returns
+ * null unless a colour surface was taken and the value size is one the
+ * engine writes, which is sixteen bits.
+ */
+void *OpenStepMesaAccelDepthBuffer(void *ctx, int width, int height,
+                                   int bytesPerValue);
+
+/* Where it is, as a byte offset into video memory, or 0. */
+unsigned long OSMGAMesaBufferDepthOrigin(void);
+
+/*
  * Copy the surface into the buffer the application handed us, which is
  * otherwise never written -- the picture is in video memory.  Does nothing
  * if no substitution happened, or if nothing has been drawn since the last
@@ -55,6 +68,6 @@ void OSMGAMesaBufferSoiled(void);
  * Give the surface back.  Named the way the Mesa port calls it -- that tree
  * asks a back end to release without naming which one.
  */
-void OpenStepMesaAccelReleaseBuffer(void);
+void OpenStepMesaAccelReleaseBuffer(void *ctx);
 
 #endif /* OPENSTEP_MGA_MESA_BUFFER_H */

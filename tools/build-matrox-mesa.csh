@@ -63,7 +63,7 @@ if ($status != 0) exit 1
 
 # Every symbol the back end must supply has to be present, or the library
 # links and simply never accelerates.
-foreach sym (OpenStepMesaAccelUpdateState OpenStepMesaAccelBuffer OpenStepMesaAccelReleaseBuffer OSMGAMesaProbeRun OSMGAMesaBuildTriangle OSMGAMesaProbeSubmit)
+foreach sym (OpenStepMesaAccelUpdateState OpenStepMesaAccelBuffer OpenStepMesaAccelDepthBuffer OpenStepMesaAccelReleaseBuffer OSMGAMesaProbeRun OSMGAMesaBuildTriangle OSMGAMesaProbeSubmit)
     nm $out/osmgaccel.o | grep "T _$sym" > /dev/null
     if ($status != 0) then
         echo "build-matrox-mesa: $sym is missing from the back end"

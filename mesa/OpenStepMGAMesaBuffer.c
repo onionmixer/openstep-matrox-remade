@@ -22,12 +22,71 @@ static void *bufCtx;      /* the context the surface belongs to */
 static void *bufApp;      /* what the application gave us */
 static unsigned long bufAppRow;  /* and how its rows are laid out */
 static int   bufDirty;
+static void *depthMapped;
+static unsigned long depthOrigin, depthBytes;
 static unsigned long bufBytes;
 
 unsigned long OSMGAMesaBufferOrigin(void) { return bufOrigin; }
 unsigned long OSMGAMesaBufferWidth(void)  { return bufWidth;  }
 unsigned long OSMGAMesaBufferHeight(void) { return bufHeight; }
 unsigned long OSMGAMesaBufferStride(void) { return bufStride; }
+unsigned long OSMGAMesaBufferDepthOrigin(void) { return depthOrigin; }
+
+void *
+OpenStepMesaAccelDepthBuffer(void *ctx, int width, int height,
+                             int bytesPerValue)
+{
+    OSMGAMesaProbe probe;
+    unsigned long need, tail, avail;
+    vm_address_t addr = 0;
+
+    if (depthMapped != 0)
+        return depthMapped;
+    /*
+     * Only alongside a colour surface of ours, and only at sixteen bits:
+     * that is what the engine writes, and a depth buffer the software path
+     * reads at a different width than the engine writes it would be worse
+     * than no sharing at all.
+     */
+    if (bufMapped == 0 || bufCtx != ctx || bytesPerValue != 2)
+        return 0;
+    if ((unsigned long)width != bufWidth ||
+        (unsigned long)height != bufHeight)
+        return 0;
+
+    OSMGAMesaProbeRun(&probe);
+    if (probe.verdict != OSMGA_PROBE_HARDWARE)
+        return 0;
+
+    /*
+     * Immediately after the colour surface, page-aligned so it can be mapped
+     * on its own.  Checked by division rather than by forming the product,
+     * as everywhere else here.
+     */
+    tail = bufOrigin - probe.caps[OSMGA_HW3D_CAP_VRAMOFF] +
+           bufHeight * bufStride * 4UL;
+    tail = (tail + 4095UL) & ~4095UL;
+    avail = probe.caps[OSMGA_HW3D_CAP_VRAMLEN];
+    if (tail >= avail)
+        return 0;
+    if (bufHeight > (avail - tail) / (bufStride * 2UL))
+        return 0;
+    need = bufHeight * bufStride * 2UL;
+    need = (need + 4095UL) & ~4095UL;
+
+    if (vm_allocate(task_self(), &addr, (vm_size_t)need, TRUE) != KERN_SUCCESS)
+        return 0;
+    if ((int)mmap((caddr_t)addr, (int)need, PROT_READ | PROT_WRITE,
+                  MAP_SHARED, OSMGAMesaProbeDeviceFd(),
+                  (long)(probe.caps[OSMGA_HW3D_CAP_VRAMOFF] + tail)) == -1) {
+        (void)vm_deallocate(task_self(), addr, (vm_size_t)need);
+        return 0;
+    }
+    depthMapped = (void *)addr;
+    depthBytes  = need;
+    depthOrigin = probe.caps[OSMGA_HW3D_CAP_VRAMOFF] + tail;
+    return depthMapped;
+}
 
 /*
  * Give the surface back.  Called when the context that owns it goes away,
@@ -78,8 +137,16 @@ OSMGAMesaBufferMirror(void)
 }
 
 void
-OpenStepMesaAccelReleaseBuffer(void)
+OpenStepMesaAccelReleaseBuffer(void *ctx)
 {
+    (void)ctx;
+    if (depthMapped != 0) {
+        (void)vm_deallocate(task_self(), (vm_address_t)depthMapped,
+                            (vm_size_t)depthBytes);
+        depthMapped = 0;
+        depthBytes = 0UL;
+    }
+    depthOrigin = 0UL;
     if (bufMapped != 0) {
         (void)vm_deallocate(task_self(), (vm_address_t)bufMapped,
                             (vm_size_t)bufBytes);
