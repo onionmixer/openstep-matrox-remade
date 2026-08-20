@@ -175,8 +175,11 @@ main(void)
               OSMGA_HW3D_E_DSTSIZE },
             { "no height",            64UL,    0UL, VRAM_BLOCK, -1L,
               OSMGA_HW3D_E_DSTSIZE },
-            { "wider than the stride", 1025UL, 8UL, VRAM_BLOCK, -1L,
-              OSMGA_HW3D_E_DSTSIZE },
+            /* Wider than the pitch is a pitch fault now, not a size one:
+             * the pitch is what a row has to fit inside, and it is checked
+             * before anything is measured against it. */
+            { "wider than the pitch",  1025UL, 8UL, VRAM_BLOCK, -1L,
+              OSMGA_HW3D_E_DSTPITCH },
             { "taller than the window", 64UL, 4096UL, VRAM_BLOCK, -1L,
               OSMGA_HW3D_E_DSTSIZE },
             { "a zero edge divisor",   64UL,  120UL, VRAM_BLOCK,  0L,
