@@ -402,6 +402,26 @@ main(void)
     b.state.zorg = 0x404000UL;
                                                 expect("depth back inside it", OSMGA_HW3D_OK);
 
+
+    /*
+     * A texture that runs the other way across the primitive.  This used to
+     * be refused outright, which turned away roughly half of all real
+     * mapping; what matters is that the coordinate stays in range at every
+     * pixel, and the plane's extremes are its four corners.
+     */
+    reset(); b.tri[0].dwgctl |= 0x0002UL;    /* textured */
+ b.state.tmr[6] = (long)lim.clipX1 * (1L << 14);
+ b.state.tmr[0] = -(1L << 14);
+                                                expect("a texture running right to left", OSMGA_HW3D_OK);
+    reset(); b.tri[0].dwgctl |= 0x0002UL;
+ b.state.tmr[6] = (long)lim.clipX1 * (1L << 14) - 1L;
+ b.state.tmr[0] = -(1L << 14);
+                                                expect("one step short, so a corner goes below zero", OSMGA_HW3D_E_TEXCOORD);
+    reset(); b.tri[0].dwgctl |= 0x0002UL;
+ b.state.tmr[6] = (long)OSMGA_HW3D_TEX_COORD_MAX;
+ b.state.tmr[0] = 1L;
+                                                expect("starting at the top and still rising", OSMGA_HW3D_E_TEXCOORD);
+
     printf("\n%s (%d failing)\n", failures ? "FAILURES" : "all cases behave as specified",
            failures);
     return failures != 0;

@@ -34,19 +34,51 @@ static int
 osmgaHW3DCoord(long start, long incX, long incY,
                unsigned long spanX, unsigned long spanY)
 {
-    unsigned long total, room = OSMGA_HW3D_TEX_COORD_MAX;
+    long room = (long)OSMGA_HW3D_TEX_COORD_MAX;
+    long cx, cy, v;
 
-    if (start < 0L || incX < 0L || incY < 0L)
-        return 0;
-    total = (unsigned long)start;
-    if (total > room)
-        return 0;
-    room -= total;
-    if (spanX != 0UL && (unsigned long)incX > room / spanX)
-        return 0;
-    room -= (unsigned long)incX * spanX;
-    if (spanY != 0UL && (unsigned long)incY > room / spanY)
-        return 0;
+    /*
+     * The coordinate is a plane, so it is monotone in x and in y and its
+     * extremes over the rectangle are at the four corners.  Checking those
+     * settles every pixel between them.
+     *
+     * Increments used to be required non-negative, which was a bound from
+     * when only increasing coordinates had been measured -- and it refused
+     * roughly half of all real texture mapping, since a triangle whose
+     * texture runs the other way across the screen has a negative gradient
+     * and is in no way exotic.  Sign is allowed now; staying inside the
+     * range is what is still required.
+     *
+     * The displacement across a span is checked before it is formed, and by
+     * comparing against a bound and its negation rather than by taking the
+     * increment's magnitude: negating the most negative long is undefined,
+     * and a client supplies these.  That is not merely to avoid overflow: if it exceeds the whole legal range
+     * then the values at the two ends differ by more than that range, so one
+     * of them lies outside it whatever the start may be.  Having refused
+     * that, every term below is at most the range plus a span, and three of
+     * them together stay well inside a signed long.
+     */
+    if (spanX != 0UL) {
+        long bound = room / (long)spanX;
+
+        if (incX > bound || incX < -bound)
+            return 0;
+    }
+    if (spanY != 0UL) {
+        long bound = room / (long)spanY;
+
+        if (incY > bound || incY < -bound)
+            return 0;
+    }
+
+    cx = incX * (long)spanX;
+    cy = incY * (long)spanY;
+    for (v = 0L; v < 4L; v++) {
+        long at = start + ((v & 1L) ? cx : 0L) + ((v & 2L) ? cy : 0L);
+
+        if (at < 0L || at > room)
+            return 0;
+    }
     return 1;
 }
 

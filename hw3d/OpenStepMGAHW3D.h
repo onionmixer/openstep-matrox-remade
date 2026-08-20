@@ -183,9 +183,16 @@ typedef struct {
     unsigned long texPitch;        /* texels per row, >= texW */
     unsigned long texFormat;       /* OSMGA_HW3D_TEXFMT_* */
     unsigned long texFlags;        /* OSMGA_HW3D_TEXF_* */
-    /* tmr[0..3] are the increments, tmr[6] and tmr[7] the starts; all six
-     * are bounded.  tmr[4], tmr[5] and tmr[8] are the H family and are
-     * IGNORED -- the kernel writes them, see the note above. */
+    /* tmr[0..3] are the increments, tmr[6] and tmr[7] the starts.  All six
+     * are bounded, and MAY BE NEGATIVE: what is required is that the
+     * coordinate stays inside the measured range at every pixel, which for a
+     * plane means at each of the four corners.  They were required
+     * non-negative once, which turned away roughly half of all real texture
+     * mapping -- a triangle whose texture runs the other way across the
+     * screen has a negative gradient and is in no way exotic.
+     *
+     * tmr[4], tmr[5] and tmr[8] are the H family and are IGNORED -- the
+     * kernel writes them, see the note above. */
     long tmr[9];
 } OSMGAHW3DState;
 
