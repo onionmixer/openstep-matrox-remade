@@ -3263,7 +3263,7 @@ unmap:
 {
     OSMGAHW3DBatch *batch;
     OSMGAHW3DLimits lim;
-    IODisplayInfo *di3 = [self displayInfo];
+    IODisplayInfo *di3;   /* read under the claim, never before it */
     const OSMGAFormat *f3 = &osmgaFmt[selectedFormatIndex];
     unsigned long stride3, total3, tail3, listPhys3, spins3, status3;
     unsigned long epoch3, dstW3, dstH3, avail3;
@@ -3323,6 +3323,22 @@ unmap:
     epoch3 = osmgaModeEpoch;
     simple_unlock(&stormLock);
 
+    /*
+     * Everything about the display is read again HERE, now that nothing else
+     * can be programming it.  The values taken when this method was entered
+     * belong to whatever mode was current then, and a mode change could have
+     * finished in the meantime; the stride in particular reaches both the
+     * proof below and the engine above, and proving a rectangle against one
+     * pitch while the card draws it with another proves nothing.
+     */
+    di3 = [self displayInfo];
+    if (!mmioMapped || !linearModeActive ||
+        osmgaFmt[selectedFormatIndex].bytesPerPixel != 4) {
+        simple_lock(&stormLock);
+        stormBusy = NO;
+        simple_unlock(&stormLock);
+        return IO_R_RESOURCE;
+    }
     stride3 = (unsigned long)di3->rowBytes / 4UL;
     batch = (OSMGAHW3DBatch *)osmgaMmapCmdVirt;
     list3 = (unsigned long *)((char *)osmgaMmapCmdVirt +
@@ -3415,39 +3431,22 @@ unmap:
     osmgaHW3DLast[1] = (unsigned)badTri3;
     osmgaHW3DLast[2] = 0U;
     osmgaHW3DLast[3] = 0U;
-    if (v3 != OSMGA_HW3D_OK)
+    if (v3 != OSMGA_HW3D_OK) {
         simple_lock(&stormLock);
         stormBusy = NO;
         simple_unlock(&stormLock);
         return IO_R_INVALID_ARG;
+    }
 
 
     /*
-     * Everything checked above was checked before we owned the engine.  A
-     * mode change could have finished in between, which would leave us
-     * drawing with a stride belonging to a mode that no longer exists.
-     * Ask again now that nothing else can be programming registers, and
-     * take the geometry from here rather than from before the claim.
+     * No second look at the display here.  There used to be one, from when
+     * the engine was claimed later than it is now: the geometry was read
+     * before the claim and had to be re-read after it, and only the width
+     * was re-proved, which left the pitch the proof and the validator had
+     * used still belonging to the older mode.  With the claim taken before
+     * anything is read, there is one reading and it cannot go stale.
      */
-    if (!mmioMapped || !linearModeActive ||
-        osmgaFmt[selectedFormatIndex].bytesPerPixel != 4) {
-        simple_lock(&stormLock);
-        stormBusy = NO;
-        simple_unlock(&stormLock);
-        return IO_R_RESOURCE;
-    }
-    stride3 = (unsigned long)[self displayInfo]->rowBytes / 4UL;
-
-    /* The stride may have moved with the mode; the width was proved against
-     * the old one, so prove it again against this one. */
-    if (dstW3 > stride3) {
-        osmgaHW3DLast[0] = (unsigned)OSMGA_HW3D_E_DSTSIZE;
-        simple_lock(&stormLock);
-        stormBusy = NO;
-        simple_unlock(&stormLock);
-        return IO_R_INVALID_ARG;
-    }
-
     total3 = osmgaHW3DEncode(list3, listDwords3, &osmgaHW3DSnapshot,
                              &tail3);
     osmgaHW3DLast[2] = (unsigned)total3;
