@@ -331,6 +331,45 @@ main(void)
                OSMGAMesaHookDrawn() == before3 + 2UL);
     }
 
+    {
+        /*
+     * The alpha each path leaves behind, from an OPAQUE triangle.  The
+     * engine writes whatever its interpolator holds, and the software
+     * path writes the vertex's alpha, so if the interpolator is not set
+     * for unblended triangles the two disagree about the fourth byte --
+     * which nothing blends with here, but glReadPixels would return.
+     */
+    {
+        unsigned long ah = ((unsigned long *)appbuf)[5UL * W + 5UL] >> 24;
+
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBegin(GL_TRIANGLES);          /* accelerated, opaque, alpha 255 */
+          glColor4ub(0, 255, 0, 255);
+          glVertex2f( 0.0f,  0.0f);
+          glVertex2f(40.0f,  0.0f);
+          glVertex2f( 0.0f, 40.0f);
+        glEnd();
+        glFinish();
+        ah = ((unsigned long *)appbuf)[5UL * W + 5UL] >> 24;
+
+        glClear(GL_COLOR_BUFFER_BIT);
+        glEnable(GL_SCISSOR_TEST); glScissor(0, 0, W, H);
+        glBegin(GL_TRIANGLES);          /* software, same triangle */
+          glColor4ub(0, 255, 0, 255);
+          glVertex2f( 0.0f,  0.0f);
+          glVertex2f(40.0f,  0.0f);
+          glVertex2f( 0.0f, 40.0f);
+        glEnd();
+        glDisable(GL_SCISSOR_TEST);
+        glFinish();
+        printf("   opaque alpha: hardware %02lx, software %02lx\n",
+               ah, ((unsigned long *)appbuf)[5UL * W + 5UL] >> 24);
+        expect("the two paths leave the same alpha behind",
+               ah == (((unsigned long *)appbuf)[5UL * W + 5UL] >> 24));
+    }
+
+    }
+
     printf("   hook drew %lu, declined %lu\n",
            OSMGAMesaHookDrawn(), OSMGAMesaHookDeclined());
     printf("%s\n", failures ? "FAIL"

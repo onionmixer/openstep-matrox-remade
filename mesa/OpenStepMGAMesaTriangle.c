@@ -148,12 +148,17 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
     t->fxbndry = (((unsigned long)right) << 16) |
                  ((unsigned long)left & 0xffffUL);
 
-    if (blend != OSMGA_MESA_BLEND_OPAQUE && aplane != 0) {
+    if (aplane != 0) {
         /*
-         * Alpha is a plane too, and at the same scale.  It only matters when
-         * something blends with it -- an opaque triangle's alpha reaches the
-         * destination's fourth byte and nothing reads it -- so it is solved
-         * only when it is going to be used.
+         * Alpha is a plane too, and at the same scale, and it is written
+         * whether or not anything blends with it.
+         *
+         * Setting it only for blended triangles was tried and measured
+         * wrong: an opaque accelerated triangle then left whatever the
+         * interpolator happened to hold in the destination's fourth byte --
+         * zero -- where the software rasteriser leaves the vertex's alpha.
+         * Read back, one path gave 00 and the other ff for the same
+         * triangle, and glReadPixels would have reported it.
          */
         double ox = (double)left - (double)a->x;
         double oy = (double)y    - (double)a->y;
@@ -281,7 +286,10 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
         }
     }
 
-    if (blend != OSMGA_MESA_BLEND_OPAQUE) {
+    /* Always, not only when blending: the destination's fourth byte is
+     * written either way, and it has to hold what the software path would
+     * have put there. */
+    {
         double x1 = (double)(b->x - a->x), y1 = (double)(b->y - a->y);
         double x2 = (double)(c->x - a->x), y2 = (double)(c->y - a->y);
         double den = x1 * y2 - x2 * y1;
