@@ -68,6 +68,7 @@ why(unsigned v)
     case OSMGA_HW3D_E_TEXORG:  return "texture origin";
     case OSMGA_HW3D_E_TEXSIZE: return "texture size";
     case OSMGA_HW3D_E_DWGCTL:  return "drawing control";
+    case OSMGA_HW3D_E_TEXCOORD:return "texture coordinate";
     default:                   return "other";
     }
 }
@@ -212,6 +213,53 @@ main(void)
     printf("   the same bad texorg with no textured triangle -> verdict %u "
            "(%s)\n", v, why(v));
     if (v != OSMGA_HW3D_OK) fails++;
+
+    /*
+     * The coordinate bounds, on hardware rather than only in the unit
+     * suite.  A refusal has to leave the machine as it was, not merely
+     * return the right number, so each case is followed by a redraw that
+     * must still land where it did before.
+     */
+    {
+        static const struct { const char *what; int idx; long val; unsigned want; }
+        cases[] = {
+            { "a negative u start",            6, -1L,          OSMGA_HW3D_E_TEXCOORD },
+            { "a negative v start",            7, -1L,          OSMGA_HW3D_E_TEXCOORD },
+            { "a negative u increment",        0, -0x4000L,     OSMGA_HW3D_E_TEXCOORD },
+            { "magnified eight times",         0, 0x4000L * 8L, OSMGA_HW3D_OK },
+            { "magnified nine times",          0, 0x4000L * 9L, OSMGA_HW3D_E_TEXCOORD },
+            { "the H family, which is ours",   4, -1L,          OSMGA_HW3D_OK },
+        };
+        unsigned long k;
+
+        printf("   coordinate bounds, checked on hardware:\n");
+        for (k = 0UL; k < sizeof cases / sizeof cases[0]; k++) {
+            unsigned long before = colour[0];
+
+            memset(batch, 0, sizeof *batch);
+            batch->magic = OSMGA_HW3D_MAGIC;
+            batch->version = OSMGA_HW3D_VERSION;
+            batch->triCount = 1;
+            batch->state.dstorg = COLOUR_ORG;
+            texState(batch);
+            rect(&batch->tri[0], 0UL, DIM, DWG_TEX);
+            batch->state.tmr[cases[k].idx] = cases[k].val;
+
+            (void)[master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
+                          objectNumber:objNum count:0];
+            v = verdict(master, objNum);
+            printf("      %-28s -> verdict %2u (%s)%s\n", cases[k].what, v,
+                   why(v), (v == cases[k].want) ? "" : "   <-- WRONG");
+            if (v != cases[k].want) fails++;
+
+            /* A refused batch must not have drawn: pixel (0,0) still holds
+             * whatever the last accepted draw put there. */
+            if (cases[k].want != OSMGA_HW3D_OK && colour[0] != before) {
+                printf("      ...and it CHANGED the framebuffer\n");
+                fails++;
+            }
+        }
+    }
 
     if (dirty != 0UL)
         printf("STOP -- the texture region was written to\n");
