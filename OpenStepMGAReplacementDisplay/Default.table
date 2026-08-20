@@ -14,12 +14,14 @@
  *                    arena and measures it; no engine register is written.
  *   WARP Test     -- D2 WARP configuration probe; writes two registers and
  *                    reads one back, draws nothing.
- *   Mesa Acceleration -- let the 3D engine be used.  "No" is enforced, not
- *                    merely advertised: the submit parameter refuses, and the
- *                    driver's own 3D tests do not run either, so a machine
- *                    with this off starts no 3D DMA of its own accord.  It
- *                    changes nothing the display depends on -- the refusal is
- *                    the one that already happens when 3D is unusable.
+ *   Mesa Acceleration -- enable the 3D client path.  "No" is enforced and not
+ *                    merely advertised: the submit parameter refuses and the
+ *                    HW3D tests are skipped.  It does NOT quiet the other
+ *                    engine diagnostics above -- those answer to their own
+ *                    switches, and Raster Test still drives the drawing
+ *                    engine by MMIO.  It changes nothing the display depends
+ *                    on: the refusal is the one that already happens when the
+ *                    3D path is unusable.
  *   VRAM Mmap     -- publish the offscreen VRAM window as a character device.
  *                    Once enabled the driver must not be unloaded, because
  *                    client mappings outlive it (docs/S4A_VRAM_MMAP_PLAN.md).

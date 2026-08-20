@@ -607,3 +607,28 @@ mach: OpenStepMGA M1-2c: PASS -- edges that walk far outside the clip ...
 
 **대신 이제 방어가 겹친다**: 라이브러리가 거절하고, 드라이버도 거절한다.
 계약이 다른 libGL이 남아 있거나 업그레이드가 반만 됐을 때 후자가 받는다.
+
+### 12-3. 이 스위치가 **끄지 않는 것** — 정확히 적어둔다
+
+처음에 Default.table 주석을 이렇게 썼다: *"이걸 끄면 기계가 스스로 3D
+DMA를 시작하지 않는다."* **교차검토가 오해를 부른다고 했고, 확인해보니
+맞았다.**
+
+`No`로 부팅한 로그에 `D3-5b`가 여전히 있었고, 그 함수를 세어보니
+`PRIMADDRESS`/`PRIMEND`는 **0번**이지만 `DWGCTL`/`EXEC`/`DSTORG`는
+**10번** 쓴다. 즉 **DMA는 아니어도 드로잉 엔진은 몬다.**
+(`runMmapWindowTest`는 레지스터 접근이 0 — 순수 산술이라 무관하다.)
+
+| 스위치가 끄는 것 | 끄지 않는 것 |
+| --- | --- |
+| 클라이언트 제출(`OSMGAHW3DSubmit`) | `Storm 2D Test` — MMIO 블릿 |
+| `runHW3DBatchTest` | `DMA Ring Test` — **primary DMA** |
+| `runHW3DContainmentTest` | `WARP Test` — WARP 레지스터, 일부 DMA |
+| | `Raster Test` — MMIO로 드로잉 엔진 |
+
+**이건 결함이 아니라 범위다.** `Mesa Acceleration`은 *3D 클라이언트
+경로*의 스위치지 엔진 전체의 차단기가 아니다. 다른 넷은 전부 개발용이고
+Default.table에서 `No`다.
+
+→ 출하 설정에서는 넷 다 꺼져 있으므로 **결과적으로는 조용하다.** 그러나
+그것은 이 스위치가 해주는 일이 아니다 — **주석이 그렇게 읽히면 안 된다.**
