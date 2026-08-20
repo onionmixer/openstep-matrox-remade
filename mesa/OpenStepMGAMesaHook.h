@@ -24,7 +24,12 @@ struct gl_context;
  * than once, because a program that enables texturing halfway through must
  * stop being accelerated at that point and not before or after.
  */
-void OSMGAMesaHookUpdateState(struct gl_context *ctx);
+/*
+ * The name is deliberately not ours.  The Mesa port declares an accelerated
+ * back end without naming which one, so that tree stays publishable on its
+ * own and any driver could supply this.
+ */
+void OpenStepMesaAccelUpdateState(struct gl_context *ctx);
 
 /*
  * How many triangles have reached the hardware, and how many were handed

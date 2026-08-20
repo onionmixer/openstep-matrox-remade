@@ -172,7 +172,7 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
 }
 
 void
-OSMGAMesaHookUpdateState(GLcontext *ctx)
+OpenStepMesaAccelUpdateState(GLcontext *ctx)
 {
     triangle_func f = osmgaMesaChooseTriangle(ctx);
 
