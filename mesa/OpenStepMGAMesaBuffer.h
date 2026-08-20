@@ -27,7 +27,7 @@
 void *OpenStepMesaAccelBuffer(void *ctx, void *buffer,
                               int width, int height,
                               int rshift, int gshift, int bshift,
-                              int *rowLength);
+                              int appRowLength, int *rowLength);
 
 /*
  * Where that surface is, as a byte offset into video memory, or 0 if the

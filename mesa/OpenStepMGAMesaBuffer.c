@@ -18,7 +18,9 @@ extern caddr_t mmap(caddr_t, int, int, int, int, long);
 static unsigned long bufOrigin;
 static unsigned long bufWidth, bufHeight, bufStride;
 static void *bufMapped;
+static void *bufCtx;      /* the context the surface belongs to */
 static void *bufApp;      /* what the application gave us */
+static unsigned long bufAppRow;  /* and how its rows are laid out */
 static int   bufDirty;
 static unsigned long bufBytes;
 
@@ -67,7 +69,7 @@ OSMGAMesaBufferMirror(void)
     w = bufWidth;
     for (y = 0UL; y < bufHeight; y++) {
         const unsigned long *s = src + y * bufStride;
-        unsigned long *d = dst + y * w;
+        unsigned long *d = dst + y * bufAppRow;
         unsigned long x;
 
         for (x = 0UL; x < w; x++)
@@ -84,7 +86,9 @@ OpenStepMesaAccelReleaseBuffer(void)
         bufMapped = 0;
         bufBytes = 0UL;
     }
+    bufCtx = 0;
     bufApp = 0;
+    bufAppRow = 0UL;
     bufDirty = 0;
     bufOrigin = 0UL;
     bufWidth = bufHeight = bufStride = 0UL;
@@ -92,15 +96,23 @@ OpenStepMesaAccelReleaseBuffer(void)
 
 void *
 OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
-                        int rshift, int gshift, int bshift, int *rowLength)
+                        int rshift, int gshift, int bshift, int appRowLength,
+                        int *rowLength)
 {
     OSMGAMesaProbe probe;
     unsigned long stride, need, avail;
     vm_address_t addr = 0;
 
-    (void)ctx;
 
     if (width <= 0 || height <= 0 || rowLength == 0)
+        return 0;
+    /*
+     * How the caller's own array is laid out, which is what the copy back
+     * has to follow.  It is usually the width, but OSMesaPixelStore lets a
+     * caller choose otherwise before making the context current, and
+     * assuming the width would then write every row at the wrong offset.
+     */
+    if (appRowLength <= 0)
         return 0;
 
     /*
@@ -111,9 +123,19 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
      * stay true for as long as anything might still be drawing through it.
      */
     if (bufMapped != 0) {
+        /*
+         * There is one surface, and it belongs to the context that got it.
+         * A second context was being handed the same memory with only its
+         * application pointer swapped in, so two contexts drew over each
+         * other and destroying either unmapped the surface the other was
+         * still using.  A second context renders in software instead.
+         */
+        if (bufCtx != ctx)
+            return 0;
         if (bufWidth == (unsigned long)width &&
             bufHeight == (unsigned long)height) {
             bufApp = buffer;    /* it may be a different buffer this time */
+            bufAppRow = (unsigned long)appRowLength;
             *rowLength = (int)bufStride;
             return bufMapped;
         }
@@ -165,7 +187,9 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
     }
 
     bufMapped = (void *)addr;
+    bufCtx    = ctx;
     bufApp    = buffer;
+    bufAppRow = (unsigned long)appRowLength;
     bufDirty  = 0;
     bufBytes  = need;
     bufOrigin = probe.caps[OSMGA_HW3D_CAP_VRAMOFF];
