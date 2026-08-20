@@ -197,8 +197,40 @@ main(int argc, char **argv)
     for (row = 0UL; row < DIM + FLATH; row++)
         for (col = 0UL; col < DIM; col++)
             colour[row * STRIDE_DW + col] = SENTINEL;
+    /*
+     * Read the region back before submitting.
+     *
+     * The pixel is lost rather than late -- five reads running all show the
+     * sentinel -- and the first submission drew it correctly, so what
+     * distinguishes this one is the fill that just happened.  If this
+     * program's own writes are still on their way when the engine draws,
+     * they land afterwards and put the sentinel back over what was drawn.
+     * A read of the same memory should not let that happen.
+     */
+    (void)colour[0];
+    (void)colour[(DIM - 1UL) * STRIDE_DW];
+
     (void)[master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
                   objectNumber:objNum count:0];
+
+    /*
+     * Is the missing pixel LATE or LOST?
+     *
+     * The driver's own uncached alias sees the sentinel at this submission's
+     * completion, so both sides agree the engine's value is not there yet --
+     * or never will be.  Reading the same word several times running tells
+     * which: one that turns into the texel was late, and one that never does
+     * was overwritten by this program's own fill landing after the engine
+     * drew.
+     */
+    {
+        unsigned long v0 = colour[0], v1 = colour[0], v2 = colour[0];
+        unsigned long v3 = colour[0], v4 = colour[0];
+
+        printf("   (0,0) five times running: %08lx %08lx %08lx %08lx %08lx\n",
+               v0, v1, v2, v3, v4);
+    }
+
 
     /*
      * PROBE: no preliminary read at all, and the band inspected BACKWARDS.
