@@ -3099,7 +3099,6 @@ unmap:
         lim.depthEnd    = OSMGA_D3_TEXORG;
         lim.texStart    = OSMGA_D3_TEXORG;
         lim.texEnd      = OSMGA_S1_VRAM_PROVEN;
-        lim.texMaxBytes = 256UL * 1024UL;
         lim.batchBytes  = OSMGA_HW3D_BATCH_BYTES;
         lim.maxEdgeWalk = OSMGA_HW3D_EDGE_WALK;
 
@@ -6204,6 +6203,19 @@ unmap:
 
 
 
+/* Ceiling log2, the same thing MGA_LOG2 and GetPowerOfTwo compute: the
+ * log2 field says which power of two CONTAINS the texture, and the exact
+ * size travels separately, so a non-power-of-two size is legal. */
+static unsigned long
+osmgaHW3DLog2Ceil(unsigned long n)
+{
+    unsigned long l = 0UL;
+
+    while ((1UL << l) < n && l < 31UL)
+        l++;
+    return l;
+}
+
 /*
  * ---- M1-2a: turn a validated batch into a DMA command list ----
  *
@@ -6222,12 +6234,15 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                 const OSMGAHW3DBatch *b, unsigned long *outTail)
 {
     unsigned long pos = 0UL, i;
-    int anyZI = 0;
+    int anyZI = 0, anyTex = 0;
     int ok = 1;
 
-    for (i = 0UL; i < b->triCount; i++)
-        if (((b->tri[i].dwgctl >> 4) & 0x7UL) == OSMGA_HW3D_ATYPE_ZI)
-            anyZI = 1;
+    for (i = 0UL; i < b->triCount; i++) {
+        unsigned long d = b->tri[i].dwgctl & OSMGA_HW3D_DWG_CLIENT;
+
+        if (((d >> 4) & 0x7UL) == OSMGA_HW3D_ATYPE_ZI) anyZI = 1;
+        if ((d & 0xFUL) == OSMGA_HW3D_OPCODE_TEX)      anyTex = 1;
+    }
 
     /* When no triangle addresses depth, ZORG should still point somewhere
      * harmless rather than at zero: zero is the visible framebuffer, so
@@ -6240,6 +6255,62 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                                                  : OSMGA_D3_ZORG,
                              MGA_DMAPAD,   0UL,
                              MGA_DMAPAD,   0UL);
+
+    /*
+     * Texture state, only when something is textured.  The client gave a
+     * size, a pitch and a format; every register here is built from those
+     * rather than handed over, which is what keeps CLAMPUV ours -- and the
+     * reason the coordinate matrix needs no validation at all is that
+     * CLAMPUV was measured to bound the fetched address, not just the
+     * coordinate.
+     *
+     * Emitting nothing when nothing is textured is not an optimisation:
+     * a batch that leaves these registers alone inherits whatever ran
+     * before it, so the untextured case has to be untextured by its
+     * DWGCTL opcode rather than by hoping the state is stale in a
+     * convenient way.
+     */
+    if (ok && anyTex) {
+        unsigned long w = b->state.texW, h = b->state.texH;
+        unsigned long lw = osmgaHW3DLog2Ceil(w), lh = osmgaHW3DLog2Ceil(h);
+
+        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                 MGA_TEXORG,    b->state.texorg,
+                 MGA_TEXWIDTH,  ((w - 1UL) << 18) |
+                                (((8UL - lw) & 63UL) << 9) | lw,
+                 MGA_TEXHEIGHT, ((h - 1UL) << 18) |
+                                (((8UL - lh) & 63UL) << 9) | lh,
+                 MGA_TEXCTL,    MGA_TEXCTL_PITCHLIN |
+                                ((b->state.texPitch & 2047UL) << 9) |
+                                MGA_TEXCTL_NOPERSP | MGA_TEXCTL_TAKEY |
+                                MGA_TEXCTL_CLAMPUV | MGA_TEXCTL_TW32);
+        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                 MGA_TEXCTL2,      MGA_TEXCTL2_G400_MAGIC |
+                                   MGA_TEXCTL2_CKSTRANSDIS,
+                 MGA_TEXFILTER,    MGA_TEXFILTER_ALPHA | (0x10UL << 21) |
+                                   (((b->state.texFlags &
+                                      OSMGA_HW3D_TEXF_BILIN) != 0UL)
+                                    ? 0x20UL : 0UL),
+                 MGA_TEXTRANS,     0x0000ffffUL,
+                 MGA_TEXTRANSHIGH, 0x0000ffffUL);
+        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                 MGA_TDUALSTAGE0, 0UL, MGA_TDUALSTAGE1, 0UL,
+                 MGA_TMR0,        (unsigned long)b->state.tmr[0],
+                 MGA_TMR0 +  4UL, (unsigned long)b->state.tmr[1]);
+        /* The H family is the kernel's: we set NOPERSPECTIVE, nothing in
+         * the sources says these are then ignored, and a client value here
+         * would be one more thing the coordinate bound does not cover. */
+        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                 MGA_TMR0 +  8UL, (unsigned long)b->state.tmr[2],
+                 MGA_TMR0 + 12UL, (unsigned long)b->state.tmr[3],
+                 MGA_TMR0 + 16UL, 0UL,
+                 MGA_TMR0 + 20UL, 0UL);
+        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                 MGA_TMR0 + 24UL, (unsigned long)b->state.tmr[6],
+                 MGA_TMR0 + 28UL, (unsigned long)b->state.tmr[7],
+                 MGA_TMR8,        1UL << 16,
+                 MGA_DMAPAD,      0UL);
+    }
 
     for (i = 0UL; ok && i < b->triCount; i++) {
         const OSMGAHW3DTri *t = &b->tri[i];
@@ -6474,7 +6545,6 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
     lim.depthEnd    = OSMGA_D3_TEXORG;
     lim.texStart    = OSMGA_D3_TEXORG;
     lim.texEnd      = OSMGA_S1_VRAM_PROVEN;
-    lim.texMaxBytes = 256UL * 1024UL;
     lim.batchBytes  = OSMGA_HW3D_BATCH_BYTES;
     lim.maxEdgeWalk = OSMGA_HW3D_EDGE_WALK;
 
@@ -6767,7 +6837,6 @@ osmgaM1cTri(OSMGAHW3DTri *t, unsigned long y, unsigned long h,
     lim.depthEnd    = OSMGA_S1_VRAM_PROVEN;
     lim.texStart    = OSMGA_S1_VRAM_BLOCK;
     lim.texEnd      = OSMGA_S1_VRAM_PROVEN;
-    lim.texMaxBytes = 4096UL;
     lim.batchBytes  = OSMGA_HW3D_BATCH_BYTES;
     lim.maxEdgeWalk = OSMGA_HW3D_EDGE_WALK;
 

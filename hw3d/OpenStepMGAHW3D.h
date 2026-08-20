@@ -54,6 +54,8 @@
 #define OSMGA_HW3D_E_TRICOL     9
 #define OSMGA_HW3D_E_TRISLOPE  10
 #define OSMGA_HW3D_E_ALPHA     11
+#define OSMGA_HW3D_E_TEXSIZE   12
+#define OSMGA_HW3D_E_TEXCOORD  13
 
 /*
  * What a client may say in DWGCTL, and what the kernel says for it.
@@ -88,14 +90,64 @@
 #define OSMGA_HW3D_AC_SRC_MAX   8UL
 #define OSMGA_HW3D_AC_DST_MAX   7UL
 
+/*
+ * Texture description.
+ *
+ * The client says what it means -- a format, a filter, a size -- and the
+ * kernel builds TEXCTL, TEXCTL2 and TEXFILTER from that.  Taking the
+ * registers directly would let a client clear CLAMPUV, and the reason we
+ * do not bound the coordinate matrix at all is that CLAMPUV was measured
+ * to hold the fetched ADDRESS inside the texture, not merely the
+ * coordinate.  That argument only survives if the bit is ours.
+ *
+ * Sizes need not be powers of two: the log2 field says which power of two
+ * contains the texture, and the exact size travels separately in bits
+ * 18 and up.  The bound the DDX states is 2048 (mga_storm.c:300-304).
+ * Pitch is in TEXELS, is the texture's own row stride, and may legally
+ * exceed the width -- EXA uses a pixmap's real stride and Storm rounds
+ * its scratch texture up to a multiple of sixteen.  The kernel writes the
+ * client's pitch into TEXCTL and uses the same number for the reach
+ * check, so the check and the hardware cannot disagree.
+ */
+#define OSMGA_HW3D_TEX_MAX_DIM  2048UL
+#define OSMGA_HW3D_TEX_MAX_PIT  2047UL   /* TEXCTL's field is 11 bits */
+#define OSMGA_HW3D_TEXFMT_TW32  6UL      /* the only format we allow yet */
+#define OSMGA_HW3D_TEXF_BILIN   0x1UL    /* client flag, not a register bit */
+
+/*
+ * How far a texture coordinate may reach.
+ *
+ * The first draft did not bound the coordinate matrix at all, on the
+ * grounds that CLAMPUV was measured to hold the fetched address inside
+ * the texture.  That measurement covered one case: magnifying eight times
+ * so the coordinate ran off the high end of both axes.  It says nothing
+ * about a negative start, and nothing about the H registers, which the
+ * sources do not show to be ignored under NOPERSPECTIVE.
+ *
+ * So the H family is taken out of the client's hands entirely -- the
+ * kernel writes TMR4, TMR5 and TMR8 -- and the remaining six are required
+ * to be non-negative and to reach no further than the magnification that
+ * was actually measured.  Beyond that the answer would rest on a property
+ * nobody has tested.
+ *
+ * A full texture spans about 1 << 20 in this fixed point regardless of
+ * its size, since one texel is 1 << (20 - log2(size)).
+ */
+#define OSMGA_HW3D_TEX_SPAN     (1UL << 20)
+#define OSMGA_HW3D_TEX_COORD_MAX (8UL * OSMGA_HW3D_TEX_SPAN)
+
 typedef struct {
     unsigned long dstorg;          /* colour origin, byte offset into VRAM */
     unsigned long zorg;            /* depth origin; ignored unless depth is on */
     unsigned long texorg;          /* texture origin; ignored unless textured */
-    unsigned long texctl;
-    unsigned long texctl2;
-    unsigned long texfilter;
-    unsigned long tmr[9];
+    unsigned long texW, texH;      /* texels; need not be powers of two */
+    unsigned long texPitch;        /* texels per row, >= texW */
+    unsigned long texFormat;       /* OSMGA_HW3D_TEXFMT_* */
+    unsigned long texFlags;        /* OSMGA_HW3D_TEXF_* */
+    /* tmr[0..3] are the increments, tmr[6] and tmr[7] the starts; all six
+     * are bounded.  tmr[4], tmr[5] and tmr[8] are the H family and are
+     * IGNORED -- the kernel writes them, see the note above. */
+    long tmr[9];
 } OSMGAHW3DState;
 
 typedef struct {
@@ -140,7 +192,8 @@ typedef struct {
     unsigned long colourStart, colourEnd;
     unsigned long depthStart, depthEnd;
     unsigned long texStart, texEnd;
-    unsigned long texMaxBytes;     /* largest texture we will address */
+    /* No longer a constant ceiling: the reach is computed from the size
+     * the client gave, which is the same size the kernel programs. */
     unsigned long batchBytes;
     /* Largest |x| an edge may accumulate over a triangle, in pixels.  The
      * hardware clip clamps the span per pixel and a measurement showed it

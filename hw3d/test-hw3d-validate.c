@@ -32,6 +32,12 @@ reset(void)
     b.state.dstorg = lim.colourStart;
     b.state.zorg = lim.depthStart;
     b.state.texorg = lim.texStart;
+    b.state.texW = 64; b.state.texH = 64; b.state.texPitch = 64;
+    b.state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
+    b.state.tmr[0] = 0x4000; b.state.tmr[3] = 0x4000;   /* identity, 64 wide */
+    b.state.texW = 64; b.state.texH = 64; b.state.texPitch = 64;
+    b.state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
+    b.state.tmr[0] = 0x4000; b.state.tmr[3] = 0x4000;   /* identity, 64 wide */
     b.tri[0].dwgctl = 0x0004UL | 0x0070UL;  /* TRAP | atype I, masked form */
     b.tri[0].alphactrl = 0x0101UL;          /* ALPHACHANNEL | SRC_ONE */
     b.tri[0].y = 0;
@@ -69,7 +75,6 @@ main(void)
     lim.depthEnd    = 5UL * 1024 * 1024 + 512UL * 1024;
     lim.texStart    = 6UL * 1024 * 1024;
     lim.texEnd      = 7UL * 1024 * 1024;
-    lim.texMaxBytes = 256UL * 1024;
     lim.batchBytes  = OSMGA_HW3D_BATCH_BYTES;
     lim.maxEdgeWalk = 16384;          /* pixels of x travel per triangle */
     rows = lim.clipY1 + 1;
@@ -165,6 +170,92 @@ main(void)
     reset(); b.triCount = 3;
              b.tri[1] = b.tri[0]; b.tri[2] = b.tri[0];
              b.state.texorg = 0;                expect("bad texorg, none is textured", OSMGA_HW3D_OK);
+
+    printf("depth origin -- reach, when any triangle is ZI\n");
+    reset(); b.tri[0].dwgctl = 0x0004UL | 0x0030UL;
+             b.state.zorg = lim.depthEnd - rows * (pitch / 4) * 2;
+                                                expect("zorg at the last fitting origin", OSMGA_HW3D_OK);
+    reset(); b.tri[0].dwgctl = 0x0004UL | 0x0030UL;
+             b.state.zorg = lim.depthEnd - rows * (pitch / 4) * 2 + 1;
+                                                expect("zorg one byte past that", OSMGA_HW3D_E_ZORG);
+    reset(); b.tri[0].dwgctl = 0x0004UL | 0x0030UL;
+             b.state.zorg = 0;                  expect("zorg at the visible framebuffer", OSMGA_HW3D_E_ZORG);
+
+    printf("texture origin -- reach from the size the client gave\n");
+    reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+             b.state.texorg = lim.texEnd - 64 * 64 * 4;
+                                                expect("texorg at the last fitting origin", OSMGA_HW3D_OK);
+    reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+             b.state.texorg = lim.texEnd - 64 * 64 * 4 + 1;
+                                                expect("texorg one byte past that", OSMGA_HW3D_E_TEXORG);
+    reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+             b.state.texPitch = 128;
+             b.state.texorg = lim.texEnd - 64 * 128 * 4;
+                                                expect("a padded pitch moves the reach", OSMGA_HW3D_OK);
+    reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+             b.state.texPitch = 128;
+             b.state.texorg = lim.texEnd - 64 * 64 * 4;
+                                                expect("that origin no longer fits at the wider pitch", OSMGA_HW3D_E_TEXORG);
+
+    printf("texture size -- powers of two are NOT required\n");
+    reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+             b.state.texW = 48; b.state.texH = 17; b.state.texPitch = 48;
+                                                expect("48 by 17, neither a power of two", OSMGA_HW3D_OK);
+    reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+             b.state.texW = 2047; b.state.texH = 1; b.state.texPitch = 2047;
+                                                expect("width 2047, the widest expressible", OSMGA_HW3D_OK);
+    reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+             b.state.texW = 2048; b.state.texH = 1; b.state.texPitch = 2047;
+                                                expect("width 2048 needs a pitch the field cannot hold", OSMGA_HW3D_E_TEXSIZE);
+    reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+             b.state.texW = 2049;               expect("width past the stated bound", OSMGA_HW3D_E_TEXSIZE);
+    reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+             b.state.texW = 0;                  expect("zero width", OSMGA_HW3D_E_TEXSIZE);
+    reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+             b.state.texH = 0;                  expect("zero height", OSMGA_HW3D_E_TEXSIZE);
+    reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+             b.state.texPitch = 63;             expect("pitch narrower than the width", OSMGA_HW3D_E_TEXSIZE);
+    reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+             b.state.texPitch = 2048;           expect("pitch past the 11-bit field", OSMGA_HW3D_E_TEXSIZE);
+    reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+             b.state.texFormat = 3;             expect("a format we do not allow yet", OSMGA_HW3D_E_TEXSIZE);
+    reset(); b.state.texW = 0; b.state.texPitch = 0; b.state.texFormat = 3;
+                                                expect("nonsense texture, but nothing is textured", OSMGA_HW3D_OK);
+
+    printf("texture coordinates -- bounded, because CLAMPUV was measured once\n");
+    {   long span = 0x4000L;            /* one texel for a 64-texel texture */
+        long full = (long)OSMGA_HW3D_TEX_COORD_MAX;
+
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                                                expect("the identity mapping", OSMGA_HW3D_OK);
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.state.tmr[0] = span * 8;     expect("magnified eight times, as measured", OSMGA_HW3D_OK);
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.state.tmr[6] = -1;           expect("a negative u start", OSMGA_HW3D_E_TEXCOORD);
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.state.tmr[7] = -1;           expect("a negative v start", OSMGA_HW3D_E_TEXCOORD);
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.state.tmr[0] = -span;        expect("a negative u increment", OSMGA_HW3D_E_TEXCOORD);
+        /* The budget covers the start AND what the increments add across
+         * the clip, so a start at the whole budget only fits when the
+         * increments are zero. */
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.state.tmr[0] = 0; b.state.tmr[6] = full;
+                                                expect("a start at the whole budget, no increment", OSMGA_HW3D_OK);
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.state.tmr[0] = 0; b.state.tmr[6] = full + 1;
+                                                expect("a start one past it", OSMGA_HW3D_E_TEXCOORD);
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.state.tmr[6] = full;         expect("that start with the identity increment no longer fits", OSMGA_HW3D_E_TEXCOORD);
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.state.tmr[0] = full;         expect("an increment that overshoots across the clip", OSMGA_HW3D_E_TEXCOORD);
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.state.tmr[2] = full;         expect("a y increment that overshoots", OSMGA_HW3D_E_TEXCOORD);
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.state.tmr[4] = -1; b.state.tmr[8] = -1;
+                                                expect("the H family is ignored, not refused", OSMGA_HW3D_OK);
+        reset(); b.state.tmr[6] = -1;           expect("a bad coordinate, but nothing is textured", OSMGA_HW3D_OK);
+    }
 
     printf("per-triangle geometry\n");
     reset(); b.tri[0].y = lim.clipY1; b.tri[0].h = 1;

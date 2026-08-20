@@ -28,6 +28,28 @@ osmgaHW3DReach(unsigned long org, unsigned long rows, unsigned long stride,
     return 1;
 }
 
+/* Is start + spanX*incX + spanY*incY non-negative and within the reach we
+ * have measured?  Written as divisions so no product can overflow. */
+static int
+osmgaHW3DCoord(long start, long incX, long incY,
+               unsigned long spanX, unsigned long spanY)
+{
+    unsigned long total, room = OSMGA_HW3D_TEX_COORD_MAX;
+
+    if (start < 0L || incX < 0L || incY < 0L)
+        return 0;
+    total = (unsigned long)start;
+    if (total > room)
+        return 0;
+    room -= total;
+    if (spanX != 0UL && (unsigned long)incX > room / spanX)
+        return 0;
+    room -= (unsigned long)incX * spanX;
+    if (spanY != 0UL && (unsigned long)incY > room / spanY)
+        return 0;
+    return 1;
+}
+
 int
 osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                   unsigned long *badTri)
@@ -93,9 +115,29 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
             return OSMGA_HW3D_E_ZORG;
     }
     if (anyTex) {
-        if (!osmgaHW3DReach(b->state.texorg, 1UL, lim->texMaxBytes,
+        unsigned long w = b->state.texW, h = b->state.texH;
+        unsigned long pitch = b->state.texPitch;
+
+        if (w == 0UL || h == 0UL ||
+            w > OSMGA_HW3D_TEX_MAX_DIM || h > OSMGA_HW3D_TEX_MAX_DIM ||
+            pitch < w || pitch > OSMGA_HW3D_TEX_MAX_PIT)
+            return OSMGA_HW3D_E_TEXSIZE;
+        if (b->state.texFormat != OSMGA_HW3D_TEXFMT_TW32)
+            return OSMGA_HW3D_E_TEXSIZE;
+        /* Reach from the size the client gave, which is the size the
+         * kernel will program: pitch texels of four bytes, h rows. */
+        if (!osmgaHW3DReach(b->state.texorg, h, pitch * 4UL,
                             lim->texStart, lim->texEnd))
             return OSMGA_HW3D_E_TEXORG;
+
+        /* The clip bounds x and y, so the furthest coordinate a draw can
+         * ask for is computable.  Keep it non-negative and inside the
+         * magnification CLAMPUV was actually measured to hold. */
+        if (!osmgaHW3DCoord(b->state.tmr[6], b->state.tmr[0],
+                            b->state.tmr[2], lim->clipX1, lim->clipY1) ||
+            !osmgaHW3DCoord(b->state.tmr[7], b->state.tmr[1],
+                            b->state.tmr[3], lim->clipX1, lim->clipY1))
+            return OSMGA_HW3D_E_TEXCOORD;
     }
 
     for (i = 0UL; i < b->triCount; i++) {
