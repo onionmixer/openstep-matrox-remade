@@ -30,7 +30,10 @@ extern caddr_t mmap(caddr_t, int, int, int, int, long);
 
 /* Must match the driver's second window. */
 #define OSMGA_CMD_WINDOW_BASE 0x40000000UL
-#define OSMGA_CMD_WINDOW_LEN  (64 * 1024)
+/* The batch only.  The kernel builds its command list in the rest of that
+ * allocation and does not let it be mapped -- a client able to rewrite the
+ * list after validation could put anything at all in front of the engine. */
+#define OSMGA_CMD_WINDOW_LEN  ((int)OSMGA_HW3D_BATCH_BYTES)
 /* Exactly as <libc.h> declares it.  A locally invented prototype would
  * conflict with the real one, and "it is ABI-compatible on this target"
  * is not the same as "it is a valid declaration". */
@@ -66,6 +69,9 @@ static int probePid = -1;       /* which process decided this */
  * anything that finishes later.
  */
 static int probeRevoked;
+
+/* The command window, at file scope so that revoking can take it back. */
+static OSMGAHW3DBatch *probeBatch;
 
 static int
 osmgaProbeForcedOff(void)
@@ -203,6 +209,14 @@ OSMGAMesaProbeRun(OSMGAMesaProbe *out_probe)
      * of the descriptor it inherited, which is its own copy to close.
      */
     if (probeDone && pid != probePid) {
+        /* The mapping came across the fork too, and it refers to the parent's
+         * descriptor; letting it survive would have the child filling a batch
+         * through a window it no longer has any claim to. */
+        if (probeBatch != 0) {
+            (void)vm_deallocate(task_self(), (vm_address_t)probeBatch,
+                                (vm_size_t)OSMGA_CMD_WINDOW_LEN);
+            probeBatch = 0;
+        }
         if (probeFd >= 0) {
             (void)close(probeFd);
             probeFd = -1;
@@ -234,6 +248,11 @@ OSMGAMesaProbeRevoke(const char *why)
      * outside this file ever held it, so no caller can be using it and no
      * later open() can hand our number to somebody who thinks it is ours.
      */
+    if (probeBatch != 0) {
+        (void)vm_deallocate(task_self(), (vm_address_t)probeBatch,
+                            (vm_size_t)OSMGA_CMD_WINDOW_LEN);
+        probeBatch = 0;
+    }
     if (probeFd >= 0) {
         (void)close(probeFd);
         probeFd = -1;
@@ -272,18 +291,23 @@ osmgaMapWindow(int fd, unsigned long offset, int len)
 OSMGAHW3DBatch *
 OSMGAMesaProbeBatch(void)
 {
-    static OSMGAHW3DBatch *batch;
     caddr_t p;
 
-    if (batch != 0)
-        return batch;
+    /*
+     * Revocation first, and only then the cache.  The other order kept
+     * handing out a mapping after acceleration had been given up on, and a
+     * caller writing through it would still be filling a batch the driver
+     * had stopped honouring.
+     */
     if (probeRevoked || probeFd < 0)
         return 0;
+    if (probeBatch != 0)
+        return probeBatch;
     p = osmgaMapWindow(probeFd, OSMGA_CMD_WINDOW_BASE, OSMGA_CMD_WINDOW_LEN);
     if (p == (caddr_t)-1)
         return 0;
-    batch = (OSMGAHW3DBatch *)p;
-    return batch;
+    probeBatch = (OSMGAHW3DBatch *)p;
+    return probeBatch;
 }
 
 int
@@ -293,16 +317,28 @@ OSMGAMesaProbeSubmit(OSMGAHW3DSubmitBlock *result)
 
     if (result == 0)
         result = &scratch;
+    result->status = EIO;
     result->verdict = 0UL;
     result->triangle = 0UL;
     result->dwords = 0UL;
     result->spins = 0UL;
 
-    if (probeRevoked || probeFd < 0)
+    if (probeRevoked || probeFd < 0) {
+        result->status = ENXIO;
         return ENXIO;
-    if (ioctl(probeFd, (long)OSMGA_IOC_SUBMIT, result) < 0)
-        return (errno != 0) ? errno : EIO;
-    return 0;
+    }
+    if (ioctl(probeFd, (long)OSMGA_IOC_SUBMIT, result) < 0) {
+        /*
+         * The driver never attempted it, so the block was not copied back
+         * and holds nothing.  Reported as -1 rather than as the errno,
+         * because the errno can equal one the driver itself uses and the
+         * caller would otherwise read a completed refusal into it.
+         */
+        result->status = (errno != 0) ? (unsigned long)errno : EIO;
+        result->verdict = OSMGA_HW3D_NOT_RUN;
+        return -1;
+    }
+    return (int)result->status;
 }
 
 const char *

@@ -99,8 +99,9 @@ main(void)
     batch->triCount = (unsigned long)n;
 
     rc = OSMGAMesaProbeSubmit(&res);
-    printf("   submit rc=%d verdict=%lu triangle=%lu dwords=%lu spins=%lu\n",
-           rc, res.verdict, res.triangle, res.dwords, res.spins);
+    printf("   submit rc=%d status=%lu verdict=%lu triangle=%lu dwords=%lu "
+           "spins=%lu\n", rc, res.status, res.verdict, res.triangle,
+           res.dwords, res.spins);
     if (rc != 0) {
         printf("   FAIL -- the batch was refused\n");
         return 1;
@@ -137,12 +138,19 @@ main(void)
         }
     }
 
-    /* A refusal must come back as a refusal, not as a silent success. */
+    /*
+     * A refusal must come back as a refusal AND say why.  Checking only that
+     * it failed is what let the first version through: the ioctl returned
+     * EINVAL, which meant the block was never copied back, so the verdict
+     * read zero -- the code for "drew fine" -- and the test was satisfied.
+     */
     batch->triCount = OSMGA_HW3D_MAX_TRI + 1UL;
     rc = OSMGAMesaProbeSubmit(&res);
-    printf("   too many triangles -> rc=%d verdict=%lu %s\n",
-           rc, res.verdict, (rc != 0) ? "ok" : "FAIL");
-    if (rc == 0)
+    printf("   too many triangles -> rc=%d verdict=%lu (want %d) %s\n",
+           rc, res.verdict, OSMGA_HW3D_E_COUNT,
+           (rc != 0 && res.verdict == (unsigned long)OSMGA_HW3D_E_COUNT)
+               ? "ok" : "FAIL");
+    if (rc == 0 || res.verdict != (unsigned long)OSMGA_HW3D_E_COUNT)
         failures++;
 
     printf("%s\n", failures ? "FAIL"

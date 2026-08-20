@@ -29,7 +29,10 @@ extern caddr_t mmap(caddr_t, int, int, int, int, long);
 #define DEV_PATH        "/dev/osmgavram"
 #define SUBMIT_PARAM    "OSMGAHW3DSubmit"
 #define CMD_MMAP_BASE   0x40000000UL
-#define CMD_MMAP_LEN    (64 * 1024)
+/* The batch only: the driver no longer lets the command list be mapped,
+ * because a client able to rewrite it after validation could put anything in
+ * front of the engine. */
+#define CMD_MMAP_LEN    ((int)OSMGA_HW3D_BATCH_BYTES)
 #define VRAM_BLOCK      (4UL * 1024UL * 1024UL)
 #define CLIP_COLS       64UL
 #define ROWS            64UL

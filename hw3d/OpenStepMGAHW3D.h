@@ -299,8 +299,25 @@ typedef struct {
  * and what comes back is the same four words the status parameter reports,
  * so a caller learns which triangle was refused and why without a second
  * call that could race another client's submission.
+ *
+ * The outcome travels in `status` rather than in the ioctl's own return,
+ * because a 4.3BSD ioctl copies its block back only when it returns zero:
+ * refusing there would have thrown away the very explanation the block
+ * exists to carry.  Measured, not reasoned about -- an over-long batch came
+ * back as EINVAL with a verdict of OSMGA_HW3D_OK, which is the block never
+ * having been copied at all.  So the ioctl now returns zero whenever it
+ * managed to attempt a submission, and non-zero only when it could not try.
  */
+/*
+ * A verdict of this means the batch was never examined -- the driver stopped
+ * before the validator ran.  It has to be distinct from OSMGA_HW3D_OK, which
+ * is zero, or a submission refused before validation would report the code
+ * for "drew fine".
+ */
+#define OSMGA_HW3D_NOT_RUN  0xFFFFFFFFUL
+
 typedef struct {
+    unsigned long status;    /* 0 drew; else an errno explaining why not */
     unsigned long verdict;   /* OSMGA_HW3D_OK or one of the E_ codes */
     unsigned long triangle;  /* which one, when the verdict names one */
     unsigned long dwords;    /* the encoded list's length */

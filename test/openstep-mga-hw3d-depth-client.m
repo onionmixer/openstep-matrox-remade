@@ -43,7 +43,10 @@ extern caddr_t mmap(caddr_t, int, int, int, int, long);
 #define STATUS_PARAM    "OSMGAHW3DStatus"
 
 #define CMD_MMAP_BASE   0x40000000UL
-#define CMD_MMAP_LEN    (64 * 1024)
+/* The batch only: the driver no longer lets the command list be mapped,
+ * because a client able to rewrite it after validation could put anything in
+ * front of the engine. */
+#define CMD_MMAP_LEN    ((int)OSMGA_HW3D_BATCH_BYTES)
 #define COLOUR_ORG      (4UL * 1024UL * 1024UL)
 #define DEPTH_ORG       (5UL * 1024UL * 1024UL)
 #define STRIDE_DW       1024UL              /* 1024x768x4 */

@@ -1310,15 +1310,19 @@ osmgaDevIoctl(int dev, int cmd, caddr_t data, int flag)
         sub->triangle = (unsigned long)osmgaHW3DLast[1];
         sub->dwords   = (unsigned long)osmgaHW3DLast[2];
         sub->spins    = (unsigned long)osmgaHW3DLast[3];
-        if (rc == IO_R_SUCCESS)
-            return 0;
-        if (rc == IO_R_UNSUPPORTED)
-            return ENODEV;     /* acceleration is switched off */
-        if (rc == IO_R_INVALID_ARG)
-            return EINVAL;     /* the batch was refused; see verdict */
-        if (rc == IO_R_BUSY)
-            return EBUSY;
-        return EIO;
+
+        /*
+         * Zero here, whatever happened to the batch: a 4.3BSD ioctl copies
+         * the block back only when the handler returns zero, so refusing
+         * would discard the explanation the caller came for.  The outcome is
+         * in the block.
+         */
+        if (rc == IO_R_SUCCESS)            sub->status = 0UL;
+        else if (rc == IO_R_UNSUPPORTED)   sub->status = ENODEV;
+        else if (rc == IO_R_INVALID_ARG)   sub->status = EINVAL;
+        else if (rc == IO_R_BUSY)          sub->status = EBUSY;
+        else                               sub->status = EIO;
+        return 0;
     }
 
     return ENOTTY;
@@ -1346,6 +1350,17 @@ osmgaDevMmap(int dev, int offset, int prot)
     if (osmgaMmapCmdPhysical != 0UL && off >= OSMGA_CMD_MMAP_BASE) {
         unsigned long rel = off - OSMGA_CMD_MMAP_BASE;
 
+        /*
+         * Only the batch, never the ring.  The kernel encodes its command
+         * list into the second part of this same allocation, and a client
+         * that could map it could overwrite the list after it had been
+         * validated and before the engine read it -- which would let raw,
+         * unchecked commands reach the engine and make the whole
+         * validate-then-encode split pointless.  The client writes a batch;
+         * the list is ours.
+         */
+        if (rel >= OSMGA_HW3D_BATCH_BYTES)
+            return -1;
         if (osmgaMmapCmdBytes < (unsigned long)PAGE_SIZE ||
             rel > osmgaMmapCmdBytes - (unsigned long)PAGE_SIZE)
             return -1;
@@ -3254,6 +3269,18 @@ unmap:
     unsigned long epoch3;
     unsigned long *list3, listDwords3, badTri3 = 0UL;
     int v3, rc3 = 0;
+
+    /*
+     * Clear the diagnostics first.  Several of the checks below return
+     * before they are written, and the ioctl copies them back regardless, so
+     * leaving them alone would answer this submission with the last one's
+     * verdict -- worst of all reporting OSMGA_HW3D_OK for a batch that was
+     * never looked at.
+     */
+    osmgaHW3DLast[0] = (unsigned)OSMGA_HW3D_NOT_RUN;
+    osmgaHW3DLast[1] = 0U;
+    osmgaHW3DLast[2] = 0U;
+    osmgaHW3DLast[3] = 0U;
 
     /*
      * The switch is enforced here and not only reported.  Reporting alone

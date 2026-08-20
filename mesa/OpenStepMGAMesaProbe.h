@@ -82,8 +82,10 @@ int OSMGAMesaProbeDeviceFd(void);
 OSMGAHW3DBatch *OSMGAMesaProbeBatch(void);
 
 /*
- * Run whatever is in that batch.  Returns 0 on success, or an errno; `result`
- * is filled either way, so a refusal names the triangle and the reason.
+ * Run whatever is in that batch.  Returns 0 when it drew, a positive errno
+ * when the driver ran it and declined -- `result` then names the triangle
+ * and the reason -- and -1 when the driver never attempted it at all, where
+ * `result` holds nothing but the verdict OSMGA_HW3D_NOT_RUN.
  *
  * A refusal is the caller's cue to stop asking: this does not revoke by
  * itself, because a batch the library built wrongly is a different thing
