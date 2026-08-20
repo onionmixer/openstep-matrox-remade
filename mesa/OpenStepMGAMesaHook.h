@@ -29,7 +29,8 @@ struct gl_context;
  * back end without naming which one, so that tree stays publishable on its
  * own and any driver could supply this.
  */
-void OpenStepMesaAccelUpdateState(struct gl_context *ctx);
+void OpenStepMesaAccelUpdateState(struct gl_context *ctx, int rowLength,
+                                  int yUp);
 
 /*
  * How many triangles have reached the hardware, and how many were handed

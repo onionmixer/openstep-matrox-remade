@@ -1,124 +1,127 @@
 /*
- * openstep-mga-mesa-gl-test.c -- M1-3b-4: does the hook actually fire?
+ * openstep-mga-mesa-gl-test.c -- M1-3c: one surface, two paths.
  *
- * An ordinary OSMesa program: make a context, draw a triangle, no knowledge
- * of any of this.  What is being checked is that the triangle reached the
- * hardware -- a hook that is installed but never called looks exactly like
- * one that works, so the count matters as much as the pixels.
+ * An ordinary OSMesa program.  It never maps anything, never opens a device,
+ * and never mentions the card; it asks OSMesa where the picture is and looks
+ * there.  What is being checked is that a triangle the hardware drew and a
+ * triangle the software rasteriser drew end up in the SAME place -- which is
+ * the whole reason for pointing Mesa at video memory, because a frame split
+ * between two buffers is worse than a slow one.
  *
- * Built against the accelerated library, and against nothing else:
  *   cc -O -Wall -o /tmp/gltest openstep-mga-mesa-gl-test.c \
- *      -I<mesa>/include -L/tmp/OpenStepMesaMGA -lGL_mga
+ *      -I<mesa>/include -L<built> -lGL_mga
  */
 
 #include <stdio.h>
 #include <string.h>
-#include <sys/types.h>
-#include <mach/mach.h>
 #include <GL/osmesa.h>
 
 /* Declared here rather than included: an ordinary program would not have
- * these headers, and using them would weaken what this test demonstrates. */
+ * these headers, and using them would weaken what this demonstrates. */
 extern unsigned long OSMGAMesaHookDrawn(void);
 extern unsigned long OSMGAMesaHookDeclined(void);
-extern int OSMGAMesaProbeDeviceFd(void);
-
-extern caddr_t mmap(caddr_t, int, int, int, int, long);
-
-#define PROT_READ   0x01
-#define PROT_WRITE  0x02
-#define MAP_SHARED  0x0001
-#define VRAM_BLOCK  (4UL * 1024UL * 1024UL)
-#define STRIDE_DW   1024UL
-#define ROWS        40UL
-#define COLS        64UL
-#define SENTINEL    0x5A5A5A5AUL
+extern unsigned long OSMGAMesaBufferOrigin(void);
+extern unsigned long OSMGAMesaBufferStride(void);
 
 #define W 64
 #define H 64
 
 static int failures;
 
+static void
+expect(const char *what, int ok)
+{
+    printf("   %-46s %s\n", what, ok ? "ok" : "FAIL");
+    if (!ok)
+        failures++;
+}
+
 int
 main(void)
 {
     OSMesaContext ctx;
-    static unsigned char buffer[W * H * 4];
-    volatile unsigned long *vram = 0;
-    unsigned long before, after, row, col, drawn;
+    static unsigned char appbuf[W * H * 4];
+    unsigned long *px;
+    unsigned long stride, drewHW, drewSW;
+    GLint bw = 0, bh = 0, bf = 0;
+    void *surface = 0;
 
     ctx = OSMesaCreateContext(OSMESA_RGBA, NULL);
-    if (!ctx) {
-        printf("OSMesaCreateContext failed\n");
-        return 1;
-    }
-    if (!OSMesaMakeCurrent(ctx, buffer, GL_UNSIGNED_BYTE, W, H)) {
+    if (!ctx) { printf("OSMesaCreateContext failed\n"); return 1; }
+    memset(appbuf, 0, sizeof appbuf);
+    if (!OSMesaMakeCurrent(ctx, appbuf, GL_UNSIGNED_BYTE, W, H)) {
         printf("OSMesaMakeCurrent failed\n");
         return 1;
     }
 
-    printf("M1-3b-4: an ordinary OSMesa program draws one triangle\n");
-
-    /* The hook draws into video memory, not into this program's buffer --
-     * that substitution is a later step -- so the result is read from there.
-     * Mapping is possible only once the probe has opened the device, which
-     * making the context has now done. */
-    if (OSMGAMesaProbeDeviceFd() >= 0) {
-        vm_address_t addr = 0;
-
-        if (vm_allocate(task_self(), &addr,
-                        (vm_size_t)(ROWS * STRIDE_DW * 4UL), TRUE)
-                == KERN_SUCCESS &&
-            (int)mmap((caddr_t)addr, (int)(ROWS * STRIDE_DW * 4UL),
-                      PROT_READ | PROT_WRITE, MAP_SHARED,
-                      OSMGAMesaProbeDeviceFd(), (long)VRAM_BLOCK) != -1)
-            vram = (volatile unsigned long *)addr;
-    }
-    if (vram == 0) {
-        printf("   no hardware here -- software rendering is the right "
-               "answer and there is nothing to check\n");
+    printf("M1-3c: one surface, two paths\n");
+    if (OSMGAMesaBufferOrigin() == 0UL) {
+        printf("   no hardware surface -- software rendering is the correct "
+               "answer and there is nothing here to check\n");
         return 0;
     }
-    for (row = 0UL; row < ROWS; row++)
-        for (col = 0UL; col < COLS; col++)
-            vram[row * STRIDE_DW + col] = SENTINEL;
+    stride = OSMGAMesaBufferStride();
+    printf("   surface at video-memory offset %lu, stride %lu px\n",
+           OSMGAMesaBufferOrigin(), stride);
 
     glViewport(0, 0, W, H);
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
     glOrtho(0.0, (double)W, 0.0, (double)H, -1.0, 1.0);
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
+    glMatrixMode(GL_MODELVIEW); glLoadIdentity();
     glShadeModel(GL_SMOOTH);
 
-    before = OSMGAMesaHookDrawn();
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    /* One the hardware takes. */
+    drewHW = OSMGAMesaHookDrawn();
     glBegin(GL_TRIANGLES);
-      glColor3ub(255, 0, 0);   glVertex2f( 0.0f,  0.0f);
-      glColor3ub(0, 255, 0);   glVertex2f( 0.0f, 20.0f);
-      glColor3ub(0, 0, 255);   glVertex2f(40.0f, 20.0f);
+      glColor3ub(255, 0, 0); glVertex2f( 0.0f,  0.0f);
+      glColor3ub(0, 255, 0); glVertex2f( 0.0f, 20.0f);
+      glColor3ub(0, 0, 255); glVertex2f(40.0f, 20.0f);
     glEnd();
     glFinish();
-    after = OSMGAMesaHookDrawn();
+    expect("the plain triangle went to the hardware",
+           OSMGAMesaHookDrawn() > drewHW);
 
-    printf("   hook drew %lu triangle(s), declined %lu\n",
-           after - before, OSMGAMesaHookDeclined());
-    if (after == before) {
-        printf("   FAIL -- the hook never fired; this is software rendering "
-               "wearing the hardware's name\n");
-        failures++;
+    /*
+     * And one it refuses.  The scissor test is a state the chooser declines,
+     * so this goes through the software rasteriser -- into the same surface
+     * if the substitution worked, and into a different one if it did not.
+     */
+    drewSW = OSMGAMesaHookDrawn();
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, W, H);
+    glBegin(GL_TRIANGLES);
+      glColor3ub(0, 255, 255); glVertex2f(30.0f, 30.0f);
+      glColor3ub(0, 255, 255); glVertex2f(30.0f, 50.0f);
+      glColor3ub(0, 255, 255); glVertex2f(50.0f, 50.0f);
+    glEnd();
+    glFinish();
+    glDisable(GL_SCISSOR_TEST);
+    expect("the scissored triangle was left to software",
+           OSMGAMesaHookDrawn() == drewSW);
+
+    if (!OSMesaGetColorBuffer(ctx, &bw, &bh, &bf, &surface) || !surface) {
+        printf("   FAIL -- OSMesa has no colour buffer\n");
+        return 1;
+    }
+    px = (unsigned long *)surface;
+
+    /* A pixel from each, read out of the one surface OSMesa points at. */
+    {
+        unsigned long hw = px[10UL * stride + 10UL] & 0xffffffUL;
+        unsigned long sw = px[40UL * stride + 35UL] & 0xffffffUL;
+
+        printf("   hardware pixel %06lx, software pixel %06lx\n", hw, sw);
+        expect("the accelerated triangle is in the surface", hw != 0UL);
+        expect("the software triangle is in the same surface", sw != 0UL);
     }
 
-    drawn = 0UL;
-    for (row = 0UL; row < ROWS; row++)
-        for (col = 0UL; col < COLS; col++)
-            if (vram[row * STRIDE_DW + col] != SENTINEL)
-                drawn++;
-    printf("   video memory holds %lu pixels, wanted 400\n", drawn);
-    if (drawn != 400UL)
-        failures++;
-
+    printf("   hook drew %lu, declined %lu\n",
+           OSMGAMesaHookDrawn(), OSMGAMesaHookDeclined());
     printf("%s\n", failures ? "FAIL"
-                            : "PASS -- glVertex reached the engine");
+                            : "PASS -- both paths drew into one surface");
     OSMesaDestroyContext(ctx);
     return failures ? 1 : 0;
 }

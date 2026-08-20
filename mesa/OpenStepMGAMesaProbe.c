@@ -17,6 +17,7 @@
 #include <mach/mach.h>
 
 #include "OpenStepMGAMesaProbe.h"
+#include "OpenStepMGAMesaBuffer.h"
 
 extern int open(const char *, int, ...);
 extern int close(int);
@@ -217,6 +218,9 @@ OSMGAMesaProbeRun(OSMGAMesaProbe *out_probe)
                                 (vm_size_t)OSMGA_CMD_WINDOW_LEN);
             probeBatch = 0;
         }
+        /* The drawing surface came across too, and describes memory reached
+         * through a descriptor that is about to be the parent's alone. */
+        OpenStepMesaAccelReleaseBuffer();
         if (probeFd >= 0) {
             (void)close(probeFd);
             probeFd = -1;

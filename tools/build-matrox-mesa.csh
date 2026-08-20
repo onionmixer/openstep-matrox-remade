@@ -11,6 +11,7 @@
 
 set mesa_src  = /tmp/OpenStepMesa342/src/Mesa-3.4.2
 set mga_src   = /ndrv/openstep-matrox-remade
+set port_src  = /ndrv/opennstep-mesa342/upstream/Mesa-3.4.2
 set out       = /tmp/OpenStepMesaMGA
 set accel     = -DOPENSTEP_MESA_ACCEL_HOOK
 
@@ -28,11 +29,14 @@ mkdir $out
 cp $mesa_src/lib/libGL.a $out/libGL_mga.a
 
 # The one Mesa object that changes: rebuilt with the hook point enabled.
+# From the port's own tree, not the staged copy: the staging is done once and
+# would otherwise hold whatever osmesa.c looked like then, so a change to the
+# hook point would be compiled out of a stale file and nothing would say so.
 cc -m486 -O -c $accel -I$mesa_src/src -I$mesa_src/include \
-   -o $out/osmesa.o $mesa_src/src/OSmesa/osmesa.c
+   -o $out/osmesa.o $port_src/src/OSmesa/osmesa.c
 if ($status != 0) exit 1
 
-foreach f (OpenStepMGAMesaHook OpenStepMGAMesaProbe OpenStepMGAMesaTriangle)
+foreach f (OpenStepMGAMesaHook OpenStepMGAMesaProbe OpenStepMGAMesaTriangle OpenStepMGAMesaBuffer)
     cc -m486 -O -c $accel -I$mesa_src/src -I$mesa_src/include -I$mga_src/hw3d \
        -o $out/$f.o $mga_src/mesa/$f.c
     if ($status != 0) exit 1
@@ -43,7 +47,8 @@ end
 # separately they collide into a single ambiguous member and two of them
 # quietly vanish.  Linking them together first sidesteps the whole question.
 ld -r -o $out/osmgaccel.o $out/OpenStepMGAMesaHook.o \
-    $out/OpenStepMGAMesaProbe.o $out/OpenStepMGAMesaTriangle.o
+    $out/OpenStepMGAMesaProbe.o $out/OpenStepMGAMesaTriangle.o \
+    $out/OpenStepMGAMesaBuffer.o
 if ($status != 0) exit 1
 
 ar r $out/libGL_mga.a $out/osmesa.o $out/osmgaccel.o
@@ -52,7 +57,7 @@ if ($status != 0) exit 1
 
 # Every symbol the back end must supply has to be present, or the library
 # links and simply never accelerates.
-foreach sym (OpenStepMesaAccelUpdateState OSMGAMesaProbeRun OSMGAMesaBuildTriangle OSMGAMesaProbeSubmit)
+foreach sym (OpenStepMesaAccelUpdateState OpenStepMesaAccelBuffer OpenStepMesaAccelReleaseBuffer OSMGAMesaProbeRun OSMGAMesaBuildTriangle OSMGAMesaProbeSubmit)
     nm $out/osmgaccel.o | grep "T _$sym" > /dev/null
     if ($status != 0) then
         echo "build-matrox-mesa: $sym is missing from the back end"

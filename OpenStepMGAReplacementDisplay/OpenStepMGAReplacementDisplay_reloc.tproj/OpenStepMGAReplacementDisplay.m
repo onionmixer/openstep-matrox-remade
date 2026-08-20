@@ -3098,6 +3098,14 @@ unmap:
     capsOut[OSMGA_HW3D_CAP_BATCH]   = (unsigned)OSMGA_HW3D_BATCH_BYTES;
     capsOut[OSMGA_HW3D_CAP_MAJOR]   = (unsigned)[[self class] characterMajor];
     capsOut[OSMGA_HW3D_CAP_VRAMOFF] = (unsigned)osmgaMmapWindowStart;
+    /*
+     * The stride the engine will use, not the one a caller might prefer: the
+     * destination pitch comes from a single register holding the display's,
+     * so a surface laid out any other way would be read wrongly however it
+     * was written.
+     */
+    capsOut[OSMGA_HW3D_CAP_STRIDE]  =
+        (unsigned)((unsigned long)[self displayInfo]->rowBytes / 4UL);
     capsOut[OSMGA_HW3D_CAP_VRAMLEN] =
         (unsigned)(osmgaMmapWindowEnd - osmgaMmapWindowStart);
 }

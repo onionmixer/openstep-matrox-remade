@@ -21,13 +21,18 @@
 
 #define OSMGA_HW3D_MAGIC        0x4D474133UL   /* 'MGA3' */
 /*
+ * 3: the capabilities report the display's row stride, which a library
+ * needs in order to lay a drawing surface out in video memory the way the
+ * engine will read it -- the engine takes the destination pitch from one
+ * register and that register holds the display's.
+ *
  * 2: the batch declares how big its destination is.  Before this the kernel
  * clipped every batch to a fixed 64 by 120, which was a development bound
  * and far too small for a real drawing surface.  The layout changed, so the
  * version had to move -- the probe demands an exact match precisely so that
  * a library and a driver disagreeing about where the fields are cannot draw.
  */
-#define OSMGA_HW3D_VERSION      2UL
+#define OSMGA_HW3D_VERSION      3UL
 
 /* The 64 KiB IOMallocLow block is split: the client writes the batch at the
  * start, the kernel builds the command list after it.  28 KiB and 36 KiB
@@ -247,7 +252,7 @@ typedef int OSMGAHW3DWordCheck[(sizeof(unsigned long) == 4) ? 1 : -1];
  * switch impossible to diagnose.  The backend gates on ENABLED.
  */
 #define OSMGA_HW3D_CAPS_PARAM   "OSMGAHW3DCaps"
-#define OSMGA_HW3D_CAPS_COUNT   8U
+#define OSMGA_HW3D_CAPS_COUNT   9U
 
 /* caps[OSMGA_HW3D_CAP_FLAGS] */
 #define OSMGA_HW3D_CAP_ENABLED  0x00000001UL /* Configure.app switch is on */
@@ -273,6 +278,7 @@ typedef int OSMGAHW3DWordCheck[(sizeof(unsigned long) == 4) ? 1 : -1];
 #define OSMGA_HW3D_CAP_MAJOR    5U  /* character major of the VRAM device */
 #define OSMGA_HW3D_CAP_VRAMOFF  6U  /* window start, byte offset into VRAM */
 #define OSMGA_HW3D_CAP_VRAMLEN  7U  /* window length in bytes */
+#define OSMGA_HW3D_CAP_STRIDE   8U  /* display row stride, in pixels */
 
 /*
  * The same capabilities, reachable from plain C.

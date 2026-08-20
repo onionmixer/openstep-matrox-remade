@@ -14,16 +14,12 @@
 
 #include "OpenStepMGAMesaProbe.h"
 #include "OpenStepMGAMesaTriangle.h"
+#include "OpenStepMGAMesaBuffer.h"
 
-/*
- * Where the hardware draws.  Still the offscreen block the tests have always
- * used: pointing Mesa's own buffer at video memory is a separate step, and
- * doing both at once would leave a wrong picture with two possible causes.
- */
-#define OSMGA_HOOK_DSTORG (4UL * 1024UL * 1024UL)
 
 static unsigned long hookDrawn;
 static unsigned long hookDeclined;
+static unsigned long osmgaHookMismatch;
 
 /*
  * One triangle, straight to the engine.
@@ -86,15 +82,17 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     batch->magic = OSMGA_HW3D_MAGIC;
     batch->version = OSMGA_HW3D_VERSION;
     batch->triCount = (unsigned long)n;
-    batch->state.dstorg = OSMGA_HOOK_DSTORG;
+    /* Where the surface is, asked of the one place that decides it -- not
+     * worked out again here, where it could disagree. */
+    batch->state.dstorg = OSMGAMesaBufferOrigin();
     /*
      * The destination is the drawing surface Mesa is working on, and saying
      * so is what lets the kernel clip to it: before the batch declared this,
      * the kernel clipped every submission to a fixed sixty-four by a hundred
      * and twenty, which no real surface fits inside.
      */
-    batch->state.dstWidth  = (unsigned long)ctx->DrawBuffer->Width;
-    batch->state.dstHeight = (unsigned long)ctx->DrawBuffer->Height;
+    batch->state.dstWidth  = OSMGAMesaBufferWidth();
+    batch->state.dstHeight = OSMGAMesaBufferHeight();
 
     if (OSMGAMesaProbeSubmit(&res) != 0) {
         /*
@@ -153,6 +151,14 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
      */
     if (OSMGAMesaProbeBatch() == 0)   return NULL;
 
+    /*
+     * And refuse unless the surface really is in video memory.  Without the
+     * substitution the software path would be drawing into the application's
+     * own buffer while this drew into the card, and a frame split between
+     * two places is worse than a slow one.
+     */
+    if (OSMGAMesaBufferOrigin() == 0UL) return NULL;
+
     /* Neither of these reaches RasterMask, so they are asked about here. */
     if (ctx->Polygon.SmoothFlag)      return NULL;
     if (ctx->Polygon.StippleFlag)     return NULL;
@@ -180,9 +186,28 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
 }
 
 void
-OpenStepMesaAccelUpdateState(GLcontext *ctx)
+OpenStepMesaAccelUpdateState(GLcontext *ctx, int rowLength, int yUp)
 {
-    triangle_func f = osmgaMesaChooseTriangle(ctx);
+    triangle_func f;
+
+    /*
+     * Both paths must put GL row y in the same place.  With the origin at
+     * the bottom -- OSMesa's default -- row y is base + y * pitch, and the
+     * engine draws its rows from the destination origin exactly that way, so
+     * the two agree without being told to.  Turned over, the software path
+     * counts from the far end and the engine does not, and the frame would
+     * come out half one way and half the other.
+     *
+     * The stride has to match for the same reason: the engine takes the
+     * destination pitch from a register holding the display's, so a surface
+     * Mesa is writing at any other stride is one the engine reads wrongly.
+     */
+    if (!yUp || (unsigned long)rowLength != OSMGAMesaBufferStride()) {
+        osmgaHookMismatch++;
+        return;
+    }
+
+    f = osmgaMesaChooseTriangle(ctx);
 
     /*
      * Only ever replace with something; never write NULL.  The software
