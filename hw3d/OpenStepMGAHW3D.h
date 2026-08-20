@@ -331,6 +331,7 @@ typedef struct {
  * rather than refused.
  */
 #define OSMGA_IOC_OUT_BIT   0x40000000UL
+#define OSMGA_IOC_IN_BIT    0x80000000UL
 #define OSMGA_IOC_PARM_MASK 0x7fUL
 #define OSMGA_IOC_GROUP     'M'
 #define OSMGA_IOC_CAPS      ((unsigned long)(OSMGA_IOC_OUT_BIT | \
@@ -374,6 +375,33 @@ typedef struct {
 #define OSMGA_IOC_SUBMIT    ((unsigned long)(OSMGA_IOC_OUT_BIT | \
     ((sizeof(OSMGAHW3DSubmitBlock) & OSMGA_IOC_PARM_MASK) << 16) | \
     ((unsigned long)OSMGA_IOC_GROUP << 8) | 2UL))
+
+/*
+ * Copying a drawn surface out of video memory, done by the driver.
+ *
+ * A client cannot read video memory reliably: measured, the first read after
+ * a submission returns can still hold what was there before the draw, and it
+ * is the client's mapping rather than anything on the device's side -- an
+ * uncached read from the driver before returning changed nothing.  The
+ * S4a plan had already raised this, since this mmap route has no way to ask
+ * for an uncached mapping.  So the driver does the copy through an alias it
+ * CAN make uncached, and a client never reads video memory at all.
+ */
+typedef struct {
+    unsigned long srcOffset;    /* byte offset into video memory */
+    unsigned long rows;
+    unsigned long srcPitch;     /* bytes between rows in video memory */
+    unsigned long width;        /* bytes copied from each row, <= srcPitch */
+    unsigned long dst;          /* where to put them, in the caller */
+    unsigned long dstPitch;     /* bytes between rows there */
+} OSMGAHW3DMirrorBlock;
+
+#define OSMGA_IOC_MIRROR    ((unsigned long)(OSMGA_IOC_IN_BIT | \
+    ((sizeof(OSMGAHW3DMirrorBlock) & OSMGA_IOC_PARM_MASK) << 16) | \
+    ((unsigned long)OSMGA_IOC_GROUP << 8) | 3UL))
+
+typedef int OSMGAHW3DMirrorFits[
+    (sizeof(OSMGAHW3DMirrorBlock) <= OSMGA_IOC_PARM_MASK) ? 1 : -1];
 
 typedef int OSMGAHW3DSubmitFits[
     (sizeof(OSMGAHW3DSubmitBlock) <= OSMGA_IOC_PARM_MASK) ? 1 : -1];
