@@ -7152,7 +7152,8 @@ osmgaM1cTri(OSMGAHW3DTri *t, unsigned long y, unsigned long h,
             }
         }
 
-    IOLog("OpenStepMGA M1-2c: slope %ld px/row; drew inside the clip "
+    IOLog("OpenStepMGA M1-2c: edge displacement %ld over the band "
+          "(not per row); drew inside the clip "
           "%lu %lu %lu %lu %lu %lu of %lu each\n",
           OSMGA_M1C_SLOPE, inside[0], inside[1], inside[2], inside[3],
           inside[4], inside[5], band * OSMGA_S1_W);
