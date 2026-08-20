@@ -370,6 +370,38 @@ main(void)
     reset(); b.state.dstPitch = 0x40000001UL;
                                                 expect("a pitch that would overflow a multiply", OSMGA_HW3D_E_DSTPITCH);
 
+
+    /*
+     * Colour, depth and texture laid out one after another in a single
+     * region, which is how a real drawing surface wants them and what the
+     * driver's limits now allow.  The suite's own regions are three separate
+     * ranges, so nothing here exercised adjacency until this case.
+     */
+    reset();
+    lim.colourStart = lim.depthStart = lim.texStart = 0x400000UL;
+    lim.colourEnd   = lim.depthEnd   = lim.texEnd   = 0x700000UL;
+    b.state.dstPitch = 64; b.state.dstWidth = 64; b.state.dstHeight = 64;
+    lim.pitchBytes = 64 * 4;
+    lim.clipX1 = 63; lim.clipY1 = 63;
+    b.state.dstorg = 0x400000UL;                       /* 16384 bytes */
+    b.state.zorg   = 0x404000UL;                       /*  8192 bytes */
+    b.state.texorg = 0x406000UL;
+    b.tri[0].h = 64; b.tri[0].ar0 = b.tri[0].ar6 = 64;
+    b.tri[0].fxbndry = (64UL << 16) | 0UL;
+                                                expect("colour, depth and texture adjacent", OSMGA_HW3D_OK);
+    /*
+     * The depth origin is only looked at when a triangle actually uses
+     * depth, which is what "ignored unless depth is on" in the contract
+     * means -- so the triangle has to ask for it before the origin can be
+     * wrong.  The first attempt at this case left the triangle drawing
+     * without depth and was satisfied by an answer of OK.
+     */
+    b.tri[0].dwgctl = 0x4UL | (0x3UL << 4) | 0x400UL;  /* TRAP, ZI, z < */
+    b.state.zorg = 0x700000UL;                         /* just past the end */
+                                                expect("depth starting at the end", OSMGA_HW3D_E_ZORG);
+    b.state.zorg = 0x404000UL;
+                                                expect("depth back inside it", OSMGA_HW3D_OK);
+
     printf("\n%s (%d failing)\n", failures ? "FAILURES" : "all cases behave as specified",
            failures);
     return failures != 0;

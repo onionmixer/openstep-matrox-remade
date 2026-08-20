@@ -3360,12 +3360,23 @@ unmap:
     /* clipX1 and clipY1 come from the batch and are set below, once the
      * snapshot exists and the rectangle it declares has been proved to lie
      * inside the window. */
-    lim.colourStart = OSMGA_S1_VRAM_BLOCK;
-    lim.colourEnd   = OSMGA_D3_ZORG;
-    lim.depthStart  = OSMGA_D3_ZORG;
-    lim.depthEnd    = OSMGA_D3_TEXORG;
-    lim.texStart    = OSMGA_D3_TEXORG;
-    lim.texEnd      = OSMGA_S1_VRAM_PROVEN;
+    /*
+     * All three live anywhere in the window, and the window is the whole of
+     * the safety property: a client that overlaps its own colour with its own
+     * depth draws nonsense into memory it was given, which is its business,
+     * while reaching outside is the thing none of this may allow.
+     *
+     * They used to be three fixed thirds, a convenience from when each probe
+     * had a corner of its own -- and it stopped a real drawing surface from
+     * putting its depth immediately after its colour, which is where a
+     * surface wants it.
+     */
+    lim.colourStart = osmgaMmapWindowStart;
+    lim.colourEnd   = osmgaMmapWindowEnd;
+    lim.depthStart  = osmgaMmapWindowStart;
+    lim.depthEnd    = osmgaMmapWindowEnd;
+    lim.texStart    = osmgaMmapWindowStart;
+    lim.texEnd      = osmgaMmapWindowEnd;
     lim.batchBytes  = OSMGA_HW3D_BATCH_BYTES;
     lim.maxEdgeWalk = OSMGA_HW3D_EDGE_WALK;
 
@@ -6938,6 +6949,7 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
     lim.batchBytes  = OSMGA_HW3D_BATCH_BYTES;
     lim.maxEdgeWalk = OSMGA_HW3D_EDGE_WALK;
 
+
     /* Reference: MMIO, rows 0..19. */
     if (!osmgaStormWaitFifo(base, 13U)) goto unmap;
     osmgaStormInitState(base, stride, 0UL, OSMGA_S1_W - 1UL,
@@ -6987,6 +6999,15 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
         batch->version = OSMGA_HW3D_VERSION;
         batch->triCount = 1UL;
         batch->state.dstorg = OSMGA_S1_VRAM_BLOCK;
+        /*
+         * The geometry the validator now requires.  It has to be set AFTER
+         * the batch is zeroed, not before: putting it above the clearing
+         * loop compiles, changes nothing, and leaves every batch here
+         * failing on the pitch before it reaches what the test is for.
+         */
+        batch->state.dstPitch  = stride;
+        batch->state.dstWidth  = lim.clipX1 + 1UL;
+        batch->state.dstHeight = lim.clipY1 + 1UL;
         t = &batch->tri[0];
         t->dwgctl = OSMGA_HW3D_OPCODE_TRAP | (OSMGA_HW3D_ATYPE_I << 4);
         t->alphactrl = MGA_ALPHACTRL_OPAQUE;
@@ -7237,6 +7258,7 @@ osmgaM1cTri(OSMGAHW3DTri *t, unsigned long y, unsigned long h,
     lim.batchBytes  = OSMGA_HW3D_BATCH_BYTES;
     lim.maxEdgeWalk = OSMGA_HW3D_EDGE_WALK;
 
+
     for (b = 0UL; b < bands; b++) {
         unsigned long y0 = b * band;
         long dxL = (b == 1UL || b == 3UL || b == 4UL) ? -OSMGA_M1C_SLOPE : 0L;
@@ -7250,6 +7272,15 @@ osmgaM1cTri(OSMGAHW3DTri *t, unsigned long y, unsigned long h,
         batch->version = OSMGA_HW3D_VERSION;
         batch->triCount = 1UL;
         batch->state.dstorg = OSMGA_M1C_DSTORG;
+        /*
+         * The geometry the validator now requires.  It has to be set AFTER
+         * the batch is zeroed, not before: putting it above the clearing
+         * loop compiles, changes nothing, and leaves every batch here
+         * failing on the pitch before it reaches what the test is for.
+         */
+        batch->state.dstPitch  = stride;
+        batch->state.dstWidth  = lim.clipX1 + 1UL;
+        batch->state.dstHeight = lim.clipY1 + 1UL;
         osmgaM1cTri(&batch->tri[0], y0, band,
                     left0, dxL, (long)band, right0, dxR, (long)band);
 

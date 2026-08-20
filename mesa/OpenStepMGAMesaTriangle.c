@@ -14,7 +14,8 @@
  * kernel, which is what keeps a client from aiming the engine somewhere it
  * should not.  TRAP with access type I is the flat-shaded case.
  */
-#define OSMGA_TRI_DWGCTL    (0x4UL | (0x7UL << 4))
+#define OSMGA_TRI_DWGCTL    (0x4UL | (0x7UL << 4))   /* TRAP, access type I */
+#define OSMGA_TRI_DWGCTL_Z  (0x4UL | (0x3UL << 4))   /* TRAP, access type ZI */
 #define OSMGA_TRI_OPAQUE    0x00000101UL   /* replace, no blending */
 
 /*
@@ -99,13 +100,15 @@ static void
 osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
                long left, long dxL, long right, long dxR,
                const OSMGAMesaVertex *flat,
-               const OSMGAColourPlane *plane, const OSMGAMesaVertex *a)
+               const OSMGAColourPlane *plane, const OSMGAMesaVertex *a,
+               unsigned long zmode, const OSMGAColourPlane *zplane)
 {
     int sdxl = (dxL < 0L) ? 1 : 0;
     int sdxr = (dxR < 0L) ? 1 : 0;
 
     memset(t, 0, sizeof *t);
-    t->dwgctl   = OSMGA_TRI_DWGCTL;
+    t->dwgctl   = (zmode != 0UL) ? (OSMGA_TRI_DWGCTL_Z | zmode)
+                                : OSMGA_TRI_DWGCTL;
     t->alphactrl = OSMGA_TRI_OPAQUE;
     t->y = y;
     t->h = h;
@@ -134,6 +137,25 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
      * `right`, not `right + 1`. */
     t->fxbndry = (((unsigned long)(right + 1L)) << 16) |
                  ((unsigned long)left & 0xffffUL);
+
+    if (zmode != 0UL && zplane != 0) {
+        /*
+         * Depth is a plane like any other, at the same fifteen-bit scale --
+         * measured, along with colour and alpha.  Its values run to 65535
+         * rather than 255, so the start is held to that range instead: the
+         * engine reads sixteen bits, and Mesa's software depth stores the
+         * same range in the same buffer, which is what lets the two agree.
+         */
+        double ox = (double)left - (double)a->x;
+        double oy = (double)y    - (double)a->y;
+        double at = zplane->at_a + zplane->dx * ox + zplane->dy * oy;
+
+        if (at < 0.0)     at = 0.0;
+        if (at > 65535.0) at = 65535.0;
+        t->z0  = osmgaFixed(at);
+        t->zdx = osmgaFixed(zplane->dx);
+        t->zdy = osmgaFixed(zplane->dy);
+    }
 
     /* The shift is 15, which is measured; the DDX sources write 7 and are
      * wrong for this part. */
@@ -166,10 +188,12 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
                        const OSMGAMesaVertex *b,
                        const OSMGAMesaVertex *c,
                        const OSMGAMesaVertex *flat,
+                       unsigned long zmode,
                        OSMGAHW3DTri *out)
 {
     const OSMGAMesaVertex *t, *m, *lo, *tmp;
     OSMGAColourPlane plane[3];
+    OSMGAColourPlane zplane;
     const OSMGAMesaVertex *shade = flat;
     long hTop, hBot, span, xSplit;
     int n = 0;
@@ -191,6 +215,27 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
 
         if (x1 * y2 - x2 * y1 == 0.0)
             return 0;
+    }
+
+    /*
+     * The depth plane, solved whenever depth is asked for, and independently
+     * of whether colour is interpolated -- flat shading says nothing about
+     * depth, which varies across a triangle in either case.
+     */
+    zplane.dx = zplane.dy = 0.0;
+    zplane.at_a = 0.0;
+    if (zmode != 0UL) {
+        double x1 = (double)(b->x - a->x), y1 = (double)(b->y - a->y);
+        double x2 = (double)(c->x - a->x), y2 = (double)(c->y - a->y);
+        double den = x1 * y2 - x2 * y1;
+        double d1 = (double)b->z - (double)a->z;
+        double d2 = (double)c->z - (double)a->z;
+
+        /* den is not zero: the caller above has already refused a triangle
+         * with no area. */
+        zplane.dx   = (d1 * y2 - d2 * y1) / den;
+        zplane.dy   = (d2 * x1 - d1 * x2) / den;
+        zplane.at_a = (double)a->z;
     }
 
     if (shade == 0) {
@@ -246,7 +291,8 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
         long r1 = (m->x < xSplit) ? xSplit : m->x;
 
         osmgaTrapezoid(&out[n], t->y, hTop,
-                       t->x, l1 - t->x, t->x, r1 - t->x, shade, plane, a);
+                       t->x, l1 - t->x, t->x, r1 - t->x, shade, plane, a,
+                       zmode, &zplane);
         n++;
     }
 
@@ -256,7 +302,8 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
         long r0 = (m->x < xSplit) ? xSplit : m->x;
 
         osmgaTrapezoid(&out[n], m->y, hBot,
-                       l0, lo->x - l0, r0, lo->x - r0, shade, plane, a);
+                       l0, lo->x - l0, r0, lo->x - r0, shade, plane, a,
+                       zmode, &zplane);
         n++;
     }
     return n;

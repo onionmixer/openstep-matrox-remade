@@ -36,6 +36,7 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     OSMGAHW3DBatch *batch = OSMGAMesaProbeBatch();
     OSMGAHW3DSubmitBlock res;
     OSMGAMesaVertex a, b, c, prov;
+    unsigned long zmode;
     int n;
 
     if (batch == 0) {
@@ -50,6 +51,7 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     do {                                                                 \
         (dst).x = (long)VB->Win.data[idx][0];                            \
         (dst).y = (long)VB->Win.data[idx][1];                            \
+        (dst).z = (unsigned long)VB->Win.data[idx][2];                   \
         (dst).r = (unsigned long)VB->ColorPtr->data[idx][0];             \
         (dst).g = (unsigned long)VB->ColorPtr->data[idx][1];             \
         (dst).b = (unsigned long)VB->ColorPtr->data[idx][2];             \
@@ -65,16 +67,25 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
      * pv names; smooth shading interpolates and does not use it.  Reading pv
      * in both cases would have looked harmless and been wrong in one.
      */
+    /*
+     * Depth mode, chosen from the state the chooser already agreed to.  It
+     * only ever gets here as one of the comparisons the engine has, because
+     * the chooser refuses the others rather than approximating them.
+     */
+    zmode = (ctx->Depth.Test && ctx->Visual->DepthBits > 0)
+            ? OSMGA_MESA_ZMODE_LT : OSMGA_MESA_ZMODE_NONE;
+
     if (ctx->Light.ShadeModel == GL_FLAT) {
         prov.x = (long)VB->Win.data[pv][0];
         prov.y = (long)VB->Win.data[pv][1];
+        prov.z = (unsigned long)VB->Win.data[pv][2];
         prov.r = (unsigned long)VB->ColorPtr->data[pv][0];
         prov.g = (unsigned long)VB->ColorPtr->data[pv][1];
         prov.b = (unsigned long)VB->ColorPtr->data[pv][2];
-        n = OSMGAMesaBuildTriangle(&a, &b, &c, &prov, batch->tri);
+        n = OSMGAMesaBuildTriangle(&a, &b, &c, &prov, zmode, batch->tri);
     } else {
         n = OSMGAMesaBuildTriangle(&a, &b, &c, (const OSMGAMesaVertex *)0,
-                                   batch->tri);
+                                   zmode, batch->tri);
     }
     if (n == 0)
         return;                 /* no area; nothing to draw and no error */
@@ -94,6 +105,7 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     batch->state.dstWidth  = OSMGAMesaBufferWidth();
     batch->state.dstHeight = OSMGAMesaBufferHeight();
     batch->state.dstPitch  = OSMGAMesaBufferStride();
+    batch->state.zorg      = OSMGAMesaBufferDepthOrigin();
 
     if (OSMGAMesaProbeSubmit(&res) != 0) {
         /*
@@ -181,7 +193,25 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
      * its own bit.  What it leaves behind is recorded in REMAINING_WORK: the
      * software alpha buffer does not learn about pixels we drew.
      */
-    if ((ctx->RasterMask & ~(GLuint)ALPHABUF_BIT) != 0)
+    /*
+     * Depth is allowed through now, but only in the one shape the engine
+     * actually performs: less-than, writing the result back, against a
+     * sixteen-bit buffer -- which is the depth Mesa's software path uses in
+     * the same memory.  Every other comparison is refused rather than
+     * approximated by the nearest one the register has.
+     *
+     * The buffer itself has to be the shared one; without it the two paths
+     * would be testing against different depths, which is worse than not
+     * accelerating at all.
+     */
+    if ((ctx->RasterMask & DEPTH_BIT) != 0) {
+        if (ctx->Depth.Func != GL_LESS)             return NULL;
+        if (ctx->Depth.Mask != GL_TRUE)             return NULL;
+        if (ctx->Visual->DepthBits != 16)           return NULL;
+        if (OSMGAMesaBufferDepthOrigin() == 0UL)    return NULL;
+    }
+
+    if ((ctx->RasterMask & ~(GLuint)(ALPHABUF_BIT | DEPTH_BIT)) != 0)
         return NULL;
 
     return osmgaMesaTriangle;

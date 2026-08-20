@@ -21,7 +21,19 @@
 typedef struct {
     long x, y;                  /* pixels, in the destination's own space */
     unsigned long r, g, b;      /* 0..255 */
+    unsigned long z;            /* 0..65535; ignored unless a z mode is asked */
 } OSMGAMesaVertex;
+
+/*
+ * Depth comparison, in the engine's own encoding, or NONE to draw without
+ * depth at all.  These are the values the drawing-control register takes,
+ * passed through rather than translated, because the caller is choosing an
+ * engine behaviour and inventing a second vocabulary for it would only make
+ * two things to keep in step.
+ */
+#define OSMGA_MESA_ZMODE_NONE  0UL
+#define OSMGA_MESA_ZMODE_LT    0x400UL
+#define OSMGA_MESA_ZMODE_GTE   0x700UL
 
 /*
  * Fills up to two trapezoids and returns how many were written -- 0 for a
@@ -43,6 +55,7 @@ int OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
                            const OSMGAMesaVertex *b,
                            const OSMGAMesaVertex *c,
                            const OSMGAMesaVertex *flat,
+                           unsigned long zmode,
                            OSMGAHW3DTri *out);
 
 #endif /* OPENSTEP_MGA_MESA_TRIANGLE_H */
