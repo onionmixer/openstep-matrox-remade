@@ -171,6 +171,10 @@
  * answer and the plain-C answer cannot drift apart.
  */
 - (void)osmgaFillHW3DCaps:(unsigned *)capsOut;
+
+/* 3-10: mode changes take the engine the same way a batch does. */
+- (int)claimEngineForMode;
+- (void)releaseEngineAfterMode:(int)claimed;
 - setBrightness:(int)level token:(int)token;
 - free;
 

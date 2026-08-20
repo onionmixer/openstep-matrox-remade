@@ -1218,6 +1218,26 @@ static int osmgaMesaAccelEnabled;             /* M1-3a: Configure.app switch */
  */
 static id osmgaCapsInstance;
 
+/*
+ * REMAINING_WORK 3-10.  The submit path claims stormBusy, but mode changes
+ * never did, so nothing stopped a mode from being reprogrammed while a batch
+ * was setting up DMA -- the two would have been writing engine registers at
+ * the same time.  Mode changes now join the same protocol.
+ *
+ * A mode change may not simply fail; the window server is asking for it.  So
+ * it waits, bounded: five times the longest a submit can spin, which is a
+ * margin rather than a guess.  If it still cannot claim the engine, it says
+ * so loudly and goes ahead, because a display that never comes back is worse
+ * than a batch drawn over -- and the epoch below is what keeps that case from
+ * being reported as a success.
+ */
+#define OSMGA_MODE_CLAIM_SPINS  200UL
+#define OSMGA_MODE_CLAIM_DELAY  5000     /* microseconds; 200 x 5ms = 1s */
+
+static unsigned long osmgaModeEpoch;         /* bumped when a mode change ends */
+static unsigned long statModeWaitedForEngine;
+static unsigned long statModeProceededBusy;
+
 /* Unused switch slots: refuse rather than leaving a NULL pointer behind. */
 static int
 osmgaDevNotSupported(void)
@@ -3175,6 +3195,7 @@ unmap:
         IODisplayInfo *di3 = [self displayInfo];
         const OSMGAFormat *f3 = &osmgaFmt[selectedFormatIndex];
         unsigned long stride3, total3, tail3, listPhys3, spins3, status3;
+        unsigned long epoch3;
         unsigned long *list3, listDwords3, badTri3 = 0UL;
         int v3, rc3 = 0;
 
@@ -3256,7 +3277,24 @@ unmap:
         simple_lock(&stormLock);
         if (stormBusy) { simple_unlock(&stormLock); return IO_R_BUSY; }
         stormBusy = YES;
+        epoch3 = osmgaModeEpoch;
         simple_unlock(&stormLock);
+
+        /*
+         * Everything checked above was checked before we owned the engine.  A
+         * mode change could have finished in between, which would leave us
+         * drawing with a stride belonging to a mode that no longer exists.
+         * Ask again now that nothing else can be programming registers, and
+         * take the geometry from here rather than from before the claim.
+         */
+        if (!mmioMapped || !linearModeActive ||
+            osmgaFmt[selectedFormatIndex].bytesPerPixel != 4) {
+            simple_lock(&stormLock);
+            stormBusy = NO;
+            simple_unlock(&stormLock);
+            return IO_R_RESOURCE;
+        }
+        stride3 = (unsigned long)[self displayInfo]->rowBytes / 4UL;
 
         total3 = osmgaHW3DEncode(list3, listDwords3, &osmgaHW3DSnapshot,
                                  &tail3);
@@ -3301,7 +3339,18 @@ unmap:
         }
         simple_lock(&stormLock);
         stormBusy = NO;
+        /*
+         * A mode change that could not claim the engine goes ahead regardless
+         * (see -claimEngineForMode).  If one did that while we were
+         * drawing, whatever we drew went somewhere we can no longer describe,
+         * so it is reported as a failure rather than a success.
+         */
+        if (osmgaModeEpoch != epoch3)
+            rc3 = 0;
         simple_unlock(&stormLock);
+        if (rc3 == 0 && osmgaModeEpoch != epoch3)
+            IOLog("OpenStepMGA 3-10: the mode changed while a batch was "
+                  "drawing; reporting it as failed\n");
         return (rc3 == 1) ? IO_R_SUCCESS : IO_R_RESOURCE;
     }
 
@@ -3319,15 +3368,53 @@ unmap:
                          count:count];
 }
 
+- (int)claimEngineForMode
+{
+    unsigned long spins;
+
+    for (spins = 0UL; spins < OSMGA_MODE_CLAIM_SPINS; spins++) {
+        simple_lock(&stormLock);
+        if (!stormBusy) {
+            stormBusy = YES;
+            simple_unlock(&stormLock);
+            if (spins != 0UL)
+                statModeWaitedForEngine++;
+            return 1;
+        }
+        simple_unlock(&stormLock);
+        IODelay(OSMGA_MODE_CLAIM_DELAY);
+    }
+    statModeProceededBusy++;
+    IOLog("OpenStepMGA 3-10: the engine stayed busy for a second; changing "
+          "mode anyway, and any batch in flight will be told it failed\n");
+    return 0;
+}
+
+- (void)releaseEngineAfterMode:(int)claimed
+{
+    simple_lock(&stormLock);
+    if (claimed)
+        stormBusy = NO;
+    osmgaModeEpoch++;
+    simple_unlock(&stormLock);
+}
+
 - (void)enterLinearMode
 {
+    /* The claim covers the register programming and stops there.  It must
+     * NOT be held across the tests below: they claim the engine themselves
+     * and would wait on us for a second each before giving up. */
+    int claimed = [self claimEngineForMode];
+
     statEnterLinear++;
     IOLog("OpenStepMGAReplacementDisplay: enterLinearMode begin\n");
     if (![self programLinearMode]) {
+        [self releaseEngineAfterMode:claimed];
         IOLog("OpenStepMGAReplacementDisplay: enterLinearMode FAILED; recover via "
               "R5-VGA config-edit reboot (Active Drivers -> VGA)\n");
         return;
     }
+    [self releaseEngineAfterMode:claimed];
     IOLog("OpenStepMGAReplacementDisplay: enterLinearMode done\n");
     /* Opt-in engine tests, last of all: display is already up and verified.
      * S2 runs after S1 and reuses the same offscreen area for its source. */
@@ -3570,9 +3657,12 @@ osmgaDmaBlock(unsigned long *ring, unsigned long ringDwords, unsigned long *pos,
 
 - (void)revertToVGAMode
 {
+    int claimed = [self claimEngineForMode];
+
     statRevertVGA++;
     linearModeActive = NO;
     [super revertToVGAMode];
+    [self releaseEngineAfterMode:claimed];
 }
 
 - (unsigned int)displayMemorySize
