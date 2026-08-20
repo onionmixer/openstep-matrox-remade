@@ -308,7 +308,7 @@ main(void)
         glDisable(GL_DEPTH_TEST);
         glClear(GL_COLOR_BUFFER_BIT);
         glBegin(GL_TRIANGLES);              /* opaque red ground */
-          glColor4ub(255, 0, 0, 255);
+          glColor4ub(255, 0, 0, 0x40);
           glVertex2f( 0.0f,  0.0f);
           glVertex2f(40.0f,  0.0f);
           glVertex2f( 0.0f, 40.0f);
@@ -316,7 +316,7 @@ main(void)
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glBegin(GL_TRIANGLES);              /* blue at half alpha over it */
-          glColor4ub(0, 0, 255, 128);
+          glColor4ub(0, 0, 255, 0x80);
           glVertex2f( 0.0f,  0.0f);
           glVertex2f(40.0f,  0.0f);
           glVertex2f( 0.0f, 40.0f);
@@ -325,6 +325,41 @@ main(void)
         glFinish();
 
         px3 = ((unsigned long *)appbuf)[5UL * W + 5UL] & 0xffffffUL;
+        /*
+         * And what the blend did to alpha itself.  Mesa applies the same
+         * factors to it -- As*As + Ad*(1-As) -- and whether the engine does
+         * the same is a question for the hardware, not for a reading of
+         * either source.  Both paths are asked and the answers printed.
+         */
+        {
+            unsigned long ahw = ((unsigned long *)appbuf)[5UL * W + 5UL] >> 24;
+            unsigned long asw;
+
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDisable(GL_BLEND);
+            glEnable(GL_SCISSOR_TEST); glScissor(0, 0, W, H);
+            glBegin(GL_TRIANGLES);
+              glColor4ub(255, 0, 0, 0x40);
+              glVertex2f( 0.0f,  0.0f);
+              glVertex2f(40.0f,  0.0f);
+              glVertex2f( 0.0f, 40.0f);
+            glEnd();
+            glEnable(GL_BLEND);
+            glBegin(GL_TRIANGLES);
+              glColor4ub(0, 0, 255, 0x80);
+              glVertex2f( 0.0f,  0.0f);
+              glVertex2f(40.0f,  0.0f);
+              glVertex2f( 0.0f, 40.0f);
+            glEnd();
+            glDisable(GL_BLEND);
+            glDisable(GL_SCISSOR_TEST);
+            glFinish();
+            asw = ((unsigned long *)appbuf)[5UL * W + 5UL] >> 24;
+            printf("   blended alpha: hardware %02lx, software %02lx\n",
+                   ahw, asw);
+            expect("the two paths blend alpha the same way", ahw == asw);
+        }
+
         printf("   blended pixel %06lx (want 7f0080)\n", px3);
         expect("the blend is what the formula says", px3 == 0x7f0080UL);
         expect("both blended triangles went to the hardware",

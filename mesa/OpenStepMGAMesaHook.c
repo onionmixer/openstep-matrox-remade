@@ -91,7 +91,15 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         prov.g = (unsigned long)VB->ColorPtr->data[pv][1];
         prov.b = (unsigned long)VB->ColorPtr->data[pv][2];
         prov.a = (unsigned long)VB->ColorPtr->data[pv][3];
-        n = OSMGAMesaBuildTriangle(&a, &b, &c, &prov, zmode, blend, batch->tri);
+        /*
+         * Flat shading flattens alpha as well.  Passing the provoking vertex
+         * for colour while leaving alpha to interpolate across the other
+         * three gave a smooth alpha under a flat colour, which is neither of
+         * the two things a caller can ask for.
+         */
+        a.a = b.a = c.a = prov.a;
+        n = OSMGAMesaBuildTriangle(&a, &b, &c, &prov, zmode, blend,
+                                   batch->tri);
     } else {
         n = OSMGAMesaBuildTriangle(&a, &b, &c, (const OSMGAMesaVertex *)0,
                                    zmode, blend, batch->tri);
@@ -231,6 +239,15 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
     if ((ctx->RasterMask & BLEND_BIT) != 0) {
         if (ctx->Color.BlendSrcRGB != GL_SRC_ALPHA)           return NULL;
         if (ctx->Color.BlendDstRGB != GL_ONE_MINUS_SRC_ALPHA) return NULL;
+        /*
+         * The alpha factors are stored separately and can be set separately,
+         * so checking only the colour ones would let a state through whose
+         * alpha the engine blends by the colour rule.  The software driver's
+         * own fast path checks the same two, which is where the omission
+         * showed.
+         */
+        if (ctx->Color.BlendSrcA != GL_SRC_ALPHA)             return NULL;
+        if (ctx->Color.BlendDstA != GL_ONE_MINUS_SRC_ALPHA)   return NULL;
         if (ctx->Color.BlendEquation != GL_FUNC_ADD_EXT)      return NULL;
         /*
          * And the destination alpha has to be where the engine puts it.  If
