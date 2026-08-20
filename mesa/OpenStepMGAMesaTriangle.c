@@ -17,10 +17,50 @@
 #define OSMGA_TRI_DWGCTL    (0x4UL | (0x7UL << 4))
 #define OSMGA_TRI_OPAQUE    0x00000101UL   /* replace, no blending */
 
+/*
+ * A colour component as a plane over the triangle: its rate along x, its
+ * rate down y, and the value at vertex a.  Doubles, which the kernel could
+ * not use but this can -- nothing in mesa/ is compiled into the driver, and
+ * the alternative is a fixed-point solve whose intermediate products leave
+ * 32 bits (255 << 15 times a coordinate of a couple of thousand is already
+ * eight times the signed range).
+ */
+typedef struct {
+    double dx, dy, at_a;
+} OSMGAColourPlane;
+
+/* (component << 15), rounded, as the two's complement the engine reads.
+ * Increments are signed there even though the field is unsigned here. */
+static unsigned long
+osmgaFixed(double v)
+{
+    double s = v * 32768.0;
+
+    return (unsigned long)(long)((s >= 0.0) ? (s + 0.5) : (s - 0.5));
+}
+
+static unsigned long
+osmgaStartFixed(double v)
+{
+    /*
+     * The start is evaluated at the trapezoid's own corner, which the
+     * integer split can put a fraction of a pixel outside the triangle.  A
+     * component that went negative would wrap into a very large unsigned
+     * value and paint the opposite of what was asked, so it is held to the
+     * representable range; the cost is at most one level at one corner.
+     */
+    if (v < 0.0)
+        v = 0.0;
+    if (v > 255.0)
+        v = 255.0;
+    return osmgaFixed(v);
+}
+
 static void
 osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
                long left, long dxL, long right, long dxR,
-               const OSMGAMesaVertex *flat)
+               const OSMGAMesaVertex *flat,
+               const OSMGAColourPlane *plane, const OSMGAMesaVertex *a)
 {
     int sdxl = (dxL < 0L) ? 1 : 0;
     int sdxr = (dxR < 0L) ? 1 : 0;
@@ -51,11 +91,30 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
     t->fxbndry = (((unsigned long)(right + 1L)) << 16) |
                  ((unsigned long)left & 0xffffUL);
 
-    /* Flat colour: a start value and no gradient.  The shift is 15, which is
-     * measured; the DDX sources write 7 and are wrong for this part. */
-    t->dr[0] = flat->r << 15;
-    t->dr[3] = flat->g << 15;
-    t->dr[6] = flat->b << 15;
+    /* The shift is 15, which is measured; the DDX sources write 7 and are
+     * wrong for this part. */
+    if (flat != 0) {
+        t->dr[0] = flat->r << 15;
+        t->dr[3] = flat->g << 15;
+        t->dr[6] = flat->b << 15;
+        return;
+    }
+    {
+        /* Start values belong at this trapezoid's first pixel, because that
+         * is where the engine begins counting -- measured, see the header. */
+        double ox = (double)left - (double)a->x;
+        double oy = (double)y    - (double)a->y;
+        int i;
+
+        for (i = 0; i < 3; i++) {
+            const OSMGAColourPlane *p = &plane[i];
+
+            t->dr[i * 3 + 0] =
+                osmgaStartFixed(p->at_a + p->dx * ox + p->dy * oy);
+            t->dr[i * 3 + 1] = osmgaFixed(p->dx);
+            t->dr[i * 3 + 2] = osmgaFixed(p->dy);
+        }
+    }
 }
 
 int
@@ -66,11 +125,44 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
                        OSMGAHW3DTri *out)
 {
     const OSMGAMesaVertex *t, *m, *lo, *tmp;
+    OSMGAColourPlane plane[3];
+    const OSMGAMesaVertex *shade = flat;
     long hTop, hBot, span, xSplit;
     int n = 0;
 
-    if (a == 0 || b == 0 || c == 0 || flat == 0 || out == 0)
+    if (a == 0 || b == 0 || c == 0 || out == 0)
         return 0;
+
+    if (shade == 0) {
+        /*
+         * Solve each component as a plane through the three vertices.  The
+         * denominator is twice the signed area; zero means the three are
+         * collinear, so there is no plane and no interior either -- fall
+         * back to a's colour rather than divide.
+         */
+        double x1 = (double)(b->x - a->x), y1 = (double)(b->y - a->y);
+        double x2 = (double)(c->x - a->x), y2 = (double)(c->y - a->y);
+        double denom = x1 * y2 - x2 * y1;
+
+        if (denom == 0.0) {
+            shade = a;
+        } else {
+            unsigned long ca[3], cb[3], cc[3];
+            int i;
+
+            ca[0] = a->r; ca[1] = a->g; ca[2] = a->b;
+            cb[0] = b->r; cb[1] = b->g; cb[2] = b->b;
+            cc[0] = c->r; cc[1] = c->g; cc[2] = c->b;
+            for (i = 0; i < 3; i++) {
+                double d1 = (double)cb[i] - (double)ca[i];
+                double d2 = (double)cc[i] - (double)ca[i];
+
+                plane[i].dx   = (d1 * y2 - d2 * y1) / denom;
+                plane[i].dy   = (d2 * x1 - d1 * x2) / denom;
+                plane[i].at_a = (double)ca[i];
+            }
+        }
+    }
 
     /* Sort by y.  Three comparisons, written out rather than looped, because
      * a loop over three pointers reads worse than the thing it replaces. */
@@ -97,7 +189,7 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
         long r1 = (m->x < xSplit) ? xSplit : m->x;
 
         osmgaTrapezoid(&out[n], t->y, hTop,
-                       t->x, l1 - t->x, t->x, r1 - t->x, flat);
+                       t->x, l1 - t->x, t->x, r1 - t->x, shade, plane, a);
         n++;
     }
 
@@ -107,7 +199,7 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
         long r0 = (m->x < xSplit) ? xSplit : m->x;
 
         osmgaTrapezoid(&out[n], m->y, hBot,
-                       l0, lo->x - l0, r0, lo->x - r0, flat);
+                       l0, lo->x - l0, r0, lo->x - r0, shade, plane, a);
         n++;
     }
     return n;

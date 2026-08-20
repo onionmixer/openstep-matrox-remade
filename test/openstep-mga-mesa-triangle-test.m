@@ -143,7 +143,66 @@ main(void)
         printf("   FAIL -- wrong pixel count\n");
         failures++;
     }
+
+    /*
+     * The same shape again, now with a colour at each vertex.  The plane
+     * through them is solved by hand for the check: red falls 12.75 a row,
+     * green falls 6.375 a column while rising 12.75 a row, blue rises 6.375
+     * a column.  Each sample below is that plane evaluated where the pixel
+     * is, so a gradient applied to the wrong axis, or counted from the
+     * destination's corner instead of the primitive's, moves every one of
+     * them.
+     */
+    v0.r = 255UL; v0.g =   0UL; v0.b =   0UL;
+    v1.r =   0UL; v1.g = 255UL; v1.b =   0UL;
+    v2.r =   0UL; v2.g =   0UL; v2.b = 255UL;
+
+    printf("   -- and again with a colour at each vertex\n");
+    for (row = 0UL; row < ROWS; row++)
+        for (col = 0UL; col < CLIP_COLS; col++)
+            vram[row * STRIDE_DW + col] = SENTINEL;
+
+    n = OSMGAMesaBuildTriangle(&v0, &v1, &v2, (OSMGAMesaVertex *)0,
+                               batch->tri);
+    batch->triCount = (unsigned long)n;
+    r = [master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
+                objectNumber:objNum count:0];
+    if (r != IO_R_SUCCESS) {
+        printf("   FAIL -- the smooth batch was refused (%d)\n", (int)r);
+        return 1;
+    }
+    {
+        static const struct { unsigned long x, y, r, g, b; } want[5] = {
+            {  0UL,  0UL, 255UL,   0UL,   0UL },
+            {  0UL, 10UL, 127UL, 127UL,   0UL },
+            { 20UL, 10UL, 127UL,   0UL, 127UL },
+            {  0UL, 19UL,  12UL, 242UL,   0UL },
+            { 38UL, 19UL,  12UL,   0UL, 242UL }
+        };
+        int i;
+
+        for (i = 0; i < 5; i++) {
+            unsigned long px = vram[want[i].y * STRIDE_DW + want[i].x];
+            unsigned long gr = (px >> 16) & 0xffUL;
+            unsigned long gg = (px >>  8) & 0xffUL;
+            unsigned long gb =  px        & 0xffUL;
+            long dr = (long)gr - (long)want[i].r;
+            long dg = (long)gg - (long)want[i].g;
+            long db = (long)gb - (long)want[i].b;
+            int ok = (px != SENTINEL) &&
+                     dr <= 1L && dr >= -1L &&
+                     dg <= 1L && dg >= -1L &&
+                     db <= 1L && db >= -1L;
+
+            printf("     (%2lu,%2lu) got %3lu %3lu %3lu  want %3lu %3lu %3lu  %s\n",
+                   want[i].x, want[i].y, gr, gg, gb,
+                   want[i].r, want[i].g, want[i].b, ok ? "ok" : "FAIL");
+            if (!ok)
+                failures++;
+        }
+    }
+
     printf("%s\n", failures ? "FAIL" : "PASS -- vertices became the shape "
-                                       "they describe");
+                                       "and the colours they describe");
     return failures ? 1 : 0;
 }

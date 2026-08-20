@@ -28,9 +28,16 @@ typedef struct {
  * triangle with no rows in it, which is not an error and must simply not be
  * drawn.  `out` must have room for two.
  *
- * Colour comes from `flat`: its r, g and b are used for the whole triangle.
- * Interpolated colour is a later step; passing the provoking vertex here
- * gives the flat-shaded case exactly.
+ * Colour: pass the provoking vertex as `flat` for flat shading, or NULL to
+ * interpolate across the three.  A degenerate triangle -- three vertices on
+ * one line -- has no plane to interpolate over, so it falls back to the
+ * colour of `a` rather than dividing by zero.
+ *
+ * The gradients count from the primitive's own first pixel, not from the
+ * destination's corner.  Measured: a trapezoid placed at column 16, row 8,
+ * with red rising 255 over 64 columns, read 0 at (16,8), 63 at (32,8) and
+ * 187 at (63,8) -- which is the primitive origin exactly, and not the
+ * destination origin's 63, 127, 251.
  */
 int OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
                            const OSMGAMesaVertex *b,
