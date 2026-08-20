@@ -153,6 +153,24 @@ main(void)
     if (rc == 0 || res.verdict != (unsigned long)OSMGA_HW3D_E_COUNT)
         failures++;
 
+    /*
+     * The kernel builds its command list in the same allocation, past the
+     * batch.  A client that could map that far could rewrite the list after
+     * it had been validated and before the engine read it, which is the one
+     * thing the validate-then-encode split exists to prevent.  Asking for
+     * the whole allocation must fail.
+     */
+    {
+        caddr_t whole = mapWindow(OSMGAMesaProbeDeviceFd(),
+                                  0x40000000UL, 64 * 1024);
+
+        printf("   mapping past the batch -> %s\n",
+               (whole == (caddr_t)-1) ? "refused, ok"
+                                      : "GRANTED -- FAIL");
+        if (whole != (caddr_t)-1)
+            failures++;
+    }
+
     printf("%s\n", failures ? "FAIL"
                             : "PASS -- drawn by hardware, with no Objective-C "
                               "anywhere in this program");
