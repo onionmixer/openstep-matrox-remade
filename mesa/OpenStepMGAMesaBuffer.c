@@ -18,6 +18,8 @@ extern caddr_t mmap(caddr_t, int, int, int, int, long);
 static unsigned long bufOrigin;
 static unsigned long bufWidth, bufHeight, bufStride;
 static void *bufMapped;
+static void *bufApp;      /* what the application gave us */
+static int   bufDirty;
 static unsigned long bufBytes;
 
 unsigned long OSMGAMesaBufferOrigin(void) { return bufOrigin; }
@@ -33,6 +35,47 @@ unsigned long OSMGAMesaBufferStride(void) { return bufStride; }
  * again.
  */
 void
+OSMGAMesaBufferSoiled(void)
+{
+    bufDirty = 1;
+}
+
+void
+OSMGAMesaBufferMirror(void)
+{
+    const unsigned long *src;
+    unsigned long *dst;
+    unsigned long y, w;
+
+    if (bufMapped == 0 || bufApp == 0 || !bufDirty)
+        return;
+    bufDirty = 0;
+
+    /*
+     * Row by row, because the surface is laid out at the display's stride
+     * and the application's buffer at its own width -- copying the whole
+     * thing in one go would slide every row along by the difference.
+     *
+     * This copies the entire surface every time, which is honest rather than
+     * clever: only the triangles this back end drew have a bounding box we
+     * know, and the software rasteriser writing into the same surface has
+     * none we can see.  Narrowing it needs both halves to report what they
+     * touched, and is recorded as work rather than guessed at here.
+     */
+    src = (const unsigned long *)bufMapped;
+    dst = (unsigned long *)bufApp;
+    w = bufWidth;
+    for (y = 0UL; y < bufHeight; y++) {
+        const unsigned long *s = src + y * bufStride;
+        unsigned long *d = dst + y * w;
+        unsigned long x;
+
+        for (x = 0UL; x < w; x++)
+            d[x] = s[x];
+    }
+}
+
+void
 OpenStepMesaAccelReleaseBuffer(void)
 {
     if (bufMapped != 0) {
@@ -41,6 +84,8 @@ OpenStepMesaAccelReleaseBuffer(void)
         bufMapped = 0;
         bufBytes = 0UL;
     }
+    bufApp = 0;
+    bufDirty = 0;
     bufOrigin = 0UL;
     bufWidth = bufHeight = bufStride = 0UL;
 }
@@ -54,7 +99,6 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
     vm_address_t addr = 0;
 
     (void)ctx;
-    (void)buffer;
 
     if (width <= 0 || height <= 0 || rowLength == 0)
         return 0;
@@ -69,6 +113,7 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
     if (bufMapped != 0) {
         if (bufWidth == (unsigned long)width &&
             bufHeight == (unsigned long)height) {
+            bufApp = buffer;    /* it may be a different buffer this time */
             *rowLength = (int)bufStride;
             return bufMapped;
         }
@@ -120,6 +165,8 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
     }
 
     bufMapped = (void *)addr;
+    bufApp    = buffer;
+    bufDirty  = 0;
     bufBytes  = need;
     bufOrigin = probe.caps[OSMGA_HW3D_CAP_VRAMOFF];
     bufWidth  = (unsigned long)width;

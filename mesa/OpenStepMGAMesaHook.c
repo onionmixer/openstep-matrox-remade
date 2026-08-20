@@ -106,6 +106,7 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         return;
     }
     hookDrawn++;
+    OSMGAMesaBufferSoiled();
 }
 
 /*
@@ -185,6 +186,60 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
     return osmgaMesaTriangle;
 }
 
+/*
+ * The picture lives in video memory now, and the buffer the application
+ * handed to OSMesaMakeCurrent is never written by anyone.  These put it back
+ * at every point the application could look -- which is between GL calls,
+ * since it is not going to be inside one.
+ *
+ * RenderFinish is the important one: it fires at the end of every batch of
+ * primitives, so a program that draws and then reads without ever calling
+ * glFinish still sees its picture.  Relying on glFinish would have been far
+ * cheaper and is not something this OSMesa documents anywhere, so it is not
+ * something to rely on.
+ */
+/*
+ * Anything at all is about to be drawn -- by this back end or by the
+ * software rasteriser, which writes into the same surface and has no way to
+ * announce it.  Marking here rather than only where we draw is what keeps a
+ * frame made entirely of refused primitives from being mirrored away as
+ * "nothing happened".
+ */
+static void
+osmgaMesaSoil(GLcontext *ctx)
+{
+    (void)ctx;
+    OSMGAMesaBufferSoiled();
+}
+
+static void
+osmgaMesaMirror(GLcontext *ctx)
+{
+    (void)ctx;
+    OSMGAMesaBufferMirror();
+}
+
+/*
+ * Clearing is the driver's own, so ours has to chain rather than replace.
+ * The saved pointer is refreshed on every state update, because the driver
+ * reinstalls its own each time -- and never saved when it is already ours,
+ * which would have made the wrapper call itself.
+ */
+static GLbitfield (*osmgaMesaPrevClear)(GLcontext *, GLbitfield, GLboolean,
+                                        GLint, GLint, GLint, GLint);
+
+static GLbitfield
+osmgaMesaClear(GLcontext *ctx, GLbitfield mask, GLboolean all,
+               GLint x, GLint y, GLint w, GLint h)
+{
+    GLbitfield left = mask;
+
+    if (osmgaMesaPrevClear != 0)
+        left = (*osmgaMesaPrevClear)(ctx, mask, all, x, y, w, h);
+    OSMGAMesaBufferSoiled();
+    return left;
+}
+
 void
 OpenStepMesaAccelUpdateState(GLcontext *ctx, int rowLength, int yUp)
 {
@@ -216,6 +271,23 @@ OpenStepMesaAccelUpdateState(GLcontext *ctx, int rowLength, int yUp)
      */
     if (f != 0)
         ctx->Driver.TriangleFunc = f;
+
+    /*
+     * The mirror is installed whenever there is a surface to mirror, not
+     * only when this state can be accelerated: the software rasteriser is
+     * drawing into video memory too, so the application's buffer needs
+     * putting back either way.
+     */
+    if (OSMGAMesaBufferOrigin() != 0UL) {
+        ctx->Driver.RenderStart = osmgaMesaSoil;
+        ctx->Driver.RenderFinish = osmgaMesaMirror;
+        ctx->Driver.Finish = osmgaMesaMirror;
+        ctx->Driver.Flush = osmgaMesaMirror;
+        if (ctx->Driver.Clear != osmgaMesaClear) {
+            osmgaMesaPrevClear = ctx->Driver.Clear;
+            ctx->Driver.Clear = osmgaMesaClear;
+        }
+    }
 }
 
 unsigned long OSMGAMesaHookDrawn(void)    { return hookDrawn; }

@@ -139,6 +139,26 @@ main(void)
                sw == 0x00ffffUL);
     }
 
+    /*
+     * And the buffer the application actually handed to MakeCurrent.  It is
+     * not where the picture is drawn any more -- video memory is -- so
+     * unless it is put back, a program that reads its own array sees nothing
+     * at all, which is the whole difficulty with substituting the buffer.
+     *
+     * Read at the application's own row width, not the surface's stride: the
+     * array is exactly width by height.
+     */
+    {
+        unsigned long *ap = (unsigned long *)appbuf;
+        unsigned long hw = ap[10UL * W + 10UL] & 0xffffffUL;
+        unsigned long sw = ap[40UL * W + 35UL] & 0xffffffUL;
+
+        printf("   application's own buffer: %06lx and %06lx\n", hw, sw);
+        expect("the accelerated triangle reached the caller's buffer",
+               hw == 0x7f3f3fUL);
+        expect("so did the software one", sw == 0x00ffffUL);
+    }
+
     printf("   hook drew %lu, declined %lu\n",
            OSMGAMesaHookDrawn(), OSMGAMesaHookDeclined());
     printf("%s\n", failures ? "FAIL"

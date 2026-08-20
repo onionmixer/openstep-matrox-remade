@@ -41,6 +41,17 @@ unsigned long OSMGAMesaBufferHeight(void);
 unsigned long OSMGAMesaBufferStride(void);
 
 /*
+ * Copy the surface into the buffer the application handed us, which is
+ * otherwise never written -- the picture is in video memory.  Does nothing
+ * if no substitution happened, or if nothing has been drawn since the last
+ * time, so calling it often is cheap when it is not needed.
+ */
+void OSMGAMesaBufferMirror(void);
+
+/* Something has been drawn; the next mirror has work to do. */
+void OSMGAMesaBufferSoiled(void);
+
+/*
  * Give the surface back.  Named the way the Mesa port calls it -- that tree
  * asks a back end to release without naming which one.
  */
