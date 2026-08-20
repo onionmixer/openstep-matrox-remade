@@ -93,6 +93,7 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
      */
     batch->state.dstWidth  = OSMGAMesaBufferWidth();
     batch->state.dstHeight = OSMGAMesaBufferHeight();
+    batch->state.dstPitch  = OSMGAMesaBufferStride();
 
     if (OSMGAMesaProbeSubmit(&res) != 0) {
         /*

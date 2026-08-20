@@ -204,6 +204,7 @@ main(void)
      * inside the window it owns and clips to it. */
     batch->state.dstWidth  = 64UL;
     batch->state.dstHeight = 120UL;
+    batch->state.dstPitch  = 1024UL;   /* the display stride, as before */
     batch->state.zorg = DEPTH_ORG;
     for (b = 0UL; b < NBAND; b++)
         fillRect(&batch->tri[b], b * BAND, BAND, zval[b], DWG_ZI | zmode[b]);

@@ -30,6 +30,11 @@ reset(void)
     b.version = OSMGA_HW3D_VERSION;
     b.triCount = 1;
     b.state.dstorg = lim.colourStart;
+    /* The pitch the limits describe.  Leaving it zero made every case here
+     * validate a batch the driver would have refused. */
+    b.state.dstPitch = lim.pitchBytes / 4;
+    b.state.dstWidth = lim.clipX1 + 1;
+    b.state.dstHeight = lim.clipY1 + 1;
     b.state.zorg = lim.depthStart;
     b.state.texorg = lim.texStart;
     b.state.texW = 64; b.state.texH = 64; b.state.texPitch = 64;
@@ -348,6 +353,22 @@ main(void)
     reset(); b.tri[0].dwgctl |= 0x0002UL;   /* textured */
  b.state.tmr[1] = -1L;
                                                 expect("a negative V increment in x", OSMGA_HW3D_E_TEXCOORD);
+
+
+    /*
+     * The pitch is what everything else is measured against, and until it
+     * was checked here the reusable validator would accept a batch whose
+     * pitch said one thing while the limits said another -- measuring a
+     * rectangle nobody was going to draw.
+     */
+    reset(); b.state.dstPitch = 0;
+                                                expect("no pitch", OSMGA_HW3D_E_DSTPITCH);
+    reset(); b.state.dstWidth = b.state.dstPitch + 1;
+                                                expect("a row wider than its pitch", OSMGA_HW3D_E_DSTPITCH);
+    reset(); b.state.dstPitch = b.state.dstPitch + 1;
+                                                expect("a pitch the limits disagree with", OSMGA_HW3D_E_DSTPITCH);
+    reset(); b.state.dstPitch = 0x40000001UL;
+                                                expect("a pitch that would overflow a multiply", OSMGA_HW3D_E_DSTPITCH);
 
     printf("\n%s (%d failing)\n", failures ? "FAILURES" : "all cases behave as specified",
            failures);

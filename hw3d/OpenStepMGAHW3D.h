@@ -21,6 +21,12 @@
 
 #define OSMGA_HW3D_MAGIC        0x4D474133UL   /* 'MGA3' */
 /*
+ * 4: the batch declares its row pitch as well as its size.  It used to be
+ * forced to the display's, which meant a drawing surface had to be laid out
+ * a screen-width at a time -- and, worse, that the software rasteriser's
+ * depth buffer could never share ours, because Mesa addresses depth at the
+ * surface's own width and cannot be told otherwise.
+ *
  * 3: the capabilities report the display's row stride, which a library
  * needs in order to lay a drawing surface out in video memory the way the
  * engine will read it -- the engine takes the destination pitch from one
@@ -32,7 +38,7 @@
  * version had to move -- the probe demands an exact match precisely so that
  * a library and a driver disagreeing about where the fields are cannot draw.
  */
-#define OSMGA_HW3D_VERSION      3UL
+#define OSMGA_HW3D_VERSION      4UL
 
 /* The 64 KiB IOMallocLow block is split: the client writes the batch at the
  * start, the kernel builds the command list after it.  28 KiB and 36 KiB
@@ -70,6 +76,7 @@
 #define OSMGA_HW3D_E_TEXCOORD  13
 #define OSMGA_HW3D_E_DSTSIZE   14   /* destination not inside the window */
 #define OSMGA_HW3D_E_EDGEDIV   15   /* AR0/AR6 are not the trapezoid's height */
+#define OSMGA_HW3D_E_DSTPITCH  16   /* pitch absent, too small or too wide */
 
 /*
  * What a client may say in DWGCTL, and what the kernel says for it.
@@ -157,12 +164,19 @@ typedef struct {
      * kernel clips to it, so a client cannot reach past what it declared;
      * and it proves the declared rectangle lies inside the window it owns
      * before believing any of it, so a client cannot declare its way out
-     * either.  The row stride is NOT here -- that stays the display's,
-     * because the engine takes the destination pitch from one register and
-     * letting a client name it would be one more thing to contain.
+     * either.  The pitch is declared too, below.
      */
-    unsigned long dstWidth;        /* columns; must be <= the display stride */
+    unsigned long dstWidth;        /* columns; must be <= dstPitch */
     unsigned long dstHeight;       /* rows */
+    /*
+     * Pixels between one row and the next.  The engine has a single pitch
+     * register and uses it for colour and for depth alike, so this is what
+     * decides how BOTH are laid out -- which is the reason it is here at all
+     * rather than fixed at the display's: Mesa addresses its depth buffer at
+     * the surface's own width, so a surface at any other pitch is one whose
+     * depth the software path cannot share.
+     */
+    unsigned long dstPitch;
     unsigned long zorg;            /* depth origin; ignored unless depth is on */
     unsigned long texorg;          /* texture origin; ignored unless textured */
     unsigned long texW, texH;      /* texels; need not be powers of two */

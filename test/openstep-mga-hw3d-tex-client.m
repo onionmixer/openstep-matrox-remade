@@ -168,6 +168,7 @@ main(void)
      * inside the window it owns and clips to it. */
     batch->state.dstWidth  = 64UL;
     batch->state.dstHeight = 120UL;
+    batch->state.dstPitch  = 1024UL;   /* the display stride, as before */
     texState(batch);
     rect(&batch->tri[0], 0UL, DIM, DWG_TEX);
     rect(&batch->tri[1], DIM, FLATH, DWG_FLAT);

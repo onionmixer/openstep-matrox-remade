@@ -91,6 +91,7 @@ main(void)
      * inside the window it owns and clips to it. */
     batch->state.dstWidth  = 64UL;
     batch->state.dstHeight = 120UL;
+    batch->state.dstPitch  = 1024UL;   /* the display stride, as before */
 
     /* The same right triangle the Objective-C test draws, so the two can be
      * compared directly: 400 pixels, and the colours of its corners. */
@@ -169,7 +170,7 @@ main(void)
             unsigned long w, h, org;
             long ar6;
             unsigned long want;
-        } refuse[5] = {
+        } refuse[8] = {
             { "no width",              0UL,  120UL, VRAM_BLOCK, -1L,
               OSMGA_HW3D_E_DSTSIZE },
             { "no height",            64UL,    0UL, VRAM_BLOCK, -1L,
@@ -179,15 +180,25 @@ main(void)
             { "taller than the window", 64UL, 4096UL, VRAM_BLOCK, -1L,
               OSMGA_HW3D_E_DSTSIZE },
             { "a zero edge divisor",   64UL,  120UL, VRAM_BLOCK,  0L,
-              OSMGA_HW3D_E_EDGEDIV }
+              OSMGA_HW3D_E_EDGEDIV },
+            { "no pitch",              64UL,  120UL, VRAM_BLOCK, -1L,
+              OSMGA_HW3D_E_DSTPITCH },
+            { "a pitch past the register", 64UL, 120UL, VRAM_BLOCK, -1L,
+              OSMGA_HW3D_E_DSTPITCH },
+            { "a row wider than its pitch", 64UL, 120UL, VRAM_BLOCK, -1L,
+              OSMGA_HW3D_E_DSTPITCH }
         };
         int i;
 
-        for (i = 0; i < 5; i++) {
+        for (i = 0; i < 8; i++) {
             batch->triCount = 1UL;
             batch->state.dstorg    = refuse[i].org;
             batch->state.dstWidth  = refuse[i].w;
             batch->state.dstHeight = refuse[i].h;
+            batch->state.dstPitch  = 1024UL;
+            if (i == 5) batch->state.dstPitch = 0UL;
+            if (i == 6) batch->state.dstPitch = 4096UL;
+            if (i == 7) batch->state.dstWidth = 2048UL;
             if (refuse[i].ar6 >= 0L)
                 batch->tri[0].ar6 = refuse[i].ar6;
             rc = OSMGAMesaProbeSubmit(&res);

@@ -151,6 +151,7 @@ main(void)
      * inside the window it owns and clips to it. */
     batch->state.dstWidth  = 64UL;
     batch->state.dstHeight = 120UL;
+    batch->state.dstPitch  = 1024UL;   /* the display stride, as before */
 
     n = OSMGAMesaBuildTriangle(&v0, &v1, &v2, &v0, batch->tri);
     batch->triCount = (unsigned long)n;

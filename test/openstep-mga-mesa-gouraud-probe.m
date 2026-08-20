@@ -109,6 +109,7 @@ main(void)
      * inside the window it owns and clips to it. */
     batch->state.dstWidth  = 64UL;
     batch->state.dstHeight = 120UL;
+    batch->state.dstPitch  = 1024UL;   /* the display stride, as before */
 
     t = &batch->tri[0];
     t->dwgctl = 0x4UL | (0x7UL << 4);       /* TRAP, access type I */

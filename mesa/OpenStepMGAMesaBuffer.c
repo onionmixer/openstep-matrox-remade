@@ -163,10 +163,21 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
     if (probe.verdict != OSMGA_PROBE_HARDWARE)
         return 0;
 
-    stride = probe.caps[OSMGA_HW3D_CAP_STRIDE];
+    /*
+     * The surface is laid out the way Mesa already lays it out -- at the
+     * caller's own row length -- rather than at the display's stride.  The
+     * engine used to force the latter, and following it meant overriding
+     * Mesa's stride and, worse, that the software rasteriser's depth buffer
+     * could never share ours: Mesa addresses depth at the surface's width and
+     * has no setting for anything else.  The batch declares the pitch now, so
+     * both can simply agree with Mesa.
+     */
+    stride = (unsigned long)appRowLength;
     avail  = probe.caps[OSMGA_HW3D_CAP_VRAMLEN];
     if (stride == 0UL || (unsigned long)width > stride)
-        return 0;               /* wider than a row: it would wrap */
+        return 0;               /* a row would run into the next */
+    if (stride > probe.caps[OSMGA_HW3D_CAP_STRIDE])
+        return 0;               /* wider than the pitch register is known to hold */
 
     /*
      * Rows times a row of bytes, checked by division so the product is never
@@ -198,11 +209,12 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
     bufStride = stride;
 
     /*
-     * The engine will read this surface at the display's stride, so Mesa has
-     * to write it at the same one.  Nothing is flipped: OSMesa puts GL row y
-     * at base + y * pitch by default, and the engine draws its rows from the
-     * origin the same way, so the two agree without being told to.
+     * Nothing to override: Mesa is already laying the surface out this way,
+     * and the batch will tell the engine to read it the same.  Nothing is
+     * flipped either -- OSMesa puts GL row y at base + y * pitch by default
+     * and the engine draws its rows from the origin the same way, so the two
+     * agree without being told to.
      */
-    *rowLength = (int)stride;
+    *rowLength = 0;
     return bufMapped;
 }

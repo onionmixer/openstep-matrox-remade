@@ -184,6 +184,7 @@ main(void)
      * inside the window it owns and clips to it. */
     batch->state.dstWidth  = 64UL;
     batch->state.dstHeight = 120UL;
+    batch->state.dstPitch  = 1024UL;   /* the display stride, as before */
 
     /* Three different shapes, so a per-triangle loop that reused one
      * triangle's values, or applied them in the wrong order, would show

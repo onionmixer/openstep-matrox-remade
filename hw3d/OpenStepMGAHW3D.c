@@ -87,6 +87,21 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
 
     /* Colour: the kernel's clip bounds the rows, so the origin plus that
      * many rows must stay inside the window we own. */
+    /*
+     * The pitch decides how far apart the rows are and therefore everything
+     * below, so it is checked here rather than only by whoever calls this.
+     * The equality is the point: the caller passes the pitch in bytes and the
+     * batch carries it in pixels, and a validator that trusted one while the
+     * engine was programmed from the other would be measuring a rectangle
+     * nobody was going to draw.  Compared by dividing, so a pitch large
+     * enough to overflow a multiply is refused rather than wrapping into
+     * agreement.
+     */
+    if (b->state.dstPitch == 0UL ||
+        b->state.dstWidth > b->state.dstPitch ||
+        lim->pitchBytes / 4UL != b->state.dstPitch)
+        return OSMGA_HW3D_E_DSTPITCH;
+
     if (!osmgaHW3DReach(b->state.dstorg, rows, lim->pitchBytes,
                         lim->colourStart, lim->colourEnd))
         return OSMGA_HW3D_E_DSTORG;

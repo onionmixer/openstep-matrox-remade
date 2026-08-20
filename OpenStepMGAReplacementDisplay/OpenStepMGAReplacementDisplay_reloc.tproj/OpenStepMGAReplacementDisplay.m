@@ -3274,7 +3274,7 @@ unmap:
     IODisplayInfo *di3;   /* read under the claim, never before it */
     const OSMGAFormat *f3 = &osmgaFmt[selectedFormatIndex];
     unsigned long stride3, total3, tail3, listPhys3, spins3, status3;
-    unsigned long epoch3, dstW3, dstH3, avail3;
+    unsigned long epoch3, dstW3, dstH3, dstP3, avail3;
     unsigned long *list3, listDwords3, badTri3 = 0UL;
     int v3, rc3 = 0;
 
@@ -3356,7 +3356,7 @@ unmap:
 
     /* Every one of these comes from the kernel.  Nothing a client can
      * write reaches this structure. */
-    lim.pitchBytes  = (unsigned long)di3->rowBytes;
+    /* pitchBytes comes from the batch and is set once it has been proved. */
     /* clipX1 and clipY1 come from the batch and are set below, once the
      * snapshot exists and the rectangle it declares has been proved to lie
      * inside the window. */
@@ -3408,7 +3408,24 @@ unmap:
      */
     dstW3 = osmgaHW3DSnapshot.state.dstWidth;
     dstH3 = osmgaHW3DSnapshot.state.dstHeight;
-    if (dstW3 == 0UL || dstH3 == 0UL || dstW3 > stride3) {
+    dstP3 = osmgaHW3DSnapshot.state.dstPitch;
+
+    /*
+     * The pitch decides how far apart the rows are, for colour and for depth
+     * alike, so it is what everything below is measured against.  It may not
+     * exceed the display's: that width is already known to work in this
+     * register, and allowing more would be asking the engine for something
+     * nothing here has ever tried.  A row must fit inside it, or the row
+     * would run into the next one.
+     */
+    if (dstP3 == 0UL || dstP3 > stride3 || dstW3 > dstP3) {
+        osmgaHW3DLast[0] = (unsigned)OSMGA_HW3D_E_DSTPITCH;
+        simple_lock(&stormLock);
+        stormBusy = NO;
+        simple_unlock(&stormLock);
+        return IO_R_INVALID_ARG;
+    }
+    if (dstW3 == 0UL || dstH3 == 0UL) {
         osmgaHW3DLast[0] = (unsigned)OSMGA_HW3D_E_DSTSIZE;
         simple_lock(&stormLock);
         stormBusy = NO;
@@ -3423,14 +3440,22 @@ unmap:
         simple_unlock(&stormLock);
         return IO_R_INVALID_ARG;
     }
+    /*
+     * The last byte the engine can touch is dstorg + (h-1)*pitch*4 + w*4 - 1.
+     * Compared without forming the product, because a height a caller may
+     * legitimately ask for overflows a 32-bit multiply long before it stops
+     * being plausible, and a check that overflows is not a check.
+     */
     avail3 = osmgaMmapWindowEnd - osmgaHW3DSnapshot.state.dstorg;
-    if (dstH3 > avail3 / (unsigned long)di3->rowBytes) {
+    if (dstW3 * 4UL > avail3 ||
+        dstH3 - 1UL > (avail3 - dstW3 * 4UL) / (dstP3 * 4UL)) {
         osmgaHW3DLast[0] = (unsigned)OSMGA_HW3D_E_DSTSIZE;
         simple_lock(&stormLock);
         stormBusy = NO;
         simple_unlock(&stormLock);
         return IO_R_INVALID_ARG;
     }
+    lim.pitchBytes = dstP3 * 4UL;
     lim.clipX1 = dstW3 - 1UL;
     lim.clipY1 = dstH3 - 1UL;
 
@@ -3461,8 +3486,8 @@ unmap:
     if (total3 != 0UL &&
         osmgaStormWaitIdle(mmioBase) &&
         osmgaStormWaitFifo(mmioBase, 13U)) {
-        osmgaStormInitState(mmioBase, stride3, 0UL, dstW3 - 1UL, 0UL,
-                            (dstH3 - 1UL) * stride3);
+        osmgaStormInitState(mmioBase, dstP3, 0UL, dstW3 - 1UL, 0UL,
+                            (dstH3 - 1UL) * dstP3);
         osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
         for (spins3 = 0UL; spins3 < OSMGA_S1_SPIN_LIMIT; spins3++) {
             status3 = osmgaR32(mmioBase, MGA_ENGSTATUS) &
