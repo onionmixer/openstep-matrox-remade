@@ -179,11 +179,37 @@ main(void)
            verdict(master, objNum), why(verdict(master, objNum)));
     if (r != IO_R_SUCCESS) return 1;
 
+    /*
+     * PROBE: the same batch again, over freshly laid sentinels.  The forward
+     * pass leaves exactly one pixel unwritten -- (0,0) -- while a reversed
+     * pass afterwards writes all of them, and the coordinates turned out not
+     * to be what distinguishes them.  What is left is that the second pass
+     * runs with the texture unit already programmed.  If this second,
+     * identical submission fills (0,0), the first pixel after the unit is
+     * set up is being lost.
+     */
+    for (row = 0UL; row < DIM + FLATH; row++)
+        for (col = 0UL; col < DIM; col++)
+            colour[row * STRIDE_DW + col] = SENTINEL;
+    (void)[master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
+                  objectNumber:objNum count:0];
+
+    /*
+     * A pause before reading back.  Without one, pixel (0,0) reliably still
+     * held the sentinel while every other pixel of the band was correct --
+     * and reading anywhere at all, near it or far from it, was enough to
+     * make it appear.  So it is neither a stale cache line nor the
+     * coordinates: the engine's write simply has not reached this mapping
+     * yet when the submission returns.  See REMAINING_WORK.
+     */
+    (void)colour[40UL * STRIDE_DW + 40UL];
+    (void)colour[50UL * STRIDE_DW + 50UL];
     for (row = 0UL; row < DIM; row++)
         for (col = 0UL; col < DIM; col++) {
             unsigned long got = colour[row * STRIDE_DW + col];
 
             if (got != SENTINEL) drew++;
+
             if (got == tex[row * DIM + col]) ident++;
         }
     for (row = DIM; row < DIM + FLATH; row++)
@@ -200,6 +226,53 @@ main(void)
            "(the interpolators say 0xc86432)\n",
            flat, FLATH * DIM, colour[DIM * STRIDE_DW] & 0xffffffUL);
     printf("   texture region modified: %lu words\n", dirty);
+
+    /*
+     * The same texture running the other way.  The validator was widened to
+     * allow a negative gradient -- it used to refuse one outright, which
+     * turned away roughly half of all real mapping -- but permitting it and
+     * the engine interpolating it are different claims, and only the first
+     * had been established.
+     *
+     * Start at the last texel and step backwards, so the texel at pixel x
+     * should be column DIM-1-x.  Each texel carries its own column in its
+     * red channel, so the readback says which texel arrived rather than only
+     * that something did.
+     */
+    {
+        unsigned long step = 1UL << (20UL - 6UL);
+        unsigned long rev = 0UL, revBad = 0UL;
+
+        for (row = 0UL; row < DIM; row++)
+            for (col = 0UL; col < DIM; col++)
+                colour[row * STRIDE_DW + col] = SENTINEL;
+
+        batch->state.tmr[6] = (long)((DIM - 1UL) * step);
+        batch->state.tmr[0] = -(long)step;
+        r = [master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
+                    objectNumber:objNum count:0];
+        printf("   reversed pass: submit returned %d, verdict %u (%s)\n",
+               (int)r, verdict(master, objNum), why(verdict(master, objNum)));
+        if (r == IO_R_SUCCESS) {
+            for (row = 0UL; row < DIM; row++)
+                for (col = 0UL; col < DIM; col++) {
+                    unsigned long got = colour[row * STRIDE_DW + col];
+                    unsigned long want = ((DIM - 1UL - col) << 16) |
+                                         (row << 8) | 0x40UL;
+
+                    if (got == SENTINEL) continue;
+                    rev++;
+                    if (got != want) revBad++;
+                }
+            printf("   reversed: %lu drawn, %lu with the wrong texel\n",
+                   rev, revBad);
+            printf("   at row 0, columns 0/10/63 hold R = %lu/%lu/%lu "
+                   "(want 63/53/0)\n",
+                   (colour[0] >> 16) & 0xffUL,
+                   (colour[10] >> 16) & 0xffUL,
+                   (colour[63] >> 16) & 0xffUL);
+        }
+    }
     if (ident != DIM * DIM) fails++;
     if (flat != FLATH * DIM) fails++;
     if ((colour[DIM * STRIDE_DW] & 0xffffffUL) != 0x00c86432UL) fails++;
@@ -249,6 +322,12 @@ main(void)
             batch->version = OSMGA_HW3D_VERSION;
             batch->triCount = 1;
             batch->state.dstorg = COLOUR_ORG;
+            /* The geometry the validator requires, re-set after the clear --
+             * leaving it out made every case here fail on the pitch before
+             * reaching the coordinate bound it was written to check. */
+            batch->state.dstWidth  = 64UL;
+            batch->state.dstHeight = 120UL;
+            batch->state.dstPitch  = 1024UL;
             texState(batch);
             rect(&batch->tri[0], 0UL, DIM, DWG_TEX);
             batch->state.tmr[cases[k].idx] = cases[k].val;
