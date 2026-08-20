@@ -100,6 +100,42 @@ main(void)
 
     printf("M1-3b: a triangle built from three vertices\n");
 
+    /*
+     * Shapes that must produce nothing at all.  Each of these once produced
+     * a trapezoid: a degenerate triangle walked both edges together and the
+     * engine drew the line itself, and a coordinate that is a multiple of
+     * 65536 survived FXBNDRY's mask as a small number, passing the kernel's
+     * column check while naming a pixel nowhere near the screen.
+     */
+    {
+        static const struct { long ax, ay, bx, by, cx, cy; const char *what; }
+        nothing[5] = {
+            {  10L, 0L,  10L, 0L,  20L, 10L, "two vertices the same" },
+            {  10L, 0L,  10L, 5L,  10L, 10L, "one column wide" },
+            {   0L, 0L,  10L, 5L,  20L, 10L, "three on one line" },
+            {   5L, 5L,   5L, 5L,   5L,  5L, "one point" },
+            { -65536L, 0L, -65536L, 1L, -65536L, 2L, "far off screen" }
+        };
+        OSMGAHW3DTri scratch[2];
+        OSMGAMesaVertex p0, p1, p2;
+        int i, got;
+
+        p0.r = p1.r = p2.r = 255UL;
+        p0.g = p1.g = p2.g = 255UL;
+        p0.b = p1.b = p2.b = 255UL;
+        for (i = 0; i < 5; i++) {
+            p0.x = nothing[i].ax; p0.y = nothing[i].ay;
+            p1.x = nothing[i].bx; p1.y = nothing[i].by;
+            p2.x = nothing[i].cx; p2.y = nothing[i].cy;
+            got = OSMGAMesaBuildTriangle(&p0, &p1, &p2, &p0, scratch);
+            printf("   %-22s -> %d trapezoid(s)  %s\n",
+                   nothing[i].what, got, (got == 0) ? "ok" : "FAIL");
+            if (got != 0)
+                failures++;
+        }
+    }
+
+
     for (row = 0UL; row < ROWS; row++)
         for (col = 0UL; col < CLIP_COLS; col++)
             vram[row * STRIDE_DW + col] = SENTINEL;

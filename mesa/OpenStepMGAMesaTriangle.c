@@ -39,6 +39,38 @@ osmgaFixed(double v)
     return (unsigned long)(long)((s >= 0.0) ? (s + 0.5) : (s - 0.5));
 }
 
+/*
+ * An increment has to be held to the range a component can actually cover in
+ * one step.  A near-degenerate triangle -- a sliver one column wide with
+ * opposite colours along it -- solves to a gradient of tens of thousands per
+ * pixel, and at the fifteen-bit scale that no longer fits the field the
+ * engine reads: 255 * 119 becomes 0x3B448000, of which the hardware would
+ * see 0x448000, or +137, and paint a gradient nobody asked for.
+ *
+ * Nothing legitimate is lost by holding it to 255.  A component spans its
+ * whole range in a single pixel at that rate, so any larger value describes
+ * a triangle too thin to have an interior for the extra precision to land
+ * in.  The clamped form also stays inside 24 bits, whatever the field's
+ * exact width turns out to be.
+ */
+static double
+osmgaClampSlope(double v)
+{
+    if (v >  255.0) return  255.0;
+    if (v < -255.0) return -255.0;
+    return v;
+}
+
+/*
+ * Coordinates far outside any real destination are refused rather than
+ * packed.  FXBNDRY keeps sixteen bits, so a multiple of 65536 would survive
+ * the mask as a small number and pass the kernel's column check while naming
+ * a pixel nowhere near the screen; and the products in the split overflow a
+ * signed long long before that.  This bound is far above any mode and far
+ * below where the arithmetic stops being exact.
+ */
+#define OSMGA_MESA_COORD_MAX 16384L
+
 static unsigned long
 osmgaStartFixed(double v)
 {
@@ -54,6 +86,13 @@ osmgaStartFixed(double v)
     if (v > 255.0)
         v = 255.0;
     return osmgaFixed(v);
+}
+
+static int
+osmgaCoordOK(const OSMGAMesaVertex *v)
+{
+    return (v->x <=  OSMGA_MESA_COORD_MAX && v->x >= -OSMGA_MESA_COORD_MAX &&
+            v->y <=  OSMGA_MESA_COORD_MAX && v->y >= -OSMGA_MESA_COORD_MAX);
 }
 
 static void
@@ -75,8 +114,13 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
      * AR0 and AR6 are the heights the two edges divide by, and AR2 and AR5
      * the displacements over that height, so the pair expresses a fractional
      * slope directly.  AR1 and AR4 start the error at the displacement,
-     * which is the form the working batches use.  The magnitude goes in the
-     * registers and the direction in SGN.
+     * which is the form the working batches use.
+     *
+     * What goes in the register is the NEGATED magnitude, never the
+     * magnitude: both arms of the expression below come out negative or
+     * zero, and the direction is carried entirely by SGN.  Confirmed by
+     * reading it back -- a right edge given +40 produced ar5 = -40 and drew
+     * the shape that displacement describes.
      */
     t->ar0 = h;
     t->ar1 = sdxl ? dxL : -dxL;
@@ -111,8 +155,8 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
 
             t->dr[i * 3 + 0] =
                 osmgaStartFixed(p->at_a + p->dx * ox + p->dy * oy);
-            t->dr[i * 3 + 1] = osmgaFixed(p->dx);
-            t->dr[i * 3 + 2] = osmgaFixed(p->dy);
+            t->dr[i * 3 + 1] = osmgaFixed(osmgaClampSlope(p->dx));
+            t->dr[i * 3 + 2] = osmgaFixed(osmgaClampSlope(p->dy));
         }
     }
 }
@@ -132,21 +176,34 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
 
     if (a == 0 || b == 0 || c == 0 || out == 0)
         return 0;
+    if (!osmgaCoordOK(a) || !osmgaCoordOK(b) || !osmgaCoordOK(c))
+        return 0;
+
+    {
+        /*
+         * Twice the signed area.  Zero means the three vertices are on one
+         * line, and a triangle with no area covers no pixels -- without this
+         * the two edges walk together and the engine draws the line itself,
+         * which is a shape nobody asked for.
+         */
+        double x1 = (double)(b->x - a->x), y1 = (double)(b->y - a->y);
+        double x2 = (double)(c->x - a->x), y2 = (double)(c->y - a->y);
+
+        if (x1 * y2 - x2 * y1 == 0.0)
+            return 0;
+    }
 
     if (shade == 0) {
         /*
          * Solve each component as a plane through the three vertices.  The
-         * denominator is twice the signed area; zero means the three are
-         * collinear, so there is no plane and no interior either -- fall
-         * back to a's colour rather than divide.
+         * denominator is twice the signed area, which the caller above has
+         * already established is not zero.
          */
         double x1 = (double)(b->x - a->x), y1 = (double)(b->y - a->y);
         double x2 = (double)(c->x - a->x), y2 = (double)(c->y - a->y);
         double denom = x1 * y2 - x2 * y1;
 
-        if (denom == 0.0) {
-            shade = a;
-        } else {
+        {
             unsigned long ca[3], cb[3], cc[3];
             int i;
 
