@@ -23,3 +23,6 @@ sym/
 *.o
 *.d
 *.reloc
+
+# Built libraries, kept only so a reboot does not cost a rebuild.
+build/mesa/

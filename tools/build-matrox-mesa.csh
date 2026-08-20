@@ -60,4 +60,16 @@ foreach sym (OpenStepMesaAccelUpdateState OSMGAMesaProbeRun OSMGAMesaBuildTriang
     endif
 end
 
+# Keep the result somewhere a reboot does not erase.  Staging lives in /tmp,
+# which is cleared at every boot, and rebuilding Mesa from source to run one
+# test costs about a quarter of an hour -- on a machine whose reboots are
+# already the scarcest thing in this project.
+set keep = $mga_src/build/mesa
+if (! -d $mga_src/build) mkdir $mga_src/build
+if (! -d $keep) mkdir $keep
+cp $out/libGL_mga.a $keep/
+cp $mesa_src/lib/libGL.a $keep/
+cp -r $mesa_src/include $keep/
+echo "build-matrox-mesa: kept a copy in $keep"
+
 echo "build-matrox-mesa: PASS $out/libGL_mga.a"

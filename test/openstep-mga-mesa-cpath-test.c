@@ -158,6 +158,51 @@ main(void)
         failures++;
 
     /*
+     * The rules the kernel gained with version 2, each checked on the
+     * hardware rather than only in the host suite -- the host suite calls
+     * the validator directly, so it cannot show that the driver actually
+     * consults it before touching the engine.
+     */
+    {
+        static const struct {
+            const char *what;
+            unsigned long w, h, org;
+            long ar6;
+            unsigned long want;
+        } refuse[5] = {
+            { "no width",              0UL,  120UL, VRAM_BLOCK, -1L,
+              OSMGA_HW3D_E_DSTSIZE },
+            { "no height",            64UL,    0UL, VRAM_BLOCK, -1L,
+              OSMGA_HW3D_E_DSTSIZE },
+            { "wider than the stride", 1025UL, 8UL, VRAM_BLOCK, -1L,
+              OSMGA_HW3D_E_DSTSIZE },
+            { "taller than the window", 64UL, 4096UL, VRAM_BLOCK, -1L,
+              OSMGA_HW3D_E_DSTSIZE },
+            { "a zero edge divisor",   64UL,  120UL, VRAM_BLOCK,  0L,
+              OSMGA_HW3D_E_EDGEDIV }
+        };
+        int i;
+
+        for (i = 0; i < 5; i++) {
+            batch->triCount = 1UL;
+            batch->state.dstorg    = refuse[i].org;
+            batch->state.dstWidth  = refuse[i].w;
+            batch->state.dstHeight = refuse[i].h;
+            if (refuse[i].ar6 >= 0L)
+                batch->tri[0].ar6 = refuse[i].ar6;
+            rc = OSMGAMesaProbeSubmit(&res);
+            printf("   %-24s -> rc=%d verdict=%lu (want %lu) %s\n",
+                   refuse[i].what, rc, res.verdict, refuse[i].want,
+                   (rc != 0 && res.verdict == refuse[i].want) ? "ok" : "FAIL");
+            if (rc == 0 || res.verdict != refuse[i].want)
+                failures++;
+            /* put the good geometry back for the next case */
+            n = OSMGAMesaBuildTriangle(&v0, &v1, &v2,
+                                       (OSMGAMesaVertex *)0, batch->tri);
+        }
+    }
+
+    /*
      * The kernel builds its command list in the same allocation, past the
      * batch.  A client that could map that far could rewrite the list after
      * it had been validated and before the engine read it, which is the one
