@@ -128,6 +128,21 @@ main(int argc, char **argv)
      * control against which the ioctl path is compared.
      */
     int noSettle = (argc > 1 && strcmp(argv[1], "trust-driver") == 0);
+    /* argv[2]: the linear word index to read first after a submission.
+     * argv[3]: how many processor-only iterations to burn before that. */
+    unsigned long argFirst = 0UL, argSpin = 0UL;
+    int argHaveFirst = 0;
+    /* argv[4]: push the destination this many rows down the window, so that
+     * the destination's first byte is no longer the window's first byte.
+     * The stale 64 bytes then say which of the two they belong to. */
+    unsigned long argRows = 0UL;
+    /* argv[5]: start the MAPPING this many rows in, as well.  With this and
+     * argv[4] both set to zero the destination sits on the driver's window
+     * start; with this alone the destination is still the first thing in the
+     * client's mapping but no longer the window's first byte.  That is the
+     * pair that says whether the stale bytes belong to the mapping or to a
+     * particular place in the card's memory. */
+    unsigned long argMapRows = 0UL;
     IODeviceMaster *master;
     IOObjectNumber objNum;
     IOString kind;
@@ -144,7 +159,8 @@ main(int argc, char **argv)
             deviceKind:&kind] != IO_R_SUCCESS) { printf("no Display0\n"); return 1; }
     if ((fd = open(DEV_PATH, O_RDWR)) < 0) { printf("no %s\n", DEV_PATH); return 1; }
     cmd  = mapDevice(fd, CMD_MMAP_BASE, CMD_MMAP_LEN);
-    cwin = mapDevice(fd, COLOUR_ORG, (int)((DIM + FLATH) * STRIDE_DW * 4UL));
+    cwin = mapDevice(fd, COLOUR_ORG + argMapRows * STRIDE_DW * 4UL,
+                     (int)((DIM + FLATH - argMapRows) * STRIDE_DW * 4UL));
     twin = mapDevice(fd, TEX_ORG,    (int)(DIM * DIM * 4UL));
     if (cmd == (caddr_t)-1 || cwin == (caddr_t)-1 || twin == (caddr_t)-1) {
         printf("a window will not map\n"); return 1;
@@ -152,6 +168,17 @@ main(int argc, char **argv)
     batch  = (OSMGAHW3DBatch *)cmd;
     colour = (volatile unsigned long *)cwin;
     tex    = (volatile unsigned long *)twin;
+
+    if (argc > 2) {
+        argFirst = (unsigned long)atoi(argv[2]);
+        argHaveFirst = 1;
+    }
+    if (argc > 3)
+        argSpin = (unsigned long)atoi(argv[3]);
+    if (argc > 4)
+        argRows = (unsigned long)atoi(argv[4]);
+    if (argc > 5)
+        argMapRows = (unsigned long)atoi(argv[5]);
 
     printf("M1-2g: texture through the batch path\n");
 
@@ -422,14 +449,47 @@ main(int argc, char **argv)
     {
         unsigned long trial, shortRuns = 0UL, worst = DIM * DIM;
         unsigned long lost[40], nlost = 0UL;
+        /*
+         * Which destination word to touch FIRST, and how long to wait on the
+         * processor alone before touching anything.
+         *
+         * The stale words came out as bytes 0..63, which was read as one
+         * 64-byte transfer.  It is not safe to read it that way: the counting
+         * pass walks the rectangle in order, so bytes 0..63 are also simply
+         * the first sixteen loads it performs.  An older round of this
+         * investigation had already found that reading a FAR AWAY word cured
+         * the staleness, which says the window is time, not place -- and that
+         * finding got lost.
+         *
+         * So: name the word to look at first.  If staleness follows the
+         * choice, the address means nothing.  And spin on the processor
+         * without touching the card: if that cures it too, what settles the
+         * memory is elapsed time rather than the read's own bus traffic.
+         */
+        unsigned long firstIdx = argFirst, spin = argSpin;
+        /* The rectangle, wherever it has been pushed to. */
+        volatile unsigned long *dst = colour + argRows * STRIDE_DW;
+        int haveFirst = argHaveFirst, firstStale = 0;
+        /*
+         * Counted separately from the short runs, because the two are not
+         * the same question.  A word that is stale when it is the first
+         * thing touched, and correct a moment later when the counting loop
+         * arrives, never shows up as a short run at all -- so short runs
+         * alone would report an address as innocent merely because it was
+         * looked at early enough to be cured before it was counted.
+         */
+        unsigned long firstStaleCount = 0UL;
 
         memset(batch, 0, sizeof *batch);
         batch->magic = OSMGA_HW3D_MAGIC;
         batch->version = OSMGA_HW3D_VERSION;
         batch->triCount = 1;
-        batch->state.dstorg = COLOUR_ORG;
+        batch->state.dstorg = COLOUR_ORG
+                            + (argMapRows + argRows) * STRIDE_DW * 4UL;
         batch->state.dstWidth  = 64UL;
-        batch->state.dstHeight = 120UL;
+        /* The claim has to shrink by as much as the origin moved, or its
+         * reach runs past the end of the window and the kernel refuses it. */
+        batch->state.dstHeight = 120UL - argRows - argMapRows;
         batch->state.dstPitch  = 1024UL;
         texState(batch);
         rect(&batch->tri[0], 0UL, DIM, DWG_TEX);
@@ -437,12 +497,17 @@ main(int argc, char **argv)
         for (trial = 0UL; trial < 40UL; trial++) {
             unsigned long n = 0UL;
 
-            for (row = 0UL; row < DIM; row++)
+            /* One row past the rectangle as well.  If the mapping's
+             * offset were ignored, the client's base would still be the
+             * window start while the engine honoured a dstorg further in --
+             * and the proof of that is the rectangle landing one row lower
+             * than the client is looking, which shows up here. */
+            for (row = 0UL; row <= DIM; row++)
                 for (col = 0UL; col < DIM; col++)
-                    colour[row * STRIDE_DW + col] = SENTINEL;
+                    dst[row * STRIDE_DW + col] = SENTINEL;
             if (!noSettle) {
-                (void)colour[0];
-                (void)colour[(DIM - 1UL) * STRIDE_DW];
+                (void)dst[0];
+                (void)dst[(DIM - 1UL) * STRIDE_DW];
             }
             (void)[master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
                           objectNumber:objNum count:0];
@@ -459,12 +524,23 @@ main(int argc, char **argv)
              * correctly.  Whatever settles this happens on first contact, so
              * the offsets have to be taken on first contact too.
              */
+            if (spin != 0UL) {
+                volatile unsigned long sink = 0UL;
+                unsigned long q;
+
+                for (q = 0UL; q < spin; q++) sink += q;
+            }
+            if (haveFirst) {
+                firstStale = (colour[firstIdx] == SENTINEL);
+                if (firstStale) firstStaleCount++;
+            }
+
             nlost = 0UL;
             for (row = 0UL; row < DIM; row++)
                 for (col = 0UL; col < DIM; col++) {
                     unsigned long idx = row * STRIDE_DW + col;
 
-                    if (colour[idx] != SENTINEL) { n++; continue; }
+                    if (dst[idx] != SENTINEL) { n++; continue; }
                     if (nlost < 40UL) lost[nlost] = idx;
                     nlost++;
                 }
@@ -480,8 +556,14 @@ main(int argc, char **argv)
                     unsigned long k, runs = 0UL, cap = nlost;
 
                     if (cap > 40UL) cap = 40UL;
-                    printf("      trial %lu came up %lu short, at:\n",
-                           trial, nlost);
+                    printf("      trial %lu came up %lu short", trial, nlost);
+                    if (haveFirst)
+                        printf("; the word looked at first (index %lu, "
+                               "byte %lu) was %s", firstIdx, firstIdx * 4UL,
+                               firstStale ? "STALE" : "already correct");
+                    if (spin != 0UL)
+                        printf("; %lu processor-only iterations first", spin);
+                    printf(", at:\n");
                     for (k = 0UL; k < cap; k++) {
                         unsigned long off = lost[k] * 4UL;
 
@@ -496,10 +578,25 @@ main(int argc, char **argv)
                 }
             }
         }
-        printf("   through the RPC, %s: %lu of 40 runs short, worst %lu of "
-               "%lu\n", noSettle ? "no read between fill and submit"
-                                 : "with the client settling too",
+        printf("   through the RPC, %s", noSettle
+               ? "no read between fill and submit"
+               : "with the client settling too");
+        if (haveFirst) printf(", first word read = index %lu", firstIdx);
+        if (spin != 0UL) printf(", %lu spins first", spin);
+        printf(": %lu of 40 runs short, worst %lu of %lu\n",
                shortRuns, worst, DIM * DIM);
+        {
+            unsigned long past = 0UL;
+
+            for (col = 0UL; col < DIM; col++)
+                if (dst[DIM * STRIDE_DW + col] != SENTINEL) past++;
+            printf("   the row just past the rectangle holds %lu drawn "
+                   "pixels (0 means the rectangle landed where it was "
+                   "asked to)\n", past);
+        }
+        if (haveFirst)
+            printf("   and the word touched first was stale on %lu of 40\n",
+                   firstStaleCount);
     }
 
     if (dirty != 0UL)
