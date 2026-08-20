@@ -195,12 +195,30 @@ main(void)
                   objectNumber:objNum count:0];
 
     /*
-     * A pause before reading back.  Without one, pixel (0,0) reliably still
-     * held the sentinel while every other pixel of the band was correct --
-     * and reading anywhere at all, near it or far from it, was enough to
-     * make it appear.  So it is neither a stale cache line nor the
-     * coordinates: the engine's write simply has not reached this mapping
-     * yet when the submission returns.  See REMAINING_WORK.
+     * PROBE: no preliminary read at all, and the band inspected BACKWARDS.
+     *
+     * (0,0) was the only stale pixel, and any prior read -- near it or far
+     * from it -- made it appear.  That was taken to mean a particular write
+     * arrives late.  It equally fits the first LOAD being early: if the
+     * completion test is short by about the time of one read across the bus,
+     * whichever location is looked at first is the one that sees the old
+     * value.  Reversing the order tells the two apart, because a stale pixel
+     * that follows the first place inspected is about time, and one that
+     * stays at (0,0) is about the engine.
+     */
+    /*
+     * Two reads thrown away before looking at anything that matters.
+     *
+     * Without them the first pixel inspected comes back holding what was
+     * there before the draw.  It is not the address: reading the word next
+     * door first shows THAT one stale too, and a moment later the checking
+     * loop finds it correct.  It is not a stale cache line either, for the
+     * same reason, and not the texture coordinates, and not the unit being
+     * cold -- each was varied on its own.  What is left is that a read
+     * arriving too soon after the submission returns sees the old value, and
+     * the cost of one bus read is enough to settle it.
+     *
+     * This belongs in the driver rather than here; see REMAINING_WORK.
      */
     (void)colour[40UL * STRIDE_DW + 40UL];
     (void)colour[50UL * STRIDE_DW + 50UL];
