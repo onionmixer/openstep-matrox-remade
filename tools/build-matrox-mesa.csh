@@ -19,14 +19,20 @@ if (! -r $mesa_src/Make-config) then
     echo "build-matrox-mesa: stage and build the Mesa port first"
     exit 2
 endif
-if (! -r $mesa_src/lib/libGL.a) then
-    echo "build-matrox-mesa: the stock libGL.a is not built yet"
+# The stock library, from the staging tree if it has been built this boot,
+# and otherwise from the copy kept across reboots.  Staging itself is only a
+# copy and costs seconds; building Mesa from source costs a quarter of an
+# hour, and /tmp is emptied at every boot.
+set stock = $mesa_src/lib/libGL.a
+if (! -r $stock) set stock = $mga_src/build/mesa/libGL.a
+if (! -r $stock) then
+    echo "build-matrox-mesa: no stock libGL.a, in staging or kept"
     exit 2
 endif
 
 rm -rf $out
 mkdir $out
-cp $mesa_src/lib/libGL.a $out/libGL_mga.a
+cp $stock $out/libGL_mga.a
 
 # The one Mesa object that changes: rebuilt with the hook point enabled.
 # From the port's own tree, not the staged copy: the staging is done once and
@@ -73,8 +79,12 @@ set keep = $mga_src/build/mesa
 if (! -d $mga_src/build) mkdir $mga_src/build
 if (! -d $keep) mkdir $keep
 cp $out/libGL_mga.a $keep/
-cp $mesa_src/lib/libGL.a $keep/
+cp $stock $keep/
 cp -r $mesa_src/include $keep/
+# Copying an archive across NFS leaves its table of contents older than its
+# members, and the linker refuses it outright rather than searching anyway.
+ranlib $keep/libGL_mga.a
+ranlib $keep/libGL.a
 echo "build-matrox-mesa: kept a copy in $keep"
 
 echo "build-matrox-mesa: PASS $out/libGL_mga.a"

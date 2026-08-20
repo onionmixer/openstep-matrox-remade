@@ -47,7 +47,7 @@ OpenStepMesaAccelReleaseBuffer(void)
 
 void *
 OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
-                        int *rowLength)
+                        int rshift, int gshift, int bshift, int *rowLength)
 {
     OSMGAMesaProbe probe;
     unsigned long stride, need, avail;
@@ -80,6 +80,17 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
          */
         return 0;
     }
+
+    /*
+     * The engine lays a pixel out as 0x00RRGGBB and cannot be told otherwise,
+     * so a caller whose context packs any other way is left with its own
+     * buffer.  Sharing a surface with a disagreement about byte order is
+     * worse than not sharing it: both paths write plausible pixels and the
+     * picture comes out with two different colour orders in it, which is a
+     * fault no amount of looking at one triangle will reveal.
+     */
+    if (rshift != 16 || gshift != 8 || bshift != 0)
+        return 0;
 
     OSMGAMesaProbeRun(&probe);
     if (probe.verdict != OSMGA_PROBE_HARDWARE)

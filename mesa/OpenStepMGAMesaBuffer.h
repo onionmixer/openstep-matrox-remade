@@ -25,7 +25,9 @@
  * display's and will read the surface that way whatever Mesa was told.
  */
 void *OpenStepMesaAccelBuffer(void *ctx, void *buffer,
-                              int width, int height, int *rowLength);
+                              int width, int height,
+                              int rshift, int gshift, int bshift,
+                              int *rowLength);
 
 /*
  * Where that surface is, as a byte offset into video memory, or 0 if the

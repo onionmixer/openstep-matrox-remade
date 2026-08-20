@@ -46,7 +46,13 @@ main(void)
     GLint bw = 0, bh = 0, bf = 0;
     void *surface = 0;
 
-    ctx = OSMesaCreateContext(OSMESA_RGBA, NULL);
+    /*
+     * ARGB, not RGBA.  The engine lays a pixel out as 0x00RRGGBB and cannot
+     * be told otherwise, so this is the layout that lets both paths share a
+     * surface; with any other the back end declines and this renders in
+     * software, which is correct but is not what this test is for.
+     */
+    ctx = OSMesaCreateContext(OSMESA_ARGB, NULL);
     if (!ctx) { printf("OSMesaCreateContext failed\n"); return 1; }
     memset(appbuf, 0, sizeof appbuf);
     if (!OSMesaMakeCurrent(ctx, appbuf, GL_UNSIGNED_BYTE, W, H)) {
@@ -113,9 +119,24 @@ main(void)
         unsigned long hw = px[10UL * stride + 10UL] & 0xffffffUL;
         unsigned long sw = px[40UL * stride + 35UL] & 0xffffffUL;
 
-        printf("   hardware pixel %06lx, software pixel %06lx\n", hw, sw);
-        expect("the accelerated triangle is in the surface", hw != 0UL);
-        expect("the software triangle is in the same surface", sw != 0UL);
+        /*
+         * Exact values, not merely "something was drawn".  The first version
+         * of this asked only whether the pixels were non-zero, and it passed
+         * while the two paths were writing OPPOSITE byte orders into the one
+         * surface -- the software half in RGBA and the hardware half in
+         * ARGB.  A test that cannot see that is not testing sharing.
+         *
+         * The hardware pixel is the colour plane at (10,10): red falls 12.75
+         * a row, green falls 6.375 a column and rises 12.75 a row, blue rises
+         * 6.375 a column, giving 127, 63, 63.  The software pixel is the cyan
+         * the second triangle was given.
+         */
+        printf("   hardware pixel %06lx (want 7f3f3f)\n", hw);
+        printf("   software pixel %06lx (want 00ffff)\n", sw);
+        expect("the accelerated triangle has the colour it should",
+               hw == 0x7f3f3fUL);
+        expect("the software triangle has that colour in the same order",
+               sw == 0x00ffffUL);
     }
 
     printf("   hook drew %lu, declined %lu\n",
