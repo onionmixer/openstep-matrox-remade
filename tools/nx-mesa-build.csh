@@ -26,6 +26,13 @@ set mark   = "$staged/.stage-complete"
 # removes the tree entire -- does not take the record with it.  A missing
 # tree is caught by the mark above, so the two together cannot lie.
 set stamp  = "$parent/.port-stamp"
+#
+# What the digest covers: the directories staging actually copies, and not the
+# whole checkout.  Listing the checkout put .git into the digest -- two thirds
+# of its lines -- so committing anything at all looked like the source had
+# moved, and forced a staging that changed nothing.
+#
+set ported = "$src/opennstep-mesa342/upstream $src/opennstep-mesa342/build $src/opennstep-mesa342/packaging $src/opennstep-mesa342/docs $src/opennstep-mesa342/examples $src/opennstep-mesa342/test"
 set force  = 0
 
 # Nested, not "&&": csh substitutes before it evaluates, so a one-line test
@@ -70,7 +77,7 @@ else
     # because this ls returns a directory in whatever order it likes and two
     # unsorted readings of an unchanged tree already disagreed.
     #
-    set now = `ls -lR $src/opennstep-mesa342 | sort | sum`
+    set now = `ls -lR $ported | sort | sum`
     set was = ""
     if (-r "$stamp") set was = "`cat $stamp`"
     if ("$now" != "$was") then
@@ -88,7 +95,7 @@ if ($restage) then
     # backquote, which splits on whitespace and rejoins with one space -- so
     # the two never matched and every run staged again.
     #
-    set now = `ls -lR $src/opennstep-mesa342 | sort | sum`
+    set now = `ls -lR $ported | sort | sum`
     echo "$now" > "$stamp"
 else
     echo "nx-mesa-build: the staged Mesa is current; not building it again"

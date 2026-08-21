@@ -214,6 +214,16 @@ main(int argc, char **argv)
      * not to provoke a read, and this is the positive one.
      */
     int argZI = 0;
+    /*
+     * argv[12]: submit this dstPitch instead of the display stride.
+     *
+     * The engine can only walk a pitch that is a multiple of 32 pixels, and
+     * one that is not lands the picture somewhere else.  The library now
+     * refuses such a surface twice over, so this is the only way left to ask
+     * the KERNEL whether it refuses one too -- which is the half of the
+     * repair that protects a client not going through the library.
+     */
+    unsigned long argPitch = 0UL;
     IODeviceMaster *master;
     IOObjectNumber objNum;
     IOString kind;
@@ -255,6 +265,8 @@ main(int argc, char **argv)
         argZorgLow = atoi(argv[10]);
     if (argc > 11)
         argZI = atoi(argv[11]);
+    if (argc > 12)
+        argPitch = (unsigned long)atoi(argv[12]);
     if (argc > 8) {
         /* "auto" is the driver's own default and cannot be written as a
          * small number, so it gets a word of its own. */
@@ -610,7 +622,7 @@ main(int argc, char **argv)
         /* The claim has to shrink by as much as the origin moved, or its
          * reach runs past the end of the window and the kernel refuses it. */
         batch->state.dstHeight = 120UL - argRows - argMapRows;
-        batch->state.dstPitch  = 1024UL;
+        batch->state.dstPitch  = (argPitch != 0UL) ? argPitch : 1024UL;
         texState(batch);
         rect(&batch->tri[0], 0UL, DIM, DWG_TEX);
         /*
@@ -741,7 +753,10 @@ main(int argc, char **argv)
             else if (argPrime == 7)
                 (void)dst[0];
             if (submitBatch(argHow, fd, master, objNum) != OSMGA_HW3D_OK) {
-                printf("      trial %lu was refused\n", trial);
+                printf("      trial %lu was refused at pitch %lu -- "
+                       "verdict %u (%s)\n", trial, batch->state.dstPitch,
+                       verdict(master, objNum),
+                       why(verdict(master, objNum)));
                 fails++;
                 continue;
             }
