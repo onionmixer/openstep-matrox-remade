@@ -1891,6 +1891,59 @@ main(void)
                 tex[r * DIM + c] = (r << 8) | c;
     }
 
+    printf("\n31. and does a VARYING alpha survive?\n");
+    {
+        /*
+         * Section 30 fixes one alpha at one pixel, which proves which operand
+         * the stage selects and nothing else.  Selecting the interpolated
+         * alpha is only right if the interpolator is actually running: the
+         * increments could be ignored, stale, or scaled wrongly and a
+         * constant would never say so.
+         *
+         * So give the triangle a slope -- 0x20 at the left, four a column --
+         * and a texture whose own alpha is a value the answer must NOT be.
+         */
+        unsigned long r, c;
+        int bad = 0;
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = 0xAB000000UL | (r << 8) | c;
+
+        blank();
+        {
+            OSMGAHW3DTri *t = setup(1024UL, 0UL, 16UL, 4UL, 0L, 0UL);
+
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = 4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+            batch->state.tmr[7] = 4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+            t->a0  = 0x20UL << 15;
+            t->adx = 4UL << 15;
+            t->ady = 0UL;
+        }
+        (void)fire();
+        printf("   alpha across the row:");
+        for (c = 0UL; c < 16UL; c += 2UL) {
+            unsigned long got = (pixat(0UL, c) >> 24) & 0xFFUL;
+
+            printf(" %02lx", got);
+            if (got != 0x20UL + 4UL * c) bad = 1;
+        }
+        printf("   wanted 20 28 30 38 40 48 50 58\n");
+        if (bad) {
+            printf("   FAIL  %-52s\n",
+                   "the interpolated alpha reaches the destination");
+            failures++;
+        } else
+            printf("   ok    %-52s\n",
+                   "the interpolated alpha reaches the destination");
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = (r << 8) | c;
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;

@@ -554,6 +554,14 @@
 #define MGA_TEXCTL2_G400_MAGIC  0x00008000UL
 #define MGA_TEXCTL2_CKSTRANSDIS 0x00000010UL
 #define MGA_TEXFILTER_ALPHA     0x00100000UL
+/*
+ * TDUALSTAGE0's alpha selector.  Zero selects ARG1, which is the current
+ * texture's alpha; this selects ARG2, and with every other field of the
+ * register left at zero ARG2 is DIFFUSE -- the interpolated alpha the
+ * triangle carries in ALPHASTART.  The colour selector is a different field
+ * and stays at ARG1, which is the GL_REPLACE the driver already gets.
+ */
+#define MGA_TDS_ALPHA_SEL_ARG2  0x40000000UL
 #define MGA_ALPHACTRL_OPAQUE    0x00000101UL   /* ALPHACHANNEL|SRC_ONE|DST_ZERO */
 
 #define OSMGA_D3_TEXORG         (6UL * 1024UL * 1024UL)
@@ -6937,7 +6945,23 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                  MGA_TEXTRANS,     0x0000ffffUL,
                  MGA_TEXTRANSHIGH, 0x0000ffffUL);
         ok = ok && osmgaDmaBlock(list, listDwords, &pos,
-                 MGA_TDUALSTAGE0, 0UL, MGA_TDUALSTAGE1, 0UL,
+                 /*
+                  * The alpha is the FRAGMENT's, not the texture's.
+                  *
+                  * With this register at zero the engine took the texture's
+                  * alpha, and a texture uploaded from GL_RGB has an empty top
+                  * byte, so every textured pixel landed with an alpha of
+                  * nought where GL_REPLACE says the interpolated one belongs.
+                  * Measured, not read off a header: a texture whose top byte
+                  * is 0xAB drawn by a triangle whose ALPHASTART is 0x55 came
+                  * back 0xAB.
+                  *
+                  * It had been wrong since texturing went in.  The comparison
+                  * against the software path masked the alpha byte off, so
+                  * nothing said so until the mask came off.
+                  */
+                 MGA_TDUALSTAGE0, MGA_TDS_ALPHA_SEL_ARG2,
+                 MGA_TDUALSTAGE1, 0UL,
                  MGA_TMR0,        (unsigned long)b->state.tmr[0],
                  MGA_TMR0 +  4UL, (unsigned long)b->state.tmr[1]);
         /* The H family is the kernel's: we set NOPERSPECTIVE, nothing in
