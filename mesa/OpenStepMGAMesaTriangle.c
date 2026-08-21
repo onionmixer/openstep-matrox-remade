@@ -506,7 +506,8 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
     OSMGAColourPlane plane[3];
     OSMGAColourPlane zplane, aplane;
     const OSMGAMesaVertex *shade = flat;
-    long span, cross, sub, rT, rM, rL;
+    long span, sub, rT, rM, rL;
+    double crossD;
     OSMGAMesaEdge longE;
     int n = 0;
 
@@ -657,15 +658,41 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
      * The coordinates reach 8192 pixels, so no 32-bit product of two
      * differences can be exact at this scale.
      *
-     * Reducing to whole pixels costs only triangles whose sides are decided
-     * by less than a pixel of vertex fraction.  Those have almost no area,
-     * and if one is classified the wrong way its span comes out inverted,
-     * which the kernel refuses and the software path then draws correctly.
+     * The overflow is real and the answer to it was not.  Reducing to whole
+     * pixels threw away the fraction that decides the sides of a narrow
+     * triangle, in two ways at once: the difference rounds to zero, and C's
+     * division truncates toward zero rather than flooring, so a difference of
+     * minus a third of a pixel came out as nought and minus one and a fifth
+     * came out as minus one.  A coarse cross of ZERO was then answered with
+     * zero -- "there is nothing to draw" -- and the hook takes that at its
+     * word and draws nothing, with no software fallback.  Measured: slivers a
+     * quarter, a half, three quarters and nine tenths of a pixel wide put 25,
+     * 51, 34 and 27 pixels on the screen through the software path and NONE
+     * through this one, with no counter recording it.
+     *
+     * A double does not overflow.  The coordinates are held to 8192 pixels by
+     * osmgaCoordOK above, which is 2^21 in sixteenths of a sixteenth of a
+     * pixel, so a difference is at most 2^22 and this determinant at most
+     * 2^44 -- integers that far are exact in a double, whose limit is 2^53.
+     * So the sign is exact and no triangle is lost or classified by a
+     * rounding.  Casts before the multiplications, so that nothing is formed
+     * in a long on the way.
+     *
+     * Mesa's own rasteriser decides the same thing the same way, from the
+     * same sorted vertices: tritemp.h computes area = eMaj.dx * eBot.dy -
+     * eBot.dx * eMaj.dy and reads ltor off its sign.  It uses a float, where
+     * this uses a double on exact integers.
      */
-    cross = ((lo->x - t->x) / OSMGA_MESA_SUBONE) * ((m->y - t->y) / OSMGA_MESA_SUBONE)
-          - ((lo->y - t->y) / OSMGA_MESA_SUBONE) * ((m->x - t->x) / OSMGA_MESA_SUBONE);
-    if (cross == 0L)
-        return 0;
+    crossD = (double)(lo->x - t->x) * (double)(m->y - t->y)
+           - (double)(lo->y - t->y) * (double)(m->x - t->x);
+    /*
+     * Unreachable: the area was tested exactly further up, and collinearity
+     * does not depend on which vertex is named first.  Kept as a guard, and
+     * answering UNSUPPORTED rather than zero, because zero is the answer that
+     * loses the triangle.
+     */
+    if (crossD == 0.0)
+        return OSMGA_MESA_TRI_UNSUPPORTED;
 
     /*
      * How much of the vertex fraction the registers can hold.
@@ -718,8 +745,8 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
 
         shortE.xa = t->x; shortE.ya = t->y;
         shortE.dee = m->x - t->x; shortE.height = m->y - t->y;
-        le = (cross < 0L) ? &longE : &shortE;
-        re = (cross < 0L) ? &shortE : &longE;
+        le = (crossD < 0.0) ? &longE : &shortE;
+        re = (crossD < 0.0) ? &shortE : &longE;
         skip = osmgaFirstDrawn(le, re, rT, rM - rT, sub);
         if (skip < rM - rT) {
             osmgaTrapezoid(&out[n], rT + skip, rM - rT - skip, sub, le, re,
@@ -735,8 +762,8 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
 
         shortE.xa = m->x; shortE.ya = m->y;
         shortE.dee = lo->x - m->x; shortE.height = lo->y - m->y;
-        le = (cross < 0L) ? &longE : &shortE;
-        re = (cross < 0L) ? &shortE : &longE;
+        le = (crossD < 0.0) ? &longE : &shortE;
+        re = (crossD < 0.0) ? &shortE : &longE;
         skip = osmgaFirstDrawn(le, re, rM, rL - rM, sub);
         if (skip < rL - rM) {
             osmgaTrapezoid(&out[n], rM + skip, rL - rM - skip, sub, le, re,

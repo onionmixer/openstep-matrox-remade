@@ -116,7 +116,15 @@ static float hookLastWin[3][3];
 static long
 osmgaFix(double v)
 {
-    if (!(v > -1.0e30) || !(v < 1.0e30))
+    /*
+     * The bound is the one the conversion below can actually take, not a
+     * round number.  It used to be 1e30, which lets through everything the
+     * cast cannot hold: v * 256 passes LONG_MAX at about 8.4 million, and a
+     * double-to-long conversion out of range is undefined -- on this FPU it
+     * yields the indefinite integer, which the coordinate check downstream
+     * happens to refuse, by luck rather than by design.
+     */
+    if (!(v > -8.0e6) || !(v < 8.0e6))
         return 0L;
     return (long)floor(v * (double)OSMGA_MESA_SUBONE + 0.5);
 }
