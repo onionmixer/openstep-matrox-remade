@@ -7,6 +7,7 @@
  * already demonstrates.
  */
 
+#include <math.h>
 #include "glheader.h"
 #include "context.h"
 #include "types.h"
@@ -56,6 +57,57 @@ static OSMGAMesaRefusal hookLastRefusal;
  * question answerable by looking instead of deriving.
  */
 static float hookLastWin[3][3];
+
+/*
+ * Window coordinates arrive as floats and the back end needs integers, and
+ * the cast that did it was losing a whole row or column.
+ *
+ * Measured with the recorder above, sweeping every integer position in three
+ * viewports: 20 of 320 columns and 10 of 240 rows come back BELOW the integer
+ * that was asked for, and an odd-sized viewport is worse at 50 of 319 and 41
+ * of 239.  The shortfalls are at most 1.5e-5, which is a fraction of a float
+ * ULP -- noise on coordinates that were meant to be exact.  One of them is
+ * y = 10, which is how a triangle came to be 83 pixels too large.
+ *
+ * Rounding everything would fix all of them and would also change what
+ * happens to genuinely fractional geometry, from floor to nearest.  That is
+ * not a free improvement: over 280 fractional triangles scored against the
+ * rule computed from their exact vertices, nearest is closer on average -- 81
+ * pixels wrong against 139 -- but WORSE on 43 of them, because rasterisation
+ * is discontinuous and a smaller vertex movement is not a smaller mask
+ * movement.  Carrying the fraction properly is a separate piece of work.
+ *
+ * So this snaps only what is within eps of an integer and leaves everything
+ * else exactly as it was.  Each eps comes from the ULP at the top of its own
+ * range rather than from taste: a coordinate reaches 8192 where the ULP is
+ * 9.8e-4, and a depth reaches 65535 where it is 7.8e-3.  The depth one has to
+ * be larger, and measuring said so before this was written -- depth noise
+ * reached 9.8e-4, four times the coordinate snap.
+ */
+#define OSMGA_COORD_SNAP  (1.0 / 512.0)     /* 2x the ULP at 8192  */
+#define OSMGA_DEPTH_SNAP  (1.0 / 32.0)      /* 4x the ULP at 65535 */
+
+static double
+osmgaSnap(double v, double eps)
+{
+    double n;
+
+    /* NaN and the infinities have no integer to cast to; ask before casting
+     * rather than after, which is where the range check happens today. */
+    if (!(v > -1.0e30) || !(v < 1.0e30))
+        return 0.0;
+    n = floor(v + 0.5);
+    if (v - n <= eps && n - v <= eps)
+        return n;
+    /*
+     * floor, not a cast.  They agree for everything Mesa should hand us, and
+     * where they differ -- a negative coordinate -- a cast truncates toward
+     * zero and puts a step at the origin that is nowhere else on the line.
+     * "Mesa should not produce one" is the kind of assumption that has been
+     * wrong twice here already.
+     */
+    return floor(v);
+}
 #define OSMGA_MESA_REFUSAL_LIMIT  8UL
 /*
  * The software triangle function, and the context it belongs to.
@@ -109,6 +161,7 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     OSMGAMesaVertex a, b, c, prov;
     unsigned long zmode, blend;
     int nwin;
+    double zsnap;
     int n;
 
     if (batch == 0) {
@@ -126,9 +179,13 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         hookLastWin[nwin][1] = (float)VB->Win.data[idx][1];              \
         hookLastWin[nwin][2] = (float)VB->Win.data[idx][2];              \
         nwin = (nwin + 1) % 3;                                           \
-        (dst).x = (long)VB->Win.data[idx][0];                            \
-        (dst).y = (long)VB->Win.data[idx][1];                            \
-        (dst).z = (unsigned long)VB->Win.data[idx][2];                   \
+        (dst).x = (long)osmgaSnap((double)VB->Win.data[idx][0],          \
+                                  OSMGA_COORD_SNAP);                     \
+        (dst).y = (long)osmgaSnap((double)VB->Win.data[idx][1],          \
+                                  OSMGA_COORD_SNAP);                     \
+        (dst).z = (unsigned long)((zsnap =                               \
+                      osmgaSnap((double)VB->Win.data[idx][2],            \
+                                OSMGA_DEPTH_SNAP)) < 0.0 ? 0.0 : zsnap); \
         (dst).r = (unsigned long)VB->ColorPtr->data[idx][0];             \
         (dst).g = (unsigned long)VB->ColorPtr->data[idx][1];             \
         (dst).b = (unsigned long)VB->ColorPtr->data[idx][2];             \

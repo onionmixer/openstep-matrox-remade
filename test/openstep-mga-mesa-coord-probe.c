@@ -22,12 +22,24 @@ extern unsigned long OSMGAMesaBufferOrigin(void);
 #define W  320
 #define H  240
 
+/*
+ * Several viewport shapes, not one.  A single 320x240 sweep is thin evidence:
+ * the arithmetic that produces the noise is a matrix multiply whose scale and
+ * bias come from the viewport, so odd sizes and a non-zero origin are
+ * different arithmetic, not the same arithmetic again.
+ */
+static const int vpx[4] = {   0,   0,  17,   0 };
+static const int vpy[4] = {   0,   0,  11,   0 };
+static const int vpw[4] = { 320, 319, 200, 640 };
+static const int vph[4] = { 240, 239, 150, 480 };
+
 int
 main(void)
 {
     OSMesaContext ctx;
     unsigned long *app;
     long i, lowX = 0, lowY = 0, hiX = 0, hiY = 0;
+    int cfg;
 
     app = (unsigned long *)malloc((unsigned)(W * H) * sizeof(unsigned long));
     if (!app) { printf("no room\n"); return 2; }
@@ -35,40 +47,67 @@ main(void)
     if (!ctx || !OSMesaMakeCurrent(ctx, app, GL_UNSIGNED_BYTE, W, H)) {
         printf("no context\n"); return 2;
     }
-    glViewport(0, 0, W, H);
-    glMatrixMode(GL_PROJECTION); glLoadIdentity();
-    glOrtho(0.0, (double)W, 0.0, (double)H, -1.0, 1.0);
-    glMatrixMode(GL_MODELVIEW); glLoadIdentity();
     glDisable(GL_DEPTH_TEST); glDisable(GL_BLEND); glDisable(GL_DITHER);
     glDisable(GL_CULL_FACE); glShadeModel(GL_FLAT);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 
     printf("# surface %dx%d  origin %lu\n", W, H, OSMGAMesaBufferOrigin());
-    printf("# asked  -> window coordinate the hook received -> its (long)\n");
 
-    for (i = 0; i < (H > W ? H : W); i++) {
+    /* ---- depth first: what noise does the window z carry? ---------------
+     * The calibration says code = round(32767.5 * (1 - objz)), so an object
+     * depth of 1 - k/32767.5 should arrive as exactly k.  Ask for many k and
+     * see what turns up, since the depth coordinate goes through the same
+     * cast on the same line as x and y.
+     */
+    glViewport(0, 0, W, H);
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glOrtho(0.0, (double)W, 0.0, (double)H, -1.0, 1.0);
+    glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+    for (i = 0; i <= 65535L; i += 337L) {
+        double wz;
+
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBegin(GL_TRIANGLES);
+          glColor4ub(0, 255, 0, 255);
+          glVertex3d(64.0, 64.0, 1.0 - (double)i / 32767.5);
+          glVertex3d(200.0, 64.0, 1.0 - (double)i / 32767.5);
+          glVertex3d(128.0, 200.0, 1.0 - (double)i / 32767.5);
+        glEnd();
+        glFinish();
+        if (OSMGAMesaHookDrawn() == 0UL) break;
+        wz = OSMGAMesaHookLastWin(0, 2);
+        printf("Z %ld %.6f\n", i, wz);
+    }
+
+    /* ---- then x and y, in several viewports ---------------------------- */
+    for (cfg = 0; cfg < 4; cfg++) {
+      printf("# viewport %d %d %d %d\n", vpx[cfg], vpy[cfg], vpw[cfg], vph[cfg]);
+      glViewport(vpx[cfg], vpy[cfg], vpw[cfg], vph[cfg]);
+      glMatrixMode(GL_PROJECTION); glLoadIdentity();
+      glOrtho(0.0, (double)vpw[cfg], 0.0, (double)vph[cfg], -1.0, 1.0);
+      glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+      for (i = 0; i < (vph[cfg] > vpw[cfg] ? vph[cfg] : vpw[cfg]); i++) {
         double wx, wy;
         long cx, cy;
 
         glClear(GL_COLOR_BUFFER_BIT);
         glBegin(GL_TRIANGLES);
           glColor4ub(0, 255, 0, 255);
-          /* one vertex at the position under test, the other two well away
-             and at positions that are not themselves in question */
-          glVertex3f((float)(i < W ? i : 0), (float)(i < H ? i : 0), 0.0f);
-          glVertex3f(64.0f, 128.0f, 0.0f);
-          glVertex3f(192.0f, 200.0f, 0.0f);
+          glVertex3f((float)(i < vpw[cfg] ? i : 0),
+                     (float)(i < vph[cfg] ? i : 0), 0.0f);
+          glVertex3f(32.0f, 64.0f, 0.0f);
+          glVertex3f(96.0f, 100.0f, 0.0f);
         glEnd();
         glFinish();
-        if (OSMGAMesaHookDrawn() == 0UL) { printf("# nothing accelerated\n"); break; }
+        if (OSMGAMesaHookDrawn() == 0UL) continue;
         wx = OSMGAMesaHookLastWin(0, 0);
         wy = OSMGAMesaHookLastWin(0, 1);
         cx = (long)wx; cy = (long)wy;
-        if (i < W && cx != i) { lowX++; if (lowX < 6) printf("X %ld %.9f %ld\n", i, wx, cx); }
-        if (i < H && cy != i) { lowY++; if (lowY < 6) printf("Y %ld %.9f %ld\n", i, wy, cy); }
-        if (i < W) hiX++;
-        if (i < H) hiY++;
-        printf("C %ld %.9f %.9f\n", i, wx, wy);
+        /* the vertex lands at viewport origin + i, so that is what is asked */
+        if (i < vpw[cfg]) { hiX++; if (cx != vpx[cfg] + i) lowX++; }
+        if (i < vph[cfg]) { hiY++; if (cy != vpy[cfg] + i) lowY++; }
+        printf("C %d %ld %.9f %.9f\n", cfg, i, wx, wy);
+      }
     }
     printf("# x: %ld of %ld positions lost by the cast\n", lowX, hiX);
     printf("# y: %ld of %ld positions lost by the cast\n", lowY, hiY);
