@@ -321,8 +321,32 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
          * engine reads sixteen bits, and Mesa's software depth stores the
          * same range in the same buffer, which is what lets the two agree.
          */
-        double ox = (double)left - (double)a->x;
-        double oy = (double)y    - (double)a->y;
+        /*
+         * Half a pixel, as for colour and alpha above: OpenGL wants the value
+         * at the fragment's centre and `left` and `y` are its corner.
+         *
+         * Depth waited for its own measurement rather than inheriting theirs,
+         * and it needed to.  The anchoring is worth 2662 and 2613 depth codes
+         * on the two shapes measured -- six and a half percent of the
+         * triangle's own span -- against four tenths of a code for the vertex
+         * truncation and half a code for the output truncation, so the three
+         * causes are nothing alike in size and only this one is fixed here.
+         *
+         * It also does more than bend a value: the start is clamped to the
+         * buffer's range, and on a steep shape reaching the far end the corner
+         * computed 67461.8, clamped, and GL_LESS then refused 65535 < 65535 --
+         * the pixel was simply not drawn.  Measured against the same shape
+         * with depth switched off, which drew it.
+         *
+         * The move is not strictly safer.  Over 236940 trapezoids it removes
+         * 1093 clamps and introduces 475; counted in pixels, 253822 against
+         * 58502.  Both populations are slivers -- median twice-area 292 and
+         * 127 against 8983 where nothing clamps -- whose depth plane is
+         * ill-conditioned wherever it is sampled.  A shape from the
+         * introduced class is in the test, not just one from the removed.
+         */
+        double ox = (double)left - (double)a->x + 0.5;
+        double oy = (double)y    - (double)a->y + 0.5;
         double at = zplane->at_a + zplane->dx * ox + zplane->dy * oy;
 
         if (at < 0.0)     at = 0.0;
