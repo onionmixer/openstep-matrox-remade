@@ -78,7 +78,7 @@ def cover(verts, W, H):
             if ok: out.setdefault(y, []).append(x)
     return {y: (min(v), max(v)) for y, v in out.items() if v}
 
-ONE_COLOUR = (1, 2, 3, 4, 5)          # 6 and 7 are drawn in two colours
+ONE_COLOUR = (1, 2, 3, 4, 5, 8)       # 6 and 7 are drawn in two colours
 
 SHAPES = {
     1: ("flat-bottomed, no split of its own", [(40,40),(200,40),(120,180)]),
@@ -88,6 +88,7 @@ SHAPES = {
     5: ("quad, one colour",                   None),
     6: ("quad, two colours, order A",         None),
     7: ("quad, two colours, order B",         None),
+    8: ("shape 1 moved half a pixel",         None),
 }
 W, H = 320, 240
 

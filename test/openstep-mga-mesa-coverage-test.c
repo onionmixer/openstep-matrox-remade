@@ -88,6 +88,19 @@ shape(int n)
             tri( 40, 40, 200,180,  40,180, 255,0,0); break;
     case 7: tri( 40, 40, 200,180,  40,180, 255,0,0);
             tri( 40, 40, 200, 40, 200,180, 0,255,0); break;
+    /*
+     * Shape 1's vertices moved half a pixel, and nowhere near an edge of the
+     * viewport, so nothing is clipped.  The hook truncates window coordinates
+     * with a (long) cast, so what the back end receives is shape 1 exactly.
+     *
+     * That makes a prediction sharp enough to be wrong: the ENGINE's coverage
+     * for this must equal the engine's coverage for shape 1, pixel for pixel,
+     * while the software path keeps the fraction and draws something else.
+     * If it holds, the difference that remains on the clipped shape is the
+     * truncation and needs no other cause; if it does not, clipped input goes
+     * wrong some further way and I have been explaining the wrong thing.
+     */
+    case 8: tri( 40.5f,40.5f, 200.5f,40.5f, 120.5f,180.5f, 0,255,0); break;
     default: break;
     }
 }
@@ -100,7 +113,7 @@ main(int argc, char **argv)
     long x, y;
     unsigned long d0, s0, u0, x0;
 
-    if (which < 1 || which > 7) { printf("shape 1..7\n"); return 2; }
+    if (which < 1 || which > 8) { printf("shape 1..8\n"); return 2; }
 
     app = (unsigned long *)malloc((unsigned)(W * H) * sizeof(unsigned long));
     if (!app) { printf("no room\n"); return 2; }
