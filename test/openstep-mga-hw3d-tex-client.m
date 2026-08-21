@@ -205,21 +205,16 @@ main(int argc, char **argv)
     unsigned v, fails = 0U;
     IOReturn r;
 
-    master = [IODeviceMaster new];
-    if ([master lookUpByDeviceName:"Display0" objectNumber:&objNum
-            deviceKind:&kind] != IO_R_SUCCESS) { printf("no Display0\n"); return 1; }
-    if ((fd = open(DEV_PATH, O_RDWR)) < 0) { printf("no %s\n", DEV_PATH); return 1; }
-    cmd  = mapDevice(fd, CMD_MMAP_BASE, CMD_MMAP_LEN);
-    cwin = mapDevice(fd, COLOUR_ORG + argMapRows * STRIDE_DW * 4UL,
-                     (int)((DIM + FLATH - argMapRows) * STRIDE_DW * 4UL));
-    twin = mapDevice(fd, TEX_ORG,    (int)(DIM * DIM * 4UL));
-    if (cmd == (caddr_t)-1 || cwin == (caddr_t)-1 || twin == (caddr_t)-1) {
-        printf("a window will not map\n"); return 1;
-    }
-    batch  = (OSMGAHW3DBatch *)cmd;
-    colour = (volatile unsigned long *)cwin;
-    tex    = (volatile unsigned long *)twin;
-
+    /*
+     * Read the arguments BEFORE anything uses them.
+     *
+     * This block used to sit after the mappings were made, which meant the
+     * one argument that moves a mapping was still zero when the mapping was
+     * taken.  Only the destination moved, so a rectangle drawn a row further
+     * in landed a row away from where the client was looking -- and that was
+     * read as the device discarding mmap's offset, and written down as an
+     * open fault against the driver.  It was this.
+     */
     if (argc > 2) {
         argFirst = (unsigned long)atoi(argv[2]);
         argHaveFirst = 1;
@@ -236,6 +231,21 @@ main(int argc, char **argv)
         argPrime = atoi(argv[7]);
     if (argc > 8)
         argSettle = atoi(argv[8]);
+
+    master = [IODeviceMaster new];
+    if ([master lookUpByDeviceName:"Display0" objectNumber:&objNum
+            deviceKind:&kind] != IO_R_SUCCESS) { printf("no Display0\n"); return 1; }
+    if ((fd = open(DEV_PATH, O_RDWR)) < 0) { printf("no %s\n", DEV_PATH); return 1; }
+    cmd  = mapDevice(fd, CMD_MMAP_BASE, CMD_MMAP_LEN);
+    cwin = mapDevice(fd, COLOUR_ORG + argMapRows * STRIDE_DW * 4UL,
+                     (int)((DIM + FLATH - argMapRows) * STRIDE_DW * 4UL));
+    twin = mapDevice(fd, TEX_ORG,    (int)(DIM * DIM * 4UL));
+    if (cmd == (caddr_t)-1 || cwin == (caddr_t)-1 || twin == (caddr_t)-1) {
+        printf("a window will not map\n"); return 1;
+    }
+    batch  = (OSMGAHW3DBatch *)cmd;
+    colour = (volatile unsigned long *)cwin;
+    tex    = (volatile unsigned long *)twin;
 
     if (argSettle >= 0) {
         unsigned one = (unsigned)argSettle;
@@ -516,7 +526,7 @@ main(int argc, char **argv)
      */
     {
         unsigned long trial, pass, shortRuns = 0UL, worst = DIM * DIM;
-        unsigned long lost[40], nlost = 0UL;
+        unsigned long lost[300], nlost = 0UL;
         /*
          * Which destination word to touch FIRST, and how long to wait on the
          * processor alone before touching anything.
@@ -709,7 +719,7 @@ main(int argc, char **argv)
                     unsigned long idx = row * STRIDE_DW + col;
 
                     if (dst[idx] != SENTINEL) { n++; continue; }
-                    if (nlost < 40UL) lost[nlost] = idx;
+                    if (nlost < 300UL) lost[nlost] = idx;
                     nlost++;
                 }
             if (n != DIM * DIM) {
@@ -723,7 +733,7 @@ main(int argc, char **argv)
                 {
                     unsigned long k, runs = 0UL, cap = nlost;
 
-                    if (cap > 40UL) cap = 40UL;
+                    if (cap > 300UL) cap = 300UL;
                     printf("      trial %lu came up %lu short", trial, nlost);
                     if (haveFirst)
                         printf("; the word looked at first (index %lu, "
@@ -732,15 +742,22 @@ main(int argc, char **argv)
                     if (spin != 0UL)
                         printf("; %lu processor-only iterations first", spin);
                     printf(", at:\n");
+                    /* The first few and the last few, not the middle:
+                     * a capped listing once made a run that spanned two rows
+                     * look like one unbroken stretch, and the shape is the
+                     * whole point of printing them. */
                     for (k = 0UL; k < cap; k++) {
                         unsigned long off = lost[k] * 4UL;
 
                         if (k == 0UL || lost[k] != lost[k - 1UL] + 1UL)
                             runs++;
-                        printf("         byte %7lu  x=%2lu y=%2lu  "
-                               "mod32=%2lu mod64=%2lu\n", off,
-                               lost[k] % STRIDE_DW, lost[k] / STRIDE_DW,
-                               off & 31UL, off & 63UL);
+                        if (k < 4UL || k + 4UL >= cap)
+                            printf("         [%3lu] byte %7lu  x=%2lu y=%2lu  "
+                                   "mod64=%2lu\n", k, off,
+                                   lost[k] % STRIDE_DW, lost[k] / STRIDE_DW,
+                                   off & 63UL);
+                        else if (k == 4UL)
+                            printf("         ...\n");
                     }
                     printf("         in %lu contiguous stretch(es)\n", runs);
                 }
