@@ -381,7 +381,13 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         batch->state.texH = texH;
         batch->state.texPitch = texPitch;
         batch->state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
-        batch->state.texFlags = 0UL;
+        /*
+         * The gate has already required MinFilter == MagFilter and that both
+         * are GL_NEAREST or GL_LINEAR, so one of them decides it.
+         */
+        batch->state.texFlags =
+            (ctx->Texture.Unit[0].CurrentD[2]->MagFilter == GL_LINEAR)
+            ? OSMGA_HW3D_TEXF_BILIN : 0UL;
         batch->state.tmr[0] = tmr[bi][0];
         batch->state.tmr[1] = tmr[bi][1];
         batch->state.tmr[2] = tmr[bi][2];
@@ -508,13 +514,52 @@ osmgaMesaTexStateOK(GLcontext *ctx)
     t = ctx->Texture.Unit[0].CurrentD[2];
     if (t == 0)
         return 0;
-    /* The kernel fixes CLAMPUV, so this is the only wrap it can honour. */
-    if (t->WrapS != GL_CLAMP || t->WrapT != GL_CLAMP)
+    /*
+     * The engine has ONE filter switch and no notion of lambda, while GL
+     * chooses between MinFilter and MagFilter per fragment -- and a single
+     * triangle can be magnified in one place and minified in another, or in
+     * one axis and not the other.  Requiring the two to be equal is what
+     * makes that choice stop mattering.  The four mipmap filters fall out
+     * here too, since neither of the values below is one of them.
+     */
+    if (t->MinFilter != t->MagFilter)
         return 0;
-    /* Bilinear is a bit the encoder can set, but what it draws has never been
-     * looked at -- only the verdict was. */
-    if (t->MinFilter != GL_NEAREST || t->MagFilter != GL_NEAREST)
+    if (t->MagFilter == GL_NEAREST) {
+        /*
+         * With nearest sampling GL_CLAMP and GL_CLAMP_TO_EDGE name the same
+         * texel for every coordinate in [0,1] -- Mesa's own two branches in
+         * COMPUTE_NEAREST_TEXEL_LOCATION agree -- so both may be taken.
+         */
+        if ((t->WrapS != GL_CLAMP && t->WrapS != GL_CLAMP_TO_EDGE) ||
+            (t->WrapT != GL_CLAMP && t->WrapT != GL_CLAMP_TO_EDGE))
+            return 0;
+    } else if (t->MagFilter == GL_LINEAR) {
+        /*
+         * Under a linear filter the two wraps part company: GL_CLAMP blends
+         * the border colour into the outermost half texel (texture.c,
+         * sample_2d_linear substitutes tObj->BorderColor when i0 is -1 or i1
+         * is the width) and GL_CLAMP_TO_EDGE holds the edge texel instead.
+         *
+         * Measured, on the machine: painting the outer two texels white and
+         * walking the outer half texel at each end reads 255 throughout,
+         * where a black border would have read about 127.  Fully outside the
+         * texture it names the nearest edge texel, one axis at a time, and
+         * the far corner names the corner texel.  So CLAMPUV is the edge
+         * clamp, and only GL_CLAMP_TO_EDGE may be taken here.
+         *
+         * What the filter itself does was measured the same way, with
+         * neighbouring texels painted 0 and 255 so the byte that comes back
+         * IS the weight: 127 at the texel boundary, 0 at the texel centre,
+         * and along a diagonal through a 2x2 all four corners appear with
+         * weights that are exact products, truncated.  That is the OpenGL
+         * rule -- u' = u * N - 0.5 and blend the two either side -- and 32 of
+         * 32 samples matched a model of it exactly.
+         */
+        if (t->WrapS != GL_CLAMP_TO_EDGE || t->WrapT != GL_CLAMP_TO_EDGE)
+            return 0;
+    } else {
         return 0;
+    }
     if (t->BaseLevel != 0)
         return 0;
     img = t->Image[0];

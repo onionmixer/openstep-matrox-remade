@@ -1619,6 +1619,278 @@ main(void)
                " coordinate read too high\n");
     }
 
+    printf("\n26. what does the engine's bilinear actually do?\n");
+    {
+        /*
+         * Section 7 asks only whether a bilinear batch is accepted.  Nobody
+         * has looked at the picture, and the Mesa gate refuses GL_LINEAR
+         * because of it.
+         *
+         * A texture whose texels name themselves cannot show a blend: between
+         * texel 10 and 11 every weight rounds to 10 or 11.  So paint one that
+         * can -- neighbouring texels 0 and 255 -- and the byte that comes back
+         * IS the weight, to one part in 255.
+         *
+         * Walking one texel in 64 steps then says three things at once:
+         * whether the engine blends at all, WHERE the ramp sits relative to
+         * the texel boundary (GL puts it at texel centres, half a texel off
+         * from the boundary), and how it rounds.
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        unsigned long r, c;
+        int mode;
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = ((c & 1UL) ? 0xFFUL : 0UL)
+                                 | ((r & 1UL) ? 0xFF00UL : 0UL);
+
+        for (mode = 0; mode < 2; mode++) {
+            blank();
+            (void)setup(1024UL, 0UL, 64UL, 4UL, texel / 64L,
+                        mode ? OSMGA_HW3D_TEXF_BILIN : 0UL);
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            /* start on a texel boundary, four texels in, on an EVEN texel so
+             * the ramp runs from 0 towards 255 */
+            batch->state.tmr[6] = 4L * texel;
+            batch->state.tmr[7] = 0L;
+            (void)fire();
+            printf("   %-8s u:", mode ? "bilinear" : "nearest");
+            for (c = 0UL; c < 64UL; c += 2UL)
+                printf(" %lu", pixat(0UL, c) & 0xFFUL);
+            printf("\n");
+        }
+        printf("   the row covers ONE texel, so nearest must be 0 throughout;"
+               " the ramp says where the blend is centred\n");
+
+        /* put the identifying texture back for anything that follows */
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = (r << 8) | c;
+    }
+
+    printf("\n27. and what does it do at the edge?\n");
+    {
+        /*
+         * With nearest sampling GL_CLAMP and GL_CLAMP_TO_EDGE are the same
+         * thing, which is why the gate has been able to accept GL_CLAMP so
+         * far.  Under a linear filter they part company: GL_CLAMP blends the
+         * BORDER colour into the outermost half texel and CLAMP_TO_EDGE does
+         * not.  Which one the engine's CLAMPUV is has never been measured,
+         * and it decides which wrap mode the gate may advertise.
+         *
+         * Paint the two texels at each end white and the middle black, then
+         * walk the outer half texel at each end.  Clamping to the edge holds
+         * 255 all the way out; blending a black border falls to about half.
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        unsigned long r, c;
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = (c <= 1UL || c >= DIM - 2UL) ? 0xFFUL : 0UL;
+
+        blank();
+        (void)setup(1024UL, 0UL, 32UL, 4UL, texel / 64L,
+                    OSMGA_HW3D_TEXF_BILIN);
+        batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+        batch->state.tmr[3] = 0L;
+        batch->state.tmr[6] = 0L;                 /* the outer half texel */
+        batch->state.tmr[7] = 0L;
+        (void)fire();
+        printf("   low  edge, u 0 .. half a texel: ");
+        for (c = 0UL; c < 32UL; c += 4UL)
+            printf(" %lu", pixat(0UL, c) & 0xFFUL);
+        printf("\n");
+
+        blank();
+        (void)setup(1024UL, 0UL, 32UL, 4UL, texel / 64L,
+                    OSMGA_HW3D_TEXF_BILIN);
+        batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+        batch->state.tmr[3] = 0L;
+        batch->state.tmr[6] = (long)(DIM - 1UL) * texel + texel / 2L;
+        batch->state.tmr[7] = 0L;
+        (void)fire();
+        printf("   high edge, last half texel:     ");
+        for (c = 0UL; c < 32UL; c += 4UL)
+            printf(" %lu", pixat(0UL, c) & 0xFFUL);
+        printf("\n");
+        printf("   255 throughout is CLAMP_TO_EDGE;"
+               " a fall towards 127 is GL_CLAMP with a black border\n");
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = (r << 8) | c;
+    }
+
+    printf("\n28. are all four texels in it, weighted as products?\n");
+    {
+        /*
+         * Section 26 walks u with v held still, so it cannot tell a proper
+         * 2x2 blend from one that only ever mixes two texels along u, and it
+         * says nothing about how the corners are weighted.
+         *
+         * Give the three channels three of the four corners:
+         *
+         *      R = 255 where c is odd  and r is even   ->  a(1-b)
+         *      G = 255 where c is even and r is odd    ->  (1-a)b
+         *      B = 255 where c is odd  and r is odd    ->  ab
+         *
+         * and walk the diagonal from the centre of texel (4,4) to the centre
+         * of (5,5), so a and b run together from 0 to 1.  At the halfway point
+         * every weight is a quarter and all three channels must read 63.  A
+         * blend that mixes only two texels leaves one of them at 0 throughout.
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        unsigned long r, c;
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] =
+                      (((c & 1UL) && !(r & 1UL)) ? 0xFFUL     : 0UL)
+                    | ((!(c & 1UL) &&  (r & 1UL)) ? 0xFF00UL   : 0UL)
+                    | (((c & 1UL) &&  (r & 1UL)) ? 0xFF0000UL : 0UL);
+
+        blank();
+        (void)setup(1024UL, 0UL, 33UL, 4UL, texel / 32L,
+                    OSMGA_HW3D_TEXF_BILIN);
+        batch->state.tmr[1] = 0L;
+        batch->state.tmr[2] = texel / 32L;    /* dt/dx: v walks with u */
+        batch->state.tmr[3] = 0L;
+        batch->state.tmr[6] = 4L * texel + texel / 2L;
+        batch->state.tmr[7] = 4L * texel + texel / 2L;
+        (void)fire();
+        printf("   %4s %6s %6s %6s\n", "col", "R a(1-b)", "G (1-a)b", "B ab");
+        for (c = 0UL; c <= 32UL; c += 4UL) {
+            unsigned long p = pixat(0UL, c);
+
+            printf("   %4lu %6lu %6lu %6lu\n",
+                   c, p & 0xFFUL, (p >> 8) & 0xFFUL, (p >> 16) & 0xFFUL);
+        }
+        printf("   at column 16 all three must be 63; a zero column is a"
+               " corner the engine never fetched\n");
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = (r << 8) | c;
+    }
+
+    printf("\n29. and outside the texture altogether?\n");
+    {
+        /*
+         * Section 27 shows the outer half texel holds the edge value, which
+         * is as far as a coordinate inside [0,1] can reach.  The kernel
+         * allows coordinates well beyond that, so what happens fully outside
+         * decides whether CLAMPUV is really GL_CLAMP_TO_EDGE; and both axes
+         * outside at once is what would catch the two clamps being applied
+         * together rather than one per axis.
+         *
+         * The interior coordinate has to be a texel CENTRE, not half the
+         * texture: half the texture is a texel boundary, where the answer is
+         * a blend of two texels and says nothing.  Centre of texel 32 it is.
+         *
+         * A coordinate below zero is refused by the kernel outright, so the
+         * primitive falls back to software and the engine never sees it.
+         * That is a safe answer, not a wrong picture, and it is recorded
+         * here so that a later change to the coordinate bound does not
+         * quietly start accelerating a case nobody measured.
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        long span = (long)OSMGA_HW3D_TEX_SPAN;
+        long mid = 32L * texel + texel / 2L;      /* centre of texel 32 */
+        long out = span + span / 4L;              /* a quarter past the end */
+        long neg = -(span / 4L);
+        static const char *name[6] = {
+            "u below zero", "u past the end",
+            "v below zero", "v past the end",
+            "both below",   "both past" };
+        long uu[6], vv[6];
+        unsigned long want[6];
+        int j;
+
+        uu[0] = neg; vv[0] = mid; want[0] = 0x2000UL;
+        uu[1] = out; vv[1] = mid; want[1] = 0x203FUL;
+        uu[2] = mid; vv[2] = neg; want[2] = 0x0020UL;
+        uu[3] = mid; vv[3] = out; want[3] = 0x3F20UL;
+        uu[4] = neg; vv[4] = neg; want[4] = 0x0000UL;
+        uu[5] = out; vv[5] = out; want[5] = 0x3F3FUL;
+
+        for (j = 0; j < 6; j++) {
+            unsigned long got;
+            unsigned v;
+
+            blank();
+            (void)setup(1024UL, 0UL, 8UL, 4UL, 0L, OSMGA_HW3D_TEXF_BILIN);
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = uu[j];
+            batch->state.tmr[7] = vv[j];
+            v = fire();
+            if (v != OSMGA_HW3D_OK) {
+                printf("   %-16s refused (%u) -- software draws it\n",
+                       name[j], v);
+                continue;
+            }
+            got = pixat(0UL, 0UL) & 0xFFFFUL;
+            printf("   %-16s texel %2lu,%2lu  wanted %2lu,%2lu %s\n",
+                   name[j], (got >> 8) & 0xFFUL, got & 0xFFUL,
+                   (want[j] >> 8) & 0xFFUL, want[j] & 0xFFUL,
+                   (got == want[j]) ? "" : "  <<");
+            if (got != want[j]) failures++;
+        }
+        printf("   clamping to the edge names the nearest edge texel,"
+               " one axis at a time\n");
+    }
+
+    printf("\n30. where does the destination's alpha come from?\n");
+    {
+        /*
+         * Comparing a textured GL scene against the software path with the
+         * alpha byte no longer masked off says the two disagree on EVERY
+         * pixel: the software path writes 255 and the engine writes 0.  With
+         * GL_REPLACE and an RGB texture the alpha is meant to be the
+         * fragment's, and the fragment's is what the encoder programs into
+         * ALPHASTART, so something is overriding it.
+         *
+         * The register reference says why: TDUALSTAGE0 is written as zero,
+         * and zero is ALPHA_SEL_ARG1 -- the current texture's alpha -- where
+         * ALPHA_SEL_ARG2 with ARG2_DIFFUSE would be the interpolated one.
+         * The texture is uploaded from GL_RGB with a zero top byte, so the
+         * alpha that wins is zero.
+         *
+         * That is a reading of a header.  This measures it: give the texture
+         * a top byte of 0xAB and the triangle an alpha of 0x55, and see which
+         * one lands.
+         */
+        unsigned long r, c, got;
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = 0xAB000000UL | (r << 8) | c;
+
+        blank();
+        {
+            OSMGAHW3DTri *t = setup(1024UL, 0UL, 8UL, 4UL, 0L, 0UL);
+
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = 4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+            batch->state.tmr[7] = 4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+            t->a0 = 0x55UL << 15;
+        }
+        (void)fire();
+        got = pixat(0UL, 0UL);
+        printf("   texture alpha 0xAB, triangle alpha 0x55  ->  pixel %08lx\n",
+               got);
+        printf("   top byte %02lx: ab is the texture's, 55 is the"
+               " fragment's, 00 is neither\n", (got >> 24) & 0xFFUL);
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = (r << 8) | c;
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;

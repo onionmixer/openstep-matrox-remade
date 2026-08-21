@@ -119,6 +119,19 @@ main(int argc, char **argv)
     if (dumpMode) {
         long x, y;
 
+        /*
+         * A second argument asks for the linear filter, which the gate now
+         * takes -- with CLAMP_TO_EDGE, since under a linear filter GL_CLAMP
+         * blends a border colour that the engine's clamp does not have.
+         */
+        if (argc > 2) {
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
+                            GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
+                            GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        }
         glClear(GL_COLOR_BUFFER_BIT);
         /* one quad and one split triangle, so both shapes are compared */
         quad(40.0, 40.0, 168.0, 168.0);
@@ -131,7 +144,10 @@ main(int argc, char **argv)
         for (y = 0; y < H; y++)
             for (x = 0; x < W; x++)
                 if (app[y * W + x] != CLEARC)
-                    printf("P %ld %ld %lu\n", x, y, app[y * W + x] & 0xFFFFFFUL);
+                    /* the whole pixel, alpha included: with GL_REPLACE and an
+                     * RGB texture the alpha must be the fragment's, and a
+                     * masked comparison would never have said so */
+                    printf("P %ld %ld %lu\n", x, y, app[y * W + x]);
         return 0;
     }
 
@@ -174,21 +190,36 @@ main(int argc, char **argv)
 
     /* 2. each condition, broken on its own, must refuse */
     {
-        struct { const char *name; } cases[4];
+        struct { const char *name; } cases[5];
         unsigned long before;
         int k;
 
         cases[0].name = "GL_MODULATE instead of GL_REPLACE";
-        cases[1].name = "GL_LINEAR instead of GL_NEAREST";
+        /*
+         * One filter changed and not the other.  The engine has a single
+         * filter switch and GL picks between the two per fragment, so a
+         * primitive that could want either is not one the engine can draw.
+         */
+        cases[1].name = "MagFilter linear, MinFilter still nearest";
         cases[2].name = "GL_REPEAT instead of GL_CLAMP";
         cases[3].name = "blending on";
-        for (k = 0; k < 4; k++) {
+        /*
+         * Linear IS taken now, but only with CLAMP_TO_EDGE: under a linear
+         * filter GL_CLAMP blends a border colour into the outer half texel
+         * and the engine's clamp holds the edge texel instead.
+         */
+        cases[4].name = "GL_LINEAR both, but wrap still GL_CLAMP";
+        for (k = 0; k < 5; k++) {
             glClear(GL_COLOR_BUFFER_BIT);
             before = OSMGAMesaHookDrawn();
             if (k == 0) glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
             if (k == 1) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             if (k == 2) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
             if (k == 3) glEnable(GL_BLEND);
+            if (k == 4) {
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            }
             quad(40.0, 40.0, 168.0, 168.0);
             glFinish();
             say(cases[k].name, OSMGAMesaHookDrawn() == before, 0);
@@ -196,7 +227,32 @@ main(int argc, char **argv)
             if (k == 1) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
             if (k == 2) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
             if (k == 3) glDisable(GL_BLEND);
+            if (k == 4) {
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            }
         }
+    }
+
+    /* and linear WITH the edge clamp is taken */
+    {
+        unsigned long before;
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glClear(GL_COLOR_BUFFER_BIT);
+        before = OSMGAMesaHookDrawn();
+        quad(40.0, 40.0, 168.0, 168.0);
+        glFinish();
+        say("GL_LINEAR with GL_CLAMP_TO_EDGE reaches the engine",
+            OSMGAMesaHookDrawn() - before >= 2UL, 0);
+        say("and it covered the quad", painted() == 128L * 128L, 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     }
 
     /* and it comes back after they are put right */
