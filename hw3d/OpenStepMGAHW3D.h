@@ -379,13 +379,17 @@ typedef struct {
 /*
  * Copying a drawn surface out of video memory, done by the driver.
  *
- * A client cannot read video memory reliably: measured, the first read after
- * a submission returns can still hold what was there before the draw, and it
- * is the client's mapping rather than anything on the device's side -- an
- * uncached read from the driver before returning changed nothing.  The
- * S4a plan had already raised this, since this mmap route has no way to ask
- * for an uncached mapping.  So the driver does the copy through an alias it
- * CAN make uncached, and a client never reads video memory at all.
+ * A client's first read after a submission returns can still hold what was
+ * there before the draw.  Measured since this was written: it depends on
+ * where the client last READ before submitting -- inside the first 64 bytes
+ * of the window and the next submission's first 64 bytes arrive late, past
+ * them and they do not, and writes make no difference either way.  The
+ * remark that once stood here, that an uncached read from the driver changed
+ * nothing, was measured at the window's first word, which is inside that
+ * range and is the one offset that cannot settle anything.
+ *
+ * The copy still goes through an alias the driver CAN make uncached, so a
+ * client using it never reads video memory at all and none of this applies.
  */
 typedef struct {
     unsigned long srcOffset;    /* byte offset into video memory */

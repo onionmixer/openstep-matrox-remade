@@ -723,6 +723,12 @@
  */
 #define OSMGA_HW3D_SUBMIT_PARAM "OSMGAHW3DSubmit"
 #define OSMGA_HW3D_STATUS_PARAM "OSMGAHW3DStatus"
+/*
+ * M1-3i: which word of the uncached alias to read once a submission has
+ * finished, or zero for none.  Development only -- see the note where it is
+ * acted on.
+ */
+#define OSMGA_HW3D_SETTLE_PARAM "OSMGAHW3DSettle"
 #define OSMGA_HW3D_CLIP_ROWS    120UL
 #define OSMGA_HW3D_CLIP_COLS    64UL
 
@@ -1219,18 +1225,28 @@ static int osmgaMesaAccelEnabled;             /* M1-3a: Configure.app switch */
 static id osmgaCapsInstance;
 
 /*
- * M1-3g DIAGNOSTIC, not a mechanism.
+ * One page of the window, aliased uncached.
  *
- * One page of the window, aliased uncached, so the driver can look at the
- * first pixel of a destination the moment its completion test says the
- * submission is done.  Nobody has measured whether the result is there at
- * that moment; everything so far measured only whether a read from here
- * repaired someone else's view, which is a different question.
- *
- * Bounded to a few lines because syslog drops bursts.
+ * Made for a diagnostic that has served its purpose and been removed; kept
+ * because M1-3i needs a way for the driver to read video memory without
+ * mapping anything and without going through displayInfo, whose mapping's
+ * cache attribute is unproven.
  */
 static volatile unsigned long *osmgaProbeAlias;
-static unsigned long osmgaProbeLeft = 8UL;
+/* How many words can be read through that alias.  Taken from the length the
+ * mapping call actually returned rather than from PAGE_SIZE: the helper
+ * rounds its start down and its length up to 4 KiB of its own accord, so the
+ * two are only equal by arithmetic that could stop being true. */
+static unsigned long osmgaProbeWords;
+/*
+ * M1-3i: 0 for no settling read, otherwise one more than the word to read.
+ *
+ * Encoded that way so that "off" and "word 0" are different values.  Word 0
+ * is the one offset measured NOT to settle anything, so it has to remain
+ * selectable -- reproducing the earlier failure is half of what the sweep is
+ * for.
+ */
+static unsigned long osmgaSettleCode;
 
 /*
  * REMAINING_WORK 3-10.  The submit path claims stormBusy, but mode changes
@@ -2167,8 +2183,18 @@ static IODisplayInfo osmgaModeTemplate = {
 
                         if (osmgaMapUncachedBlock(frameBufferPhysical, start,
                                                   start + (unsigned long)PAGE_SIZE,
-                                                  &pa, &pl, &pp) == IO_R_SUCCESS)
+                                                  &pa, &pl, &pp) == IO_R_SUCCESS) {
+                            unsigned long skew = start & 0x0FFFUL;
+
                             osmgaProbeAlias = pp;
+                            /* The pointer handed back is inside the mapping
+                             * by however much the start was rounded down, so
+                             * what is readable from it is shorter than the
+                             * mapping by exactly that. */
+                            osmgaProbeWords = (pl > skew)
+                                ? (pl - skew) / sizeof(unsigned long)
+                                : 0UL;
+                        }
                     }
                     osmgaCapsInstance = self;
                     osmgaMmapRegistered = 1;
@@ -3269,6 +3295,43 @@ unmap:
         return [self runHW3DSubmit];
     }
 
+    /*
+     * M1-3i: choose the word the driver reads once a submission has finished,
+     * or turn the read off.  DEVELOPMENT ONLY -- see the note where it acts.
+     *
+     * It exists as a knob rather than a constant because the thing it is
+     * meant to answer needs several offsets tried, and every constant would
+     * have cost a reboot.  Measured from userland, a read of the first 64
+     * bytes of the window settles nothing while a read past them settles
+     * everything; whether that holds for a read the KERNEL makes, through an
+     * uncached alias, is the question, and it decides what any fix can look
+     * like.
+     *
+     * An enabled setting is refused when there is no alias to read.  Letting
+     * it through would have the sweep quietly measure "off" while reporting
+     * an offset, and a negative result read that way is worse than none.
+     */
+    if (osmgaTextEquals(parameterName, OSMGA_HW3D_SETTLE_PARAM)) {
+        unsigned long want;
+
+        if (parameterArray == 0 || count != 1)
+            return IO_R_INVALID_ARG;
+        want = (unsigned long)parameterArray[0];
+        if (want != 0UL &&
+            (osmgaProbeAlias == 0 || osmgaProbeWords == 0UL ||
+             want > osmgaProbeWords))
+            return IO_R_INVALID_ARG;
+        simple_lock(&stormLock);
+        osmgaSettleCode = want;
+        simple_unlock(&stormLock);
+        IOLog("OpenStepMGA M1-3i: settling read %s (alias holds %lu words)\n",
+              want == 0UL ? "off" : "on", osmgaProbeWords);
+        if (want != 0UL)
+            IOLog("OpenStepMGA M1-3i: it will read word %lu, byte %lu of the "
+                  "window\n", want - 1UL, (want - 1UL) * sizeof(unsigned long));
+        return IO_R_SUCCESS;
+    }
+
     if (osmgaTextEquals(parameterName, IO_DISPLAY_DO_BLIT) ||
         osmgaTextEquals(parameterName, OSMGA_PROBE_BLIT_PARAM)) {
         if (parameterArray == 0 || count != IO_DISPLAY_BLIT_SIZE) {
@@ -3298,7 +3361,7 @@ unmap:
     IODisplayInfo *di3;   /* read under the claim, never before it */
     const OSMGAFormat *f3 = &osmgaFmt[selectedFormatIndex];
     unsigned long stride3, total3, tail3, listPhys3, spins3, status3;
-    unsigned long epoch3, dstW3, dstH3, dstP3, avail3;
+    unsigned long epoch3, dstW3, dstH3, dstP3, avail3, settle3;
     unsigned long *list3, listDwords3, badTri3 = 0UL;
     int v3, rc3 = 0;
 
@@ -3353,6 +3416,10 @@ unmap:
     if (stormBusy) { simple_unlock(&stormLock); return IO_R_BUSY; }
     stormBusy = YES;
     epoch3 = osmgaModeEpoch;
+    /* Taken here with everything else this submission is entitled to, so a
+     * setting changed while it runs belongs to the next one and not to this
+     * one half-way through. */
+    settle3 = osmgaSettleCode;
     simple_unlock(&stormLock);
 
     /*
@@ -3550,35 +3617,33 @@ unmap:
             if (spins3 < OSMGA_S1_SPIN_LIMIT &&
                 osmgaStormWaitIdle(mmioBase)) {
                 /*
-                 * No read-back here.  One was added and measured useless:
-                 * an uncached read of the same physical memory from this
-                 * side, before returning, left a client's first read still
-                 * showing what was there before the draw.  So the staleness
-                 * is not on the device's side of the bus, and machinery that
-                 * does not do what it claims is worse than none.  See
-                 * REMAINING_WORK 3-18 for where it actually is.
-                 */
-                /*
-                 * M1-3g: what does an uncached alias see, right here?
+                 * M1-3i: one read of video memory before saying it is done,
+                 * at a word the caller chose.
                  *
-                 * A client's first read after this returns can hold pre-draw
-                 * data.  It was put down to the client's mapping until the
-                 * S4a gate was re-read, which had already shown that mapping
-                 * coherent with engine writes -- through a 2D blit, where
-                 * this is primary DMA.  So the suspicion moved to the
-                 * completion test: the end bit says the command stream was
-                 * consumed, which is not the same as its writes having
-                 * landed.  This says which, and reads nothing a client owns.
+                 * A read-back was here once and was taken out as useless.  It
+                 * read the window's first word.  Measured since, from
+                 * userland: a read anywhere in the first sixty-four bytes
+                 * settles nothing, and a read past them settles everything --
+                 * so that attempt picked the one offset that could not have
+                 * worked, and the note it left behind ("the staleness is not
+                 * on the device's side") was not entitled to its conclusion.
+                 *
+                 * Whether a read the KERNEL makes, through an uncached alias,
+                 * does what a client's own read does is a different question
+                 * and is not answered yet.  This is how it gets asked: the
+                 * word is settable while the machine runs, so one boot can
+                 * try the offset that failed before, the first one that ought
+                 * to work, and several past it.
+                 *
+                 * The old diagnostic that sat here is gone rather than
+                 * disabled.  Its counter was a static initialised to eight,
+                 * so a reboot would have brought it back, and what it read
+                 * was word zero -- eight uncontrolled reads of exactly the
+                 * offset under test, in front of the measurement.
                  */
-                if (osmgaProbeAlias != 0 && osmgaProbeLeft > 0UL &&
-                    osmgaHW3DSnapshot.state.dstorg == osmgaMmapWindowStart) {
-                    unsigned long a1 = osmgaProbeAlias[0];
-                    unsigned long a2 = osmgaProbeAlias[0];
-
-                    osmgaProbeLeft--;
-                    IOLog("OpenStepMGA M1-3g: at completion the alias reads "
-                          "%08lx, and again %08lx\n", a1, a2);
-                }
+                if (settle3 != 0UL && osmgaProbeAlias != 0 &&
+                    settle3 <= osmgaProbeWords)
+                    (void)osmgaProbeAlias[settle3 - 1UL];
                 rc3 = 1;
             }
             else

@@ -31,6 +31,7 @@ extern caddr_t mmap(caddr_t, int, int, int, int, long);
 
 #define DEV_PATH        "/dev/osmgavram"
 #define SUBMIT_PARAM    "OSMGAHW3DSubmit"
+#define SETTLE_PARAM    "OSMGAHW3DSettle"
 #define STATUS_PARAM    "OSMGAHW3DStatus"
 #define CMD_MMAP_BASE   0x40000000UL
 /* The batch only: the driver no longer lets the command list be mapped,
@@ -186,6 +187,13 @@ main(int argc, char **argv)
      * front of EVERY trial, so every one of the forty is a state transition
      * rather than only the first. */
     int argHow = SUBMIT_RPC, argPrime = 0;
+    /* argv[8]: what the DRIVER should read once a submission finishes.
+     * 0 turns it off; N reads word N-1 of the window through the kernel's
+     * uncached alias.  Whether that does what a client's own read does is
+     * the whole question -- a client read past byte 64 settles everything
+     * and one inside settles nothing, and it does not follow that a read
+     * from the other side of the bus behaves the same way. */
+    int argSettle = -1;
     IODeviceMaster *master;
     IOObjectNumber objNum;
     IOString kind;
@@ -226,6 +234,19 @@ main(int argc, char **argv)
         argHow = SUBMIT_IOCTL;
     if (argc > 7)
         argPrime = atoi(argv[7]);
+    if (argc > 8)
+        argSettle = atoi(argv[8]);
+
+    if (argSettle >= 0) {
+        unsigned one = (unsigned)argSettle;
+        IOReturn sr = [master setIntValues:&one forParameter:SETTLE_PARAM
+                              objectNumber:objNum count:1];
+
+        printf("   driver settling read set to %d -> %s\n", argSettle,
+               (sr == IO_R_SUCCESS) ? "accepted"
+                                    : "REFUSED (the sweep below means nothing)");
+        if (sr != IO_R_SUCCESS) return 1;
+    }
 
     printf("M1-2g: texture through the batch path\n");
 
