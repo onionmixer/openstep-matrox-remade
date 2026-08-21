@@ -32,12 +32,33 @@ unsigned long OSMGAMesaBufferHeight(void) { return bufHeight; }
 unsigned long OSMGAMesaBufferStride(void) { return bufStride; }
 unsigned long OSMGAMesaBufferDepthOrigin(void) { return depthOrigin; }
 
+/*
+ * Said once, and only when a resource was asked for and refused.
+ *
+ * Returning nothing from the depth accessor is ordinary for a second
+ * context, an unsupported depth width, or a surface that does not match --
+ * those are decisions, not failures, and saying so every frame would be
+ * noise.  What was worth saying and never was: the mapping itself failed, so
+ * the hardware depth buffer is gone and Mesa is quietly back on its own.
+ */
+static void
+depthGrumble(const char *why)
+{
+    static int said;
+
+    if (said)
+        return;
+    said = 1;
+    fprintf(stderr, "OpenStepMGA: %s; falling back to a software depth "
+                    "buffer\n", why);
+}
+
 void *
 OpenStepMesaAccelDepthBuffer(void *ctx, int width, int height,
                              int bytesPerValue)
 {
     OSMGAMesaProbe probe;
-    unsigned long need, tail, avail;
+    unsigned long need, tail, avail, page;
     vm_address_t addr = 0;
 
     if (depthMapped != 0)
@@ -70,27 +91,51 @@ OpenStepMesaAccelDepthBuffer(void *ctx, int width, int height,
         return 0;
 
     /*
-     * Immediately after the colour surface, page-aligned so it can be mapped
-     * on its own.  Checked by division rather than by forming the product,
-     * as everywhere else here.
+     * Immediately after the colour surface, on a page boundary so it can be
+     * mapped on its own.  Checked by division rather than by forming the
+     * product, as everywhere else here.
+     *
+     * The page is the machine's, not a number written here.  This used to
+     * round to 4096, which is right on a machine whose page is 4096 and
+     * quietly wrong on this one, where it is 8192: the device refuses an
+     * offset that is not a whole page -- EINVAL, not a silent rounding --
+     * so the mapping failed, this returned nothing, and Mesa went back to a
+     * software depth buffer without anyone being told.  It needs h*w to be a
+     * multiple of 2048 to land right by accident, which 1024x768 does and
+     * 800x600 and 320x240 do not; every test here has used the first.
      */
+    page = (unsigned long)vm_page_size;
+    if (page == 0UL || (page & (page - 1UL)) != 0UL)
+        return 0;               /* not a power of two: the mask below lies */
+
     tail = bufOrigin - probe.caps[OSMGA_HW3D_CAP_VRAMOFF] +
            bufHeight * bufStride * 4UL;
-    tail = (tail + 4095UL) & ~4095UL;
+    if (tail > 0xFFFFFFFFUL - (page - 1UL))
+        return 0;
+    tail = (tail + (page - 1UL)) & ~(page - 1UL);
     avail = probe.caps[OSMGA_HW3D_CAP_VRAMLEN];
     if (tail >= avail)
         return 0;
     if (bufHeight > (avail - tail) / (bufStride * 2UL))
         return 0;
+    /*
+     * The length is left exact.  Only the offset has to be a whole page --
+     * measured, a length that is not a multiple of one maps perfectly well --
+     * and padding it would be worse than useless: the capacity check just
+     * above is made against the unpadded size, so a padded length can reach
+     * past the end of the window, which the device refuses a page at a time.
+     */
     need = bufHeight * bufStride * 2UL;
-    need = (need + 4095UL) & ~4095UL;
 
-    if (vm_allocate(task_self(), &addr, (vm_size_t)need, TRUE) != KERN_SUCCESS)
+    if (vm_allocate(task_self(), &addr, (vm_size_t)need, TRUE) != KERN_SUCCESS) {
+        depthGrumble("no room for a depth mapping");
         return 0;
+    }
     if ((int)mmap((caddr_t)addr, (int)need, PROT_READ | PROT_WRITE,
                   MAP_SHARED, OSMGAMesaProbeDeviceFd(),
                   (long)(probe.caps[OSMGA_HW3D_CAP_VRAMOFF] + tail)) == -1) {
         (void)vm_deallocate(task_self(), addr, (vm_size_t)need);
+        depthGrumble("the depth mapping was refused");
         return 0;
     }
     depthMapped = (void *)addr;
