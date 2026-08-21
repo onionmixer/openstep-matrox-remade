@@ -167,6 +167,29 @@
 #define OSMGA_HW3D_TEX_MAX_PIT  2047UL   /* TEXCTL's field is 11 bits */
 #define OSMGA_HW3D_TEXFMT_TW32  6UL      /* the only format we allow yet */
 #define OSMGA_HW3D_TEXF_BILIN   0x1UL    /* client flag, not a register bit */
+/*
+ * Two diagnostic flags, and what they are for.
+ *
+ * The engine draws in two lanes: the even columns of a row and the odd ones
+ * are handled by different halves of it, and TDUALSTAGE0 and TDUALSTAGE1 hold
+ * one lane's texture-environment word each rather than two stages of a serial
+ * combiner.  That was worked out from a failure -- selecting the interpolated
+ * alpha in stage nought alone fixed exactly the even columns -- and a reading
+ * arrived at from a failure is worth proving before it is believed.
+ *
+ * So the encoder can be asked to put the two words back the way they were, or
+ * to swap them.  Neither flag lets a client PUT anything in a register: the
+ * two words are the kernel's own constants and the flags only choose which
+ * lane gets which.  What they buy is the control the reading needs --
+ *
+ *      neither     every column takes the interpolated alpha
+ *      TDS1ZERO    the even columns do and the odd ones take the texture's
+ *      TDSSWAP     the odd columns do and the even ones take the texture's
+ *
+ * -- and the third line is the one that cannot be explained any other way.
+ */
+#define OSMGA_HW3D_TEXF_TDS1ZERO 0x2UL   /* stage 1 left at zero, as it was */
+#define OSMGA_HW3D_TEXF_TDSSWAP  0x4UL   /* the two lanes' words exchanged */
 
 /*
  * How far a texture coordinate may reach.

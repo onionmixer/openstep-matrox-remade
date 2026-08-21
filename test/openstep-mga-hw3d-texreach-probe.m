@@ -1923,14 +1923,24 @@ main(void)
             t->ady = 0UL;
         }
         (void)fire();
+        /*
+         * EVERY column.  Printing every other one hid the thing that
+         * mattered: the end-to-end comparison says the odd columns keep the
+         * wrong alpha and the even ones do not, and a stride of two over an
+         * even start could never have said so.
+         */
         printf("   alpha across the row:");
-        for (c = 0UL; c < 16UL; c += 2UL) {
+        for (c = 0UL; c < 16UL; c++) {
             unsigned long got = (pixat(0UL, c) >> 24) & 0xFFUL;
 
             printf(" %02lx", got);
             if (got != 0x20UL + 4UL * c) bad = 1;
         }
-        printf("   wanted 20 28 30 38 40 48 50 58\n");
+        printf("\n   wanted               ");
+        for (c = 0UL; c < 16UL; c++)
+            printf(" %02lx", 0x20UL + 4UL * c);
+        printf("\n   (the texture's own alpha is ab, so an ab is the texture"
+               " winning and a 00 is neither)\n");
         if (bad) {
             printf("   FAIL  %-52s\n",
                    "the interpolated alpha reaches the destination");
@@ -1938,6 +1948,73 @@ main(void)
         } else
             printf("   ok    %-52s\n",
                    "the interpolated alpha reaches the destination");
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = (r << 8) | c;
+    }
+
+    printf("\n32. two lanes, or a story about two lanes?\n");
+    {
+        /*
+         * Section 31 says the even columns take the interpolated alpha and
+         * the odd ones take the texture's, which is where the reading came
+         * from: TDUALSTAGE0 and TDUALSTAGE1 are not two stages of a serial
+         * combiner but one texture-environment word per LANE, and the engine
+         * draws the even and odd columns in different lanes.
+         *
+         * "It works now" would not prove that -- writing anything at all into
+         * the second word could have had some other effect.  What proves it
+         * is the parity REVERSING when the two words are exchanged, which no
+         * other explanation predicts.  The kernel will exchange them on ask;
+         * the flags choose between its own two constants and carry nothing
+         * into a register.
+         */
+        static const struct { unsigned long f; const char *name; } cases[3] = {
+            { 0UL,                        "both lanes, diffuse" },
+            { OSMGA_HW3D_TEXF_TDS1ZERO,   "lane 1 left at zero" },
+            { OSMGA_HW3D_TEXF_TDSSWAP,    "the two exchanged" }
+        };
+        unsigned long r, c;
+        int j;
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = 0xAB000000UL | (r << 8) | c;
+
+        for (j = 0; j < 3; j++) {
+            int evenOK = 1, oddOK = 1;
+
+            blank();
+            {
+                OSMGAHW3DTri *t = setup(1024UL, 0UL, 16UL, 4UL, 0L,
+                                        cases[j].f);
+
+                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                batch->state.tmr[3] = 0L;
+                batch->state.tmr[6] =
+                    4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+                batch->state.tmr[7] =
+                    4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+                t->a0  = 0x20UL << 15;
+                t->adx = 4UL << 15;
+                t->ady = 0UL;
+            }
+            (void)fire();
+            printf("   %-20s", cases[j].name);
+            for (c = 0UL; c < 12UL; c++) {
+                unsigned long got = (pixat(0UL, c) >> 24) & 0xFFUL;
+
+                printf(" %02lx", got);
+                if (got != 0x20UL + 4UL * c) {
+                    if (c & 1UL) oddOK = 0; else evenOK = 0;
+                }
+            }
+            printf("   even %s, odd %s\n", evenOK ? "ok" : "no",
+                   oddOK ? "ok" : "no");
+        }
+        printf("   the reading needs the third line to be the second one's"
+               " mirror; anything else and it is a story\n");
 
         for (r = 0UL; r < DIM; r++)
             for (c = 0UL; c < DIM; c++)

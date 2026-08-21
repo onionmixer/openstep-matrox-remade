@@ -6885,6 +6885,7 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                 const OSMGAHW3DBatch *b, unsigned long *outTail)
 {
     unsigned long pos = 0UL, i;
+    unsigned long tds0 = 0UL, tds1 = 0UL;
     int anyZI = 0, anyTex = 0;
     int ok = 1;
 
@@ -6935,6 +6936,18 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                                 ((b->state.texPitch & 2047UL) << 9) |
                                 MGA_TEXCTL_NOPERSP | MGA_TEXCTL_TAKEY |
                                 MGA_TEXCTL_CLAMPUV | MGA_TEXCTL_TW32);
+        /*
+         * One texture-environment word per lane; see the flags in
+         * OpenStepMGAHW3D.h for why the diagnostic ones exist.
+         */
+        tds0 = MGA_TDS_ALPHA_SEL_ARG2;
+        tds1 = MGA_TDS_ALPHA_SEL_ARG2;
+        if ((b->state.texFlags & OSMGA_HW3D_TEXF_TDS1ZERO) != 0UL)
+            tds1 = 0UL;
+        if ((b->state.texFlags & OSMGA_HW3D_TEXF_TDSSWAP) != 0UL) {
+            tds0 = 0UL;
+            tds1 = MGA_TDS_ALPHA_SEL_ARG2;
+        }
         ok = ok && osmgaDmaBlock(list, listDwords, &pos,
                  MGA_TEXCTL2,      MGA_TEXCTL2_G400_MAGIC |
                                    MGA_TEXCTL2_CKSTRANSDIS,
@@ -6960,8 +6973,24 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                   * against the software path masked the alpha byte off, so
                   * nothing said so until the mask came off.
                   */
-                 MGA_TDUALSTAGE0, MGA_TDS_ALPHA_SEL_ARG2,
-                 MGA_TDUALSTAGE1, 0UL,
+                 MGA_TDUALSTAGE0, tds0,
+                 /*
+                  * The SAME value in the second stage, not zero.
+                  *
+                  * Selecting the diffuse alpha in stage nought alone fixed
+                  * exactly half the pixels: the even columns took the
+                  * interpolated alpha and the odd ones went on taking the
+                  * texture's.  Measured with a sloped alpha and a texture
+                  * whose own alpha is 0xAB, a row reads
+                  *
+                  *      20 ab 28 ab 30 ab 38 ab ...
+                  *
+                  * X.Org's mga driver programs the two stages together when
+                  * there is only one texture -- mga_exa.c, "if (!pMask) ds1 =
+                  * ds0" -- rather than leaving the second at zero, which is
+                  * what this now does.
+                  */
+                 MGA_TDUALSTAGE1, tds1,
                  MGA_TMR0,        (unsigned long)b->state.tmr[0],
                  MGA_TMR0 +  4UL, (unsigned long)b->state.tmr[1]);
         /* The H family is the kernel's: we set NOPERSPECTIVE, nothing in
