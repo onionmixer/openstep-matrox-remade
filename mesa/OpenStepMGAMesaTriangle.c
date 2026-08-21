@@ -71,6 +71,20 @@ osmgaClampSlope(double v)
  */
 #define OSMGA_MESA_COORD_MAX 16384L
 
+/*
+ * The coordinate range this encoding can carry without leaving 32 bits.
+ *
+ * The error term below contains 2*|D|*k0, and |D| and k0 are each bounded by
+ * twice the coordinate limit, so the product is bounded by eight times its
+ * square.  At OSMGA_MESA_COORD_MAX that is 2147418112, which clears the
+ * signed range by sixty-five thousand -- a margin of nothing at all.  Half
+ * that limit leaves a factor of four, and no surface this driver drives is
+ * anywhere near it: the widest mode is 1600 columns.  A triangle outside it
+ * is refused as unsupported and drawn the other way, which is the mechanism
+ * that already exists for triangles this back end cannot express.
+ */
+#define OSMGA_MESA_RULE_COORD_MAX  8192L
+
 static unsigned long
 osmgaStartFixed(double v)
 {
@@ -91,20 +105,96 @@ osmgaStartFixed(double v)
 static int
 osmgaCoordOK(const OSMGAMesaVertex *v)
 {
-    return (v->x <=  OSMGA_MESA_COORD_MAX && v->x >= -OSMGA_MESA_COORD_MAX &&
-            v->y <=  OSMGA_MESA_COORD_MAX && v->y >= -OSMGA_MESA_COORD_MAX);
+    return (v->x <=  OSMGA_MESA_RULE_COORD_MAX &&
+            v->x >= -OSMGA_MESA_RULE_COORD_MAX &&
+            v->y <=  OSMGA_MESA_RULE_COORD_MAX &&
+            v->y >= -OSMGA_MESA_RULE_COORD_MAX);
+}
+
+/*
+ * C's division truncates toward zero, which is not the floor when the
+ * numerator is negative -- and the numerator below is negative for every
+ * edge steeper than one column per row.
+ */
+static long
+osmgaFloorDiv(long a, long b)
+{
+    long q = a / b;
+
+    if ((a % b) != 0L && ((a < 0L) != (b < 0L)))
+        q--;
+    return q;
+}
+
+/*
+ * An edge as the rule needs it: where the edge itself starts, how far it
+ * moves over its WHOLE height, and how many rows into it this trapezoid
+ * begins.  The lower trapezoid continues the long edge rather than restarting
+ * from a rounded position, which is what k0 is for.
+ */
+typedef struct {
+    long xa;                    /* the edge's own start column */
+    long dee;                   /* displacement over the whole edge */
+    long height;                /* the edge's own height, not the trapezoid's */
+    long k0;                    /* rows into the edge this trapezoid starts */
+} OSMGAMesaEdge;
+
+/*
+ * The registers for one edge.
+ *
+ * OpenGL samples a pixel at its centre and breaks ties top-left, so the first
+ * column of a left edge at row ya+k0+k is
+ *
+ *     xa + ceil( (2*D*(k0+k) + D - H) / (2*H) )
+ *
+ * and the same expression is the right edge's boundary, which FXBNDRY treats
+ * as exclusive.  Doubling AR0 and AR2 keeps the slope exactly and makes that
+ * half pixel an integer -- with the pair left at the trapezoid's own height,
+ * as it was, there is no integer that expresses it, which is why biasing the
+ * start column alone reached 13 triangles in 300 and this reaches 300.
+ *
+ * The -1 on a leftward edge is the identity that appears when a ceiling is
+ * negated; it is right only because every edge here runs top to bottom.
+ *
+ * The error term is then folded into [0, 2H) by moving whole columns into the
+ * start, since shifting it by the denominator moves the walk exactly one
+ * column.  That is NOT a general transformation -- the walk clamps at zero,
+ * and folding across the clamp moves every row, as dy=10, |dx|=1, e=15 shows.
+ * It is safe here because the term before folding is at most H, and the
+ * denominator is 2H, so the fold only ever raises it.  It also leaves nothing
+ * to walk on the first row, which is what makes the column written the column
+ * drawn -- and the interpolation planes below are anchored to that column.
+ */
+static void
+osmgaEdgeRegs(const OSMGAMesaEdge *e,
+              long *x0, long *mag, long *dy, long *err)
+{
+    long mg = (e->dee < 0L) ? -e->dee : e->dee;
+    long den = 2L * e->height;
+    long v = e->height - mg - 2L * mg * e->k0 - ((e->dee < 0L) ? 1L : 0L);
+    long q = osmgaFloorDiv(v, den);
+
+    *mag = 2L * mg;
+    *dy  = den;
+    *err = v - q * den;
+    *x0  = e->xa - ((e->dee < 0L) ? -q : q);
 }
 
 static void
 osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
-               long left, long dxL, long right, long dxR,
+               const OSMGAMesaEdge *le, const OSMGAMesaEdge *re,
                const OSMGAMesaVertex *flat,
                const OSMGAColourPlane *plane, const OSMGAMesaVertex *a,
                unsigned long zmode, const OSMGAColourPlane *zplane,
                unsigned long blend, const OSMGAColourPlane *aplane)
 {
-    int sdxl = (dxL < 0L) ? 1 : 0;
-    int sdxr = (dxR < 0L) ? 1 : 0;
+    int sdxl = (le->dee < 0L) ? 1 : 0;
+    int sdxr = (re->dee < 0L) ? 1 : 0;
+    long left, lmag, ldy, lerr;
+    long right, rmag, rdy, rerr;
+
+    osmgaEdgeRegs(le, &left,  &lmag, &ldy, &lerr);
+    osmgaEdgeRegs(re, &right, &rmag, &rdy, &rerr);
 
     memset(t, 0, sizeof *t);
     t->dwgctl   = (zmode != 0UL) ? (OSMGA_TRI_DWGCTL_Z | zmode)
@@ -116,8 +206,11 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
     /*
      * AR0 and AR6 are the heights the two edges divide by, and AR2 and AR5
      * the displacements over that height, so the pair expresses a fractional
-     * slope directly.  AR1 and AR4 start the error at the displacement,
-     * which is the form the working batches use.
+     * slope directly.  It is the EDGE's height, not the trapezoid's: pinning
+     * it to the trapezoid was what forced the long edge through a rounded
+     * restart at the split, and both are doubled so AR1 and AR4 can carry
+     * half a pixel.  AR1 and AR4 are the displacement with that error term
+     * folded in.
      *
      * What goes in the register is the NEGATED magnitude, never the
      * magnitude: both arms of the expression below come out negative or
@@ -125,12 +218,12 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
      * reading it back -- a right edge given +40 produced ar5 = -40 and drew
      * the shape that displacement describes.
      */
-    t->ar0 = h;
-    t->ar1 = sdxl ? dxL : -dxL;
-    t->ar2 = t->ar1;
-    t->ar4 = sdxr ? dxR : -dxR;
-    t->ar5 = t->ar4;
-    t->ar6 = h;
+    t->ar0 = ldy;
+    t->ar2 = -lmag;
+    t->ar1 = -lmag - lerr;
+    t->ar4 = -rmag - rerr;
+    t->ar5 = -rmag;
+    t->ar6 = rdy;
     t->sgn = ((long)sdxl << 1) | ((long)sdxr << 5);
 
     /*
@@ -227,7 +320,8 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
     OSMGAColourPlane plane[3];
     OSMGAColourPlane zplane, aplane;
     const OSMGAMesaVertex *shade = flat;
-    long hTop, hBot, span, xSplit;
+    long hTop, hBot, span, cross;
+    OSMGAMesaEdge longE;
     int n = 0;
 
     /*
@@ -350,32 +444,53 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
         return 0;               /* no rows: nothing to draw, not an error */
 
     /*
-     * Where the long edge is at the middle vertex's row.  The division is
-     * integer and truncating, so the split can be a pixel off the exact
-     * edge; that shows as at most one column at the join, which is why the
-     * test compares whole shapes rather than this value alone.
+     * Which side of the long edge the middle vertex is on -- decided once,
+     * because the engine cannot exchange left for right partway down a
+     * trapezoid.  The sign of this is the sign of the middle vertex's column
+     * minus the long edge's column at that row.
+     *
+     * Zero means the three are collinear, so there is no area and nothing to
+     * draw.  Said here rather than left to produce an empty span by
+     * arithmetic: relying on two boundaries to come out equal is a weaker
+     * thing to depend on than saying what the case is.
      */
-    xSplit = t->x + ((lo->x - t->x) * (m->y - t->y)) / span;
+    cross = (lo->x - t->x) * (m->y - t->y) - (lo->y - t->y) * (m->x - t->x);
+    if (cross == 0L)
+        return 0;
+
+    /*
+     * Both trapezoids walk the ORIGINAL edges.  The lower one continues the
+     * long edge from row hTop rather than restarting from where an integer
+     * division put it, which is what used to lose a fraction of a column at
+     * the split -- and, on the shape that splits, a whole row.
+     */
+    longE.xa = t->x; longE.dee = lo->x - t->x; longE.height = span;
 
     hTop = m->y - t->y;
     if (hTop > 0L) {
-        long l1 = (m->x < xSplit) ? m->x : xSplit;
-        long r1 = (m->x < xSplit) ? xSplit : m->x;
+        OSMGAMesaEdge shortE;
 
+        shortE.xa = t->x; shortE.dee = m->x - t->x;
+        shortE.height = hTop; shortE.k0 = 0L;
+        longE.k0 = 0L;
         osmgaTrapezoid(&out[n], t->y, hTop,
-                       t->x, l1 - t->x, t->x, r1 - t->x, shade, plane, a,
-                       zmode, &zplane, blend, &aplane);
+                       (cross < 0L) ? &longE : &shortE,
+                       (cross < 0L) ? &shortE : &longE,
+                       shade, plane, a, zmode, &zplane, blend, &aplane);
         n++;
     }
 
     hBot = lo->y - m->y;
     if (hBot > 0L) {
-        long l0 = (m->x < xSplit) ? m->x : xSplit;
-        long r0 = (m->x < xSplit) ? xSplit : m->x;
+        OSMGAMesaEdge shortE;
 
+        shortE.xa = m->x; shortE.dee = lo->x - m->x;
+        shortE.height = hBot; shortE.k0 = 0L;
+        longE.k0 = hTop;
         osmgaTrapezoid(&out[n], m->y, hBot,
-                       l0, lo->x - l0, r0, lo->x - r0, shade, plane, a,
-                       zmode, &zplane, blend, &aplane);
+                       (cross < 0L) ? &longE : &shortE,
+                       (cross < 0L) ? &shortE : &longE,
+                       shade, plane, a, zmode, &zplane, blend, &aplane);
         n++;
     }
     return n;

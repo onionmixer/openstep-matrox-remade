@@ -139,18 +139,47 @@ main(int argc, char **argv)
     long i, badTri = 0, badRow = 0, totRow = 0, unsupported = 0;
     long shown = 0;
 
-    printf("builder output vs the OpenGL rule, %ld triangles\n\n", rounds);
+    /*
+     * Random integer vertices almost never share a y, so the shapes that
+     * matter most would never appear: the flat-bottomed one is the control
+     * that has no split of its own, and it is the shape the hardware
+     * measurement actually used.  Collinear, one row tall, and a sliver two
+     * columns wide are the other places an edge walk goes wrong.  They are
+     * listed rather than hoped for.
+     */
+    static const long fixed[][6] = {
+        {  40,40, 200,40, 120,180 },   /* flat bottom -- one trapezoid */
+        { 120,180, 200,40,  40,40 },   /* the same, wound the other way */
+        {  40,40, 200,90, 120,180 },   /* splits at the middle row */
+        {  40,40, 120,180, 200,180 },  /* flat top */
+        {  10,10,  60,60, 110,110 },   /* collinear: no area */
+        {  10,10,  10,10, 110,110 },   /* two vertices the same */
+        {  30,30, 200,31,  40,32 },    /* two rows, nearly flat */
+        {  50,20,  51,200, 52,60 },    /* a sliver two columns wide */
+        {   0,0,  319,0,    0,239 },   /* the whole surface corner */
+        { 300,10, 319,239,  0,120 }    /* spans the width */
+    };
+    long nfixed = (long)(sizeof fixed / sizeof fixed[0]);
 
-    for (i = 0; i < rounds; i++) {
+    printf("builder output vs the OpenGL rule, %ld random plus a fixed corpus\n\n",
+           rounds);
+
+    for (i = -nfixed; i < rounds; i++) {
         OSMGAMesaVertex a, b, c;
         OSMGAHW3DTri tri[2];
         long L[H], R[H];
         long y, n, t, off = 0;
         int thisBad = 0;
 
-        vert(&a, pick(W), pick(H));
-        vert(&b, pick(W), pick(H));
-        vert(&c, pick(W), pick(H));
+        if (i < 0L) {
+            const long *f = fixed[nfixed + i];
+
+            vert(&a, f[0], f[1]); vert(&b, f[2], f[3]); vert(&c, f[4], f[5]);
+        } else {
+            vert(&a, pick(W), pick(H));
+            vert(&b, pick(W), pick(H));
+            vert(&c, pick(W), pick(H));
+        }
 
         n = (long)OSMGAMesaBuildTriangle(&a, &b, &c, &a,
                                          OSMGA_MESA_ZMODE_NONE,
@@ -197,10 +226,28 @@ main(int argc, char **argv)
             }
         }
         (void)off;
+        /*
+         * Say what the fixed corpus actually exercised.  A degenerate shape
+         * and an empty rule agree for free, and a corpus that passes for
+         * free is not a corpus.
+         */
+        if (i < 0L) {
+            long rows = 0, y2;
+
+            for (y2 = 0; y2 < H; y2++) {
+                long q0 = 0, q1 = 0;
+                if (ruleSpan(a.x, a.y, b.x, b.y, c.x, c.y, y2, &q0, &q1)) rows++;
+            }
+            printf("   corpus (%3ld,%3ld) (%3ld,%3ld) (%3ld,%3ld): "
+                   "%ld trapezoid(s), %ld rows in the rule%s\n",
+                   a.x, a.y, b.x, b.y, c.x, c.y, n, rows,
+                   thisBad ? "   <-- DIFFERS" : "");
+        }
         if (thisBad) badTri++;
     }
 
-    printf("\n   triangles that differ anywhere : %ld of %ld\n", badTri, rounds);
+    printf("\n   triangles that differ anywhere : %ld of %ld\n",
+           badTri, rounds + nfixed);
     printf("   rows that differ               : %ld of %ld\n", badRow, totRow);
     printf("   refused as unsupported         : %ld\n", unsupported);
     printf("\n%s\n", badTri == 0
