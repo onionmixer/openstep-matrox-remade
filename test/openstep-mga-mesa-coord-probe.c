@@ -79,6 +79,30 @@ main(void)
         printf("Z %ld %.6f\n", i, wz);
     }
 
+    /* ---- what grid do the fractions arrive on? -------------------------
+     * The sub-pixel plan rests on Mesa handing over fractions that sit on its
+     * own 11-bit grid.  VB->Win is float, so that is an assumption; ask for
+     * fractions that are not on any small grid and see what comes back.
+     */
+    for (i = 0; i < 64; i++) {
+        double wx, wy;
+        double fx = 40.0 + (double)i / 64.0 + 0.003;
+        double fy = 60.0 + (double)i / 37.0;
+
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBegin(GL_TRIANGLES);
+          glColor4ub(0, 255, 0, 255);
+          glVertex3d(fx, fy, 0.0);
+          glVertex3d(200.0, 60.0, 0.0);
+          glVertex3d(120.0, 180.0, 0.0);
+        glEnd();
+        glFinish();
+        if (OSMGAMesaHookDrawn() == 0UL) break;
+        wx = OSMGAMesaHookLastWin(0, 0);
+        wy = OSMGAMesaHookLastWin(0, 1);
+        printf("F %.17g %.17g %.17g %.17g\n", fx, wx, fy, wy);
+    }
+
     /* ---- then x and y, in several viewports ---------------------------- */
     for (cfg = 0; cfg < 4; cfg++) {
       printf("# viewport %d %d %d %d\n", vpx[cfg], vpy[cfg], vpw[cfg], vph[cfg]);
