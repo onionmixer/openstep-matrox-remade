@@ -78,6 +78,9 @@
 #define OSMGA_HW3D_E_EDGEDIV   15   /* AR0/AR6 is not a usable divisor */
 #define OSMGA_HW3D_E_DSTPITCH  16   /* pitch absent, too small, too wide,
                                            or not a multiple of 32 pixels */
+#define OSMGA_HW3D_E_TRISGN    18   /* a direction bit the validator does not
+                                     * model, and therefore cannot predict the
+                                     * drawn columns from */
 #define OSMGA_HW3D_E_TRICROSS  17   /* the two edges cross partway down, or
                                            one leaves the clip rectangle */
 

@@ -346,34 +346,63 @@ main(void)
                " 41, 63, 63 would mean the screen\n");
     }
 
-    printf("\n6b. the same shape with TMR6 = 0, so the coordinate goes NEGATIVE\n");
-    blank();
+    printf("\n6b. the negative side of the anchor -- the check now sees it\n");
     {
-        OSMGAHW3DTri *t = setup(1024UL, 40UL, 8UL, 32UL,
-                                (long)(OSMGA_HW3D_TEX_SPAN / DIM), 0UL);
-        unsigned long lo, hi, mid, texDirty = 0UL;
+        static const long starts[3] = { 0L, 31L, 30L };
+        static const int wantOK[3]  = { 0, 1, 0 };
+        static const char *label[3] = {
+            "a left-opening edge with a zero start",
+            "the same edge with a start that covers it",
+            "one texel short of covering it"
+        };
+        int k;
 
-        t->ar0 = 32L;
-        t->ar2 = -32L;
-        t->ar1 = -1L;
-        t->sgn = 0x2L;
-        /* TMR6 stays zero: every pixel left of the row-0 left edge then has a
-         * coordinate below zero, which the validator's non-negative rule was
-         * written to keep out -- and which it does not see, because it looks
-         * at offsets from the box's left, not from the primitive's origin. */
-        say("a left-opening triangle with a zero start", fire(), OSMGA_HW3D_OK);
-        lo  = colour[31UL * STRIDE_DW +  9UL];
-        mid = colour[31UL * STRIDE_DW + 40UL];
-        hi  = colour[31UL * STRIDE_DW + 47UL];
-        printf("         bottom row (v,u): x=9 -> (%lu,%lu), x=40 -> (%lu,%lu),"
-               " x=47 -> (%lu,%lu)\n",
-               lo >> 8, lo & 0xFFUL, mid >> 8, mid & 0xFFUL,
-               hi >> 8, hi & 0xFFUL);
-        printf("         a clamped negative coordinate reads texel 0\n");
-        for (r = 0UL; r < DIM; r++)
-            for (c = 0UL; c < DIM; c++)
-                if (tex[r * DIM + c] != ((r << 8) | c)) texDirty++;
-        printf("         texture words changed by the draw: %lu\n", texDirty);
+        for (k = 0; k < 3; k++) {
+            OSMGAHW3DTri *t;
+            unsigned ver;
+
+            blank();
+            t = setup(1024UL, 40UL, 8UL, 32UL,
+                      (long)(OSMGA_HW3D_TEX_SPAN / DIM), 0UL);
+            t->ar0 = 32L;
+            t->ar2 = -32L;
+            t->ar1 = -1L;
+            t->sgn = 0x2L;                  /* left edge decreasing */
+            batch->state.tmr[6] = starts[k] * (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+            ver = fire();
+            say(label[k], ver, wantOK[k] ? OSMGA_HW3D_OK
+                                         : OSMGA_HW3D_E_TEXCOORD);
+            if (wantOK[k] && ver == OSMGA_HW3D_OK) {
+                unsigned long lo  = colour[31UL * STRIDE_DW +  9UL];
+                unsigned long mid = colour[31UL * STRIDE_DW + 40UL];
+                unsigned long hi  = colour[31UL * STRIDE_DW + 47UL];
+                unsigned long texDirty = 0UL;
+
+                printf("         bottom row (v,u): x=9 -> (%lu,%lu),"
+                       " x=40 -> (%lu,%lu), x=47 -> (%lu,%lu)\n",
+                       lo >> 8, lo & 0xFFUL, mid >> 8, mid & 0xFFUL,
+                       hi >> 8, hi & 0xFFUL);
+                if ((lo & 0xFFUL) == 0UL && (mid & 0xFFUL) == 31UL &&
+                    (hi & 0xFFUL) == 38UL)
+                    printf("   ok    %-52s\n",
+                           "and it draws 0, 31, 38 as the anchor says");
+                else {
+                    printf("   FAIL  %-52s\n",
+                           "and it draws 0, 31, 38 as the anchor says");
+                    failures++;
+                }
+                for (r = 0UL; r < DIM; r++)
+                    for (c = 0UL; c < DIM; c++)
+                        if (tex[r * DIM + c] != ((r << 8) | c)) texDirty++;
+                if (texDirty == 0UL)
+                    printf("   ok    %-52s\n", "the texture is untouched");
+                else {
+                    printf("   FAIL  %-52s %lu\n", "the texture is untouched",
+                           texDirty);
+                    failures++;
+                }
+            }
+        }
     }
 
     printf("\n6c. and the same question for v: two rows apart, one batch each\n");
@@ -414,6 +443,97 @@ main(void)
                                                       * non-negative */
         say("a negative u gradient with a start that covers it", fire(),
             OSMGA_HW3D_OK);
+    }
+
+    printf("\n8. two textured primitives in ONE batch -- does the coordinate\n");
+    printf("   restart at the second, or carry on from the first?\n");
+    {
+        /*
+         * Every origin measurement so far submitted ONE triangle per batch,
+         * and the texture state is written once before the triangle loop --
+         * so "restarts at every primitive" was really "restarts at every
+         * submission".  The batch-maximum reasoning in the validator needs
+         * the stronger fact.  Nothing periodic is used: 11 columns, then a
+         * second primitive at column 17 and row 20.
+         */
+        OSMGAHW3DTri *t;
+        unsigned long a, b2;
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+
+        blank();
+        t = setup(1024UL, 0UL, 11UL, 8UL, texel, 0UL);
+        batch->state.tmr[6] = 5L * texel;
+        batch->state.tmr[7] = 3L * texel;
+        batch->triCount = 2UL;
+        batch->tri[1] = batch->tri[0];
+        batch->tri[1].y = 20L;
+        batch->tri[1].fxbndry = (28UL << 16) | 17UL;
+        say("a two-primitive textured batch", fire(), OSMGA_HW3D_OK);
+
+        a  = colour[0UL * STRIDE_DW + 0UL];
+        b2 = colour[20UL * STRIDE_DW + 17UL];
+        printf("         first primitive  at (0,0)   -> (v,u) = (%lu,%lu)\n",
+               a >> 8, a & 0xFFUL);
+        printf("         second primitive at (17,20) -> (v,u) = (%lu,%lu)\n",
+               b2 >> 8, b2 & 0xFFUL);
+        printf("         (3,5) twice means it restarts inside the batch;"
+               " (23,22) would mean it carries on\n");
+        printf("         u restarts (%lu = the start); v does not (%lu"
+               " = start + the first primitive's %d rows)\n",
+               b2 & 0xFFUL, b2 >> 8, 8);
+    }
+
+    printf("\n8b. three primitives -- is v exactly the running sum of rows?\n");
+    {
+        OSMGAHW3DTri *t;
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        unsigned long p0, p1, p2;
+
+        blank();
+        t = setup(1024UL, 0UL, 11UL, 8UL, texel, 0UL);
+        batch->state.tmr[6] = 5L * texel;
+        batch->state.tmr[7] = 3L * texel;
+        batch->triCount = 3UL;
+        batch->tri[1] = batch->tri[0];
+        batch->tri[1].y = 20L;
+        batch->tri[1].fxbndry = (28UL << 16) | 17UL;
+        batch->tri[2] = batch->tri[0];
+        batch->tri[2].y = 40L;
+        batch->tri[2].h = 8L; batch->tri[2].ar0 = 8L; batch->tri[2].ar6 = 8L;
+        batch->tri[2].fxbndry = (40UL << 16) | 29UL;
+        say("three textured primitives", fire(), OSMGA_HW3D_OK);
+        p0 = colour[ 0UL * STRIDE_DW +  0UL];
+        p1 = colour[20UL * STRIDE_DW + 17UL];
+        p2 = colour[40UL * STRIDE_DW + 29UL];
+        printf("         v at each primitive's first row: %lu, %lu, %lu"
+               "  (a running sum would be 3, 11, 19)\n",
+               p0 >> 8, p1 >> 8, p2 >> 8);
+        printf("         u at each: %lu, %lu, %lu  (a per-primitive anchor"
+               " gives 5, 5, 5)\n",
+               p0 & 0xFFUL, p1 & 0xFFUL, p2 & 0xFFUL);
+    }
+
+    printf("\n8c. does an UNTEXTURED primitive in the batch move v too?\n");
+    {
+        OSMGAHW3DTri *t;
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        unsigned long p1;
+
+        blank();
+        t = setup(1024UL, 0UL, 11UL, 8UL, texel, 0UL);
+        batch->state.tmr[6] = 5L * texel;
+        batch->state.tmr[7] = 3L * texel;
+        batch->triCount = 2UL;
+        batch->tri[1] = batch->tri[0];
+        batch->tri[1].y = 20L;
+        batch->tri[1].fxbndry = (28UL << 16) | 17UL;
+        /* the FIRST one is a plain trapezoid; only the second is textured */
+        batch->tri[0].dwgctl = 0x0004UL | 0x0070UL;
+        say("one flat primitive then one textured", fire(), OSMGA_HW3D_OK);
+        p1 = colour[20UL * STRIDE_DW + 17UL];
+        printf("         the textured one starts at v = %lu"
+               "  (3 means the flat one did not move it, 11 means it did)\n",
+               p1 >> 8);
     }
 
     printf("\n%s (%d failing)\n",

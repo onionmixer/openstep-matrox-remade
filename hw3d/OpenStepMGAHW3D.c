@@ -368,6 +368,19 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
              * ever moves one way, so no edge can take more steps than the
              * rectangle is wide.
              */
+            /*
+             * Only the two direction bits this walk models.
+             *
+             * The encoder passes sgn to the engine unmasked, and everything
+             * the texture reach now rests on comes from predicting which
+             * columns get drawn.  A bit that changes how an edge walks would
+             * make that prediction describe a different shape than the one
+             * the hardware draws, so a bit that is not modelled is refused
+             * rather than assumed inert.
+             */
+            if ((t->sgn & ~0x22L) != 0L)
+                return OSMGA_HW3D_E_TRISGN;
+
             lx = (long)left;   rx = (long)right;
             lacc = t->ar1 - t->ar2;
             racc = t->ar4 - t->ar5;
@@ -412,6 +425,24 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                 }
             }
             if (opcode == OSMGA_HW3D_OPCODE_TEX) {
+                /*
+                 * v does not restart at a primitive; it runs on.
+                 *
+                 * Measured: three textured primitives with one start of three
+                 * texels and eight rows each began at v = 3, 11 and 19, and a
+                 * flat primitive in front of a textured one left it at 3.  So
+                 * the vertical coordinate is an accumulator over the rows of
+                 * the TEXTURED primitives in the batch, and the span to check
+                 * is their total height, not the tallest of them.  Taking the
+                 * maximum was an under-check by a factor of the batch's
+                 * length -- two hundred, at the cap.
+                 *
+                 * Counted for an empty primitive too: it is still executed,
+                 * and whether the accumulator steps for a row that draws
+                 * nothing is not measured.  Counting it is the conservative
+                 * of the two answers.
+                 */
+                texSpanY += (unsigned long)t->h;
                 if (!haveBox) {
                     texEmpty = 1;
                 } else {
@@ -419,14 +450,12 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                      * leftward puts pixels before it; one that closes puts
                      * none, and the clamp keeps that at zero. */
                     long lo = lx0 - bx0, hi = bx1 - lx0;
-                    unsigned long sy = (unsigned long)t->h - 1UL;
 
                     if (lo < 0L) lo = 0L;
                     if (hi < 0L) hi = 0L;
                     texDrawn = 1;
                     if ((unsigned long)lo > texSpanLo) texSpanLo = (unsigned long)lo;
                     if ((unsigned long)hi > texSpanHi) texSpanHi = (unsigned long)hi;
-                    if (sy > texSpanY) texSpanY = sy;
                 }
             }
         }
@@ -435,9 +464,10 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
     /*
      * The texture coordinate, now that the reach is known.
      *
-     * Batch-global state, so the widest primitive in the batch decides -- and
-     * a verdict about batch-global state belongs to no triangle, which is why
-     * badTri goes back to zero before it is reported.
+     * Batch-global state.  Horizontally the widest primitive decides, because
+     * u restarts at each one; vertically the TOTAL decides, because v does
+     * not.  A verdict about batch-global state belongs to no triangle, which
+     * is why badTri goes back to zero before it is reported.
      */
     if (anyTex) {
         unsigned long spanLo = 0UL, spanHi = lim->clipX1;
@@ -446,7 +476,8 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
         if (texDrawn && !texEmpty) {
             spanLo = texSpanLo;
             spanHi = texSpanHi;
-            spanY = texSpanY;
+            /* the accumulator's last step, so one less than the total */
+            spanY = (texSpanY > 0UL) ? texSpanY - 1UL : 0UL;
         }
         if (!osmgaHW3DCoord(b->state.tmr[6], b->state.tmr[0],
                             b->state.tmr[2], spanLo, spanHi, spanY) ||

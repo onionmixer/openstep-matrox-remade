@@ -364,6 +364,44 @@ main(void)
             }
 
             /*
+             * v runs on across the batch; u does not.
+             *
+             * Measured: three textured primitives of eight rows each, one
+             * start of three texels, began at v = 3, 11 and 19 while u began
+             * at 5 every time.  So the vertical span to check is the total
+             * height of the textured primitives, not the tallest one, and
+             * taking the maximum was an under-check by the batch's length.
+             */
+            {   long ident = (long)(OSMGA_HW3D_TEX_SPAN / 64UL);
+                unsigned long n;
+
+                /* one primitive of 8 rows: a y gradient of a thousandth of
+                 * the budget per row fits easily */
+                reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                         b.tri[0].h = 8; b.tri[0].ar0 = b.tri[0].ar6 = 8;
+                         b.state.tmr[0] = ident;
+                         b.state.tmr[3] = (long)(OSMGA_HW3D_TEX_COORD_MAX / 64L);
+                                                expect("one 8-row textured primitive", OSMGA_HW3D_OK);
+                /* sixteen of them run the accumulator sixteen times as far */
+                reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                         b.tri[0].h = 8; b.tri[0].ar0 = b.tri[0].ar6 = 8;
+                         b.state.tmr[0] = ident;
+                         b.state.tmr[3] = (long)(OSMGA_HW3D_TEX_COORD_MAX / 64L);
+                         b.triCount = 16;
+                         for (n = 1UL; n < 16UL; n++) b.tri[n] = b.tri[0];
+                                                expect("sixteen of them, which the total catches", OSMGA_HW3D_E_TEXCOORD);
+            }
+
+            /*
+             * A direction bit the walk does not model.  The encoder hands sgn
+             * to the engine unmasked, and the texture reach is now computed
+             * from the columns the walk predicts, so an unmodelled bit is
+             * refused rather than assumed inert.
+             */
+            reset(); b.tri[0].sgn = 0x4;        expect("an sgn bit the walk does not model", OSMGA_HW3D_E_TRISGN);
+            reset(); b.tri[0].sgn = 0x22;       expect("the two bits it does model", OSMGA_HW3D_OK);
+
+            /*
              * Which verdict wins when a batch is wrong in two ways.
              *
              * The coordinate check used to run BEFORE the triangle loop, so a
