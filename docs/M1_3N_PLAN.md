@@ -319,3 +319,72 @@ if (bufCtx != 0 && bufCtx != ctx) return;
   의 "남의 표면을 가져감"을 막는다.
 - 경우 3 의 죽음은 위 셋의 결과이지 따로 고칠 것이 아니다. 다시 시험해서
   확인한다.
+
+## 9. 고침 설계 (측정 위에서, 아직 코드 아님)
+
+### 고침 1 — **결속**을 명시적으로 기록한다 (경우 1·2·3 의 "여전히 가속")
+
+지금은 "표면이 있는가"(`OSMGAMesaBufferOrigin() != 0`)만 묻는다. 물어야 할
+것은 **"지금 이 컨텍스트가 그 표면에 그리고 있는가"** 다.
+
+- `bufBound` — 표면에 결속된 `OSMesaContext`.
+- **`OpenStepMesaAccelBuffer` 맨 앞에서**, 부르는 쪽이 결속돼 있으면 푼다:
+  `if (bufBound == ctx) bufBound = 0;`
+  그러면 **모든 거절 경로가 저절로 푼다** — 그 함수에는 `return 0` 이
+  스무 곳쯤 있고, 하나씩 손대면 언젠가 하나를 빠뜨린다.
+- 성공하는 두 반환(같은 크기 재바인딩, 새로 만들기)에서만 다시 건다.
+- 다른 컨텍스트가 거절당해도 **남의 결속은 안 푼다** (조건이 `== ctx`).
+- `OSMGAMesaBufferBoundTo(const void *osmesaCtx)` 를 내보내고,
+  `OpenStepMesaAccelUpdateState` 가 **삼각형 함수와 미러 래퍼 둘 다**에
+  대해 그것을 묻는다. 지금 래퍼는 결속과 무관하게 달린다 — 경우 3 에서
+  B 가 A 의 표면에 그린 것이 그 때문이다.
+
+### 고침 2 — 배치가 안 맞게 되면 **표면에서 물러난다** (경우 1·5 의 어긋난 그림)
+
+하드웨어를 거절하는 것만으로는 부족하다. `ctx->buffer` 가 여전히 VRAM
+매핑이라 **소프트웨어가 거기에 새 보폭으로 쓴다.**
+
+`OSMesaPixelStore` 안(훅 `#ifdef` 안)에서, 표면이 이 컨텍스트에 결속돼 있고
+새 행 길이/방향이 공유를 깨면 바꿔치기를 되돌린다:
+
+| 바꿔치울 때 | 되돌릴 때 |
+| --- | --- |
+| `ctx->buffer = accelBuf` | 애플리케이션 버퍼로 (`OSMGAMesaBufferApp()` 을 내보낸다) |
+| `ctx->rowlength = accelRow` | 호출자가 방금 요청한 값 그대로 둔다 |
+| `DepthBuffer = accelDepth`, `UseSoftwareDepthBuffer = FALSE` | **`DepthBuffer = NULL` 을 먼저** 놓고 `UseSoftwareDepthBuffer = TRUE`, 그 다음 `alloc_depth_buffer` |
+| `UseSoftwareAlphaBuffers = FALSE` (알파 있는 visual 일 때만) | 같은 조건으로 `TRUE`, `NewState |= NEW_RASTER_OPS` |
+| 매핑 | `OpenStepMesaAccelReleaseBuffer(ctx)` |
+
+**`DepthBuffer = NULL` 을 먼저 놓는 것이 핵심이다.** `_mesa_alloc_depth_buffer`
+는 기존 포인터를 `FREE()` 하는데, 우리 것은 `vm_allocate` 로 잡은 것이라
+힙이 아니다 — 경우 3 이 죽은 것이 정확히 그 free 다.
+
+그리고 마지막에 `osmesa_update_state( &ctx->gl_ctx )`.
+
+### 고침 3 — 해제가 자기 것만 놓되, **강제 형태를 남긴다** (경우 3, 경우 4 유지)
+
+```c
+if (ctx != 0 && bufCtx != 0 && bufCtx != ctx)
+    return;                 /* 남의 표면은 안 건드린다 */
+```
+
+`ctx == 0` 은 언제나 놓는다 — fork 정리(`OpenStepMGAMesaProbe.c:223`)가 그것에
+기대고, 경우 4 가 그것을 지킨다.
+
+경우 3 의 **프로세스 죽음은 따로 고칠 것이 아니다**: B 가 A 의 매핑을 놓지
+않게 되면 A 의 `DepthBuffer` 가 살아 있고, 그 free 가 일어나지 않는다.
+다시 시험해서 확인한다.
+
+### 안 하는 것
+
+- **두 번째 컨텍스트를 가속하지 않는다.** 표면은 하나다. 지금 하는 것은
+  거절이 제대로 거절이 되게 하는 것뿐이다.
+- **`OSMesaPixelStore` 의 `0 = 이미지 너비` 의미를 이번에 손보지 않는다.**
+  헤더와 코드가 어긋나 있지만(`rowlength` 에 0 을 그대로 저장한다) 별개
+  문제다. 다만 되돌리기 판단에서 **0 을 너비로 읽어** 잘못된 되돌리기를
+  하지 않도록 주의한다.
+
+### 검증
+
+같은 다섯 경우를 다시 돌린다. 전부 통과해야 하고, **경우 4 는 계속 통과해야
+한다.** 그리고 `zagree` 와 `zsize` 를 다시 돌려 회귀가 없는지 본다.
