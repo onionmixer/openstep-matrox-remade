@@ -305,11 +305,11 @@ main(void)
                      b.tri[0].fxbndry = (7UL << 16) | 7UL;
                      b.tri[0].h = 4; b.tri[0].ar0 = b.tri[0].ar6 = 4;
                      b.state.tmr[0] = grad;
-                                                expect("an empty textured span keeps the wide check", OSMGA_HW3D_E_TEXCOORD);
+                                                expect("a textured span that draws nothing", OSMGA_HW3D_E_TRIEMPTY);
             reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                      b.tri[0].fxbndry = (7UL << 16) | 7UL;
                      b.tri[0].h = 4; b.tri[0].ar0 = b.tri[0].ar6 = 4;
-                                                expect("an empty textured span, coordinate inside", OSMGA_HW3D_OK);
+                                                expect("the same, with a coordinate that would fit", OSMGA_HW3D_E_TRIEMPTY);
 
             reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
             b.tri[0].fxbndry = (320UL << 16) | 0UL;
@@ -420,10 +420,11 @@ main(void)
                          b.tri[1].h = 64; b.tri[1].ar0 = b.tri[1].ar6 = 64;
                                                 expect("two primitives of 2 and 64 rows", OSMGA_HW3D_E_TEXCOORD);
                 /*
-                 * An empty textured primitive must not throw the accumulated
-                 * height away.  It once did: the empty case fell back to the
-                 * clip for BOTH axes, so one empty primitive hid the total of
-                 * every other one -- eighty-four times short, at the cap.
+                 * An empty textured primitive used to throw the accumulated
+                 * height away, because the empty case fell back to the clip
+                 * for BOTH axes -- eighty-four times short at the cap.  It is
+                 * refused outright now, so the total cannot be hidden that
+                 * way at all.
                  */
                 reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                          b.tri[0].h = 8; b.tri[0].ar0 = b.tri[0].ar6 = 8;
@@ -432,7 +433,33 @@ main(void)
                          b.triCount = 10;
                          for (n = 1UL; n < 10UL; n++) b.tri[n] = b.tri[0];
                          b.tri[9].fxbndry = (7UL << 16) | 7UL;   /* empty */
-                                                expect("an empty primitive does not hide the total", OSMGA_HW3D_E_TEXCOORD);
+                                                expect("an empty primitive cannot hide the total", OSMGA_HW3D_E_TRIEMPTY);
+            }
+
+            /*
+             * u's row index re-seeds at every primitive and v's does not, so
+             * the two get different vertical spans.  Measured: with one texel
+             * per row in u, two primitives both began at the same texel.
+             * Sixteen primitives of eight rows run v over 127 rows but u over
+             * only 7, so a u gradient that fits one primitive must not be
+             * refused for the batch's total.
+             */
+            {   unsigned long n;
+
+                reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                         b.tri[0].h = 8; b.tri[0].ar0 = b.tri[0].ar6 = 8;
+                         b.state.tmr[0] = 0;
+                         b.state.tmr[2] = (long)(OSMGA_HW3D_TEX_COORD_MAX / 8L);
+                         b.triCount = 16;
+                         for (n = 1UL; n < 16UL; n++) b.tri[n] = b.tri[0];
+                                                expect("a u row gradient sized to one primitive", OSMGA_HW3D_OK);
+                reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                         b.tri[0].h = 8; b.tri[0].ar0 = b.tri[0].ar6 = 8;
+                         b.state.tmr[0] = 0;
+                         b.state.tmr[2] = (long)(OSMGA_HW3D_TEX_COORD_MAX / 4L);
+                         b.triCount = 16;
+                         for (n = 1UL; n < 16UL; n++) b.tri[n] = b.tri[0];
+                                                expect("a u row gradient one primitive cannot hold", OSMGA_HW3D_E_TEXCOORD);
             }
 
             /*

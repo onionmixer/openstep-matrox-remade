@@ -134,16 +134,18 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
      *      did not move it.  An EMPTY textured primitive does move it: five
      *      drawn rows then six empty ones put the next primitive at 14.
      *
-     * So the horizontal span is the widest primitive's and the vertical span
-     * is the batch's total.  texEmpty is a fallback for the HORIZONTAL span
-     * only: a primitive with height and no columns is still encoded and still
-     * executed, and whether it fetches at columns it never draws is not
-     * measured, so the wide clip is kept for x.  It must not be applied to y,
-     * where the total is the measured answer -- doing that let one empty
-     * primitive throw away the accumulated height of two hundred others.
+     *   u's ROW index re-seeds as well: with a gradient of one texel per row
+     *      in u and nothing in x, two primitives both began at the same
+     *      texel.  So u's vertical reach is one primitive's height and v's is
+     *      the batch's total, and they are checked with different spans.
+     *
+     * Each batch writes TMR6 and TMR7 once, before its primitives, so the
+     * accumulator starts afresh every submission -- read in the encoder and
+     * then measured, twice through the same batch.
      */
     unsigned long texSpanLo = 0UL, texSpanHi = 0UL, texSpanY = 0UL;
-    int texEmpty = 0, texDrawn = 0;
+    unsigned long texMaxH = 0UL;
+    int texDrawn = 0;
 
     if (badTri != 0)
         *badTri = 0UL;
@@ -349,7 +351,7 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
             unsigned long right = (t->fxbndry >> 16) & 0xFFFFUL;
             long lx, rx, lacc, racc, lsgn, rsgn, row;
             long bx0 = 0L, bx1 = 0L, lx0;
-            int haveBox = 0;
+            int haveBox = 0, drewSome = 0;
 
             if (left > lim->clipX1 + 1UL || right > lim->clipX1 + 1UL ||
                 left > right)
@@ -430,12 +432,26 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                  * Only rows that have columns.  lx == rx is a legal row with
                  * nothing in it, and rx - 1 there would run below zero.
                  */
-                if (opcode == OSMGA_HW3D_OPCODE_TEX && lx < rx) {
-                    if (!haveBox) { bx0 = lx; bx1 = rx - 1L; haveBox = 1; }
+                /*
+                 * Every row, not only the rows with columns in them.
+                 *
+                 * A row where lx equals rx draws nothing, but its span still
+                 * sits somewhere, and the rows around it can be elsewhere
+                 * entirely -- an edge that walks out to column a hundred while
+                 * empty and comes back to draw at zero would have left the box
+                 * describing a shape the primitive does not have.  The empty
+                 * row contributes its position and no width.
+                 */
+                if (opcode == OSMGA_HW3D_OPCODE_TEX) {
+                    long hiCol = (lx < rx) ? rx - 1L : lx;
+
+                    if (!haveBox) { bx0 = lx; bx1 = hiCol; haveBox = 1; }
                     else {
-                        if (lx < bx0)      bx0 = lx;
-                        if (rx - 1L > bx1) bx1 = rx - 1L;
+                        if (lx < bx0)    bx0 = lx;
+                        if (hiCol > bx1) bx1 = hiCol;
                     }
+                    if (lx < rx)
+                        drewSome = 1;
                 }
             }
             if (opcode == OSMGA_HW3D_OPCODE_TEX) {
@@ -457,9 +473,28 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                  * of the two answers.
                  */
                 texSpanY += (unsigned long)t->h;
-                if (!haveBox) {
-                    texEmpty = 1;
-                } else {
+                if ((unsigned long)t->h > texMaxH)
+                    texMaxH = (unsigned long)t->h;
+                /*
+                 * A textured primitive that draws nothing anywhere is
+                 * refused.  It is still encoded and still executed -- it
+                 * steps the vertical accumulator like any other, which is
+                 * measured -- so the texture unit is running for it, and
+                 * where it fetches cannot be observed, because a fetch that
+                 * writes no pixel leaves no trace.  The old answer was to
+                 * widen the horizontal check to the whole clip, which
+                 * covered only the columns to the RIGHT of where it started:
+                 * an empty span whose edges walk left sits at negative
+                 * offsets that the widening never reached.  Refusing makes
+                 * no claim about it, and nothing is lost, since it draws no
+                 * pixel by construction.
+                 */
+                if (!drewSome) {
+                    if (badTri != 0)
+                        *badTri = i;
+                    return OSMGA_HW3D_E_TRIEMPTY;
+                }
+                {
                     /* Both sides of the anchor.  A left edge that opens
                      * leftward puts pixels before it; one that closes puts
                      * none, and the clamp keeps that at zero. */
@@ -485,21 +520,32 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
      */
     if (anyTex) {
         unsigned long spanLo = 0UL, spanHi = lim->clipX1;
-        unsigned long spanY = lim->clipY1;
+        unsigned long spanY = lim->clipY1;   /* v: the batch's total */
+        unsigned long spanUY = lim->clipY1;  /* u: one primitive's height */
 
         /*
          * Vertically the total always, because that is what was measured and
          * an empty primitive steps the accumulator like any other.  The
          * fallback below is horizontal only.
          */
+        /*
+         * u and v want different vertical spans, and both were measured.
+         *
+         * u re-seeds at every primitive -- with a gradient of one texel per
+         * row in u, two primitives both began at the same texel -- so its
+         * row index only ever runs the height of one primitive.  v does not
+         * re-seed, so its row index runs the batch's total.
+         */
+        if (texMaxH > 0UL)
+            spanUY = texMaxH - 1UL;
         if (texSpanY > 0UL)
             spanY = texSpanY - 1UL;     /* the accumulator's last step */
-        if (texDrawn && !texEmpty) {
+        if (texDrawn) {
             spanLo = texSpanLo;
             spanHi = texSpanHi;
         }
         if (!osmgaHW3DCoord(b->state.tmr[6], b->state.tmr[0],
-                            b->state.tmr[2], spanLo, spanHi, spanY) ||
+                            b->state.tmr[2], spanLo, spanHi, spanUY) ||
             !osmgaHW3DCoord(b->state.tmr[7], b->state.tmr[1],
                             b->state.tmr[3], spanLo, spanHi, spanY)) {
             if (badTri != 0)

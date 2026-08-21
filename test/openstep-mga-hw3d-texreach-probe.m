@@ -276,8 +276,8 @@ main(void)
                                 (long)(OSMGA_HW3D_TEX_SPAN / DIM * 9UL), 0UL);
 
         (void)t;
-        say("an empty span with a coordinate past the bound", fire(),
-            OSMGA_HW3D_E_TEXCOORD);
+        say("a textured span that draws nothing", fire(),
+            OSMGA_HW3D_E_TRIEMPTY);
     }
 
     printf("\n5. a sloped edge, where the widest row is not the first\n");
@@ -605,13 +605,47 @@ main(void)
         batch->tri[2].y = 16L; batch->tri[2].h = 4L;
         batch->tri[2].ar0 = 4L; batch->tri[2].ar6 = 4L;
         batch->tri[2].fxbndry = (35UL << 16) | 24UL;
-        say("textured, empty textured, textured", fire(), OSMGA_HW3D_OK);
+        /*
+         * This is how the accumulator's behaviour for an empty primitive was
+         * measured, and what it said: v at the first and third primitives was
+         * 3 and 14, so the six empty rows stepped it.  The batch is refused
+         * now -- a textured primitive that draws nothing makes a fetch nobody
+         * can observe -- so the reading is kept here as the record and the
+         * case asserts the refusal.
+         */
+        say("a batch containing one", fire(), OSMGA_HW3D_E_TRIEMPTY);
+        (void)a; (void)c2;
+    }
+
+    printf("\n8f. u has a y component too (TMR2) -- does IT accumulate?\n");
+    {
+        /*
+         * The validator hands the batch total to the u check as well as the
+         * v check, which is conservative if u's y index re-seeds per
+         * primitive and exact if it accumulates.  Which it is has not been
+         * measured: every u measurement so far had TMR2 = 0.
+         */
+        OSMGAHW3DTri *t;
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        unsigned long a, b3;
+
+        blank();
+        t = setup(64UL, 0UL, 11UL, 8UL, 0L, 0UL);   /* no x gradient */
+        batch->state.tmr[6] = 0L;
+        batch->state.tmr[7] = 0L;
+        batch->state.tmr[2] = texel;                /* one texel per ROW, in u */
+        batch->state.tmr[3] = 0L;
+        batch->triCount = 2UL;
+        batch->tri[1] = batch->tri[0];
+        batch->tri[1].y = 16L;
+        batch->tri[1].fxbndry = (28UL << 16) | 17UL;
+        say("two primitives with a u-per-row gradient", fire(), OSMGA_HW3D_OK);
         a  = colour[ 0UL * STRIDE_DW +  0UL];
-        c2 = colour[16UL * STRIDE_DW + 24UL];
-        printf("         v at the first and the third: %lu, %lu\n",
-               a >> 8, c2 >> 8);
-        printf("         14 means the empty one stepped it (5 + 6);"
-               " 8 means it did not (5 only)\n");
+        b3 = colour[16UL * STRIDE_DW + 17UL];
+        printf("         u at the two firsts: %lu, %lu\n",
+               a & 0xFFUL, b3 & 0xFFUL);
+        printf("         8 means u's row index accumulates like v;"
+               " 0 means it re-seeds with u\n");
     }
 
     printf("\n9. the vertical span is the batch total, not the tallest\n");
@@ -641,6 +675,144 @@ main(void)
             sprintf(name, "%lu textured primitives of eight rows", counts[k]);
             say(name, fire(), wantOK[k] ? OSMGA_HW3D_OK
                                         : OSMGA_HW3D_E_TEXCOORD);
+        }
+    }
+
+    printf("\n9b. an empty primitive must not hide the accumulated height\n");
+    {
+        /*
+         * The empty-primitive fallback used to revert BOTH axes to the clip,
+         * so one empty primitive discarded the total of every other textured
+         * primitive in the batch.  Seven drawn plus one empty totals 64 rows
+         * and fits; eight plus one totals 72 and does not.  Under the old
+         * fallback all of them were sixty-three rows and all were accepted.
+         */
+        static const unsigned long drawn[2] = { 7UL, 8UL };
+        static const int wantOK[2] = { 1, 0 };
+        int k;
+
+        for (k = 0; k < 2; k++) {
+            unsigned long n;
+            char name[72];
+
+            blank();
+            (void)setup(64UL, 0UL, 11UL, 8UL, 0L, 0UL);   /* no x gradient, so
+                                                           * the x fallback
+                                                           * cannot be the
+                                                           * reason */
+            batch->state.tmr[3] = (long)(OSMGA_HW3D_TEX_COORD_MAX / 64UL);
+            batch->triCount = drawn[k] + 1UL;
+            for (n = 1UL; n < drawn[k]; n++)
+                batch->tri[n] = batch->tri[0];
+            batch->tri[drawn[k]] = batch->tri[0];
+            batch->tri[drawn[k]].fxbndry = (20UL << 16) | 20UL;   /* empty */
+            sprintf(name, "%lu drawn plus one empty, %lu rows in all",
+                    drawn[k], (drawn[k] + 1UL) * 8UL);
+            (void)wantOK[k];
+            /* Both are refused now, and for the empty primitive rather than
+             * for the total -- which is the point: the total can no longer be
+             * hidden behind one, because one is not allowed. */
+            say(name, fire(), OSMGA_HW3D_E_TRIEMPTY);
+        }
+    }
+
+    printf("\n9c. does a textured STATE TRANSITION reset the accumulator?\n");
+    {
+        /*
+         * The encoder writes the texture registers once before the triangle
+         * loop but rewrites DWGCTL for every primitive.  If moving between
+         * atype I and atype ZI re-seeded the vertical accumulator, the check
+         * would be too wide rather than too narrow -- safe, but worth
+         * knowing.  Depth is given an origin inside the window so the ZI
+         * primitive is legal.
+         */
+        OSMGAHW3DTri *t;
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        unsigned long a, c2;
+
+        blank();
+        t = setup(64UL, 0UL, 11UL, 3UL, texel, 0UL);
+        batch->state.tmr[6] = 5L * texel;
+        batch->state.tmr[7] = 3L * texel;
+        batch->state.zorg = 5UL * 1024UL * 1024UL;
+        batch->triCount = 3UL;
+        batch->tri[1] = batch->tri[0];
+        batch->tri[1].dwgctl = OSMGA_HW3D_OPCODE_TEX |
+                               (OSMGA_HW3D_ATYPE_ZI << 4);
+        batch->tri[1].y = 8L;  batch->tri[1].h = 13L;
+        batch->tri[1].ar0 = 13L; batch->tri[1].ar6 = 13L;
+        batch->tri[1].fxbndry = (28UL << 16) | 17UL;
+        batch->tri[2] = batch->tri[0];
+        batch->tri[2].y = 24L; batch->tri[2].h = 5L;
+        batch->tri[2].ar0 = 5L; batch->tri[2].ar6 = 5L;
+        batch->tri[2].fxbndry = (52UL << 16) | 41UL;
+        {
+            unsigned ver = fire();
+
+            printf("         verdict %u%s\n", ver,
+                   ver == OSMGA_HW3D_OK ? "" : " (not accepted -- see below)");
+            if (ver == OSMGA_HW3D_OK) {
+                a  = colour[ 0UL * STRIDE_DW +  0UL];
+                c2 = colour[24UL * STRIDE_DW + 41UL];
+                printf("         v at the first and the third: %lu, %lu\n",
+                       a >> 8, c2 >> 8);
+                printf("         19 means the ZI primitive stepped it too"
+                       " (3+3+13); 3 means the transition reset it\n");
+                if ((a >> 8) == 3UL && (c2 >> 8) == 19UL)
+                    printf("   ok    %-52s\n",
+                           "an atype transition does not reset it");
+                else {
+                    printf("   FAIL  %-52s\n",
+                           "an atype transition does not reset it");
+                    failures++;
+                }
+            } else {
+                printf("   FAIL  %-52s verdict %u\n",
+                       "the state-transition batch is accepted", ver);
+                failures++;
+            }
+        }
+    }
+
+    printf("\n9d. does the accumulator carry ACROSS submissions?\n");
+    {
+        /*
+         * If it did, the per-batch total this check uses would be right only
+         * for the first batch of a sequence.  The encoder writes TMR6 and
+         * TMR7 inside the block it emits ONCE per batch, before the triangle
+         * loop, so it should be re-seeded every time -- read, then measured,
+         * because reading has been wrong before.
+         */
+        int pass;
+        unsigned long first[2];
+
+        for (pass = 0; pass < 2; pass++) {
+            OSMGAHW3DTri *t;
+            long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+            unsigned long n;
+
+            blank();
+            t = setup(64UL, 0UL, 11UL, 8UL, texel, 0UL);
+            batch->state.tmr[6] = 5L * texel;
+            batch->state.tmr[7] = 3L * texel;
+            batch->triCount = 3UL;
+            for (n = 1UL; n < 3UL; n++) {
+                batch->tri[n] = batch->tri[0];
+                batch->tri[n].y = (long)(n * 8UL);
+                batch->tri[n].fxbndry = ((n * 16UL + 11UL) << 16) | (n * 16UL);
+            }
+            (void)fire();
+            first[pass] = colour[0UL * STRIDE_DW + 0UL] >> 8;
+        }
+        printf("         v at the first primitive, two submissions: %lu, %lu\n",
+               first[0], first[1]);
+        printf("         3 both times means each batch re-seeds it;"
+               " 27 the second time would mean it carries\n");
+        if (first[0] == 3UL && first[1] == 3UL)
+            printf("   ok    %-52s\n", "every batch starts the accumulator afresh");
+        else {
+            printf("   FAIL  %-52s\n", "every batch starts the accumulator afresh");
+            failures++;
         }
     }
 

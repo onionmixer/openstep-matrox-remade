@@ -78,6 +78,10 @@
 #define OSMGA_HW3D_E_EDGEDIV   15   /* AR0/AR6 is not a usable divisor */
 #define OSMGA_HW3D_E_DSTPITCH  16   /* pitch absent, too small, too wide,
                                            or not a multiple of 32 pixels */
+#define OSMGA_HW3D_E_TRIEMPTY  19   /* a textured primitive that draws no
+                                     * pixel at all: it is still executed and
+                                     * where it would fetch cannot be observed,
+                                     * so it is refused rather than guessed at */
 #define OSMGA_HW3D_E_TRISGN    18   /* a direction bit the validator does not
                                      * model, and therefore cannot predict the
                                      * drawn columns from */
