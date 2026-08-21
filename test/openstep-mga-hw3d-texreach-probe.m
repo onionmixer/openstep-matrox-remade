@@ -226,6 +226,16 @@ main(void)
     else {
         printf("   FAIL  %-52s %lu wrong\n", "every drawn pixel took its texel",
                wrong);
+        /* A count is a summary, not a diagnosis: say WHAT is wrong. */
+        for (r = 0UL; r < 3UL; r++) {
+            for (c = 0UL; c < 6UL; c++) {
+                unsigned long got = colour[r * STRIDE_DW + c];
+                unsigned long want = (r << 8) | ((c * DIM) / 32UL);
+
+                printf("         (%lu,%lu) got (v=%lu,u=%lu) want (v=%lu,u=%lu)\n",
+                       c, r, got >> 8, got & 0xFFUL, want >> 8, want & 0xFFUL);
+            }
+        }
         failures++;
     }
     {
@@ -1083,6 +1093,51 @@ main(void)
                flipU, (long)OSMGA_HW3D_TEX_SPAN / 64L - flipU);
         printf("   v turns over at start %ld  ->  K = %ld\n",
                flipV, (long)OSMGA_HW3D_TEX_SPAN / 64L - flipV);
+    }
+
+    printf("\n17. does the constant depend on the gradient?\n");
+    {
+        /*
+         * The constant was measured with every increment at zero, and again
+         * at 500, 1000 and 5533 where it held.  Then a correction built on it
+         * broke two cases whose increments were 16384 and 32768, while the
+         * scene it was built for -- 8192 per pixel -- improved.  So the
+         * question is whether the constant depends on the gradient, and where
+         * it changes.
+         *
+         * The turnover start is measured with one increment held at each
+         * magnitude.  The running kernel subtracts 511 before writing the
+         * register, so a turnover at 16384 means the engine adds 511 back and
+         * one at 16895 means it adds nothing.
+         */
+        static const long mags[9] = { 0L, 500L, 1000L, 5533L, 8192L,
+                                      12288L, 16384L, 24576L, 32768L };
+        int j;
+
+        printf("   %8s %10s %8s\n", "increment", "turnover", "implies K");
+        for (j = 0; j < 9; j++) {
+            long lo = 15000L, hi = 17500L, mid;
+            int it;
+
+            for (it = 0; it < 16 && lo < hi; it++) {
+                OSMGAHW3DTri *t;
+
+                mid = (lo + hi) / 2L;
+                blank();
+                t = setup(64UL, 0UL, 8UL, 4UL, mags[j], 0UL);
+                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                batch->state.tmr[3] = 0L;
+                batch->state.tmr[6] = mid;
+                batch->state.tmr[7] = 0L;
+                (void)fire();
+                if ((colour[0UL * STRIDE_DW + 0UL] & 0xFFUL) != 0UL) hi = mid;
+                else lo = mid + 1L;
+            }
+            printf("   %8ld %10ld %8ld\n", mags[j], lo,
+                   (long)OSMGA_HW3D_TEX_SPAN / 64L - (lo - 511L));
+        }
+        printf("   K = 511 means the engine still adds it;"
+               " K = 0 means it does not\n");
     }
 
     printf("\n%s (%d failing)\n",

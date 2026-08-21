@@ -203,16 +203,34 @@
  * which is the coordinate rounded up to a multiple of 512, one texture span
  * divided by the largest texture it will take.
  *
- * It is subtracted in the ENCODER, immediately before the registers are
- * written, so that this protocol and the validator go on speaking in the
- * coordinates the caller means.  A caller sends what it wants sampled; the
- * kernel is what knows this engine adds something.
+ * IT IS NOT APPLIED, and the value here is zero.
  *
- * Signed on purpose: the corrected value is negative whenever the caller's
- * start is below 511, which is the ordinary case of a texture beginning at a
- * vertex.
+ * Subtracting it in the encoder was tried and taken out on the machine.  It
+ * did what it was meant to on the scene that motivated it -- the difference
+ * against the software path fell from 137 pixels of 25964 to 24 -- and the
+ * zero-gradient sweep moved to exactly the texel boundary.  But four other
+ * measurements came back one texel low, including a raw drawing whose texels
+ * are wrong in 1004 places out of 1024.
+ *
+ * What that says is that a CONSTANT is not the whole rule -- not that the
+ * constant is wrong.  Swept again with one increment held at each of nine
+ * magnitudes from nothing to 32768, the turnover says 511 every time, so it
+ * does not depend on the gradient.  And with the correction applied the two
+ * probes that measure the constant read exactly what the corrected model
+ * predicts.
+ *
+ * Where it comes apart is further along a span.  A row drawn with 32768 per
+ * column reads the right texel at columns nought to three and then falls one
+ * behind from column four on -- seven where eight is wanted, nine where ten
+ * is wanted -- which is not an offset at all but the accumulation arriving
+ * slightly short.  Subtracting the constant at the start makes that shortfall
+ * cross a texel boundary where it did not before.
+ *
+ * So: the correction is right about the start and wrong about what happens
+ * after it, and it is not applied until the rest is known.  The 137 stay.
+ * They are one texel each, at texel boundaries, and invisible.
  */
-#define OSMGA_HW3D_TEX_BIAS     511L
+#define OSMGA_HW3D_TEX_BIAS     0L      /* see below: not applied */
 
 typedef struct {
     unsigned long dstorg;          /* colour origin, byte offset into VRAM */

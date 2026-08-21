@@ -6950,16 +6950,20 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                  MGA_TMR0 + 20UL, 0UL);
         ok = ok && osmgaDmaBlock(list, listDwords, &pos,
                  /*
-                  * The engine adds 511 to the coordinate before it picks a
-                  * texel -- measured at zero gradient -- so what it is given
-                  * is what the caller meant, less that.  Comparing the two
-                  * paths on one textured scene, 137 pixels of 25964 took the
-                  * neighbouring texel because of it.
+                  * The start, as the caller meant it.
+                  *
+                  * It was briefly corrected here by the 511 the engine was
+                  * measured to add, and that was taken out again: the
+                  * measurement was made with every increment at zero, and
+                  * that turns out to be the one case where the constant
+                  * appears.  With a gradient running, a start of exactly
+                  * thirty-one texels came back as texel thirty once the
+                  * correction was applied -- from a register that was still
+                  * positive, so nothing about negative values explains it.
+                  * See docs/M1_4C7_TEXBIAS_PLAN.md.
                   */
-                 MGA_TMR0 + 24UL,
-                 (unsigned long)(b->state.tmr[6] - OSMGA_HW3D_TEX_BIAS),
-                 MGA_TMR0 + 28UL,
-                 (unsigned long)(b->state.tmr[7] - OSMGA_HW3D_TEX_BIAS),
+                 MGA_TMR0 + 24UL, (unsigned long)b->state.tmr[6],
+                 MGA_TMR0 + 28UL, (unsigned long)b->state.tmr[7],
                  MGA_TMR8,        1UL << 16,
                  MGA_DMAPAD,      0UL);
     }
