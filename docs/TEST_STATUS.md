@@ -1,6 +1,6 @@
 # Current Verification Status
 
-기준일: 2026-08-19 (표 아래쪽 R6-WORKING 이후 행은 2026-08-19 갱신)
+기준일: **2026-08-21** (3D 래스터화 행은 2026-08-21 갱신)
 
 > **읽는 법.** 이 표는 시간순 원장이다. `R6-WORKING` 행부터가 현재 실기에서
 > 동작하는 `OpenStepMGAReplacementDisplay`의 사실이고, 그 위의 P1/P2/P3/R1~R4
@@ -82,7 +82,14 @@
 | P3 reference oracle | clear/checksum/compare, flat triangle winding, 16-bit depth, source-alpha blend, nearest clamp texture | 없음 | host C89 통과; hardware submit/readback 미시작 |
 | P3 command envelope | 32-bit surface/clear/flat-triangle geometry, overflow/range/degenerate rejection | 없음 | host C89 통과; P2 MiG ABI와 hardware submit 미연결 |
 | **정리·`HAS_TRANSFER_TABLE` 측정** | 관측(observe) 모드 전면 제거, 통계 19종으로 정리(`setTransferTable` 카운터 신설), 죽은 코드 제거(`chipVendorDevice`/`chipRevision`/`manualVideoMemoryConfigured`/`OSMGA_ENABLE_MODE_PROGRAM`/`MGA_BPP32_SHIFT`/`OSMGA_RANGE_*`), 설정 기본값을 `Storm 2D Test`=No·`VRAM Mmap`=No로 정직화하고 `Default.table`에 문서화. `IO_DISPLAY_CAN_BLIT` 광고 중단 → `IO_DISPLAY_HAS_TRANSFER_TABLE` 광고 | **실기 부팅 + 유저스페이스 호출** | ✅ **인과 확정(2026-08-19)**: 같은 모드(1024×768 RGB:888/32)로 플래그 **미광고 상태 7회 부팅 동안 `setTransferTable` 호출 0회**, 플래그 **광고 후 첫 부팅에서 1회**(`setTransferTable cached (256 entries, RGB:888/32)`). 즉 **WindowServer는 `IO_DISPLAY_HAS_TRANSFER_TABLE`을 보고서야 컬러맵을 보낸다.** 부작용: `RGB:256/8`(PseudoColor)에서는 이제 WindowServer 컬러맵이 RAMDAC에 **실제로 기록**된다(그전까지는 우리 리니어 램프가 그대로 남았음) — **실기 검증 완료**(2026-08-19, 1024×768 `RGB:256/8` 부팅): `setTransferTable live colormap (256 entries)` 기록, 화면 색 정상. codex 교차검토 완료(도달불가 프로브 분기 1건 지적·수정) |
-| P3 3D path | BAR/VRAM/engine command | 금지 | 시작하지 않음 |
+| ~~P3 3D path~~ | — | — | **이 행은 오래됐다.** 3D 는 시작됐고 아래 행들이 현재 상태다 |
+| **3D 커버리지 규칙** | 화소 중심 표본 + top-left 채우기. 독립 기하 신탁(python 정수 연산)에 대고 양 경로를 채점 | **실기 부팅 + 가속 실행** | ✅ 시험 도형 전부 **하드웨어가 규칙과 정확히 일치**. 소프트웨어와의 행별 차이 0. 빈틈·겹침·방향 의존 없음. 근거 `M1_4A2_COVERAGE_RESULT.md`, `M1_4A3_RASTER_RULE_PLAN.md` |
+| **3D 변 걷기 규칙** | 엔진이 실제로 어떻게 걷는지 (`a = AR1 − AR2`, 0 행은 FXBNDRY 자리, 행 사이에 `a < 0` 인 동안 배수) | **실기** | ✅ 3 방향 탐침으로 확정(8/8, 20/20, 대조군). 앞서 "확정"이라 적은 규칙은 `AR1 == AR2` 제약 아래의 **동치류**였다 — `M1_4A8_EDGE_WALK_GAP_PLAN.md` |
+| **3D 색·알파 보간** | 평면을 화소 **중심**에서 읽고, 출력 절단을 반올림으로 보정 | **실기** | ✅ 두 도형·네 채널. 소프트웨어와 **99.6% / 99.3% 화소 동일**, 남은 차이는 1 단계(동률 반올림). `M1_4A5_ATTRIB_FIX_PLAN.md` |
+| **3D 깊이 보간** | 화소 중심 정착, 시작값 클램프 제거(빈 첫 행 건너뛰기) | **실기** | ✅ 중심 잔차 ±2662 코드 → **−0.5**(출력 절단만 남음). 클램프 발동 **0**(계기로 확인). `M1_4A7`, `M1_4B2_DEPTH_CLAMP_PLAN.md` |
+| **3D 정점 좌표** | `1/256` 고정소수점 전달 + 삼각형마다 실을 수 있는 만큼 소수부를 AR 인코딩에 싣기 | **실기** | ✅ 부동소수 잡음(행 하나가 통째로 밀림) 제거, 소수 기하 **5.01% → 0.21%**. 정수 정점은 **한 화소도 안 변함**(호스트 410 삼각형·98640 행). `M1_4A9`, `M1_4B1_SUBPIXEL_PLAN.md`, `spec/subpixel-model.py` |
+| **3D 텍스처** | 좌표·업로드·상주·선택자 | — | **미착수** — `M1_4_TEXTURE_PLAN.md` 의 4b·4c·4d |
+| **3D 공유 변** | 이웃 삼각형이 변을 공유할 때의 틈·겹침 | — | **한 번도 안 봤다.** 지금까지 잰 것은 전부 고립된 삼각형 |
 
 최신 full no-hardware host regression은 original-compatible manual-memory 3..63 MiB
 range 정렬 후 다시 실행되었고
