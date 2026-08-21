@@ -1239,14 +1239,46 @@ static volatile unsigned long *osmgaProbeAlias;
  * two are only equal by arithmetic that could stop being true. */
 static unsigned long osmgaProbeWords;
 /*
- * M1-3i: 0 for no settling read, otherwise one more than the word to read.
+ * ---- M1-3i/j: the window's first 64 bytes, and the read that settles them ----
  *
- * Encoded that way so that "off" and "word 0" are different values.  Word 0
- * is the one offset measured NOT to settle anything, so it has to remain
- * selectable -- reproducing the earlier failure is half of what the sweep is
- * for.
+ * Measured on this board, from both sides of the bus: writes the engine makes
+ * into the first 64 bytes of the mmap window become visible late whenever the
+ * last read before the submission fell inside those same 64 bytes, and a
+ * single read at byte 64 or beyond makes them visible.  Nothing else does --
+ * not elapsed time (twenty thousand processor-only iterations changed
+ * nothing), not a read inside the range, and not writes of any kind.  Eighty
+ * trials at each of seven offsets: every one inside short, every one outside
+ * clean.
+ *
+ * WHY it is 64 bytes, and why only at that one address, is not known.  This
+ * is an empirical repair and is written down as one.  It was measured on a
+ * G450 under OPENSTEP 4.2 and is not claimed of any other part.
  */
-static unsigned long osmgaSettleCode;
+#define OSMGA_HW3D_DEAD_BYTES   64UL    /* the boundary, measured */
+#define OSMGA_HW3D_SETTLE_WORD  16UL    /* byte 64: the first that worked */
+#define OSMGA_HW3D_SETTLE_AUTO  0xFFFFFFFFUL
+
+/*
+ * What the driver reads once a submission has finished:
+ *
+ *   0                        nothing
+ *   1..osmgaProbeWords       word N-1, after EVERY successful submission
+ *   OSMGA_HW3D_SETTLE_AUTO   word 16, and only when the batch could have
+ *                            written into the first 64 bytes
+ *
+ * "Off" and "word 0" have to be different values because word 0 is the one
+ * offset measured not to settle anything, and reproducing that failure is
+ * half of what the knob is for.
+ *
+ * AUTO is the initial value rather than zero.  The first submission normally
+ * happens long before anything calls the setter, and starting at "off" would
+ * knowingly leave that stretch unprotected.
+ */
+static unsigned long osmgaSettleCode = OSMGA_HW3D_SETTLE_AUTO;
+/* How many times AUTO has decided to read.  Reported when the setter is
+ * called, so that a destination which does not overlap can be shown to leave
+ * it alone -- otherwise "conditional" is a claim rather than a measurement. */
+static unsigned long osmgaSettleAutoCount;
 
 /*
  * REMAINING_WORK 3-10.  The submit path claims stormBusy, but mode changes
@@ -2195,6 +2227,12 @@ static IODisplayInfo osmgaModeTemplate = {
                                 ? (pl - skew) / sizeof(unsigned long)
                                 : 0UL;
                         }
+                        if (osmgaProbeAlias == 0 ||
+                            osmgaProbeWords <= OSMGA_HW3D_SETTLE_WORD)
+                            IOLog("OpenStepMGA M1-3j: no uncached alias of "
+                                  "the window (%lu words); batches that write "
+                                  "its first %lu bytes will be REFUSED\n",
+                                  osmgaProbeWords, OSMGA_HW3D_DEAD_BYTES);
                     }
                     osmgaCapsInstance = self;
                     osmgaMmapRegistered = 1;
@@ -3312,23 +3350,36 @@ unmap:
      * an offset, and a negative result read that way is worse than none.
      */
     if (osmgaTextEquals(parameterName, OSMGA_HW3D_SETTLE_PARAM)) {
-        unsigned long want;
+        unsigned long want, seen;
 
         if (parameterArray == 0 || count != 1)
             return IO_R_INVALID_ARG;
         want = (unsigned long)parameterArray[0];
-        if (want != 0UL &&
+        if (want != 0UL && want != OSMGA_HW3D_SETTLE_AUTO &&
             (osmgaProbeAlias == 0 || osmgaProbeWords == 0UL ||
              want > osmgaProbeWords))
             return IO_R_INVALID_ARG;
         simple_lock(&stormLock);
         osmgaSettleCode = want;
+        seen = osmgaSettleAutoCount;
         simple_unlock(&stormLock);
-        IOLog("OpenStepMGA M1-3i: settling read %s (alias holds %lu words)\n",
-              want == 0UL ? "off" : "on", osmgaProbeWords);
-        if (want != 0UL)
-            IOLog("OpenStepMGA M1-3i: it will read word %lu, byte %lu of the "
-                  "window\n", want - 1UL, (want - 1UL) * sizeof(unsigned long));
+        /* The count comes out under the same lock that guards the setting, so
+         * a reader taking it before and after a run gets two figures that
+         * belong to the same series. */
+        if (want == OSMGA_HW3D_SETTLE_AUTO)
+            IOLog("OpenStepMGA M1-3i: settling read automatic -- word %lu "
+                  "when a batch could write the window's first %lu bytes "
+                  "(automatic reads so far: %lu)\n",
+                  OSMGA_HW3D_SETTLE_WORD, OSMGA_HW3D_DEAD_BYTES, seen);
+        else if (want == 0UL)
+            IOLog("OpenStepMGA M1-3i: settling read off "
+                  "(automatic reads so far: %lu)\n", seen);
+        else
+            IOLog("OpenStepMGA M1-3i: settling read forced to word %lu, "
+                  "byte %lu, after every submission (alias holds %lu words; "
+                  "automatic reads so far: %lu)\n",
+                  want - 1UL, (want - 1UL) * sizeof(unsigned long),
+                  osmgaProbeWords, seen);
         return IO_R_SUCCESS;
     }
 
@@ -3362,6 +3413,7 @@ unmap:
     const OSMGAFormat *f3 = &osmgaFmt[selectedFormatIndex];
     unsigned long stride3, total3, tail3, listPhys3, spins3, status3;
     unsigned long epoch3, dstW3, dstH3, dstP3, avail3, settle3;
+    int anyZI3 = 0, overlap3 = 0;
     unsigned long *list3, listDwords3, badTri3 = 0UL;
     int v3, rc3 = 0;
 
@@ -3573,6 +3625,71 @@ unmap:
         return IO_R_INVALID_ARG;
     }
 
+    /*
+     * Could this batch write the window's first 64 bytes?
+     *
+     * Asked as one comparison per origin rather than as a range test, and
+     * that is a derivation rather than a shortcut.  The validator has
+     * already proved that each origin is at or past the window start and
+     * that its forward reach does not wrap; under those two facts a range
+     * beginning past the dead zone cannot reach backwards into it, so
+     * "overlaps" and "starts inside" are the same question.  Checked in
+     * python across ten thousand origin, row and stride combinations with
+     * no disagreement.
+     *
+     * It answers "may write", not "did write" -- a fully clipped or
+     * zero-area triangle costs an extra read and nothing worse.  The other
+     * error would be the expensive one.
+     *
+     * Depth is asked only when some triangle is ZI, which is the condition
+     * the validator and the encoder both use, and by the same expression.
+     */
+    {
+        unsigned long i3;
+
+        anyZI3 = 0;
+        for (i3 = 0UL; i3 < osmgaHW3DSnapshot.triCount; i3++) {
+            unsigned long d3 = osmgaHW3DSnapshot.tri[i3].dwgctl &
+                               OSMGA_HW3D_DWG_CLIENT;
+
+            if (((d3 >> 4) & 0x7UL) == OSMGA_HW3D_ATYPE_ZI) anyZI3 = 1;
+        }
+        overlap3 = (osmgaHW3DSnapshot.state.dstorg - osmgaMmapWindowStart)
+                       < OSMGA_HW3D_DEAD_BYTES;
+        if (anyZI3 &&
+            (osmgaHW3DSnapshot.state.zorg - osmgaMmapWindowStart)
+                < OSMGA_HW3D_DEAD_BYTES)
+            overlap3 = 1;
+    }
+
+    /*
+     * If the settling read is the automatic one and this batch needs it, it
+     * has to be possible.  The character device registers whether or not the
+     * uncached alias could be made, so without this a submission would draw
+     * into memory it cannot then settle and report success -- the client
+     * would read stale pixels and nothing would say why.
+     *
+     * Refusing costs acceleration rather than correctness: Mesa's surface
+     * always begins at the window start, so it always overlaps, so this is
+     * in practice "no alias, no 3D".  That is the right answer, because the
+     * alias is a requirement of this path and not a convenience.
+     */
+    if (settle3 == OSMGA_HW3D_SETTLE_AUTO && overlap3 &&
+        (osmgaProbeAlias == 0 || osmgaProbeWords <= OSMGA_HW3D_SETTLE_WORD)) {
+        static int toldOnce;
+
+        if (!toldOnce) {
+            toldOnce = 1;
+            IOLog("OpenStepMGA M1-3j: refusing batches that write the "
+                  "window's first %lu bytes -- there is no uncached alias to "
+                  "settle them with\n", OSMGA_HW3D_DEAD_BYTES);
+        }
+        simple_lock(&stormLock);
+        stormBusy = NO;
+        simple_unlock(&stormLock);
+        return IO_R_RESOURCE;
+    }
+
 
     /*
      * No second look at the display here.  There used to be one, from when
@@ -3641,8 +3758,20 @@ unmap:
                  * was word zero -- eight uncontrolled reads of exactly the
                  * offset under test, in front of the measurement.
                  */
-                if (settle3 != 0UL && osmgaProbeAlias != 0 &&
-                    settle3 <= osmgaProbeWords)
+                if (settle3 == OSMGA_HW3D_SETTLE_AUTO) {
+                    /* Only when this batch could have written the range, so
+                     * a submission that cannot be affected pays a comparison
+                     * and nothing else. */
+                    if (overlap3 && osmgaProbeAlias != 0 &&
+                        osmgaProbeWords > OSMGA_HW3D_SETTLE_WORD) {
+                        (void)osmgaProbeAlias[OSMGA_HW3D_SETTLE_WORD];
+                        simple_lock(&stormLock);
+                        osmgaSettleAutoCount++;
+                        simple_unlock(&stormLock);
+                    }
+                }
+                else if (settle3 != 0UL && osmgaProbeAlias != 0 &&
+                         settle3 <= osmgaProbeWords)
                     (void)osmgaProbeAlias[settle3 - 1UL];
                 rc3 = 1;
             }

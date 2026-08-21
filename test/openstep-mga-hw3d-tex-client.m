@@ -194,6 +194,7 @@ main(int argc, char **argv)
      * and one inside settles nothing, and it does not follow that a read
      * from the other side of the bus behaves the same way. */
     int argSettle = -1;
+    unsigned long argSettleVal = 0UL;
     IODeviceMaster *master;
     IOObjectNumber objNum;
     IOString kind;
@@ -229,8 +230,17 @@ main(int argc, char **argv)
         argHow = SUBMIT_IOCTL;
     if (argc > 7)
         argPrime = atoi(argv[7]);
-    if (argc > 8)
-        argSettle = atoi(argv[8]);
+    if (argc > 8) {
+        /* "auto" is the driver's own default and cannot be written as a
+         * small number, so it gets a word of its own. */
+        if (strcmp(argv[8], "auto") == 0) {
+            argSettle = 1;
+            argSettleVal = 0xFFFFFFFFUL;
+        } else {
+            argSettle = 1;
+            argSettleVal = (unsigned long)atoi(argv[8]);
+        }
+    }
 
     master = [IODeviceMaster new];
     if ([master lookUpByDeviceName:"Display0" objectNumber:&objNum
@@ -248,11 +258,11 @@ main(int argc, char **argv)
     tex    = (volatile unsigned long *)twin;
 
     if (argSettle >= 0) {
-        unsigned one = (unsigned)argSettle;
+        unsigned one = (unsigned)argSettleVal;
         IOReturn sr = [master setIntValues:&one forParameter:SETTLE_PARAM
                               objectNumber:objNum count:1];
 
-        printf("   driver settling read set to %d -> %s\n", argSettle,
+        printf("   driver settling read set to %lu -> %s\n", argSettleVal,
                (sr == IO_R_SUCCESS) ? "accepted"
                                     : "REFUSED (the sweep below means nothing)");
         if (sr != IO_R_SUCCESS) return 1;
