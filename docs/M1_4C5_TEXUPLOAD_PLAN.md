@@ -166,3 +166,51 @@ typedef struct {
    `TEXTURE_BIT` 를 안 받으므로 **백엔드를 직접 부르고**, 제출한
    `texorg`·`texPitch`·`texFormat` 을 함께 단언한다.  화소만 보면 소프트웨어로
    통과할 수 있다.
+
+## 10. 결과 (2026-08-22)
+
+### 10-1 할당기
+
+호스트 **15 사례** 통과.  모든 할당이 아레나 원점을 내도록 일부러 망가뜨리면
+**네 사례가 잡는다** — 겹침 검사, 이중 해제, 고갈, 그리고 남은 자리 검사.
+
+### 10-2 올리기
+
+`test/openstep-mga-mesa-texup-test.c` 는 진짜 GL 텍스처를 올리고 VRAM 을
+읽는다.  선택기가 아직 `TEXTURE_BIT` 를 안 받으므로 상주 계층을 직접 부른다.
+
+```
+arena at 4661248, 2678784 bytes
+  nothing is resident before it is asked for         ok
+  the texture becomes resident                       ok
+  at the size it was given                           ok
+  and takes one block                                ok
+  every texel arrives as 0x00RRGGBB                  ok
+  a sub-image makes the copy stale                   ok
+  and the new texel is in video memory               ok
+  redefining hands the old block back                ok
+  and the new size becomes resident                  ok
+  deleting returns the arena                         ok
+uploads 3, refusals 0
+```
+
+* **바이트 순서**: 텍셀마다 네 채널을 전부 다르게 채운다.  네 채널이 같으면
+  뒤섞임을 못 잡는다.  R 과 B 를 바꿔 빌드하면 **두 사례가 실패한다.**
+* **부분 갱신**: `glTexSubImage2D` 는 포인터를 바꾸지 않는다 — 객체에 건
+  더러움 표시로는 못 잡는 경우다.  올린 횟수가 하나 늘고 그 텍셀이 VRAM 에서
+  바뀐 것으로 확인한다.
+* **재정의**: 같은 객체에 다른 크기로 `glTexImage2D` 하면 옛 자리가 돌아온다.
+* **삭제**: `glDeleteTextures` 뒤 아레나가 비어 있다.
+
+### 10-3 여기서 한 번 속았다
+
+변이 시험 뒤 라이브러리만 다시 빌드하고 **시험 바이너리를 다시 링크하지
+않았다.**  정적 링크라 옛 코드가 그대로 들어 있었고, 고친 소스로 여전히
+실패하는 것처럼 보였다.  라이브러리를 고쳤으면 그것을 쓰는 것도 다시 링크한다.
+
+### 10-4 아직 없는 것
+
+* 선택기가 `TEXTURE_BIT` 를 받지 않는다 (4d).  그러니 GL 프로그램은 여전히
+  소프트웨어로 그린다.
+* 아핀 게이트가 없다 — `w` 가 셋 다 같고 `q == 1` 인지 보는 곳.
+* 사다리꼴마다 배치를 하나씩 내는 제출 고리가 없다 (`M1_4C3` §7-2).

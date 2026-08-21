@@ -89,7 +89,7 @@ cc -m486 -O -c $accel -I$mesa_src/src -I$mesa_src/include \
    -o $out/osmesa.o $port_src/src/OSmesa/osmesa.c
 if ($status != 0) exit 1
 
-foreach f (OpenStepMGAMesaHook OpenStepMGAMesaProbe OpenStepMGAMesaTriangle OpenStepMGAMesaBuffer)
+foreach f (OpenStepMGAMesaHook OpenStepMGAMesaProbe OpenStepMGAMesaTriangle OpenStepMGAMesaBuffer OpenStepMGAMesaTexArena OpenStepMGAMesaTexture)
     cc -m486 -O -c $accel -I$mesa_src/src -I$mesa_src/include -I$mga_src/hw3d \
        -o $out/$f.o $mga_src/mesa/$f.c
     if ($status != 0) exit 1
@@ -101,7 +101,8 @@ end
 # quietly vanish.  Linking them together first sidesteps the whole question.
 ld -r -o $out/osmgaccel.o $out/OpenStepMGAMesaHook.o \
     $out/OpenStepMGAMesaProbe.o $out/OpenStepMGAMesaTriangle.o \
-    $out/OpenStepMGAMesaBuffer.o
+    $out/OpenStepMGAMesaBuffer.o \
+    $out/OpenStepMGAMesaTexArena.o $out/OpenStepMGAMesaTexture.o
 if ($status != 0) exit 1
 
 ar r $out/libGL_mga.a $out/osmesa.o $out/osmgaccel.o

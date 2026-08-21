@@ -19,6 +19,7 @@
 #include "OpenStepMGAMesaProbe.h"
 #include "OpenStepMGAMesaTriangle.h"
 #include "OpenStepMGAMesaBuffer.h"
+#include "OpenStepMGAMesaTexture.h"
 #include "OpenStepMGAMesaHook.h"
 
 
@@ -642,6 +643,14 @@ OpenStepMesaAccelUpdateState(GLcontext *ctx, int rowLength, int yUp)
      * putting back either way.
      */
     /* Bound, by the test above, so the surface is this context's to mirror. */
+    /*
+     * The texture hooks go in whenever there is a surface, like the mirror
+     * below and for the same reason: a texture defined while the software
+     * path is drawing still has to be noticed, or the copy in video memory
+     * would be stale the moment acceleration came back.
+     */
+    OSMGAMesaTexInstall(ctx);
+
     {
         ctx->Driver.RenderStart = osmgaMesaSoil;
         ctx->Driver.RenderFinish = osmgaMesaMirror;
