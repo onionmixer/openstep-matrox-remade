@@ -88,6 +88,24 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
 {
     unsigned long i, rows, opcode, atype;
     int anyZI, anyTex;
+    /*
+     * How far a texture coordinate actually travels in this batch.
+     *
+     * It used to be extrapolated to the last column and row of the whole
+     * destination, which is not where the coordinate is defined: a probe that
+     * changed nothing but the declared width saw the same 32-pixel triangle
+     * accepted at 256 and refused at 320.  And the coordinate restarts at
+     * every primitive -- measured, by drawing one textured rectangle at two
+     * different columns with the same TMR and getting the same ramp twice --
+     * so the span that matters is the primitive's own.
+     *
+     * texEmpty is the honest fallback: a triangle with height but no columns
+     * on any row is still encoded and still executed, so there is no ground
+     * for saying it fetches nothing.  Such a batch keeps the old, wider
+     * check rather than being trusted or waved through.
+     */
+    unsigned long texSpanX = 0UL, texSpanY = 0UL;
+    int texEmpty = 0, texDrawn = 0;
 
     if (badTri != 0)
         *badTri = 0UL;
@@ -193,14 +211,9 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                             lim->texStart, lim->texEnd))
             return OSMGA_HW3D_E_TEXORG;
 
-        /* The clip bounds x and y, so the furthest coordinate a draw can
-         * ask for is computable.  Keep it non-negative and inside the
-         * magnification CLAMPUV was actually measured to hold. */
-        if (!osmgaHW3DCoord(b->state.tmr[6], b->state.tmr[0],
-                            b->state.tmr[2], lim->clipX1, lim->clipY1) ||
-            !osmgaHW3DCoord(b->state.tmr[7], b->state.tmr[1],
-                            b->state.tmr[3], lim->clipX1, lim->clipY1))
-            return OSMGA_HW3D_E_TEXCOORD;
+        /* The coordinate check is after the triangle loop, because what it
+         * needs -- how far the drawing actually reaches -- is what that loop
+         * works out. */
     }
 
     for (i = 0UL; i < b->triCount; i++) {
@@ -297,6 +310,8 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
             unsigned long left  = t->fxbndry & 0xFFFFUL;
             unsigned long right = (t->fxbndry >> 16) & 0xFFFFUL;
             long lx, rx, lacc, racc, lsgn, rsgn, row;
+            long bx0 = 0L, bx1 = 0L;
+            int haveBox = 0;
 
             if (left > lim->clipX1 + 1UL || right > lim->clipX1 + 1UL ||
                 left > right)
@@ -335,6 +350,9 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
             lsgn = (t->sgn & 0x2L)  ? -1L : 1L;
             rsgn = (t->sgn & 0x20L) ? -1L : 1L;
 
+            if (opcode == OSMGA_HW3D_OPCODE_TEX) {
+                bx0 = lx; bx1 = lx; haveBox = 0;
+            }
             for (row = 0L; row < t->h; row++) {
                 if (row > 0L) {
                     lacc += t->ar2;
@@ -354,7 +372,54 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                 }
                 if (lx > rx)
                     return OSMGA_HW3D_E_TRICROSS;
+                /*
+                 * Only rows that have columns.  lx == rx is a legal row with
+                 * nothing in it, and rx - 1 there would run below zero.
+                 */
+                if (opcode == OSMGA_HW3D_OPCODE_TEX && lx < rx) {
+                    if (!haveBox) { bx0 = lx; bx1 = rx - 1L; haveBox = 1; }
+                    else {
+                        if (lx < bx0)      bx0 = lx;
+                        if (rx - 1L > bx1) bx1 = rx - 1L;
+                    }
+                }
             }
+            if (opcode == OSMGA_HW3D_OPCODE_TEX) {
+                if (!haveBox) {
+                    texEmpty = 1;
+                } else {
+                    unsigned long sx = (unsigned long)(bx1 - bx0);
+                    unsigned long sy = (unsigned long)t->h - 1UL;
+
+                    texDrawn = 1;
+                    if (sx > texSpanX) texSpanX = sx;
+                    if (sy > texSpanY) texSpanY = sy;
+                }
+            }
+        }
+    }
+
+    /*
+     * The texture coordinate, now that the reach is known.
+     *
+     * Batch-global state, so the widest primitive in the batch decides -- and
+     * a verdict about batch-global state belongs to no triangle, which is why
+     * badTri goes back to zero before it is reported.
+     */
+    if (anyTex) {
+        unsigned long spanX = lim->clipX1, spanY = lim->clipY1;
+
+        if (texDrawn && !texEmpty) {
+            spanX = texSpanX;
+            spanY = texSpanY;
+        }
+        if (!osmgaHW3DCoord(b->state.tmr[6], b->state.tmr[0],
+                            b->state.tmr[2], spanX, spanY) ||
+            !osmgaHW3DCoord(b->state.tmr[7], b->state.tmr[1],
+                            b->state.tmr[3], spanX, spanY)) {
+            if (badTri != 0)
+                *badTri = 0UL;
+            return OSMGA_HW3D_E_TEXCOORD;
         }
     }
     if (badTri != 0)

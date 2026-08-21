@@ -256,12 +256,78 @@ main(void)
                  b.state.tmr[6] = full;         expect("that start with the identity increment no longer fits", OSMGA_HW3D_E_TEXCOORD);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                  b.state.tmr[0] = full;         expect("an increment that overshoots across the clip", OSMGA_HW3D_E_TEXCOORD);
+        /* The y span is the PRIMITIVE's height now, not the clip's, so a y
+         * increment on a one-row triangle is never applied and must not be
+         * refused.  Two cases where there was one. */
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
-                 b.state.tmr[2] = full;         expect("a y increment that overshoots", OSMGA_HW3D_E_TEXCOORD);
+                 b.state.tmr[2] = full;
+                                                expect("a y increment on a one-row triangle", OSMGA_HW3D_OK);
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.tri[0].h = 4; b.tri[0].ar0 = b.tri[0].ar6 = 4;
+                 b.state.tmr[2] = full;         expect("a y increment that overshoots four rows", OSMGA_HW3D_E_TEXCOORD);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                  b.state.tmr[4] = -1; b.state.tmr[8] = -1;
                                                 expect("the H family is ignored, not refused", OSMGA_HW3D_OK);
         reset(); b.state.tmr[6] = -1;           expect("a bad coordinate, but nothing is textured", OSMGA_HW3D_OK);
+
+        /*
+         * The reach is the primitive's own, not the surface's.
+         *
+         * Measured on the machine before this was written: the same
+         * 32-column textured triangle was accepted with a 256-wide
+         * destination and refused at 320, nothing else changed.  And the
+         * coordinate restarts at every primitive -- also measured, by drawing
+         * one textured rectangle at two different columns with the same TMR
+         * and getting the same 0..63 ramp twice.  So the surface was never
+         * the interval the coordinate is defined over.
+         *
+         * The clip is widened here on purpose: at the 64-wide clip the rest
+         * of this file uses, "a narrow triangle" and "the whole surface" are
+         * the same thing, and the case could not tell the two rules apart.
+         */
+        {   unsigned long keepX = lim.clipX1, keepY = lim.clipY1;
+            unsigned long keepP = lim.pitchBytes;
+            long grad = (long)(OSMGA_HW3D_TEX_SPAN / 32UL);
+            unsigned long badTri = 0xDEADUL;
+
+            lim.clipX1 = 319; lim.clipY1 = 239;
+            lim.pitchBytes = 320UL * 4UL;
+
+            reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                     b.tri[0].fxbndry = (32UL << 16) | 0UL;
+                     b.state.tmr[0] = grad;
+                                                expect("one texture across 32 columns of a 320 surface", OSMGA_HW3D_OK);
+            reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                     b.tri[0].fxbndry = (320UL << 16) | 0UL;
+                     b.state.tmr[0] = grad;
+                                                expect("that gradient across a 320-wide primitive", OSMGA_HW3D_E_TEXCOORD);
+            reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                     b.tri[0].fxbndry = (7UL << 16) | 7UL;
+                     b.tri[0].h = 4; b.tri[0].ar0 = b.tri[0].ar6 = 4;
+                     b.state.tmr[0] = grad;
+                                                expect("an empty textured span keeps the wide check", OSMGA_HW3D_E_TEXCOORD);
+            reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                     b.tri[0].fxbndry = (7UL << 16) | 7UL;
+                     b.tri[0].h = 4; b.tri[0].ar0 = b.tri[0].ar6 = 4;
+                                                expect("an empty textured span, coordinate inside", OSMGA_HW3D_OK);
+
+            reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+            b.tri[0].fxbndry = (320UL << 16) | 0UL;
+            b.state.tmr[0] = grad;
+            b.triCount = 2;
+            b.tri[1] = b.tri[0];
+            if (osmgaHW3DValidate(&b, &lim, &badTri) == OSMGA_HW3D_E_TEXCOORD &&
+                badTri == 0UL) {
+                printf("  ok    %-46s %lu\n",
+                       "a coordinate verdict names no triangle", badTri);
+            } else {
+                printf("  FAIL  %-46s badTri %lu\n",
+                       "a coordinate verdict names no triangle", badTri);
+                failures++;
+            }
+
+            lim.clipX1 = keepX; lim.clipY1 = keepY; lim.pitchBytes = keepP;
+        }
     }
 
     printf("per-triangle geometry\n");
