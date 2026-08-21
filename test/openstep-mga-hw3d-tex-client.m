@@ -195,6 +195,18 @@ main(int argc, char **argv)
      * from the other side of the bus behaves the same way. */
     int argSettle = -1;
     unsigned long argSettleVal = 0UL;
+    /*
+     * argv[9]: bytes added to dstorg ONLY, so the origin can be put at a
+     * byte the row argument cannot reach.  The drawing then lands where the
+     * client is not looking and the pixel counts are meaningless; the point
+     * is the driver's automatic-read counter, which says whether the
+     * boundary in the driver is where it is supposed to be.
+     * argv[10]: put zorg at the window start while leaving every triangle
+     * untextured and un-Z'd, which must NOT provoke a read -- depth is only
+     * asked about when a triangle actually addresses it.
+     */
+    unsigned long argDstBytes = 0UL;
+    int argZorgLow = 0;
     IODeviceMaster *master;
     IOObjectNumber objNum;
     IOString kind;
@@ -230,6 +242,10 @@ main(int argc, char **argv)
         argHow = SUBMIT_IOCTL;
     if (argc > 7)
         argPrime = atoi(argv[7]);
+    if (argc > 9)
+        argDstBytes = (unsigned long)atoi(argv[9]);
+    if (argc > 10)
+        argZorgLow = atoi(argv[10]);
     if (argc > 8) {
         /* "auto" is the driver's own default and cannot be written as a
          * small number, so it gets a word of its own. */
@@ -576,8 +592,11 @@ main(int argc, char **argv)
         batch->magic = OSMGA_HW3D_MAGIC;
         batch->version = OSMGA_HW3D_VERSION;
         batch->triCount = 1;
-        tOrg = COLOUR_ORG + (argMapRows + argRows) * STRIDE_DW * 4UL;
+        tOrg = COLOUR_ORG + (argMapRows + argRows) * STRIDE_DW * 4UL
+                          + argDstBytes;
         batch->state.dstorg = tOrg;
+        if (argZorgLow)
+            batch->state.zorg = COLOUR_ORG;
         batch->state.dstWidth  = 64UL;
         /* The claim has to shrink by as much as the origin moved, or its
          * reach runs past the end of the window and the kernel refuses it. */
