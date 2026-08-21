@@ -99,7 +99,25 @@ osmgaStartFixed(double v)
         v = 0.0;
     if (v > 255.0)
         v = 255.0;
-    return osmgaFixed(v);
+    /*
+     * Half a level on top, because the engine discards the fifteen low bits
+     * rather than rounding them.  Measured as an identity, not a tendency:
+     * over 704 pixels of a Gouraud triangle the painted value was exactly
+     * floor(the plane's value) at every one of them, in both channels, with
+     * zero error -- and the channel whose plane happens to take integer
+     * values at integer points came out exactly right, which is the only
+     * place a truncation has nothing to discard.
+     *
+     * Adding it here rather than at the two call sites is why depth is
+     * unaffected: depth converts through osmgaFixed directly, and whether its
+     * own interpolator truncates has not been measured.
+     *
+     * The largest start becomes 255.5 scaled, 0x7FC000, against the 0x7F8000
+     * this already wrote, and floors back to 255 on the way out.  The
+     * clamp above runs first, so the effective range is [0.5, 255.5] and both
+     * endpoints still land on their own code.
+     */
+    return osmgaFixed(v) + (1UL << 14);
 }
 
 static int
