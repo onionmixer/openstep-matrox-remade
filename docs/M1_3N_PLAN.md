@@ -57,17 +57,52 @@ OpenStepMesaAccelReleaseBuffer(void *ctx)
 | `OpenStepMesaAccelBuffer` / `DepthBuffer` / `ReleaseBuffer` | **`OSMesaContext`** (`(void *) ctx`) |
 | `OpenStepMesaAccelUpdateState`, 선택기, 삼각형 함수 | **`GLcontext *`** |
 
-`bufCtx` 에는 `OSMesaContext` 가 들어 있다. 그러니 선택기에서 그냥 `ctx` 를
-비교하면 **언제나 다르다** — 소유 검사가 아니라 무조건 거절이 된다.
+`bufCtx` 에는 `OSMesaContext` 가 들어 있다.
 
-다리는 `ctx->DriverCtx` 이고, Mesa 자신이 그렇다고 단언한다:
+**처음에 "그러니 선택기의 `ctx` 를 그냥 비교하면 언제나 다르다" 고 적었다.
+틀렸다.** 구조체를 보면:
 
 ```c
-/* osmesa.c:1737 */
+struct osmesa_context {
+   GLcontext gl_ctx;        /* 첫 멤버 */
+   ...
+```
+
+첫 멤버이므로 `OSMesaContext` 포인터와 `&ctx->gl_ctx` 는 **같은 주소**다 —
+C 가 보장한다. 그리고 이 파일이 이미 그 사실에 기대고 있다:
+
+```c
+OSMesaContext GLAPIENTRY OSMesaGetCurrentContext( void )
+{
+   GLcontext *ctx = gl_get_current_context();
+   if (ctx) return (OSMesaContext) ctx;      /* 그냥 캐스팅한다 */
+```
+
+그러니 두 경로 다 맞는다. `ctx->DriverCtx` 를 쓰는 이유는 "다르기 때문"이
+아니라 **의도가 드러나고 구조체 배치에 기대지 않기 때문**이다. Mesa 자신이
+그 등식을 단언한다:
+
+```c
+/* osmesa.c:1737, 186 */
 ASSERT((void *) osmesa == (void *) ctx->DriverCtx);
 ```
 
+**함정이 아니라 우연한 안전이었다.** 그래도 명시적인 쪽을 쓴다 — 그리고
+`(void)` 캐스팅으로 형을 뭉개는 비교이므로, 어느 쪽을 쓰는지 주석에 적는다.
+
 ## 3. 고침
+
+### 갱신 순서는 이미 맞다 (확인함)
+
+`osmesa_update_state` 는 소프트웨어 선택을 **먼저** 놓고 우리 것을 **나중에**
+부른다:
+
+```
+203:   ctx->Driver.TriangleFunc = choose_triangle_function( ctx );
+219:   OpenStepMesaAccelUpdateState( ctx, ... );
+```
+
+그러니 우리가 거절하면 소프트웨어 함수가 그대로 남는다. 따로 되돌릴 것이 없다.
 
 ### (a) `OSMesaPixelStore` 끝에서 상태를 갱신한다
 
@@ -75,6 +110,12 @@ ASSERT((void *) osmesa == (void *) ctx->DriverCtx);
 한 줄. 이 파일은 이미 `OSMesaMakeCurrent` 에서 같은 함수를 직접 두 번 부르므로
 전례가 있다. `OSMesaPixelStore` 는 **current 컨텍스트**에 작용하므로 대상이
 모호하지 않다.
+
+`OSMesaGetCurrentContext()` 는 `NULL` 을 돌려줄 수 있지만, 그 경우 이 함수는
+**내 줄에 닿기 전에 이미** `ctx->userRowLength` 에서 죽는다. 즉 이 함수는
+current 컨텍스트를 이미 전제하고 있고, 내 한 줄이 그 전제를 새로 만들지는
+않는다. 그 사실을 주석에 적되 여기에만 방어를 다는 짓은 하지 않는다 — 함수의
+나머지와 어긋난다.
 
 갱신이 돌면 선택기가 다시 판단하고, 보폭이 안 맞으면 하드웨어 함수를 설치하지
 않는다 — 그리고 소프트웨어 드라이버가 방금 넣은 함수가 그대로 남는다
