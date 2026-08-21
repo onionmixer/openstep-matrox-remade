@@ -47,6 +47,12 @@ unsigned long OSMGAMesaBufferStride(void);
  * null unless a colour surface was taken and the value size is one the
  * engine writes, which is sixteen bits.
  */
+/* Is this the context drawing into the surface right now?  Not the same as
+ * owning it: a rebind at another size is refused and leaves the owner set. */
+int OSMGAMesaBufferBoundTo(const void *ctx);
+/* The application's own buffer, for putting back what was substituted. */
+void *OSMGAMesaBufferApp(void);
+
 void *OpenStepMesaAccelDepthBuffer(void *ctx, int width, int height,
                                    int bytesPerValue);
 

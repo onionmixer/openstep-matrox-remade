@@ -20,6 +20,16 @@ static unsigned long bufOrigin;
 static unsigned long bufWidth, bufHeight, bufStride;
 static void *bufMapped;
 static void *bufCtx;      /* the context the surface belongs to */
+/*
+ * And the context that is DRAWING into it, which is not the same question.
+ *
+ * A rebind at another size is refused and deliberately leaves the description
+ * alone, so the owner is still that context while Mesa has gone back to the
+ * application's buffer.  Asking who owns the surface therefore says yes when
+ * nobody is using it, and the hardware path went on being installed against
+ * a surface nothing was drawing into.
+ */
+static void *bufBound;
 static void *bufApp;      /* what the application gave us */
 static unsigned long bufAppRow;  /* and how its rows are laid out */
 static int   bufDirty;
@@ -32,6 +42,28 @@ unsigned long OSMGAMesaBufferWidth(void)  { return bufWidth;  }
 unsigned long OSMGAMesaBufferHeight(void) { return bufHeight; }
 unsigned long OSMGAMesaBufferStride(void) { return bufStride; }
 unsigned long OSMGAMesaBufferDepthOrigin(void) { return depthOrigin; }
+
+/* Is this the context drawing into the surface right now? */
+int OSMGAMesaBufferBoundTo(const void *ctx)
+{
+    return bufBound != 0 && bufBound == ctx;
+}
+
+/* The application's own buffer, for putting back what was substituted. */
+void *OSMGAMesaBufferApp(void) { return bufApp; }
+
+/*
+ * The same three under the names the hook points use.
+ *
+ * osmesa.c is written against a back end it does not name, so everything it
+ * calls carries the OpenStepMesaAccel prefix; the names above are this back
+ * end's own and are what the rest of these files use.  Forwarders rather than
+ * one set of names, so that neither side has to know the other's spelling.
+ */
+int   OpenStepMesaAccelBoundTo(const void *ctx) { return OSMGAMesaBufferBoundTo(ctx); }
+void *OpenStepMesaAccelAppBuffer(void)          { return OSMGAMesaBufferApp(); }
+void  OpenStepMesaAccelMirror(void)             { OSMGAMesaBufferMirror(); }
+unsigned long OpenStepMesaAccelStride(void)      { return OSMGAMesaBufferStride(); }
 
 /*
  * Said once, and only when a resource was asked for and refused.
@@ -196,7 +228,20 @@ OSMGAMesaBufferMirror(void)
 void
 OpenStepMesaAccelReleaseBuffer(void *ctx)
 {
-    (void)ctx;
+    /*
+     * A context lets go of its own surface and nobody else's.  Without this
+     * the second context to be destroyed handed back the first one's
+     * mappings, and the first one was left holding a depth pointer into
+     * memory that had gone -- which killed the process the next time that
+     * pointer was freed.
+     *
+     * A null context means let go regardless.  The fork path depends on that:
+     * a child inherits the mappings and has to discard them, and it has no
+     * context to name.
+     */
+    if (ctx != 0 && bufCtx != 0 && bufCtx != ctx)
+        return;
+    bufBound = 0;
     if (depthMapped != 0) {
         (void)vm_deallocate(task_self(), (vm_address_t)depthMapped,
                             (vm_size_t)depthBytes);
@@ -227,6 +272,18 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
     unsigned long stride, need, avail;
     vm_address_t addr = 0;
 
+
+    /*
+     * Let go of the binding first, and put it back only where a surface is
+     * really handed over.
+     *
+     * Done here rather than at each refusal because there are twenty of them
+     * and a twenty-first will be added one day without this being thought
+     * about.  Only THIS context's binding is released -- a refusal handed to
+     * somebody else must not unseat whoever is drawing.
+     */
+    if (bufBound == ctx)
+        bufBound = 0;
 
     if (width <= 0 || height <= 0 || rowLength == 0)
         return 0;
@@ -287,6 +344,7 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
             bufApp = buffer;    /* it may be a different buffer this time */
             bufAppRow = (unsigned long)appRowLength;
             *rowLength = (int)bufStride;
+            bufBound = ctx;
             return bufMapped;
         }
         /*
@@ -349,6 +407,7 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
 
     bufMapped = (void *)addr;
     bufCtx    = ctx;
+    bufBound  = ctx;
     bufApp    = buffer;
     bufAppRow = (unsigned long)appRowLength;
     bufDirty  = 0;

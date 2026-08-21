@@ -357,6 +357,27 @@ OpenStepMesaAccelUpdateState(GLcontext *ctx, int rowLength, int yUp)
      * destination pitch from a register holding the display's, so a surface
      * Mesa is writing at any other stride is one the engine reads wrongly.
      */
+    /*
+     * Nothing of ours belongs on a context that is not drawing into the
+     * surface, and taking it off is a separate act from not putting it on.
+     * The state update below reinstalls Mesa's own Clear and triangle
+     * function, but it does not touch RenderStart, RenderFinish, Finish or
+     * Flush -- so a context that has lost its binding keeps mirroring a
+     * surface it no longer uses into a buffer that may be smaller.
+     *
+     * Put back means NULL: nothing in OSMesa or Mesa sets those four, only
+     * this file, and every call site guards against NULL.
+     */
+    if (!OSMGAMesaBufferBoundTo(ctx->DriverCtx)) {
+        ctx->Driver.RenderStart = 0;
+        ctx->Driver.RenderFinish = 0;
+        ctx->Driver.Finish = 0;
+        ctx->Driver.Flush = 0;
+        if (ctx->Driver.Clear == osmgaMesaClear && osmgaMesaPrevClear != 0)
+            ctx->Driver.Clear = osmgaMesaPrevClear;
+        return;
+    }
+
     if (!yUp || (unsigned long)rowLength != OSMGAMesaBufferStride()) {
         osmgaHookMismatch++;
         return;
@@ -378,7 +399,8 @@ OpenStepMesaAccelUpdateState(GLcontext *ctx, int rowLength, int yUp)
      * drawing into video memory too, so the application's buffer needs
      * putting back either way.
      */
-    if (OSMGAMesaBufferOrigin() != 0UL) {
+    /* Bound, by the test above, so the surface is this context's to mirror. */
+    {
         ctx->Driver.RenderStart = osmgaMesaSoil;
         ctx->Driver.RenderFinish = osmgaMesaMirror;
         ctx->Driver.Finish = osmgaMesaMirror;

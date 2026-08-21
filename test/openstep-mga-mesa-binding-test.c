@@ -234,9 +234,30 @@ main(int argc, char **argv)
         if (drewSince() != 0UL) { printf("   STILL ACCELERATED\n"); bad++; }
         break;
 
+    case 6:
+        /*
+         * The row length changed and NOTHING drawn afterwards.  Only here to
+         * say whether a failure belongs to the change or to the first draw
+         * after it -- two very different places to look.
+         */
+        OSMesaPixelStore(OSMESA_ROW_LENGTH, BAD);
+        printf("   the row length change returned; surface=%lu\n",
+               OSMGAMesaBufferOrigin());
+        break;
+
+    case 7:
+        /* The same, and then one clear -- no triangle. */
+        OSMesaPixelStore(OSMESA_ROW_LENGTH, BAD);
+        printf("   the row length change returned\n");
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFinish();
+        printf("   the clear returned\n");
+        break;
+
     default:
         printf("   usage: 1 row length, 2 rebind, 3 second context, "
-               "4 forced release, 5 y-up\n");
+               "4 forced release, 5 y-up, 6 change only, 7 change and clear\n");
         return 2;
     }
 

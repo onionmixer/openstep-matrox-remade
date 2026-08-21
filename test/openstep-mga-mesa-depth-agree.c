@@ -45,6 +45,7 @@
 extern unsigned long OSMGAMesaHookDrawn(void);
 extern unsigned long OSMGAMesaHookDeclined(void);
 extern unsigned long OSMGAMesaBufferDepthOrigin(void);
+extern unsigned long OSMGAMesaBufferOrigin(void);
 
 /* The triangle occupies window 1.5 .. 40.5 on both axes; the comparison
  * looks at 2 .. 37, inside it on every side.  The far copy is inset by 42
