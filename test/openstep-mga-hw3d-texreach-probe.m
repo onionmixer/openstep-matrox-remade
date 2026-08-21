@@ -1134,10 +1134,60 @@ main(void)
                 else lo = mid + 1L;
             }
             printf("   %8ld %10ld %8ld\n", mags[j], lo,
-                   (long)OSMGA_HW3D_TEX_SPAN / 64L - (lo - 511L));
+                   (long)OSMGA_HW3D_TEX_SPAN / 64L - lo);
         }
-        printf("   K = 511 means the engine still adds it;"
-               " K = 0 means it does not\n");
+        printf("   the constant is the same at every magnitude\n");
+    }
+
+    printf("\n18. does the accumulation arrive short?\n");
+    {
+        /*
+         * The correction that was tried and taken out failed further along a
+         * span, not at its start.  A negative start cannot be sent from a
+         * client -- the per-row check refuses the first pixel -- but the same
+         * shape can be built with a POSITIVE one: a start of 15873 plus 511
+         * is exactly one texel, so every column ought to land exactly on a
+         * boundary and read 1 + 2c.  A column that reads 2c is the
+         * accumulation arriving short.
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        unsigned long k;
+        int firstShort = -1;
+
+        {
+        static const long incs[3] = { 2L, 1L, 0L };  /* texels per column:
+                                                      * two, one, a half */
+        int j;
+
+        for (j = 0; j < 3; j++) {
+            long inc = (incs[j] != 0L) ? incs[j] * texel : texel / 2L;
+            long want;
+
+            blank();
+            (void)setup(64UL, 0UL, 40UL, 4UL, inc, 0UL);
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = texel - 511L;
+            batch->state.tmr[7] = 0L;
+            (void)fire();
+            firstShort = -1;
+            printf("   increment %6ld  u:", inc);
+            for (k = 0UL; k < 12UL; k++) {
+                unsigned long got = colour[0UL * STRIDE_DW + k] & 0xFFUL;
+
+                want = (texel - 511L + inc * (long)k + 511L) / texel;
+                printf(" %lu", got);
+                if (firstShort < 0 && got != (unsigned long)want)
+                    firstShort = (int)k;
+            }
+            printf("   short from column %d", firstShort);
+            if (firstShort >= 0)
+                printf(" (coordinate %ld)",
+                       texel - 511L + inc * (long)firstShort);
+            printf("\n");
+        }
+        }
+        (void)say; (void)firstShort;
     }
 
     printf("\n%s (%d failing)\n",
