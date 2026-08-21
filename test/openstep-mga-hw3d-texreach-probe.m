@@ -1466,6 +1466,113 @@ main(void)
         }
     }
 
+    printf("\n23. does subtracting the bias actually fix it?\n");
+    {
+        /*
+         * The whole point of measuring the bias is to take it off in the
+         * encoder, and that can be tried from here without touching the
+         * kernel at all: the probe simply programs a start that already has
+         * the bias removed.  If the rule is right, the texels come out as the
+         * coordinate says they should.
+         *
+         * The case where the bias is visible is a coordinate that sits just
+         * BELOW a texel boundary: adding 511 carries it over and the engine
+         * reads the next texel.  A row of 600 columns stepping one unit each,
+         * starting 600 below the boundary, is 600 such coordinates in one
+         * drawing -- every one of them should read the texel below.
+         *
+         * Two bands, because the bias is not the same in both: the first
+         * texel, where the granularity is one and the bias is 511, and texel
+         * 40, past 2^19, where it is sixteen and 496.
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        static const long bands[2] = { 1L, 40L };
+        int j;
+
+        for (j = 0; j < 2; j++) {
+            long bnd = bands[j] * texel;
+            long want = bands[j] - 1L;
+            int mode;
+
+            for (mode = 0; mode < 2; mode++) {
+                long begin = bnd - 600L;
+                long bias = 0L, probe;
+                unsigned long c, bad = 0UL, blanks = 0UL;
+
+                if (mode)
+                    bias = OSMGA_HW3D_TEX_BIAS;   /* the smallest of the ladder */
+                probe = begin - bias;
+                blank();
+                (void)setup(1024UL, 0UL, 600UL, 4UL, 1L, 0UL);
+                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                batch->state.tmr[3] = 0L;
+                batch->state.tmr[6] = probe;
+                batch->state.tmr[7] = 0L;
+                (void)fire();
+                for (c = 0UL; c < 600UL; c++) {
+                    unsigned long got = pixat(0UL, c);
+
+                    if (got == BLANK) { blanks++; continue; }
+                    if ((long)(got & 0xFFUL) != want) bad++;
+                }
+                printf("   texel %2ld  %-13s bias %3ld  wrong %3lu of 600%s\n",
+                       want, mode ? "compensated" : "as the engine is",
+                       bias, bad, blanks ? "  (undrawn columns!)" : "");
+            }
+        }
+        printf("   subtracting the smallest of the ladder cannot undershoot:"
+               " at most 15 of 600 in the first band, none past 2^19\n");
+    }
+
+    printf("\n24. and the case that vetoed the first attempt\n");
+    {
+        /*
+         * The first attempt took a fixed 511 off, and a drawing whose texture
+         * lands exactly on texel boundaries came back one texel low from part
+         * way along.  That is the ladder: 511 was taken off at the start and
+         * only 510, then 508, was added back further out, so a coordinate
+         * sitting exactly ON a boundary fell one unit below it.
+         *
+         * Subtracting the SMALLEST of the ladder cannot do that, and this
+         * checks it where it failed before -- a start of one texel and 32768
+         * a column, which is exactly on a boundary at every column, so the
+         * texels must run 1, 3, 5, 7, ... with nothing lost.  Both the
+         * uncorrected engine and the correction that goes in should pass it;
+         * a per-band correction would not, which is why it is not what went
+         * in.
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        long step32 = (long)(OSMGA_HW3D_TEX_SPAN / 32UL);
+        int mode;
+
+        for (mode = 0; mode < 3; mode++) {
+            static const char *what[3] = { "as the engine is",
+                                           "less 496 (what goes in)",
+                                           "less 511 (the first attempt)" };
+            long bias = (mode == 0) ? 0L
+                      : (mode == 1) ? OSMGA_HW3D_TEX_BIAS : 511L;
+            unsigned long c, bad = 0UL;
+
+            blank();
+            (void)setup(1024UL, 0UL, 12UL, 4UL, step32, 0UL);
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = texel - bias;
+            batch->state.tmr[7] = 0L;
+            (void)fire();
+            printf("   %-28s u:", what[mode]);
+            for (c = 0UL; c < 12UL; c++) {
+                unsigned long got = pixat(0UL, c) & 0xFFUL;
+
+                printf(" %lu", got);
+                if (got != 1UL + 2UL * c) bad++;
+            }
+            printf("   %lu wrong\n", bad);
+        }
+        printf("   wanted 1 3 5 7 9 ... -- the first attempt is the one that"
+               " loses them\n");
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;

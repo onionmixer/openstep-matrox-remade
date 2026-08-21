@@ -191,46 +191,50 @@
 #define OSMGA_HW3D_TEX_COORD_MAX (8UL * OSMGA_HW3D_TEX_SPAN)
 
 /*
- * What the engine adds to a texture coordinate before it picks a texel.
+ * What the engine adds to a texture coordinate before it picks a texel, and
+ * what the encoder takes back off.
  *
- * Measured, where no gradient can hide it: with every increment at zero the
- * coordinate is the start and nothing else, and the texel turns over at a
- * start of 15873 rather than 16384 -- in both axes, for a 64-texel texture
- * whose texel is 16384.  So the engine indexes with
+ * The engine's addend is not one number.  Sweeping the start with every
+ * gradient at zero -- so the coordinate at each pixel IS the start -- and
+ * bisecting the turnover at all sixty-three texel boundaries of a 64-texel
+ * texture, it adds
  *
- *     texel = floor((u + 511) / texel size)
+ *      511 below 2^16      510 below 2^17      508 below 2^18
+ *      504 below 2^19      496 below 2^20
  *
- * which is the coordinate rounded up to a multiple of 512, one texture span
- * divided by the largest texture it will take.
+ * that is, 512 less one, two, four, eight, sixteen, stepping at the powers of
+ * two of the coordinate: the coordinate is carried with about sixteen
+ * significant bits and the addend is what survives of 512.  Above 2^20 it
+ * stops mattering, because a coordinate past the last texel is clamped and no
+ * addend this small can change which texel that is.
  *
- * IT IS NOT APPLIED, and the value here is zero.
+ * What is subtracted here is the SMALLEST of them, not the one that matches
+ * the band the primitive starts in.  Correcting per band is exact for a
+ * primitive that stays inside one, and it is what the first attempt did --
+ * but a primitive that crosses a band gets back less than was taken off, and
+ * a coordinate sitting exactly ON a texel boundary then lands one unit below
+ * it and reads the texel before.  Coordinates exactly on boundaries are not a
+ * corner case; they are what a texture drawn at its own size is made of.
+ * That is what took the first attempt out, and it was read at the time as the
+ * accumulation arriving short.
  *
- * Subtracting it in the encoder was tried and taken out on the machine.  It
- * did what it was meant to on the scene that motivated it -- the difference
- * against the software path fell from 137 pixels of 25964 to 24 -- and the
- * zero-gradient sweep moved to exactly the texel boundary.  But four other
- * measurements came back one texel low, including a raw drawing whose texels
- * are wrong in 1004 places out of 1024.
+ * Subtracting the smallest instead can only ever leave the coordinate at or
+ * ABOVE where the caller put it, by at most 511 - 496 = 15 units against a
+ * texel of 16384.  So boundary-aligned drawing stays exact, and a coordinate
+ * just below a boundary is misread only in the last fifteen units of the
+ * texel instead of the last 511.
  *
- * What that says is that a CONSTANT is not the whole rule -- not that the
- * constant is wrong.  Swept again with one increment held at each of nine
- * magnitudes from nothing to 32768, the turnover says 511 every time, so it
- * does not depend on the gradient.  And with the correction applied the two
- * probes that measure the constant read exactly what the corrected model
- * predicts.
+ * Measured on the machine, from userland, before it went in: six hundred
+ * coordinates each sitting just below a texel boundary, all of which must
+ * read the texel BELOW.  Uncorrected they came back 511 wrong of 600 in the
+ * first band and 497 wrong of 600 past 2^19.
  *
- * Where it comes apart is further along a span.  A row drawn with 32768 per
- * column reads the right texel at columns nought to three and then falls one
- * behind from column four on -- seven where eight is wanted, nine where ten
- * is wanted -- which is not an offset at all but the accumulation arriving
- * slightly short.  Subtracting the constant at the start makes that shortfall
- * cross a texel boundary where it did not before.
- *
- * So: the correction is right about the start and wrong about what happens
- * after it, and it is not applied until the rest is known.  The 137 stay.
- * They are one texel each, at texel boundaries, and invisible.
+ * The fine structure of at most fifteen units on top of the ladder, which
+ * involves the column and which no rule tried so far fits, is written down in
+ * docs/M1_4C7_TEXBIAS_PLAN.md rather than guessed at.  It is the same size as
+ * the residual above and smaller than what is being corrected.
  */
-#define OSMGA_HW3D_TEX_BIAS     0L      /* see below: not applied */
+#define OSMGA_HW3D_TEX_BIAS     496L
 
 typedef struct {
     unsigned long dstorg;          /* colour origin, byte offset into VRAM */
