@@ -49,6 +49,28 @@ extern unsigned long OSMGAMesaBufferOrigin(void);
  * rather than a legitimate discontinuity.  The fourth colour is not free: it
  * is what the other three and the geometry require.
  */
+/*
+ * D and E are the cases a quad cannot reach.  D is a fan of four triangles
+ * meeting at one vertex, with the sectors deliberately unequal so that three
+ * different sub-pixel precisions are chosen -- 5, 6, 5 and 4 -- which is the
+ * hardest test of whether the shared vertex lands in the same place for all
+ * of them.  E is a strip, where edges are shared pairwise rather than at a
+ * point.  Three triangles cannot share one whole edge in a plane, so these
+ * two are what "more than two meet" actually means.
+ */
+#define NSHAPE 5
+#define MAXTRI 4
+static const int ntri[NSHAPE] = { 2, 2, 2, 4, 4 };
+/* each triangle as three indices into the shape's vertex list */
+static const int tidx[NSHAPE][MAXTRI][3] = {
+    { {0,1,2}, {0,2,3}, {0,0,0}, {0,0,0} },
+    { {0,1,2}, {0,2,3}, {0,0,0}, {0,0,0} },
+    { {0,1,2}, {0,2,3}, {0,0,0}, {0,0,0} },
+    { {0,1,2}, {0,2,3}, {0,3,4}, {0,4,5} },          /* fan around vertex 0 */
+    { {0,4,1}, {4,5,1}, {1,5,2}, {5,6,2} }           /* strip */
+};
+#define NVERT 8
+
 #define OFF  0.2890625f                  /* 37/128 */
 static const float qx[3][4] = {
     {  40.0f, 200.0f, 200.0f,  40.0f },
@@ -61,24 +83,41 @@ static const float qy[3][4] = {
     {  72.0f, 132.0f, 172.0f,  48.0f }
 };
 
+static const float vx[NSHAPE][NVERT] = {
+    {  40.0f, 200.0f, 200.0f,  40.0f },
+    {  40.0f + OFF, 200.0f + OFF, 200.0f + OFF, 40.0f + OFF },
+    { 148.0f,  24.0f, 144.0f, 296.0f },
+    { 160.0f,  60.0f, 176.0f, 188.0f, 304.0f,  64.0f },     /* fan */
+    {  40.0f, 120.0f, 200.0f, 280.0f,  48.0f, 128.0f, 208.0f, 288.0f }
+};
+static const float vy[NSHAPE][NVERT] = {
+    {  40.0f,  40.0f, 180.0f, 180.0f },
+    {  40.0f + OFF,  40.0f + OFF, 180.0f + OFF, 180.0f + OFF },
+    {  72.0f, 132.0f, 172.0f,  48.0f },
+    { 120.0f,  40.0f,  24.0f,  28.0f, 160.0f, 216.0f },     /* fan */
+    {  60.0f,  52.0f,  64.0f,  56.0f, 180.0f, 188.0f, 176.0f, 184.0f }
+};
+static const int nvert[NSHAPE] = { 4, 4, 4, 6, 8 };
+
 static unsigned long *app;
 
 static void
-tri(int s, int i0, int i1, int i2, int plane, int r, int g, int b)
+tri(int s, int t, int plane, int r, int g, int b)
 {
-    int idx[3], k;
+    int k;
 
-    idx[0] = i0; idx[1] = i1; idx[2] = i2;
     glBegin(GL_TRIANGLES);
       for (k = 0; k < 3; k++) {
+          int v = tidx[s][t][k];
+
           if (plane) {
-              int c = (int)(qx[s][idx[k]] / 4.0f + qy[s][idx[k]] / 4.0f + 120.0f);
+              int c = (int)(vx[s][v] / 4.0f + vy[s][v] / 4.0f + 120.0f);
 
               glColor4ub((GLubyte)c, (GLubyte)c, (GLubyte)c, 255);
           } else {
               glColor4ub((GLubyte)r, (GLubyte)g, (GLubyte)b, 255);
           }
-          glVertex3f(qx[s][idx[k]], qy[s][idx[k]], 0.0f);
+          glVertex3f(vx[s][v], vy[s][v], 0.0f);
       }
     glEnd();
 }
@@ -89,7 +128,8 @@ main(int argc, char **argv)
     OSMesaContext ctx;
     const char *shape = (argc > 1) ? argv[1] : "A";
     const char *mode  = (argc > 2) ? argv[2] : "both";
-    int s = (shape[0] >= 'A' && shape[0] <= 'C') ? (shape[0] - 'A') : 0;
+    int s = (shape[0] >= 'A' && shape[0] <= 'E') ? (shape[0] - 'A') : 0;
+    int t;
     long x, y;
     unsigned long d0, s0, x0;
 
@@ -112,21 +152,26 @@ main(int argc, char **argv)
     d0 = OSMGAMesaHookDrawn(); s0 = OSMGAMesaHookSoftware();
     x0 = OSMGAMesaHookDeclined();
 
-    /* the quad is v0 v1 v2 v3; the diagonal is v0-v2 */
-    if (strcmp(mode, "solo1") == 0)        tri(s, 0, 1, 2, 0, 0, 255, 0);
-    else if (strcmp(mode, "solo2") == 0)   tri(s, 0, 2, 3, 0, 0, 255, 0);
-    else if (strcmp(mode, "both") == 0)  { tri(s, 0, 1, 2, 0, 0, 255, 0);
-                                           tri(s, 0, 2, 3, 0, 255, 0, 0); }
-    else if (strcmp(mode, "rev") == 0)   { tri(s, 0, 2, 3, 0, 255, 0, 0);
-                                           tri(s, 0, 1, 2, 0, 0, 255, 0); }
-    else if (strcmp(mode, "plane") == 0) { tri(s, 0, 1, 2, 1, 0, 0, 0);
-                                           tri(s, 0, 2, 3, 1, 0, 0, 0); }
-    else { printf("mode: solo1 solo2 both rev plane\n"); return 2; }
+    if (strncmp(mode, "solo", 4) == 0) {
+        t = atoi(mode + 4) - 1;
+        if (t < 0 || t >= ntri[s]) { printf("no such triangle\n"); return 2; }
+        tri(s, t, 0, 0, 255, 0);
+    } else if (strcmp(mode, "both") == 0) {
+        for (t = 0; t < ntri[s]; t++)
+            tri(s, t, 0, (t & 1) ? 255 : 0, (t & 1) ? 0 : 255, 0);
+    } else if (strcmp(mode, "rev") == 0) {
+        for (t = ntri[s] - 1; t >= 0; t--)
+            tri(s, t, 0, (t & 1) ? 255 : 0, (t & 1) ? 0 : 255, 0);
+    } else if (strcmp(mode, "plane") == 0) {
+        for (t = 0; t < ntri[s]; t++) tri(s, t, 1, 0, 0, 0);
+    } else { printf("mode: soloN both rev plane\n"); return 2; }
     glFinish();
 
-    printf("# shape %c mode %s\n", 'A' + s, mode);
-    for (x = 0; x < 4; x++)
-        printf("# v%ld %.7f %.7f\n", x, qx[s][x], qy[s][x]);
+    printf("# shape %c mode %s ntri %d\n", 'A' + s, mode, ntri[s]);
+    for (x = 0; x < nvert[s]; x++)
+        printf("# v%ld %.7f %.7f\n", x, vx[s][x], vy[s][x]);
+    for (x = 0; x < ntri[s]; x++)
+        printf("# t%ld %d %d %d\n", x, tidx[s][x][0], tidx[s][x][1], tidx[s][x][2]);
     printf("# counters drawn=%lu software=%lu declined=%lu\n",
            OSMGAMesaHookDrawn() - d0, OSMGAMesaHookSoftware() - s0,
            OSMGAMesaHookDeclined() - x0);
