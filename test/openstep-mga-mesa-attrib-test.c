@@ -54,19 +54,37 @@ extern unsigned long OSMGAMesaBufferOrigin(void);
 #define H       240
 #define CLEARC  0xFF102030UL
 
-static const long vx[3] = { 190, 198, 150 };
-static const long vy[3] = {  53,  61, 189 };
-static const int  vr[3] = {  24, 231, 127 };
-static const int  vg[3] = { 231,  24, 127 };
-static const int  vb[3] = { 206, 206,  30 };
+/*
+ * Two shapes, not one.  The middle vertex sits on opposite sides of the long
+ * edge in them, so the left edge slopes the other way and the split's winding
+ * reverses -- one triangle cannot speak for both, and the review was right to
+ * say so.  Alpha carries a gradient too, since the dump already prints the
+ * alpha byte and measuring it costs nothing.
+ *
+ *   shape 1  cross -1408    red +12.94  green -12.94  blue 0  alpha +10.00
+ *   shape 2  cross +1387    red +13.13  green -13.14  blue 0  alpha +10.15
+ */
+static const long sx[2][3] = { { 190, 198, 150 }, { 108,  89,  47 } };
+static const long sy[2][3] = { {  53,  61, 189 }, {  86, 105, 220 } };
+static const int  sr[2][3] = { {  24, 231, 127 }, { 231,  24, 127 } };
+static const int  sg[2][3] = { { 231,  24, 127 }, {  24, 231, 127 } };
+static const int  sb[2][3] = { { 206, 206,  30 }, { 225, 187,  30 } };
+static const int  sa[2][3] = { {  40, 200, 120 }, { 200,  40, 120 } };
 
 int
-main(void)
+main(int argc, char **argv)
 {
     OSMesaContext ctx;
     unsigned long *app;
     long x, y, i;
     unsigned long d0, s0, u0, x0;
+    int sh = (argc > 1) ? (atoi(argv[1]) - 1) : 0;
+    const long *vx, *vy;
+    const int *vr, *vg, *vb, *va;
+
+    if (sh < 0 || sh > 1) { printf("shape 1 or 2\n"); return 2; }
+    vx = sx[sh]; vy = sy[sh];
+    vr = sr[sh]; vg = sg[sh]; vb = sb[sh]; va = sa[sh];
 
     app = (unsigned long *)malloc((unsigned)(W * H) * sizeof(unsigned long));
     if (!app) { printf("no room\n"); return 2; }
@@ -101,7 +119,8 @@ main(void)
 
     glBegin(GL_TRIANGLES);
       for (i = 0; i < 3; i++) {
-          glColor4ub((GLubyte)vr[i], (GLubyte)vg[i], (GLubyte)vb[i], 255);
+          glColor4ub((GLubyte)vr[i], (GLubyte)vg[i], (GLubyte)vb[i],
+                     (GLubyte)va[i]);
           glVertex3f((float)vx[i], (float)vy[i], 0.0f);
       }
     glEnd();
@@ -109,9 +128,10 @@ main(void)
 
     printf("# surface %dx%d  origin %lu  clear %08lx\n",
            W, H, OSMGAMesaBufferOrigin(), CLEARC);
+    printf("# shape %d\n", sh + 1);
     for (i = 0; i < 3; i++)
-        printf("# vertex %ld  (%ld,%ld)  rgb %d %d %d\n",
-               i, vx[i], vy[i], vr[i], vg[i], vb[i]);
+        printf("# vertex %ld  %ld %ld  rgba %d %d %d %d\n",
+               i, vx[i], vy[i], vr[i], vg[i], vb[i], va[i]);
     printf("# counters drawn=%lu software=%lu unsupported=%lu declined=%lu\n",
            OSMGAMesaHookDrawn() - d0, OSMGAMesaHookSoftware() - s0,
            OSMGAMesaHookUnsupported() - u0, OSMGAMesaHookDeclined() - x0);

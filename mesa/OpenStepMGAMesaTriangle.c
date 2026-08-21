@@ -268,8 +268,26 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
          * Read back, one path gave 00 and the other ff for the same
          * triangle, and glReadPixels would have reported it.
          */
-        double ox = (double)left - (double)a->x;
-        double oy = (double)y    - (double)a->y;
+        /*
+         * Half a pixel into the pixel, because OpenGL asks for the value at
+         * the fragment's CENTRE and `left` and `y` are its top-left corner.
+         *
+         * Measured, not reasoned: one Gouraud triangle, every covered pixel,
+         * scored against the plane solved exactly from the vertices.  The
+         * software path landed within four hundredths of a level of the
+         * centre and the engine within half a level of the corner, on two
+         * shapes whose middle vertex falls on opposite sides of the long
+         * edge.  A third channel built so its two gradients cancel could not
+         * move under this and did not, which is what says anchoring rather
+         * than a colour bias.
+         *
+         * Depth uses the same expression below and is deliberately NOT
+         * changed here: half a pixel of depth is many 16-bit codes on a steep
+         * polygon, it flips comparisons at ties, and with the depth test on
+         * it would move coverage.  It gets its own measurement.
+         */
+        double ox = (double)left - (double)a->x + 0.5;
+        double oy = (double)y    - (double)a->y + 0.5;
 
         t->a0  = osmgaStartFixed(aplane->at_a + aplane->dx * ox
                                  + aplane->dy * oy);
@@ -307,8 +325,26 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
     {
         /* Start values belong at this trapezoid's first pixel, because that
          * is where the engine begins counting -- measured, see the header. */
-        double ox = (double)left - (double)a->x;
-        double oy = (double)y    - (double)a->y;
+        /*
+         * Half a pixel into the pixel, because OpenGL asks for the value at
+         * the fragment's CENTRE and `left` and `y` are its top-left corner.
+         *
+         * Measured, not reasoned: one Gouraud triangle, every covered pixel,
+         * scored against the plane solved exactly from the vertices.  The
+         * software path landed within four hundredths of a level of the
+         * centre and the engine within half a level of the corner, on two
+         * shapes whose middle vertex falls on opposite sides of the long
+         * edge.  A third channel built so its two gradients cancel could not
+         * move under this and did not, which is what says anchoring rather
+         * than a colour bias.
+         *
+         * Depth uses the same expression above and is deliberately NOT
+         * changed there: half a pixel of depth is many 16-bit codes on a steep
+         * polygon, it flips comparisons at ties, and with the depth test on
+         * it would move coverage.  It gets its own measurement.
+         */
+        double ox = (double)left - (double)a->x + 0.5;
+        double oy = (double)y    - (double)a->y + 0.5;
         int i;
 
         for (i = 0; i < 3; i++) {

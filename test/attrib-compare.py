@@ -25,15 +25,17 @@ it is visible.
 import sys, os, re, collections
 from fractions import Fraction as F
 
-V   = [(190, 53), (198, 61), (150, 189)]
-COL = [(24, 231, 206), (231, 24, 206), (127, 127, 30)]
-NAME = ("red", "green", "blue")
-SPLIT = 61
+NAME = ("red", "green", "blue", "alpha")
 
 def load(path):
     px, meta = {}, {}
+    meta['V'] = []; meta['COL'] = []
     for line in open(path):
-        if line.startswith('# mode'):
+        if line.startswith('# vertex'):
+            f = line.split()
+            meta['V'].append((int(f[3]), int(f[4])))
+            meta['COL'].append(tuple(int(t) for t in f[6:10]))
+        elif line.startswith('# mode'):
             meta['mode'] = line.split()[-1]
         elif line.startswith('# counters'):
             for k, v in re.findall(r'(\w+)=(\d+)', line):
@@ -43,7 +45,7 @@ def load(path):
             px[(int(f[1]), int(f[2]))] = tuple(int(t) for t in f[3:7])
     return meta, px
 
-def plane(comp):
+def plane(V, COL, comp):
     (x1, y1), (x2, y2), (x3, y3) = [(F(a), F(b)) for a, b in V]
     c1, c2, c3 = [F(COL[i][comp]) for i in range(3)]
     den = (x2 - x1) * (y3 - y1) - (y2 - y1) * (x3 - x1)
@@ -74,7 +76,10 @@ def cover(verts, W=320, H=240):
 def main(d):
     mh, hw = load(os.path.join(d, 'hw.txt'))
     ms, sw = load(os.path.join(d, 'sw.txt'))
+    V, COL = mh['V'], mh['COL']
+    SPLIT = sorted(y for _, y in V)[1]
     fail = []
+    print("shape %s   split at y = %d\n" % (V, SPLIT))
 
     print("== the engine drew the accelerated run ==")
     ok = (mh['software'] == 0 and mh['declined'] == 0
@@ -103,8 +108,8 @@ def main(d):
     print("   %-6s %9s %9s | %10s %10s | %10s %10s"
           % ("chan", "dx", "dy", "hw corner", "hw centre", "sw corner", "sw centre"))
     res = {}
-    for comp in range(3):
-        dx, dy, k = plane(comp)
+    for comp in range(4):
+        dx, dy, k = plane(V, COL, comp)
         A = lambda x, y: dx * x + dy * y + k
         cell = []
         for px in (hw, sw):
@@ -117,7 +122,7 @@ def main(d):
                  float(cell[0]), float(cell[1]), float(cell[2]), float(cell[3])))
 
     print("\n   predicted for a corner-anchored start: corner 0, centre -(dx+dy)/2")
-    for comp in range(3):
+    for comp in range(4):
         dx, dy, _ = res[comp]
         print("      %-6s -(dx+dy)/2 = %+8.4f" % (NAME[comp], float(-(dx+dy)/2)))
 
@@ -129,8 +134,8 @@ def main(d):
     left = {}
     for (x, y) in hw:
         left[y] = min(left.get(y, 1 << 30), x)
-    for comp in (0, 1):
-        dx, dy, k = plane(comp)
+    for comp in (0, 1, 3):
+        dx, dy, k = plane(V, COL, comp)
         per = collections.defaultdict(list)
         for (x, y) in hw:
             per[y].append(hw[(x, y)][comp] - (dx*F(x) + dy*F(y) + k))
@@ -147,8 +152,8 @@ def main(d):
             fail.append("%s residual follows the left edge" % NAME[comp])
 
     print("\n== do the two trapezoids agree?  (split at y = %d) ==" % SPLIT)
-    for comp in range(3):
-        dx, dy, k = plane(comp)
+    for comp in range(4):
+        dx, dy, k = plane(V, COL, comp)
         top = [hw[p][comp] - (dx*F(p[0])+dy*F(p[1])+k) for p in hw if p[1] < SPLIT]
         bot = [hw[p][comp] - (dx*F(p[0])+dy*F(p[1])+k) for p in hw if p[1] >= SPLIT]
         if not top or not bot: continue
