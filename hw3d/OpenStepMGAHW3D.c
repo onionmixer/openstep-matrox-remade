@@ -296,7 +296,7 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
         {
             unsigned long left  = t->fxbndry & 0xFFFFUL;
             unsigned long right = (t->fxbndry >> 16) & 0xFFFFUL;
-            long lx, rx, lacc, racc, lmag, rmag, lsgn, rsgn, row;
+            long lx, rx, lacc, racc, lsgn, rsgn, row;
 
             if (left > lim->clipX1 + 1UL || right > lim->clipX1 + 1UL ||
                 left > right)
@@ -306,11 +306,23 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
              * Then walk both edges the way the engine does, and require a
              * span on every row rather than only at the ends.
              *
-             * Bounding each edge's travel on its own is not enough: the
-             * difference of two monotone sequences is not monotone, so two
-             * edges whose first and last rows are in order can still cross in
-             * between.  Constructed rather than imagined -- rows 0 and h-1 in
-             * order and row 36 reversed.
+             *     a = AR1 - AR2 ;  row 0 is emitted where FXBNDRY says
+             *     between rows:  a += AR2 ;  while a < 0:  x += sgn ; a += AR0
+             *
+             * That recurrence is measured, and the one this first carried was
+             * not.  Its predecessor came from a fit taken entirely with AR1
+             * equal to AR2, which every batch this driver had ever sent
+             * satisfied -- and under that constraint the two rules emit the
+             * same pixels, so the fit could not have chosen.  A three-way
+             * probe separated them: 8 rows of 8 for this one against 7 and 6,
+             * and 20 of 20 against 11 and 1 on a control.  A validator that
+             * predicts the wrong columns refuses correct work and passes
+             * incorrect work, so this is not a detail.
+             *
+             * Bounding each edge's travel on its own is not enough either:
+             * the difference of two monotone sequences is not monotone, so
+             * two edges whose first and last rows are in order can still
+             * cross in between.  Constructed rather than imagined.
              *
              * The work is bounded.  Every column step is checked against the
              * rectangle and refused the moment it leaves it, and a walk only
@@ -318,25 +330,27 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
              * rectangle is wide.
              */
             lx = (long)left;   rx = (long)right;
-            lacc = t->ar1 - 1L; racc = t->ar4 - 1L;
-            lmag = -t->ar2;     rmag = -t->ar5;
+            lacc = t->ar1 - t->ar2;
+            racc = t->ar4 - t->ar5;
             lsgn = (t->sgn & 0x2L)  ? -1L : 1L;
             rsgn = (t->sgn & 0x20L) ? -1L : 1L;
 
             for (row = 0L; row < t->h; row++) {
-                lacc += lmag;
-                while (lacc >= 0L) {
-                    lx += lsgn;
-                    lacc -= t->ar0;
-                    if (lx < 0L || (unsigned long)lx > lim->clipX1 + 1UL)
-                        return OSMGA_HW3D_E_TRICROSS;
-                }
-                racc += rmag;
-                while (racc >= 0L) {
-                    rx += rsgn;
-                    racc -= t->ar6;
-                    if (rx < 0L || (unsigned long)rx > lim->clipX1 + 1UL)
-                        return OSMGA_HW3D_E_TRICROSS;
+                if (row > 0L) {
+                    lacc += t->ar2;
+                    while (lacc < 0L) {
+                        lx += lsgn;
+                        lacc += t->ar0;
+                        if (lx < 0L || (unsigned long)lx > lim->clipX1 + 1UL)
+                            return OSMGA_HW3D_E_TRICROSS;
+                    }
+                    racc += t->ar5;
+                    while (racc < 0L) {
+                        rx += rsgn;
+                        racc += t->ar6;
+                        if (rx < 0L || (unsigned long)rx > lim->clipX1 + 1UL)
+                            return OSMGA_HW3D_E_TRICROSS;
+                    }
                 }
                 if (lx > rx)
                     return OSMGA_HW3D_E_TRICROSS;

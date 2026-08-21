@@ -117,12 +117,12 @@ osmgaCoordOK(const OSMGAMesaVertex *v)
  * edge steeper than one column per row.
  */
 static long
-osmgaFloorDiv(long a, long b)
+osmgaCeilDiv(long a, long b)            /* b > 0 */
 {
     long q = a / b;
 
-    if ((a % b) != 0L && ((a < 0L) != (b < 0L)))
-        q--;
+    if ((a % b) != 0L && a > 0L)
+        q++;
     return q;
 }
 
@@ -142,6 +142,14 @@ typedef struct {
 /*
  * The registers for one edge.
  *
+ * What the engine does, measured rather than assumed (see below):
+ *
+ *     a = AR1 - AR2 ;  row 0 is emitted at FXBNDRY
+ *     between rows:  a += AR2 ;  while a < 0:  x += sgn ;  a += AR0
+ *
+ * so the column at row k is  x0 + sgn * max(0, ceil((|AR2|*k + e) / AR0))
+ * with e = -AR1 - |AR2|, and row 0 always sits exactly where FXBNDRY put it.
+ *
  * OpenGL samples a pixel at its centre and breaks ties top-left, so the first
  * column of a left edge at row ya+k0+k is
  *
@@ -150,20 +158,26 @@ typedef struct {
  * and the same expression is the right edge's boundary, which FXBNDRY treats
  * as exclusive.  Doubling AR0 and AR2 keeps the slope exactly and makes that
  * half pixel an integer -- with the pair left at the trapezoid's own height,
- * as it was, there is no integer that expresses it, which is why biasing the
- * start column alone reached 13 triangles in 300 and this reaches 300.
+ * as it was, there is no integer that expresses it.
  *
- * The -1 on a leftward edge is the identity that appears when a ceiling is
- * negated; it is right only because every edge here runs top to bottom.
+ * Writing A for that numerator at this trapezoid's first row, the start
+ * column is xa + ceil(A / 2H) -- which the engine emits untouched, since it
+ * takes no step on row 0 -- and the error term is what is left over,
+ * A - 2H*ceil(A/2H), lying in (-2H, 0].  A leftward edge needs the extra
+ * turn that appears when a ceiling is negated, which is right only because
+ * every edge here runs top to bottom.
  *
- * The error term is then folded into [0, 2H) by moving whole columns into the
- * start, since shifting it by the denominator moves the walk exactly one
- * column.  That is NOT a general transformation -- the walk clamps at zero,
- * and folding across the clamp moves every row, as dy=10, |dx|=1, e=15 shows.
- * It is safe here because the term before folding is at most H, and the
- * denominator is 2H, so the fold only ever raises it.  It also leaves nothing
- * to walk on the first row, which is what makes the column written the column
- * drawn -- and the interpolation planes below are anchored to that column.
+ * THE SIGN OF THE ERROR TERM WAS WRONG HERE ONCE, and the way it was wrong is
+ * worth keeping.  The recurrence this was first built on came from a fit to
+ * hardware in which AR1 was always equal to AR2 -- as it was in every batch
+ * this driver had ever sent.  Under that constraint two different recurrences
+ * emit identical pixels, so the fit could not choose between them, and the
+ * host test walked the registers with the same wrong one and agreed with the
+ * code.  The engine drew a quad whose vertical edges have no displacement at
+ * all one column to the right from the second row on, which the wrong rule
+ * says cannot happen, and a three-way probe then separated the candidates:
+ * 8 of 8 rows for this rule against 7 and 6 for the others, and 20 of 20
+ * against 11 and 1 on a control.
  */
 static void
 osmgaEdgeRegs(const OSMGAMesaEdge *e,
@@ -171,13 +185,14 @@ osmgaEdgeRegs(const OSMGAMesaEdge *e,
 {
     long mg = (e->dee < 0L) ? -e->dee : e->dee;
     long den = 2L * e->height;
-    long v = e->height - mg - 2L * mg * e->k0 - ((e->dee < 0L) ? 1L : 0L);
-    long q = osmgaFloorDiv(v, den);
+    long a = 2L * e->dee * e->k0 + e->dee - e->height;
+    long q = osmgaCeilDiv(a, den);
+    long r = a - q * den;               /* in (-den, 0] */
 
     *mag = 2L * mg;
     *dy  = den;
-    *err = v - q * den;
-    *x0  = e->xa - ((e->dee < 0L) ? -q : q);
+    *err = (e->dee >= 0L) ? r : (-r - den + 1L);
+    *x0  = e->xa + q;
 }
 
 static void

@@ -86,18 +86,26 @@ ruleSpan(long ax, long ay, long bx, long by, long cx, long cy,
 
 /* ------------------------------------------------------- the engine's walk
  *
- * acc = AR1 - 1 ; each row: acc += |dx| ; while acc >= 0: x += sgn, acc -= dy
- * Written as the loop rather than a closed form, because the closed form is
- * where I got it wrong once already.
+ *     a = AR1 - AR2 ;  emit row 0 at FXBNDRY
+ *     between rows:  a += AR2 ;  while a < 0:  x += sgn ;  a += AR0
+ *
+ * Written in the registers themselves and as the loop rather than a closed
+ * form, because the closed form is where I got it wrong once, and the
+ * recurrence is where I got it wrong twice: the first version came from a fit
+ * taken entirely with AR1 equal to AR2, which cannot tell this rule from the
+ * one it replaced.  Measured on hardware three ways round before being
+ * written here.
  */
 static void
-walk(long x0, long mag, long dy, long e, long sgn, long n, long *out)
+walk(long x0, long ar0, long ar1, long ar2, long sgn, long n, long *out)
 {
-    long acc = -mag - e - 1L, x = x0, k;
+    long a = ar1 - ar2, x = x0, k;
 
     for (k = 0; k < n; k++) {
-        acc += mag;
-        while (acc >= 0L) { x += sgn; acc -= dy; }
+        if (k > 0L) {
+            a += ar2;
+            while (a < 0L) { x += sgn; a += ar0; }
+        }
         out[k] = x;
     }
 }
@@ -106,15 +114,13 @@ walk(long x0, long mag, long dy, long e, long sgn, long n, long *out)
 static void
 spansOf(const OSMGAHW3DTri *t, long *L, long *R)
 {
-    long magL = -t->ar2, magR = -t->ar5;
-    long eL = -t->ar1 - magL, eR = -t->ar4 - magR;
     long sgnL = (t->sgn & 0x2L) ? -1L : 1L;
     long sgnR = (t->sgn & 0x20L) ? -1L : 1L;
     long left  = (long)(t->fxbndry & 0xFFFFUL);
     long right = (long)((t->fxbndry >> 16) & 0xFFFFUL);
 
-    walk(left,  magL, t->ar0, eL, sgnL, t->h, L);
-    walk(right, magR, t->ar6, eR, sgnR, t->h, R);
+    walk(left,  t->ar0, t->ar1, t->ar2, sgnL, t->h, L);
+    walk(right, t->ar6, t->ar4, t->ar5, sgnR, t->h, R);
 }
 
 /*

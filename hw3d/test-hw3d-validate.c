@@ -351,9 +351,20 @@ main(void)
     reset(); b.tri[0].h = 20;
  b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar2 = -131071L;
                                                 expect("the widest an 18-bit field holds", OSMGA_HW3D_E_TRISLOPE);
+    /*
+     * One row and the whole budget is accepted, and that is not slack.  The
+     * engine emits the first row where FXBNDRY put it and only steps between
+     * rows, so a trapezoid one row tall never moves however large its
+     * displacement -- measured, not assumed.  Two rows with the same
+     * displacement do move, and are refused.
+     */
     reset(); b.tri[0].h = 1;
  b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h;  b.tri[0].ar2 = -(long)lim.maxEdgeWalk;
-                                                expect("one row, the whole budget, still leaves it", OSMGA_HW3D_E_TRICROSS);
+                                                expect("one row cannot move, whatever the budget", OSMGA_HW3D_OK);
+    reset(); b.tri[0].h = 2;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h;
+ b.tri[0].ar1 = b.tri[0].ar2 = -(long)lim.maxEdgeWalk;
+                                                expect("two rows with the same, and it leaves", OSMGA_HW3D_E_TRICROSS);
     reset(); b.tri[0].h = 1;
  b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h;  b.tri[0].ar2 = -(long)lim.maxEdgeWalk - 1;
                                                 expect("one row, one past it", OSMGA_HW3D_E_TRISLOPE);
