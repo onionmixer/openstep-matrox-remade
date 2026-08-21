@@ -370,6 +370,35 @@ main(void)
     reset(); b.state.dstPitch = 0x40000001UL;
                                                 expect("a pitch that would overflow a multiply", OSMGA_HW3D_E_DSTPITCH);
 
+    /*
+     * And a pitch the engine can hold.  Measured on a G450: a pitch that is
+     * not a multiple of 32 pixels is ACCEPTED by everything and drawn
+     * somewhere else, covering as little as one per cent of what the
+     * software path covers.
+     *
+     * Two cases, because one of them would pass for the wrong reason.  The
+     * first proves the predicate is about the pitch; the second proves it is
+     * NOT about the width, which matters because a 333-pixel picture inside
+     * a 352-pixel pitch is a perfectly ordinary surface and everything
+     * downstream -- the colour reach, the depth reach, the pitch register --
+     * is driven by the pitch.
+     */
+    {
+        unsigned long keptPitch = lim.pitchBytes;
+
+        lim.pitchBytes = 1023UL * 4UL;          /* the limits agree ... */
+        reset();
+        b.state.dstWidth = 64;                  /* ... and the width is fine */
+                                                expect("a pitch that is not a multiple of 32 pixels", OSMGA_HW3D_E_DSTPITCH);
+
+        lim.pitchBytes = 352UL * 4UL;
+        reset();
+        b.state.dstWidth = 333;                 /* an unaligned WIDTH is fine */
+                                                expect("an unaligned width inside an aligned pitch", OSMGA_HW3D_OK);
+
+        lim.pitchBytes = keptPitch;
+    }
+
 
     /*
      * Colour, depth and texture laid out one after another in a single

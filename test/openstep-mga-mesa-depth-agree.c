@@ -43,6 +43,7 @@
 #include <GL/osmesa.h>
 
 extern unsigned long OSMGAMesaHookDrawn(void);
+extern unsigned long OSMGAMesaHookDeclined(void);
 extern unsigned long OSMGAMesaBufferDepthOrigin(void);
 
 /* The triangle occupies window 1.5 .. 40.5 on both axes; the comparison
@@ -129,11 +130,24 @@ clearWords(OSMesaContext ctx)
 /* Was that pass drawn by the engine?  Asked of every pass: a first pass that
  * was accelerated proves nothing about whether a later state change got the
  * hardware back. */
-static unsigned long hookMark;
+static unsigned long hookMark, declMark, declTotal;
 static void
-markBegin(void) { hookMark = OSMGAMesaHookDrawn(); }
+markBegin(void)
+{
+    hookMark = OSMGAMesaHookDrawn();
+    declMark = OSMGAMesaHookDeclined();
+}
 static int
 markAccel(void) { return OSMGAMesaHookDrawn() > hookMark; }
+/*
+ * Refusals matter as much as draws, and watching only the draws cannot tell
+ * the two failures apart.  A chooser that declined up front and a batch that
+ * was submitted, refused and then revoked both leave every later pass looking
+ * unaccelerated -- but the second lost a triangle and turned the process's
+ * acceleration off, and the first cost nothing.
+ */
+static void
+markDone(void) { declTotal += OSMGAMesaHookDeclined() - declMark; }
 
 int
 main(int argc, char **argv)
@@ -165,7 +179,24 @@ main(int argc, char **argv)
         printf("no context at %dx%d\n", W, H); return 2;
     }
     if (OSMGAMesaBufferDepthOrigin() == 0UL) {
-        printf("%dx%d: no shared depth buffer -- nothing to compare\n", W, H);
+        /*
+         * Say WHICH refusal this is.  A surface that was never taken into
+         * video memory and a surface that was taken but could not have depth
+         * are different outcomes, and printing the same line for both is how
+         * a deliberate refusal gets read as a regression.
+         *
+         * Draw once anyway: if anything reached the hook and was turned away
+         * by the kernel instead of by the chooser, the declined counter says
+         * so, and that is the difference between costing nothing and costing
+         * a triangle and the rest of the process's acceleration.
+         */
+        markBegin(); drawIt(); (void)markAccel(); markDone();
+        printf("%dx%d: no shared depth buffer.  surface origin %lu (%s), "
+               "declined %lu\n", W, H, OSMGAMesaBufferOrigin(),
+               (OSMGAMesaBufferOrigin() == 0UL)
+                   ? "no accelerated surface at all -- refused at creation"
+                   : "surface taken, depth refused",
+               declTotal);
         return 0;
     }
 
@@ -193,34 +224,35 @@ main(int argc, char **argv)
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     printf("   words holding the clear value after a clear: %ld of %ld\n",
            clearWords(ctx), (long)W * H);
-    markBegin(); drawIt(); a1 = markAccel();
+    markBegin(); drawIt(); a1 = markAccel(); markDone();
     if (!snap(snapA, ctx)) return 2;
 
     /* 2: software alone */
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     softOn();
-    markBegin(); drawIt(); a2 = markAccel();
+    markBegin(); drawIt(); a2 = markAccel(); markDone();
     softOff();
     if (!snap(snapB, ctx)) return 2;
 
     /* 3: software first, then accelerated over it */
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     softOn();
-    markBegin(); drawIt(); a3s = markAccel();
+    markBegin(); drawIt(); a3s = markAccel(); markDone();
     softOff();
-    markBegin(); drawIt(); a3h = markAccel();
+    markBegin(); drawIt(); a3h = markAccel(); markDone();
     if (!snap(mix1, ctx)) return 2;
 
     /* 4: the other order */
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    markBegin(); drawIt(); a4h = markAccel();
+    markBegin(); drawIt(); a4h = markAccel(); markDone();
     softOn();
-    markBegin(); drawIt(); a4s = markAccel();
+    markBegin(); drawIt(); a4s = markAccel(); markDone();
     softOff();
     if (!snap(mix2, ctx)) return 2;
 
     printf("   accelerated?  pass1=%d pass2=%d  pass3 sw=%d hw=%d  "
-           "pass4 hw=%d sw=%d\n", a1, a2, a3s, a3h, a4h, a4s);
+           "pass4 hw=%d sw=%d   declined=%lu\n",
+           a1, a2, a3s, a3h, a4h, a4s, declTotal);
     printf("   (pass1, pass3 hw and pass4 hw want 1; the rest want 0)\n");
 
     for (region = 0; region < (haveFar() ? 2 : 1); region++) {
@@ -273,9 +305,10 @@ main(int argc, char **argv)
 
     printf("RAW %dx%d regions=%d hwOnly=%ld swOnly=%ld lt=%ld eq=%ld gt=%ld "
            "n=%ld sum=%ld worst=%ld mix1Changed=%ld mix2Changed=%ld "
-           "mix1NotMin=%ld mix2NotMin=%ld\n",
+           "mix1NotMin=%ld mix2NotMin=%ld declined=%lu\n",
            W, H, haveFar() ? 2 : 1, hwOnly, swOnly, lt, eq, gt,
-           n, sum, worst, mix1Changed, mix2Changed, mix1NotMin, mix2NotMin);
+           n, sum, worst, mix1Changed, mix2Changed, mix1NotMin, mix2NotMin,
+           declTotal);
 
     OSMesaDestroyContext(ctx);
     return 0;

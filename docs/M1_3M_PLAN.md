@@ -178,3 +178,39 @@ displayInfo->rowBytes = r->width * f->bytesPerPixel;
 
 계획 교차검토 → 재검증 → (a) 와 (b) 코드 → 빌드 → 설치 → 재부팅 요청 →
 검증.
+
+## 8. 결과 — 유저랜드 쪽 (2026-08-21, 재부팅 전)
+
+### 검증기 (호스트/타깃 단위 시험, 재부팅 불필요)
+
+```
+ok    a pitch that is not a multiple of 32 pixels    16
+ok    an unaligned width inside an aligned pitch      0
+```
+
+기존 사례도 전부 통과한다(`all cases behave as specified (0 failing)`).
+두 번째 줄이 중요하다 — **너비에 32 를 강제하지 않았다.** 333 화소짜리
+그림이 352 화소 pitch 안에 있는 것은 정상이고, 아래의 모든 계산을 모는
+것은 pitch 다.
+
+### Mesa 쪽
+
+| 너비 | 결과 | 거절 횟수 |
+| --- | --- | --- |
+| 320, 640, 352 | **전과 완전히 같다** (커버리지 100%/100%/98%, worst 2) | 0 |
+| 333, 336, 655, 369 | `surface origin 0 — refused at creation` | **0** |
+
+**거절이 0 이라는 것이 핵심이다.** 선택기나 커널이 나중에 막았다면
+`hookDeclined` 가 올랐을 것이고, 그러면 삼각형 하나를 잃고 그 프로세스의
+가속이 통째로 꺼졌을 것이다. **생성에서 막았으므로 아무것도 제출되지
+않았고 아무것도 잃지 않았다.** 표면을 VRAM 에 잡지도, 매 프레임 미러하지도
+않는다.
+
+`OSMGAMesaHookDeclined()` 를 시험이 부르게 한 덕분에 이것을 구분할 수 있다
+— 그 전에는 "선택기가 미리 막음"과 "제출 후 거절되어 revoke" 가 똑같이
+보였다.
+
+### 남은 것
+
+커널의 검증기 backstop 은 설치했고 **재부팅 뒤에 확인한다.** 날
+클라이언트가 정렬 안 된 pitch 를 직접 제출했을 때 `E_DSTPITCH` 가 나오는지.

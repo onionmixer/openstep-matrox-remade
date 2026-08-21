@@ -133,6 +133,22 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
         b->state.dstWidth > b->state.dstPitch ||
         lim->pitchBytes / 4UL != b->state.dstPitch)
         return OSMGA_HW3D_E_DSTPITCH;
+    /*
+     * And a pitch the hardware can actually hold.
+     *
+     * Without this the engine accepts the batch and draws somewhere else --
+     * measured, it covered as little as one per cent of what the software
+     * path covered, and nothing anywhere said no.  It is refused HERE rather
+     * than only in the library because the library is not the only caller:
+     * everything the checks below promise about staying inside the window is
+     * computed from this pitch, and if the hardware is walking a different
+     * one those promises are about a picture nobody is drawing.
+     *
+     * The width is deliberately not constrained -- 333 pixels inside a pitch
+     * of 352 is a perfectly good surface.  It is the PITCH the engine walks.
+     */
+    if ((b->state.dstPitch % OSMGA_HW3D_PITCH_ALIGN) != 0UL)
+        return OSMGA_HW3D_E_DSTPITCH;
 
     if (!osmgaHW3DReach(b->state.dstorg, rows, lim->pitchBytes,
                         lim->colourStart, lim->colourEnd))

@@ -190,6 +190,20 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
      */
     if (OSMGAMesaBufferOrigin() == 0UL) return NULL;
 
+    /*
+     * And refuse a stride the engine cannot walk.
+     *
+     * The surface allocator already declines to take such a surface into
+     * video memory, so reaching here means something changed underneath --
+     * but this is the last place anything can still be said no to.  Once the
+     * triangle function is installed Mesa dispatches to it and there is no
+     * way back: a batch refused by the kernel loses that triangle for good
+     * and revokes the probe for the rest of the process.  A NULL here costs
+     * nothing at all.
+     */
+    if ((OSMGAMesaBufferStride() % OSMGA_HW3D_PITCH_ALIGN) != 0UL)
+        return NULL;
+
     /* Neither of these reaches RasterMask, so they are asked about here. */
     if (ctx->Polygon.SmoothFlag)      return NULL;
     if (ctx->Polygon.StippleFlag)     return NULL;

@@ -76,7 +76,8 @@
 #define OSMGA_HW3D_E_TEXCOORD  13
 #define OSMGA_HW3D_E_DSTSIZE   14   /* destination not inside the window */
 #define OSMGA_HW3D_E_EDGEDIV   15   /* AR0/AR6 are not the trapezoid's height */
-#define OSMGA_HW3D_E_DSTPITCH  16   /* pitch absent, too small or too wide */
+#define OSMGA_HW3D_E_DSTPITCH  16   /* pitch absent, too small, too wide,
+                                           or not a multiple of 32 pixels */
 
 /*
  * What a client may say in DWGCTL, and what the kernel says for it.
@@ -91,6 +92,29 @@
  * addressing, which would turn x and y into a flat offset and step past
  * the clip -- is outside it.
  */
+/*
+ * How coarse a destination pitch this hardware can hold, IN PIXELS.
+ *
+ * Measured on a G450 across twelve widths, with no exception: 64, 320, 352,
+ * 640 and 800 draw what the software path draws, while 322, 324, 328, 333,
+ * 336, 369 and 655 cover between one and fourteen per cent of it.  Only 32
+ * separates those two sets -- 16 fails on 336, 8 on 328, 4 on 324, 2 on 322,
+ * and 64 fails because 352 and 800 are clean without being multiples of it.
+ *
+ * X.Org's mga driver says the same in two places: mga_exa.c sets
+ * pixmapPitchAlign to 128 bytes for "sets of 32 pixels ... to cover 32bpp",
+ * and mga_dacG.c fills a rounding table whose entry for four bytes a pixel
+ * is 32.
+ *
+ * It is PIXELS and it varies with the depth -- that table reads 64, 32, 64,
+ * 32 for one through four bytes a pixel, which is 64, 64, 192 and 128 bytes,
+ * not a constant.  A byte rule cannot even describe what was measured: 336
+ * pixels is 1344 bytes, a multiple of 64, and 336 is one of the widths that
+ * failed.  This constant belongs to THIS contract, which the driver admits
+ * only at four bytes a pixel.
+ */
+#define OSMGA_HW3D_PITCH_ALIGN  32UL
+
 #define OSMGA_HW3D_DWG_CLIENT   0x0000077FUL
 #define OSMGA_HW3D_DWG_FIXED    0x000C4000UL   /* bop/trans, SHIFTZERO */
 

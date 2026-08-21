@@ -8,6 +8,7 @@
 
 #include "OpenStepMGAMesaBuffer.h"
 #include "OpenStepMGAMesaProbe.h"
+#include "OpenStepMGAHW3D.h"   /* OSMGA_HW3D_PITCH_ALIGN */
 
 extern caddr_t mmap(caddr_t, int, int, int, int, long);
 
@@ -236,6 +237,32 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
      * assuming the width would then write every row at the wrong offset.
      */
     if (appRowLength <= 0)
+        return 0;
+
+    /*
+     * A width the engine cannot walk.
+     *
+     * The destination pitch has to be a multiple of 32 pixels; measured, one
+     * that is not is accepted by everything and drawn somewhere else, and
+     * the surface covers as little as one per cent of what the software path
+     * covers.  The kernel refuses such a pitch now, and the chooser refuses
+     * to install a triangle function for one -- but refusing HERE is what
+     * stops the rest from happening at all.
+     *
+     * Without this a surface that can never be accelerated is still taken
+     * into video memory, and then the software rasteriser draws into the
+     * card across the bus and the whole thing is copied back once a frame.
+     * That is slower than plain software rendering, and it buys nothing.
+     *
+     * Refusing simply leaves OSMesa drawing into the buffer the application
+     * gave it, which is what it does without this back end at all.
+     *
+     * Asked of the ROW LENGTH rather than the width, because the row length
+     * is what becomes the surface's stride a few lines below and therefore
+     * what becomes the pitch the engine walks.  A 333-pixel picture laid out
+     * on a 352-pixel row is fine; a 333-pixel row is not.
+     */
+    if (((unsigned long)appRowLength % OSMGA_HW3D_PITCH_ALIGN) != 0UL)
         return 0;
 
     /*
