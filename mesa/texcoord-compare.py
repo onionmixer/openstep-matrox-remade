@@ -58,7 +58,10 @@ def main(path):
             y, h, left, right, t0, t1, t2, t3, t6, t7 = T
             ox = left - ax / S + 0.5
             oy = y - ay / S + 0.5
-            want = [round(udx), round(udy), round(vdx), round(vdy),
+            # floor(v + 0.5), which is what the C does -- python's round()
+            # is ties-to-even and would disagree on a .5
+            want = [math.floor(udx + 0.5), math.floor(udy + 0.5),
+                    math.floor(vdx + 0.5), math.floor(vdy + 0.5),
                     math.floor(ua + udx * ox + udy * oy + 0.5),
                     math.floor(va + vdx * ox + vdy * oy + 0.5)]
             got = [t0, t1, t2, t3, t6, t7]

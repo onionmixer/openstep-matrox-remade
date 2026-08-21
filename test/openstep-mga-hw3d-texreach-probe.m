@@ -893,20 +893,27 @@ main(void)
 
         blank();
         t = setup(64UL, 0UL, 16UL, 8UL, 0L, 0UL);   /* tmr[0] = 0 */
-        batch->state.tmr[1] = texel;                /* v per column */
-        batch->state.tmr[2] = texel;                /* u per row */
+        /*
+         * DIFFERENT values, three texels against five.  This case gave both
+         * the same value once, so either assignment of the two cross terms
+         * produced the same picture and it read as a confirmation of the
+         * wrong one.  With three and five the picture says which is which.
+         */
+        batch->state.tmr[1] = 3L * texel;
+        batch->state.tmr[2] = 5L * texel;
         batch->state.tmr[3] = 0L;
         batch->state.tmr[6] = 0L;
         batch->state.tmr[7] = 0L;
         say("u per row, v per column, on a rectangle", fire(), OSMGA_HW3D_OK);
+        printf("         TMR1 = 3 texels, TMR2 = 5 texels\n");
         printf("         column 0, rows 0..5  u =");
         for (k = 0UL; k < 6UL; k++)
             printf(" %lu", colour[k * STRIDE_DW + 0UL] & 0xFFUL);
-        printf("   (0 1 2 3 4 5 means TMR2 steps once a row)\n");
+        printf("   (0 3 6 9 12 15 means TMR1 is u per ROW)\n");
         printf("         row 0, columns 0..5  v =");
         for (k = 0UL; k < 6UL; k++)
             printf(" %lu", colour[0UL * STRIDE_DW + k] >> 8);
-        printf("   (0 1 2 3 4 5 means TMR1 steps once a column)\n");
+        printf("   (0 5 10 15 20 25 means TMR2 is v per COLUMN)\n");
     }
 
     printf("\n13. a SLOPED left edge: is x measured from the row or the anchor?\n");
@@ -991,6 +998,91 @@ main(void)
                    : ((isU ? (b5 & 0xFFUL) : (b5 >> 8)) == 35UL
                        ? "honoured" : "NOT honoured"));
         }
+    }
+
+    printf("\n15. constant, or a sample taken slightly inside the pixel?\n");
+    {
+        /*
+         * The hardware's coordinate runs about five hundred units ahead of
+         * the model.  Two explanations fit the data so far: a constant added
+         * to the coordinate, or a sample taken a fraction of a pixel inside,
+         * which would scale with the increment.  A small increment separates
+         * them: with 500 per column the first texel boundary lands at column
+         * 32 if a constant is added and at 33 if the offset is a fraction of
+         * a pixel.
+         */
+        static const long incs[3] = { 500L, 1000L, 5533L };
+        int j;
+
+        for (j = 0; j < 3; j++) {
+            OSMGAHW3DTri *t;
+            unsigned long k, first = 0UL;
+
+            blank();
+            t = setup(64UL, 0UL, 40UL, 4UL, incs[j], 0UL);
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = 0L; batch->state.tmr[7] = 0L;
+            (void)fire();
+            for (k = 0UL; k < 40UL; k++)
+                if ((colour[0UL * STRIDE_DW + k] & 0xFFUL) != 0UL) {
+                    first = k; break;
+                }
+            printf("   increment %5ld: first column with texel 1 is %lu\n",
+                   incs[j], first);
+        }
+        printf("   a constant predicts 32, 16, 3;"
+               " a fraction of a pixel predicts 33, 17, 3\n");
+    }
+
+    printf("\n16. the constant, exactly\n");
+    {
+        /*
+         * With every increment at zero the coordinate is the start and
+         * nothing else, so the start at which the texel turns over gives the
+         * constant directly: it flips when start + K reaches one texel.
+         */
+        long lo = 15000L, hi = 16400L, mid;
+        long flipU = -1L, flipV = -1L;
+        int it;
+
+        for (it = 0; it < 16 && lo < hi; it++) {
+            OSMGAHW3DTri *t;
+            unsigned long p;
+
+            mid = (lo + hi) / 2L;
+            blank();
+            t = setup(64UL, 0UL, 8UL, 4UL, 0L, 0UL);
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = mid;
+            batch->state.tmr[7] = mid;
+            (void)fire();
+            p = colour[0UL * STRIDE_DW + 0UL];
+            if ((p & 0xFFUL) != 0UL) hi = mid; else lo = mid + 1L;
+        }
+        flipU = lo;
+        lo = 15000L; hi = 16400L;
+        for (it = 0; it < 16 && lo < hi; it++) {
+            OSMGAHW3DTri *t;
+            unsigned long p;
+
+            mid = (lo + hi) / 2L;
+            blank();
+            t = setup(64UL, 0UL, 8UL, 4UL, 0L, 0UL);
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = mid;
+            batch->state.tmr[7] = mid;
+            (void)fire();
+            p = colour[0UL * STRIDE_DW + 0UL];
+            if ((p >> 8) != 0UL) hi = mid; else lo = mid + 1L;
+        }
+        flipV = lo;
+        printf("   u turns over at start %ld  ->  K = %ld\n",
+               flipU, (long)OSMGA_HW3D_TEX_SPAN / 64L - flipU);
+        printf("   v turns over at start %ld  ->  K = %ld\n",
+               flipV, (long)OSMGA_HW3D_TEX_SPAN / 64L - flipV);
     }
 
     printf("\n%s (%d failing)\n",
