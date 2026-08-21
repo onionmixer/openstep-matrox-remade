@@ -390,6 +390,49 @@ main(void)
                          b.triCount = 16;
                          for (n = 1UL; n < 16UL; n++) b.tri[n] = b.tri[0];
                                                 expect("sixteen of them, which the total catches", OSMGA_HW3D_E_TEXCOORD);
+                /* the threshold itself: eight fit, nine do not */
+                reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                         b.tri[0].h = 8; b.tri[0].ar0 = b.tri[0].ar6 = 8;
+                         b.state.tmr[0] = ident;
+                         b.state.tmr[3] = (long)(OSMGA_HW3D_TEX_COORD_MAX / 64L);
+                         b.triCount = 8;
+                         for (n = 1UL; n < 8UL; n++) b.tri[n] = b.tri[0];
+                                                expect("eight of them, which still fit", OSMGA_HW3D_OK);
+                reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                         b.tri[0].h = 8; b.tri[0].ar0 = b.tri[0].ar6 = 8;
+                         b.state.tmr[0] = ident;
+                         b.state.tmr[3] = (long)(OSMGA_HW3D_TEX_COORD_MAX / 64L);
+                         b.triCount = 9;
+                         for (n = 1UL; n < 9UL; n++) b.tri[n] = b.tri[0];
+                                                expect("nine, one past the threshold", OSMGA_HW3D_E_TEXCOORD);
+                /*
+                 * Heights that differ, chosen so that the two candidate rules
+                 * disagree: two rows and sixty-four spend 8519680 of the
+                 * budget as a sum and 8257536 as the tallest alone.  A case
+                 * where both rules agree would have proved nothing.
+                 */
+                reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                         b.tri[0].h = 2; b.tri[0].ar0 = b.tri[0].ar6 = 2;
+                         b.state.tmr[0] = ident;
+                         b.state.tmr[3] = (long)(OSMGA_HW3D_TEX_COORD_MAX / 64L);
+                         b.triCount = 2;
+                         b.tri[1] = b.tri[0];
+                         b.tri[1].h = 64; b.tri[1].ar0 = b.tri[1].ar6 = 64;
+                                                expect("two primitives of 2 and 64 rows", OSMGA_HW3D_E_TEXCOORD);
+                /*
+                 * An empty textured primitive must not throw the accumulated
+                 * height away.  It once did: the empty case fell back to the
+                 * clip for BOTH axes, so one empty primitive hid the total of
+                 * every other one -- eighty-four times short, at the cap.
+                 */
+                reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                         b.tri[0].h = 8; b.tri[0].ar0 = b.tri[0].ar6 = 8;
+                         b.state.tmr[0] = 0;    /* nothing to see horizontally */
+                         b.state.tmr[3] = (long)(OSMGA_HW3D_TEX_COORD_MAX / 64L);
+                         b.triCount = 10;
+                         for (n = 1UL; n < 10UL; n++) b.tri[n] = b.tri[0];
+                         b.tri[9].fxbndry = (7UL << 16) | 7UL;   /* empty */
+                                                expect("an empty primitive does not hide the total", OSMGA_HW3D_E_TEXCOORD);
             }
 
             /*

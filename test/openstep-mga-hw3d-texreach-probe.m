@@ -536,6 +536,130 @@ main(void)
                p1 >> 8);
     }
 
+    printf("\n8d. heights that DIFFER -- a sum, or a constant per primitive?\n");
+    {
+        /*
+         * 8b used three primitives of eight rows each, so v = 3, 11, 19 fits
+         * "the sum of their heights" and "eight per primitive" equally well.
+         * Three samples of one height cannot tell those apart.  Different
+         * heights can: 5, 11, a flat 7, then 3.
+         */
+        OSMGAHW3DTri *t;
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        unsigned long a, b2, d;
+
+        blank();
+        t = setup(1024UL, 0UL, 11UL, 5UL, texel, 0UL);
+        batch->state.tmr[6] = 5L * texel;
+        batch->state.tmr[7] = 3L * texel;
+        batch->triCount = 4UL;
+        batch->tri[1] = batch->tri[0];
+        batch->tri[1].y = 8L;  batch->tri[1].h = 11L;
+        batch->tri[1].ar0 = 11L; batch->tri[1].ar6 = 11L;
+        batch->tri[1].fxbndry = (28UL << 16) | 17UL;
+        batch->tri[2] = batch->tri[0];          /* FLAT, seven rows */
+        batch->tri[2].dwgctl = 0x0004UL | 0x0070UL;
+        batch->tri[2].y = 24L; batch->tri[2].h = 7L;
+        batch->tri[2].ar0 = 7L; batch->tri[2].ar6 = 7L;
+        batch->tri[2].fxbndry = (40UL << 16) | 29UL;
+        batch->tri[3] = batch->tri[0];
+        batch->tri[3].y = 34L; batch->tri[3].h = 3L;
+        batch->tri[3].ar0 = 3L; batch->tri[3].ar6 = 3L;
+        batch->tri[3].fxbndry = (52UL << 16) | 41UL;
+        say("four primitives, heights 5, 11, flat 7, 3", fire(), OSMGA_HW3D_OK);
+
+        a  = colour[ 0UL * STRIDE_DW +  0UL];
+        b2 = colour[ 8UL * STRIDE_DW + 17UL];
+        d  = colour[34UL * STRIDE_DW + 41UL];
+        printf("         v at the three textured firsts: %lu, %lu, %lu\n",
+               a >> 8, b2 >> 8, d >> 8);
+        printf("         a sum of heights gives 3, 8, 19;"
+               " a constant eight would give 3, 11, 19+\n");
+        if ((a >> 8) == 3UL && (b2 >> 8) == 8UL && (d >> 8) == 19UL)
+            printf("   ok    %-52s\n", "v is the sum of the textured heights");
+        else {
+            printf("   FAIL  %-52s\n", "v is the sum of the textured heights");
+            failures++;
+        }
+    }
+
+    printf("\n8e. does an EMPTY textured primitive step the accumulator?\n");
+    {
+        OSMGAHW3DTri *t;
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        unsigned long a, c2;
+
+        blank();
+        /* a narrow destination, because an empty textured primitive makes the
+         * check fall back to the clip and a 1024-wide clip would refuse the
+         * batch for a reason that has nothing to do with the question */
+        t = setup(64UL, 0UL, 11UL, 5UL, texel, 0UL);
+        batch->state.tmr[6] = 5L * texel;
+        batch->state.tmr[7] = 3L * texel;
+        batch->triCount = 3UL;
+        batch->tri[1] = batch->tri[0];          /* textured but EMPTY */
+        batch->tri[1].y = 8L;  batch->tri[1].h = 6L;
+        batch->tri[1].ar0 = 6L; batch->tri[1].ar6 = 6L;
+        batch->tri[1].fxbndry = (20UL << 16) | 20UL;
+        batch->tri[2] = batch->tri[0];
+        batch->tri[2].y = 16L; batch->tri[2].h = 4L;
+        batch->tri[2].ar0 = 4L; batch->tri[2].ar6 = 4L;
+        batch->tri[2].fxbndry = (35UL << 16) | 24UL;
+        say("textured, empty textured, textured", fire(), OSMGA_HW3D_OK);
+        a  = colour[ 0UL * STRIDE_DW +  0UL];
+        c2 = colour[16UL * STRIDE_DW + 24UL];
+        printf("         v at the first and the third: %lu, %lu\n",
+               a >> 8, c2 >> 8);
+        printf("         14 means the empty one stepped it (5 + 6);"
+               " 8 means it did not (5 only)\n");
+    }
+
+    printf("\n9. the vertical span is the batch total, not the tallest\n");
+    {
+        /*
+         * v runs on across the textured primitives, so N of them reach N
+         * times as far.  With a y gradient of a sixty-fourth of the budget
+         * per row and eight rows each, eight primitives spend 8257536 of
+         * 8388608 and nine spend 9306112: the boundary is between them, and
+         * a check that looked at the tallest alone would accept all of them.
+         */
+        static const unsigned long counts[3] = { 1UL, 8UL, 9UL };
+        static const int wantOK[3] = { 1, 1, 0 };
+        int k;
+
+        for (k = 0; k < 3; k++) {
+            unsigned long n;
+            char name[64];
+
+            blank();
+            (void)setup(1024UL, 0UL, 11UL, 8UL,
+                        (long)(OSMGA_HW3D_TEX_SPAN / DIM), 0UL);
+            batch->state.tmr[3] = (long)(OSMGA_HW3D_TEX_COORD_MAX / 64UL);
+            batch->triCount = counts[k];
+            for (n = 1UL; n < counts[k]; n++)
+                batch->tri[n] = batch->tri[0];
+            sprintf(name, "%lu textured primitives of eight rows", counts[k]);
+            say(name, fire(), wantOK[k] ? OSMGA_HW3D_OK
+                                        : OSMGA_HW3D_E_TEXCOORD);
+        }
+    }
+
+    printf("\n10. a direction bit the walk does not model\n");
+    {
+        OSMGAHW3DTri *t;
+
+        blank();
+        t = setup(1024UL, 0UL, 11UL, 8UL,
+                  (long)(OSMGA_HW3D_TEX_SPAN / DIM), 0UL);
+        t->sgn = 0x4L;
+        say("sgn bit 0x4", fire(), OSMGA_HW3D_E_TRISGN);
+        blank();
+        t = setup(1024UL, 0UL, 11UL, 8UL,
+                  (long)(OSMGA_HW3D_TEX_SPAN / DIM), 0UL);
+        t->sgn = 0x22L;
+        say("sgn bits 0x22, which it does model", fire(), OSMGA_HW3D_OK);
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;

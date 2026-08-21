@@ -118,15 +118,29 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
      * It used to be extrapolated to the last column and row of the whole
      * destination, which is not where the coordinate is defined: a probe that
      * changed nothing but the declared width saw the same 32-pixel triangle
-     * accepted at 256 and refused at 320.  And the coordinate restarts at
-     * every primitive -- measured, by drawing one textured rectangle at two
-     * different columns with the same TMR and getting the same ramp twice --
-     * so the span that matters is the primitive's own.
+     * accepted at 256 and refused at 320.
      *
-     * texEmpty is the honest fallback: a triangle with height but no columns
-     * on any row is still encoded and still executed, so there is no ground
-     * for saying it fetches nothing.  Such a batch keeps the old, wider
-     * check rather than being trusted or waved through.
+     * The two coordinates then turned out to behave differently, which is why
+     * they are tracked apart here.  Measured, in one batch, at positions that
+     * are not multiples of a texture:
+     *
+     *   u  is re-seeded at every primitive, at its own first row's left edge.
+     *      Three primitives at three different columns all began at the same
+     *      texel.
+     *   v  is NOT re-seeded.  It runs on across the TEXTURED primitives of
+     *      the batch: heights of five, eleven and three, with a flat
+     *      primitive interposed, gave first rows of 3, 8 and 19 from a start
+     *      of 3 -- the running sum of the textured heights, and the flat one
+     *      did not move it.  An EMPTY textured primitive does move it: five
+     *      drawn rows then six empty ones put the next primitive at 14.
+     *
+     * So the horizontal span is the widest primitive's and the vertical span
+     * is the batch's total.  texEmpty is a fallback for the HORIZONTAL span
+     * only: a primitive with height and no columns is still encoded and still
+     * executed, and whether it fetches at columns it never draws is not
+     * measured, so the wide clip is kept for x.  It must not be applied to y,
+     * where the total is the measured answer -- doing that let one empty
+     * primitive throw away the accumulated height of two hundred others.
      */
     unsigned long texSpanLo = 0UL, texSpanHi = 0UL, texSpanY = 0UL;
     int texEmpty = 0, texDrawn = 0;
@@ -473,11 +487,16 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
         unsigned long spanLo = 0UL, spanHi = lim->clipX1;
         unsigned long spanY = lim->clipY1;
 
+        /*
+         * Vertically the total always, because that is what was measured and
+         * an empty primitive steps the accumulator like any other.  The
+         * fallback below is horizontal only.
+         */
+        if (texSpanY > 0UL)
+            spanY = texSpanY - 1UL;     /* the accumulator's last step */
         if (texDrawn && !texEmpty) {
             spanLo = texSpanLo;
             spanHi = texSpanHi;
-            /* the accumulator's last step, so one less than the total */
-            spanY = (texSpanY > 0UL) ? texSpanY - 1UL : 0UL;
         }
         if (!osmgaHW3DCoord(b->state.tmr[6], b->state.tmr[0],
                             b->state.tmr[2], spanLo, spanHi, spanY) ||
