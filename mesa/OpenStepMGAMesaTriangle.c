@@ -123,10 +123,9 @@ osmgaStartFixed(double v)
 static int
 osmgaCoordOK(const OSMGAMesaVertex *v)
 {
-    return (v->x <=  OSMGA_MESA_RULE_COORD_MAX &&
-            v->x >= -OSMGA_MESA_RULE_COORD_MAX &&
-            v->y <=  OSMGA_MESA_RULE_COORD_MAX &&
-            v->y >= -OSMGA_MESA_RULE_COORD_MAX);
+    long lim = OSMGA_MESA_RULE_COORD_MAX * OSMGA_MESA_SUBONE;
+
+    return (v->x <= lim && v->x >= -lim && v->y <= lim && v->y >= -lim);
 }
 
 /*
@@ -151,83 +150,82 @@ osmgaCeilDiv(long a, long b)            /* b > 0 */
  * from a rounded position, which is what k0 is for.
  */
 typedef struct {
-    long xa;                    /* the edge's own start column */
-    long dee;                   /* displacement over the whole edge */
-    long height;                /* the edge's own height, not the trapezoid's */
-    long k0;                    /* rows into the edge this trapezoid starts */
+    long xa, ya;                /* 1/256 pixel: the edge's own start vertex */
+    long dee;                   /* 1/256 pixel: displacement over the edge   */
+    long height;                /* 1/256 pixel: the edge's own height        */
 } OSMGAMesaEdge;
 
+/* floor division, since C's / rounds toward zero and the numerators here are
+ * signed.  Used for quantising a coordinate down onto the chosen grid. */
+static long
+osmgaFloorDiv(long a, long b)
+{
+    long q = a / b;
+
+    if ((a % b) != 0L && ((a < 0L) != (b < 0L)))
+        q--;
+    return q;
+}
+
 /*
- * The registers for one edge.
+ * The registers for one edge, with the vertex's fraction carried.
  *
- * What the engine does, measured rather than assumed (see below):
+ * Transcribed from spec/subpixel-model.py.  With the vertex on a 1/M grid and
+ * XA, YA, DD, HH the coordinates scaled by M, the rule's boundary at sample
+ * row r is
  *
- *     a = AR1 - AR2 ;  row 0 is emitted at FXBNDRY
- *     between rows:  a += AR2 ;  while a < 0:  x += sgn ;  a += AR0
+ *     B(r) = ceil( P(r) / (2*M*HH) ),
+ *     P(r) = 2*XA*HH - M*HH + ((2r+1)*M - 2*YA)*DD
  *
- * so the column at row k is  x0 + sgn * max(0, ceil((|AR2|*k + e) / AR0))
- * with e = -AR1 - |AR2|, and row 0 always sits exactly where FXBNDRY put it.
- *
- * OpenGL samples a pixel at its centre and breaks ties top-left, so the first
- * column of a left edge at row ya+k0+k is
- *
- *     xa + ceil( (2*D*(k0+k) + D - H) / (2*H) )
- *
- * and the same expression is the right edge's boundary, which FXBNDRY treats
- * as exclusive.  Doubling AR0 and AR2 keeps the slope exactly and makes that
- * half pixel an integer -- with the pair left at the trapezoid's own height,
- * as it was, there is no integer that expresses it.
- *
- * Writing A for that numerator at this trapezoid's first row, the start
- * column is xa + ceil(A / 2H) -- which the engine emits untouched, since it
- * takes no step on row 0 -- and the error term is what is left over,
- * A - 2H*ceil(A/2H), lying in (-2H, 0].  A leftward edge needs the extra
- * turn that appears when a ceiling is negated, which is right only because
- * every edge here runs top to bottom.
- *
- * THE SIGN OF THE ERROR TERM WAS WRONG HERE ONCE, and the way it was wrong is
- * worth keeping.  The recurrence this was first built on came from a fit to
- * hardware in which AR1 was always equal to AR2 -- as it was in every batch
- * this driver had ever sent.  Under that constraint two different recurrences
- * emit identical pixels, so the fit could not choose between them, and the
- * host test walked the registers with the same wrong one and agreed with the
- * code.  The engine drew a quad whose vertical edges have no displacement at
- * all one column to the right from the second row on, which the wrong rule
- * says cannot happen, and a three-way probe then separated the candidates:
- * 8 of 8 rows for this rule against 7 and 6 for the others, and 20 of 20
- * against 11 and 1 on a control.
+ * so the start column is B at the trapezoid's first row and the error term is
+ * what is left over.  The engine is then given the HALVED scaling -- divisor
+ * 2*HH rather than 2*M*HH, with the error term divided by M and rounded up --
+ * which is exact, not approximate: the coarse ceiling equals the fine one
+ * because the half-open interval between a non-integer and the next integer
+ * above it contains no integer for a multiple of the divisor to sit in.  That
+ * halving is what buys four bits of fraction inside the kernel's edge budget
+ * instead of two.
  */
 static void
-osmgaEdgeRegs(const OSMGAMesaEdge *e,
-              long *x0, long *mag, long *dy, long *err)
+osmgaEdgeRegs(const OSMGAMesaEdge *e, long r0, long s,
+              long *x0, long *mag, long *dy, long *err, long *sgn)
 {
-    long mg = (e->dee < 0L) ? -e->dee : e->dee;
-    long den = 2L * e->height;
-    long a = 2L * e->dee * e->k0 + e->dee - e->height;
-    long q = osmgaCeilDiv(a, den);
-    long r = a - q * den;               /* in (-den, 0] */
+    long shift = OSMGA_MESA_SUBBITS - s;
+    long step = 1L << shift;
+    long M = 1L << s;
+    long XA = osmgaFloorDiv(e->xa, step);
+    long YA = osmgaFloorDiv(e->ya, step);
+    long DD = osmgaFloorDiv(e->dee, step);
+    long HH = osmgaFloorDiv(e->height, step);
+    long Q2, P0, r, e2;
 
-    *mag = 2L * mg;
-    *dy  = den;
-    *err = (e->dee >= 0L) ? r : (-r - den + 1L);
-    *x0  = e->xa + q;
+    Q2 = 2L * M * HH;
+    P0 = 2L * XA * HH - M * HH + ((2L * r0 + 1L) * M - 2L * YA) * DD;
+    *x0 = osmgaCeilDiv(P0, Q2);
+    r = P0 - (*x0) * Q2;
+    e2 = (DD >= 0L) ? r : (-r - Q2 + 1L);
+    *mag = 2L * ((DD >= 0L) ? DD : -DD);
+    *dy = 2L * HH;
+    *err = osmgaCeilDiv(e2, M);
+    *sgn = (DD >= 0L) ? 1L : -1L;
 }
 
 static void
-osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
+osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
                const OSMGAMesaEdge *le, const OSMGAMesaEdge *re,
                const OSMGAMesaVertex *flat,
                const OSMGAColourPlane *plane, const OSMGAMesaVertex *a,
                unsigned long zmode, const OSMGAColourPlane *zplane,
                unsigned long blend, const OSMGAColourPlane *aplane)
 {
-    int sdxl = (le->dee < 0L) ? 1 : 0;
-    int sdxr = (re->dee < 0L) ? 1 : 0;
-    long left, lmag, ldy, lerr;
-    long right, rmag, rdy, rerr;
+    long left, lmag, ldy, lerr, lsgn;
+    long right, rmag, rdy, rerr, rsgn;
+    int sdxl, sdxr;
 
-    osmgaEdgeRegs(le, &left,  &lmag, &ldy, &lerr);
-    osmgaEdgeRegs(re, &right, &rmag, &rdy, &rerr);
+    osmgaEdgeRegs(le, y, sub, &left,  &lmag, &ldy, &lerr, &lsgn);
+    osmgaEdgeRegs(re, y, sub, &right, &rmag, &rdy, &rerr, &rsgn);
+    sdxl = (lsgn < 0L) ? 1 : 0;
+    sdxr = (rsgn < 0L) ? 1 : 0;
 
     memset(t, 0, sizeof *t);
     t->dwgctl   = (zmode != 0UL) ? (OSMGA_TRI_DWGCTL_Z | zmode)
@@ -304,8 +302,8 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
          * polygon, it flips comparisons at ties, and with the depth test on
          * it would move coverage.  It gets its own measurement.
          */
-        double ox = (double)left - (double)a->x + 0.5;
-        double oy = (double)y    - (double)a->y + 0.5;
+        double ox = (double)left - (double)a->x / (double)OSMGA_MESA_SUBONE + 0.5;
+        double oy = (double)y    - (double)a->y / (double)OSMGA_MESA_SUBONE + 0.5;
 
         t->a0  = osmgaStartFixed(aplane->at_a + aplane->dx * ox
                                  + aplane->dy * oy);
@@ -345,8 +343,8 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
          * ill-conditioned wherever it is sampled.  A shape from the
          * introduced class is in the test, not just one from the removed.
          */
-        double ox = (double)left - (double)a->x + 0.5;
-        double oy = (double)y    - (double)a->y + 0.5;
+        double ox = (double)left - (double)a->x / (double)OSMGA_MESA_SUBONE + 0.5;
+        double oy = (double)y    - (double)a->y / (double)OSMGA_MESA_SUBONE + 0.5;
         double at = zplane->at_a + zplane->dx * ox + zplane->dy * oy;
 
         if (at < 0.0)     at = 0.0;
@@ -385,8 +383,8 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h,
          * polygon, it flips comparisons at ties, and with the depth test on
          * it would move coverage.  It gets its own measurement.
          */
-        double ox = (double)left - (double)a->x + 0.5;
-        double oy = (double)y    - (double)a->y + 0.5;
+        double ox = (double)left - (double)a->x / (double)OSMGA_MESA_SUBONE + 0.5;
+        double oy = (double)y    - (double)a->y / (double)OSMGA_MESA_SUBONE + 0.5;
         int i;
 
         for (i = 0; i < 3; i++) {
@@ -413,7 +411,7 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
     OSMGAColourPlane plane[3];
     OSMGAColourPlane zplane, aplane;
     const OSMGAMesaVertex *shade = flat;
-    long hTop, hBot, span, cross;
+    long span, cross, sub, rT, rM, rL;
     OSMGAMesaEdge longE;
     int n = 0;
 
@@ -438,8 +436,10 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
          * the two edges walk together and the engine draws the line itself,
          * which is a shape nobody asked for.
          */
-        double x1 = (double)(b->x - a->x), y1 = (double)(b->y - a->y);
-        double x2 = (double)(c->x - a->x), y2 = (double)(c->y - a->y);
+        double x1 = (double)(b->x - a->x) / (double)OSMGA_MESA_SUBONE;
+        double y1 = (double)(b->y - a->y) / (double)OSMGA_MESA_SUBONE;
+        double x2 = (double)(c->x - a->x) / (double)OSMGA_MESA_SUBONE;
+        double y2 = (double)(c->y - a->y) / (double)OSMGA_MESA_SUBONE;
 
         if (x1 * y2 - x2 * y1 == 0.0)
             return 0;
@@ -455,8 +455,10 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
     aplane.dx = aplane.dy = 0.0;
     aplane.at_a = 255.0;
     if (zmode != 0UL) {
-        double x1 = (double)(b->x - a->x), y1 = (double)(b->y - a->y);
-        double x2 = (double)(c->x - a->x), y2 = (double)(c->y - a->y);
+        double x1 = (double)(b->x - a->x) / (double)OSMGA_MESA_SUBONE;
+        double y1 = (double)(b->y - a->y) / (double)OSMGA_MESA_SUBONE;
+        double x2 = (double)(c->x - a->x) / (double)OSMGA_MESA_SUBONE;
+        double y2 = (double)(c->y - a->y) / (double)OSMGA_MESA_SUBONE;
         double den = x1 * y2 - x2 * y1;
         double d1 = (double)b->z - (double)a->z;
         double d2 = (double)c->z - (double)a->z;
@@ -486,8 +488,10 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
      * written either way, and it has to hold what the software path would
      * have put there. */
     {
-        double x1 = (double)(b->x - a->x), y1 = (double)(b->y - a->y);
-        double x2 = (double)(c->x - a->x), y2 = (double)(c->y - a->y);
+        double x1 = (double)(b->x - a->x) / (double)OSMGA_MESA_SUBONE;
+        double y1 = (double)(b->y - a->y) / (double)OSMGA_MESA_SUBONE;
+        double x2 = (double)(c->x - a->x) / (double)OSMGA_MESA_SUBONE;
+        double y2 = (double)(c->y - a->y) / (double)OSMGA_MESA_SUBONE;
         double den = x1 * y2 - x2 * y1;
         double d1 = (double)b->a - (double)a->a;
         double d2 = (double)c->a - (double)a->a;
@@ -503,8 +507,10 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
          * denominator is twice the signed area, which the caller above has
          * already established is not zero.
          */
-        double x1 = (double)(b->x - a->x), y1 = (double)(b->y - a->y);
-        double x2 = (double)(c->x - a->x), y2 = (double)(c->y - a->y);
+        double x1 = (double)(b->x - a->x) / (double)OSMGA_MESA_SUBONE;
+        double y1 = (double)(b->y - a->y) / (double)OSMGA_MESA_SUBONE;
+        double x2 = (double)(c->x - a->x) / (double)OSMGA_MESA_SUBONE;
+        double y2 = (double)(c->y - a->y) / (double)OSMGA_MESA_SUBONE;
         double denom = x1 * y2 - x2 * y1;
 
         {
@@ -547,40 +553,87 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
      * arithmetic: relying on two boundaries to come out equal is a weaker
      * thing to depend on than saying what the case is.
      */
-    cross = (lo->x - t->x) * (m->y - t->y) - (lo->y - t->y) * (m->x - t->x);
+    /*
+     * The side the middle vertex falls on, computed in WHOLE PIXELS.
+     *
+     * In 1/256 units this product overflows: a 191-row, 199-column triangle
+     * gives 2490957824, which is past the signed range, and the sign flips --
+     * measured, as a triangle drawn with its left and right edges exchanged.
+     * The coordinates reach 8192 pixels, so no 32-bit product of two
+     * differences can be exact at this scale.
+     *
+     * Reducing to whole pixels costs only triangles whose sides are decided
+     * by less than a pixel of vertex fraction.  Those have almost no area,
+     * and if one is classified the wrong way its span comes out inverted,
+     * which the kernel refuses and the software path then draws correctly.
+     */
+    cross = ((lo->x - t->x) / OSMGA_MESA_SUBONE) * ((m->y - t->y) / OSMGA_MESA_SUBONE)
+          - ((lo->y - t->y) / OSMGA_MESA_SUBONE) * ((m->x - t->x) / OSMGA_MESA_SUBONE);
     if (cross == 0L)
         return 0;
 
     /*
-     * Both trapezoids walk the ORIGINAL edges.  The lower one continues the
-     * long edge from row hTop rather than restarting from where an integer
-     * division put it, which is what used to lose a fraction of a column at
-     * the split -- and, on the shape that splits, a whole row.
+     * How much of the vertex fraction the registers can hold.
+     *
+     * The divisor is 2*(M*H) and the displacement 2*(M*|D|), and the kernel
+     * holds the displacement and the error term to its edge budget, so the
+     * binding condition is on their sum.  One value for the whole triangle,
+     * never one per edge: two edges quantising a shared vertex differently
+     * would put it in two places and open the seam the split runs along.
      */
-    longE.xa = t->x; longE.dee = lo->x - t->x; longE.height = span;
+    sub = OSMGA_MESA_SUBBITS;
+    while (sub > 0L) {
+        long step = 1L << (OSMGA_MESA_SUBBITS - sub);
+        long worst = 0L;
+        int i2, j2;
 
-    hTop = m->y - t->y;
-    if (hTop > 0L) {
+        for (i2 = 0; i2 < 3; i2++)
+            for (j2 = 0; j2 < 3; j2++) {
+                const OSMGAMesaVertex *p = (i2 == 0) ? t : ((i2 == 1) ? m : lo);
+                const OSMGAMesaVertex *q = (j2 == 0) ? t : ((j2 == 1) ? m : lo);
+                long dd = (q->x - p->x) / step, hh = (q->y - p->y) / step;
+
+                if (dd < 0L) dd = -dd;
+                if (hh < 0L) hh = -hh;
+                if (2L * dd > worst) worst = 2L * dd;
+                if (2L * (dd + hh) > worst) worst = 2L * (dd + hh);
+            }
+        if (worst <= (long)OSMGA_HW3D_EDGE_WALK) break;
+        sub--;
+    }
+
+    /*
+     * Which rows belong to which trapezoid, in SAMPLE ROW space rather than
+     * in vertex coordinates: row r belongs where r + 1/2 falls.  With a
+     * fractional vertex the first row and the height are no longer the
+     * vertex's own numbers, which is the thing that made this rewrite
+     * necessary in the first place.
+     */
+    rT = osmgaCeilDiv(t->y  - OSMGA_MESA_SUBONE / 2L, OSMGA_MESA_SUBONE);
+    rM = osmgaCeilDiv(m->y  - OSMGA_MESA_SUBONE / 2L, OSMGA_MESA_SUBONE);
+    rL = osmgaCeilDiv(lo->y - OSMGA_MESA_SUBONE / 2L, OSMGA_MESA_SUBONE);
+
+    longE.xa = t->x; longE.ya = t->y;
+    longE.dee = lo->x - t->x; longE.height = lo->y - t->y;
+
+    if (rM > rT && m->y > t->y) {
         OSMGAMesaEdge shortE;
 
-        shortE.xa = t->x; shortE.dee = m->x - t->x;
-        shortE.height = hTop; shortE.k0 = 0L;
-        longE.k0 = 0L;
-        osmgaTrapezoid(&out[n], t->y, hTop,
+        shortE.xa = t->x; shortE.ya = t->y;
+        shortE.dee = m->x - t->x; shortE.height = m->y - t->y;
+        osmgaTrapezoid(&out[n], rT, rM - rT, sub,
                        (cross < 0L) ? &longE : &shortE,
                        (cross < 0L) ? &shortE : &longE,
                        shade, plane, a, zmode, &zplane, blend, &aplane);
         n++;
     }
 
-    hBot = lo->y - m->y;
-    if (hBot > 0L) {
+    if (rL > rM && lo->y > m->y) {
         OSMGAMesaEdge shortE;
 
-        shortE.xa = m->x; shortE.dee = lo->x - m->x;
-        shortE.height = hBot; shortE.k0 = 0L;
-        longE.k0 = hTop;
-        osmgaTrapezoid(&out[n], m->y, hBot,
+        shortE.xa = m->x; shortE.ya = m->y;
+        shortE.dee = lo->x - m->x; shortE.height = lo->y - m->y;
+        osmgaTrapezoid(&out[n], rM, rL - rM, sub,
                        (cross < 0L) ? &longE : &shortE,
                        (cross < 0L) ? &shortE : &longE,
                        shade, plane, a, zmode, &zplane, blend, &aplane);

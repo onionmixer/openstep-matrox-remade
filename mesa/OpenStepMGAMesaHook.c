@@ -87,6 +87,25 @@ static float hookLastWin[3][3];
 #define OSMGA_COORD_SNAP  (1.0 / 512.0)     /* 2x the ULP at 8192  */
 #define OSMGA_DEPTH_SNAP  (1.0 / 32.0)      /* 4x the ULP at 65535 */
 
+/*
+ * Coordinates now go over as fixed point, in 1/256 of a pixel, because the
+ * back end can carry some of the fraction and throwing it away costs five per
+ * cent of a triangle's area.
+ *
+ * Rounding to the nearest 1/256 subsumes the bounded snap above for x and y:
+ * the noise measured on an intended-integer coordinate tops out at fifteen
+ * millionths, which is a long way inside half a step, so an integer still
+ * arrives as an exact multiple of 256.  Depth keeps the snap, since it is a
+ * whole number to the engine and has its own, larger, noise.
+ */
+static long
+osmgaFix(double v)
+{
+    if (!(v > -1.0e30) || !(v < 1.0e30))
+        return 0L;
+    return (long)floor(v * (double)OSMGA_MESA_SUBONE + 0.5);
+}
+
 static double
 osmgaSnap(double v, double eps)
 {
@@ -179,10 +198,8 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         hookLastWin[nwin][1] = (float)VB->Win.data[idx][1];              \
         hookLastWin[nwin][2] = (float)VB->Win.data[idx][2];              \
         nwin = (nwin + 1) % 3;                                           \
-        (dst).x = (long)osmgaSnap((double)VB->Win.data[idx][0],          \
-                                  OSMGA_COORD_SNAP);                     \
-        (dst).y = (long)osmgaSnap((double)VB->Win.data[idx][1],          \
-                                  OSMGA_COORD_SNAP);                     \
+        (dst).x = osmgaFix((double)VB->Win.data[idx][0]);                \
+        (dst).y = osmgaFix((double)VB->Win.data[idx][1]);                \
         (dst).z = (unsigned long)((zsnap =                               \
                       osmgaSnap((double)VB->Win.data[idx][2],            \
                                 OSMGA_DEPTH_SNAP)) < 0.0 ? 0.0 : zsnap); \

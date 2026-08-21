@@ -18,8 +18,23 @@
 
 #include "../hw3d/OpenStepMGAHW3D.h"
 
+/*
+ * Vertex coordinates are FIXED POINT, in units of 1/256 of a pixel.
+ *
+ * They used to be whole pixels, and the fraction was thrown away on the way
+ * in.  Measured, that cost five per cent of a triangle's area on fractional
+ * geometry -- and worse, float noise on a coordinate meant to be integral
+ * could drop a whole row.  Carrying the fraction here lets the back end
+ * choose, per triangle, how much of it the engine's registers can hold.
+ *
+ * The model this is transcribed from is spec/subpixel-model.py, which is
+ * checked against the geometric rule and against the old integer behaviour.
+ */
+#define OSMGA_MESA_SUBBITS  8L
+#define OSMGA_MESA_SUBONE   (1L << OSMGA_MESA_SUBBITS)
+
 typedef struct {
-    long x, y;                  /* pixels, in the destination's own space */
+    long x, y;                  /* 1/256 pixel, in the destination's space */
     unsigned long r, g, b, a;   /* 0..255 */
     unsigned long z;            /* 0..65535; ignored unless a z mode is asked */
 } OSMGAMesaVertex;

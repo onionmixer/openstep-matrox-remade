@@ -179,11 +179,15 @@ pick(long n)
     return (long)((seed >> 16) % (unsigned long)n);
 }
 
+/* The builder takes 1/256-pixel coordinates now; this test speaks whole
+ * pixels, so it scales.  Integer input through the fixed-point path is
+ * exactly the case that must not have changed. */
 static void
 vert(OSMGAMesaVertex *v, long x, long y)
 {
     memset(v, 0, sizeof *v);
-    v->x = x; v->y = y; v->g = 255UL; v->a = 255UL;
+    v->x = x * OSMGA_MESA_SUBONE; v->y = y * OSMGA_MESA_SUBONE;
+    v->g = 255UL; v->a = 255UL;
 }
 
 int
@@ -262,7 +266,11 @@ main(int argc, char **argv)
             }
             for (y = 0; y < H; y++) {
                 long rlo = 0, rhi = 0;
-                int want = ruleSpan(a.x, a.y, b.x, b.y, c.x, c.y, y, &rlo, &rhi);
+                /* the rule speaks whole pixels; the vertices are 1/256 now */
+                int want = ruleSpan(a.x / OSMGA_MESA_SUBONE, a.y / OSMGA_MESA_SUBONE,
+                                    b.x / OSMGA_MESA_SUBONE, b.y / OSMGA_MESA_SUBONE,
+                                    c.x / OSMGA_MESA_SUBONE, c.y / OSMGA_MESA_SUBONE,
+                                    y, &rlo, &rhi);
 
                 totRow++;
                 if (want && gotAny[y] && rlo == gotLo[y] && rhi == gotHi[y])
@@ -273,7 +281,9 @@ main(int argc, char **argv)
                 if (shown < 8) {
                     printf("   (%ld,%ld) (%ld,%ld) (%ld,%ld)  row %ld: "
                            "rule %s%ld..%ld%s  builder %s%ld..%ld%s\n",
-                           a.x, a.y, b.x, b.y, c.x, c.y, y,
+                           a.x / OSMGA_MESA_SUBONE, a.y / OSMGA_MESA_SUBONE,
+                           b.x / OSMGA_MESA_SUBONE, b.y / OSMGA_MESA_SUBONE,
+                           c.x / OSMGA_MESA_SUBONE, c.y / OSMGA_MESA_SUBONE, y,
                            want ? "" : "(", rlo, rhi, want ? "" : ")",
                            gotAny[y] ? "" : "(", gotLo[y], gotHi[y],
                            gotAny[y] ? "" : ")");
@@ -307,11 +317,16 @@ main(int argc, char **argv)
 
             for (y2 = 0; y2 < H; y2++) {
                 long q0 = 0, q1 = 0;
-                if (ruleSpan(a.x, a.y, b.x, b.y, c.x, c.y, y2, &q0, &q1)) rows++;
+                if (ruleSpan(a.x / OSMGA_MESA_SUBONE, a.y / OSMGA_MESA_SUBONE,
+                             b.x / OSMGA_MESA_SUBONE, b.y / OSMGA_MESA_SUBONE,
+                             c.x / OSMGA_MESA_SUBONE, c.y / OSMGA_MESA_SUBONE,
+                             y2, &q0, &q1)) rows++;
             }
             printf("   corpus (%3ld,%3ld) (%3ld,%3ld) (%3ld,%3ld): "
                    "%ld trapezoid(s), %ld rows in the rule%s\n",
-                   a.x, a.y, b.x, b.y, c.x, c.y, n, rows,
+                   a.x / OSMGA_MESA_SUBONE, a.y / OSMGA_MESA_SUBONE,
+                   b.x / OSMGA_MESA_SUBONE, b.y / OSMGA_MESA_SUBONE,
+                   c.x / OSMGA_MESA_SUBONE, c.y / OSMGA_MESA_SUBONE, n, rows,
                    thisBad ? "   <-- DIFFERS" : "");
         }
         if (thisBad) badTri++;
