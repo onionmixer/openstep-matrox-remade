@@ -371,9 +371,41 @@ if (ctx != 0 && bufCtx != 0 && bufCtx != ctx)
 `ctx == 0` 은 언제나 놓는다 — fork 정리(`OpenStepMGAMesaProbe.c:223`)가 그것에
 기대고, 경우 4 가 그것을 지킨다.
 
-경우 3 의 **프로세스 죽음은 따로 고칠 것이 아니다**: B 가 A 의 매핑을 놓지
-않게 되면 A 의 `DepthBuffer` 가 살아 있고, 그 free 가 일어나지 않는다.
-다시 시험해서 확인한다.
+### 죽음이 정확히 어디서 났는가 (전수로 확인)
+
+Mesa 에서 깊이 버퍼를 `FREE` 하는 곳은 **딱 둘**이다:
+
+| 곳 | 조건 |
+| --- | --- |
+| `depth.c:1583` `_mesa_alloc_depth_buffer` | `UseSoftwareDepthBuffer` 일 때만 |
+| `context.c:359` `gl_destroy_framebuffer` | **무조건** |
+
+두 번째는 이미 막혀 있다 — `osmesa.c:323` 이 우리 매핑이면 `DepthBuffer` 를
+먼저 `NULL` 로 놓고 부른다.
+
+그러면 경우 3 은 어디서 죽었나. 추적하면 **바꿔치기 그 자리**다:
+
+```c
+/* osmesa.c:477 */
+if (ctx->gl_buffer->DepthBuffer)
+    FREE( ctx->gl_buffer->DepthBuffer );      /* <- 여기 */
+ctx->gl_buffer->DepthBuffer = accelDepth;
+```
+
+B 가 파괴되며 A 의 매핑을 해제한다 → A 를 다시 current 로 만들면 표면을
+새로 잡고 깊이도 새로 잡는다 → 그런데 **A 의 `DepthBuffer` 는 아직 해제된
+매핑을 가리킨다** → 그것을 `FREE` 한다 → 힙이 아니다.
+
+**고침 3 이 이 경로를 막는다**(B 가 A 의 매핑을 안 놓으므로). 다만 그 줄은
+**남은 포인터가 힙에서 왔다고 가정한다.** 그러니 함께 굳힌다:
+
+```c
+if (ctx->gl_buffer->DepthBuffer && ctx->gl_buffer->UseSoftwareDepthBuffer)
+    FREE( ctx->gl_buffer->DepthBuffer );
+```
+
+한 사례가 아니라 **그 부류를 닫는다.** 되돌리기(고침 2)도 같은 이유로
+`DepthBuffer = NULL` 을 먼저 놓는다.
 
 ### 안 하는 것
 
