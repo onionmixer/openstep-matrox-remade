@@ -207,6 +207,13 @@ main(int argc, char **argv)
      */
     unsigned long argDstBytes = 0UL;
     int argZorgLow = 0;
+    /*
+     * argv[11]: make the trial triangle address depth, with zorg wherever
+     * argv[10] put it.  The other half of the depth predicate: the negative
+     * case (a low zorg on a batch that never touches depth) has been shown
+     * not to provoke a read, and this is the positive one.
+     */
+    int argZI = 0;
     IODeviceMaster *master;
     IOObjectNumber objNum;
     IOString kind;
@@ -246,6 +253,8 @@ main(int argc, char **argv)
         argDstBytes = (unsigned long)atoi(argv[9]);
     if (argc > 10)
         argZorgLow = atoi(argv[10]);
+    if (argc > 11)
+        argZI = atoi(argv[11]);
     if (argc > 8) {
         /* "auto" is the driver's own default and cannot be written as a
          * small number, so it gets a word of its own. */
@@ -604,6 +613,19 @@ main(int argc, char **argv)
         batch->state.dstPitch  = 1024UL;
         texState(batch);
         rect(&batch->tri[0], 0UL, DIM, DWG_TEX);
+        /*
+         * AFTER rect(), which clears the triangle and sets dwgctl itself.
+         * Put before it, as this was at first, it is silently undone -- the
+         * count did not move and it looked like the driver's depth branch
+         * was dead when nothing had ever asked it anything.
+         */
+        if (argZI) {
+            /* TRAP with atype ZI and no depth comparison, the shape the
+             * depth client uses; the texture opcode is dropped so no texture
+             * state has to be valid for this. */
+            batch->tri[0].dwgctl = 0x4UL | (0x3UL << 4);
+            batch->tri[0].z0 = 0x7000UL << 15;
+        }
 
         /*
          * Twice through, in one process.
