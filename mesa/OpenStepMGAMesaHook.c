@@ -43,6 +43,19 @@ static unsigned long hookUnsupported;
  */
 static unsigned long hookVerdictCount[OSMGA_MESA_VERDICTS];
 static OSMGAMesaRefusal hookLastRefusal;
+
+/*
+ * The window coordinates of the last triangle, as floats, BEFORE the cast
+ * below turns them into integers.
+ *
+ * Recorded because reasoning about them failed: a triangle came out 83 pixels
+ * too large and I refused the "a coordinate landed below its integer" theory
+ * by recomputing Mesa's viewport transform myself.  Mesa multiplies a matrix
+ * and I evaluated an algebraically equal expression, which is not the same
+ * arithmetic; the vertex really had arrived one row low.  This makes the
+ * question answerable by looking instead of deriving.
+ */
+static float hookLastWin[3][3];
 #define OSMGA_MESA_REFUSAL_LIMIT  8UL
 /*
  * The software triangle function, and the context it belongs to.
@@ -95,6 +108,7 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     OSMGAHW3DSubmitBlock res;
     OSMGAMesaVertex a, b, c, prov;
     unsigned long zmode, blend;
+    int nwin;
     int n;
 
     if (batch == 0) {
@@ -108,6 +122,10 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
 
 #define OSMGA_LOAD(dst, idx)                                             \
     do {                                                                 \
+        hookLastWin[nwin][0] = (float)VB->Win.data[idx][0];              \
+        hookLastWin[nwin][1] = (float)VB->Win.data[idx][1];              \
+        hookLastWin[nwin][2] = (float)VB->Win.data[idx][2];              \
+        nwin = (nwin + 1) % 3;                                           \
         (dst).x = (long)VB->Win.data[idx][0];                            \
         (dst).y = (long)VB->Win.data[idx][1];                            \
         (dst).z = (unsigned long)VB->Win.data[idx][2];                   \
@@ -117,6 +135,7 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         (dst).a = (unsigned long)VB->ColorPtr->data[idx][3];             \
     } while (0)
 
+    nwin = 0;
     OSMGA_LOAD(a, v0);
     OSMGA_LOAD(b, v1);
     OSMGA_LOAD(c, v2);
@@ -534,6 +553,13 @@ OpenStepMesaAccelUpdateState(GLcontext *ctx, int rowLength, int yUp)
             ctx->Driver.Clear = osmgaMesaClear;
         }
     }
+}
+
+/* The three window coordinates the last triangle arrived with, unrounded. */
+double OSMGAMesaHookLastWin(unsigned long v, unsigned long c)
+{
+    if (v > 2UL || c > 2UL) return 0.0;
+    return (double)hookLastWin[v][c];
 }
 
 unsigned long OSMGAMesaHookDrawn(void)    { return hookDrawn; }
