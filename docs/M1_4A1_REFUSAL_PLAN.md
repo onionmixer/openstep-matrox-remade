@@ -159,3 +159,44 @@ h = 768, |ar2| = 768
    시험의 경계 사례도 함께 고친다**(지금 값들은 잘못된 모델을 굳히고 있다).
 3. **커널을 느슨하게 하는 것이 아니다.** 의도된 한계는 그대로 16384 이고,
    구현이 그 의도와 어긋나 있던 것을 맞추는 것이다.
+
+
+## 8. 실기가 확인했다 (2026-08-21)
+
+진단만 넣고(동작 변경 없이) 대체 시험을 돌렸다:
+
+```
+refusals by verdict: [10]=2                       <- E_TRISLOPE, 두 번
+last refusal: status 22 verdict 10, trapezoid 0 of 1, surface 320x240
+   y=4 h=236 ar0=236 ar2=0 ar5=-179 ar6=236 fxbndry=00780078
+   travel 179: against the limit itself inside, against limit/h (69) OUTSIDE
+```
+
+**읽어서 얻은 답 그대로다.** 236 행에 179 화소 움직이는 평범한 사다리꼴이,
+한계 자체(16384)에는 한참 못 미치는데 `limit/h`(69) 에만 걸려 거절됐다.
+`status 22` 는 `EINVAL` — 검증 거절이므로 대체 경로가 넘긴 것도 옳았다.
+
+## 9. 고쳤다
+
+검사를 `sl > maxEdgeWalk / h` 에서 `sl > maxEdgeWalk` 로 바꿨다.
+
+**커널을 느슨하게 만든 것이 아니다.** 의도된 한계는 그대로 16384 이고,
+`ar2` 가 총 변위이므로 **변이 걷는 거리를 묶는 것은 그 값 자체**다. 봉쇄는
+여전히 선다 — 변은 클립 안에서 시작해 그만큼만 움직인다.
+
+**검증기 시험도 함께 옮겼다.** 그 시험들은 같은 잘못된 모델을 담고 있어서
+(`maxEdgeWalk / 20`) 통과해도 전제를 보증하지 못했다. 그리고 실기가 거절한
+그 모양을 사례로 넣었다 — 하네스의 한계가 64 행이라 그 사례만 표면 크기를
+넓혔다. **재현 못 하는 시험은 고쳤다는 증거가 못 된다.**
+
+```
+ok    slope at the walk limit                        0
+ok    a tall triangle with an ordinary edge          0     <- 실기가 거절하던 것
+ok    slope one past the limit                       10
+ok    right edge past the limit                      10
+ok    one row past the limit                         10
+all cases behave as specified (0 failing)
+```
+
+설치 16:00. **재부팅 뒤 확인할 것**: 같은 시험에서 `declined 0`, 그리고
+그 삼각형이 소프트웨어가 아니라 **가속으로** 그려지는가.

@@ -30,6 +30,7 @@ extern unsigned long OSMGAMesaHookDrawn(void);
 extern unsigned long OSMGAMesaHookDeclined(void);
 extern unsigned long OSMGAMesaHookSoftware(void);
 extern unsigned long OSMGAMesaHookUnsupported(void);
+#include "../mesa/OpenStepMGAMesaHook.h"
 extern unsigned long OSMGAMesaBufferOrigin(void);
 
 #define W       320
@@ -127,6 +128,49 @@ main(void)
            OSMGAMesaHookDrawn() - d0, OSMGAMesaHookSoftware() - s0,
            OSMGAMesaHookUnsupported() - u0, OSMGAMesaHookDeclined() - x0);
     printf("   green %ld (was %ld), red %ld\n", both, nearOnly, farPixels);
+
+    /*
+     * Say WHY, not just how many.  The submission block carries the
+     * validator's verdict and the trapezoid it named, and this file used to
+     * print neither -- so a refusal in an ordinary scene could be counted and
+     * not explained.
+     */
+    {
+        const OSMGAMesaRefusal *r = OSMGAMesaHookLastRefusal();
+        unsigned long v;
+
+        printf("   refusals by verdict:");
+        for (v = 0UL; v < OSMGA_MESA_VERDICTS; v++)
+            if (OSMGAMesaHookVerdictCount(v) != 0UL)
+                printf(" [%lu]=%lu", v, OSMGAMesaHookVerdictCount(v));
+        printf("\n");
+        if (r->verdict != 0UL || r->status != 0UL) {
+            long h = r->tri.h;
+            long ar2 = r->tri.ar2, ar5 = r->tri.ar5;
+            long a2 = (ar2 < 0L) ? -ar2 : ar2;
+            long a5 = (ar5 < 0L) ? -ar5 : ar5;
+            long worst = (a2 > a5) ? a2 : a5;
+
+            printf("   last refusal: status %lu verdict %lu, trapezoid %lu "
+                   "of %lu, surface %lux%lu\n", r->status, r->verdict,
+                   r->triangle, r->triCount, r->dstWidth, r->dstHeight);
+            printf("      y=%ld h=%ld ar0=%ld ar2=%ld ar5=%ld ar6=%ld "
+                   "fxbndry=%08lx\n", r->tri.y, h, r->tri.ar0, ar2, ar5,
+                   r->tri.ar6, r->tri.fxbndry);
+            /*
+             * The two readings of the edge limit, side by side.  The value in
+             * ar2/ar5 is the edge's TOTAL horizontal travel -- X.Org writes
+             * dx there and dy in ar0 -- so the distance walked is that value,
+             * while the kernel's test multiplies it by the height.
+             */
+            if (h > 0L)
+                printf("      travel %ld: against the limit itself %s, "
+                       "against limit/h (%ld) %s\n", worst,
+                       (worst <= 16384L) ? "inside" : "OUTSIDE",
+                       16384L / h,
+                       (worst <= 16384L / h) ? "inside" : "OUTSIDE");
+        }
+    }
 
     if (OSMGAMesaHookSoftware() - s0 == 0UL) {
         printf("FAIL -- nothing was handed to software; the back end either "

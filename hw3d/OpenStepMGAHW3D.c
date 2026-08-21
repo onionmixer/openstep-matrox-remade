@@ -254,7 +254,32 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
             if (s1 > sl) sl = s1;
             if (s4 > sr) sr = s4;
             if (sr > sl) sl = sr;
-            if (h != 0UL && sl > lim->maxEdgeWalk / h)
+            /*
+             * The value IS the travel; it must not be multiplied by the
+             * height again.
+             *
+             * AR2 and AR5 hold an edge's total horizontal displacement over
+             * AR0/AR6 rows -- X.Org's own trapezoid setup writes dx into one
+             * and dy into the other -- so the distance an edge walks across
+             * a triangle is that number, and dividing the budget by the
+             * height made the test stricter by a factor of the height.
+             *
+             * It refused ordinary work.  Measured: a triangle Mesa had
+             * clipped to a 320x240 surface, 236 rows tall with an edge moving
+             * 179 pixels, was turned away because 179 exceeds 16384/236.  On
+             * that surface nothing taller than 51 rows could have an edge
+             * crossing the screen.  The constant's own comment gives "a
+             * 768-row edge at one pixel per row is 768" as an example of
+             * something far inside the limit, and the old form refused that
+             * too -- 768 against 16384/768.
+             *
+             * Bounding the displacement still bounds the excursion, which is
+             * what the check is for: an edge starts inside the clip and moves
+             * at most this far, so containment does not rest on the clip
+             * alone.
+             */
+            (void)h;
+            if (sl > lim->maxEdgeWalk)
                 return OSMGA_HW3D_E_TRISLOPE;
         }
         /*

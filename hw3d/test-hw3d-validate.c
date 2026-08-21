@@ -287,18 +287,50 @@ main(void)
              b.tri[2].y = lim.clipY1 + 1;       expect("a bad triangle late in the batch", OSMGA_HW3D_E_TRIROW);
 
     printf("edge slopes -- bounded so containment does not rest on the clip alone\n");
+    /*
+     * These used to divide the budget by the height, which encoded the same
+     * mistake the validator made: AR2 is the edge's whole displacement, not
+     * its displacement per row, so the height has no business in the bound.
+     * The tests moved with the fix, and the case below that a real Mesa
+     * triangle failed is now among them.
+     */
     reset(); b.tri[0].h = 20;
- b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar2 = -(long)(lim.maxEdgeWalk / 20);
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar2 = -(long)lim.maxEdgeWalk;
                                                 expect("slope at the walk limit", OSMGA_HW3D_OK);
     reset(); b.tri[0].h = 20;
- b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar2 = -(long)(lim.maxEdgeWalk / 20) - 1;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar2 = -(long)lim.maxEdgeWalk - 1;
                                                 expect("slope one past the limit", OSMGA_HW3D_E_TRISLOPE);
     reset(); b.tri[0].h = 20;
- b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar5 = (long)(lim.maxEdgeWalk / 20) + 1;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar5 = (long)lim.maxEdgeWalk + 1;
                                                 expect("right edge past the limit", OSMGA_HW3D_E_TRISLOPE);
     reset(); b.tri[0].h = 20;
- b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar1 = -(long)(lim.maxEdgeWalk / 20) - 1;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar1 = -(long)lim.maxEdgeWalk - 1;
                                                 expect("ar1 carries the slope too", OSMGA_HW3D_E_TRISLOPE);
+    /*
+     * The shape that was refused on hardware: 236 rows, an edge moving 179
+     * pixels.  Nothing about it is unusual, and the old bound turned it away.
+     *
+     * The limits here describe a 64-row surface, which is smaller than the
+     * shape, so they are widened for this one case -- the height has to be
+     * over about 91 for the old bound to bite at 179 pixels at all, and a
+     * case that cannot reproduce the fault cannot show it fixed.
+     */
+    {
+        unsigned long keepY = lim.clipY1, keepX = lim.clipX1;
+        unsigned long keepP = lim.pitchBytes;
+
+        lim.clipY1 = 239; lim.clipX1 = 319; lim.pitchBytes = 320UL * 4UL;
+        reset(); b.tri[0].y = 4; b.tri[0].h = 236;
+        b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h;
+        b.tri[0].ar5 = -179L;
+        b.tri[0].fxbndry = (120UL << 16) | 120UL;
+                                                expect("a tall triangle with an ordinary edge", OSMGA_HW3D_OK);
+        lim.clipY1 = keepY; lim.clipX1 = keepX; lim.pitchBytes = keepP;
+    }
+    /* And the height still must not buy extra travel. */
+    reset(); b.tri[0].h = 1;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar2 = -(long)lim.maxEdgeWalk - 1;
+                                                expect("one row past the limit", OSMGA_HW3D_E_TRISLOPE);
     reset(); b.tri[0].h = 20;
  b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar2 = -131071L;
                                                 expect("the widest an 18-bit field holds", OSMGA_HW3D_E_TRISLOPE);

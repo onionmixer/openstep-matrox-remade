@@ -11,6 +11,8 @@
 #ifndef OPENSTEP_MGA_MESA_HOOK_H
 #define OPENSTEP_MGA_MESA_HOOK_H
 
+#include "OpenStepMGAHW3D.h"   /* OSMGAHW3DTri */
+
 struct gl_context;
 
 /*
@@ -45,5 +47,27 @@ unsigned long OSMGAMesaHookSoftware(void);
 /* Of those, the ones this back end could not express at all -- as opposed to
  * the ones the kernel refused. */
 unsigned long OSMGAMesaHookUnsupported(void);
+
+/*
+ * What the kernel said about a batch it would not run.
+ *
+ * The verdict is the validator's; the status is what the submission itself
+ * came to.  They are not the same question -- a verdict of OK with a failing
+ * status means validation passed and the trouble came after the engine had
+ * the work, which is the one case that must not be drawn again.
+ */
+#define OSMGA_MESA_VERDICTS 24
+
+typedef struct {
+    unsigned long status;       /* 0, or errno-like */
+    unsigned long verdict;      /* OSMGA_HW3D_OK or an E_ code */
+    unsigned long triangle;     /* which trapezoid, as this back end made them */
+    unsigned long triCount;     /* how many were in the batch */
+    unsigned long dstWidth, dstHeight;
+    OSMGAHW3DTri  tri;          /* a copy of the one that was named */
+} OSMGAMesaRefusal;
+
+unsigned long OSMGAMesaHookVerdictCount(unsigned long verdict);
+const OSMGAMesaRefusal *OSMGAMesaHookLastRefusal(void);
 
 #endif /* OPENSTEP_MGA_MESA_HOOK_H */

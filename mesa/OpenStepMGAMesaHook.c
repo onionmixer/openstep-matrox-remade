@@ -18,6 +18,7 @@
 #include "OpenStepMGAMesaProbe.h"
 #include "OpenStepMGAMesaTriangle.h"
 #include "OpenStepMGAMesaBuffer.h"
+#include "OpenStepMGAMesaHook.h"
 
 
 static unsigned long hookDrawn;
@@ -29,6 +30,19 @@ static unsigned long hookRefusedRun;
 /* Counted apart, because "this back end cannot express it" and "the kernel
  * refused the batch" are different things to have to fix. */
 static unsigned long hookUnsupported;
+
+/*
+ * Why the kernel turned a batch away, kept rather than counted and thrown.
+ *
+ * The submission block already carries the answer and this file was
+ * discarding it, so a refusal in an ordinary scene could only be counted, not
+ * explained.  Per verdict, because keeping one sample shows the first refusal
+ * and hides every different one after it; and one full copy of the trapezoid
+ * that was named, because the index alone identifies a shape this back end
+ * generated rather than anything the caller drew.
+ */
+static unsigned long hookVerdictCount[OSMGA_MESA_VERDICTS];
+static OSMGAMesaRefusal hookLastRefusal;
 #define OSMGA_MESA_REFUSAL_LIMIT  8UL
 /*
  * The software triangle function, and the context it belongs to.
@@ -181,6 +195,16 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
 
     if (OSMGAMesaProbeSubmit(&res) != 0) {
         hookDeclined++;
+        if (res.verdict < OSMGA_MESA_VERDICTS)
+            hookVerdictCount[res.verdict]++;
+        hookLastRefusal.status   = res.status;
+        hookLastRefusal.verdict  = res.verdict;
+        hookLastRefusal.triangle = res.triangle;
+        hookLastRefusal.triCount = batch->triCount;
+        hookLastRefusal.dstWidth  = batch->state.dstWidth;
+        hookLastRefusal.dstHeight = batch->state.dstHeight;
+        if (res.triangle < batch->triCount)
+            hookLastRefusal.tri = batch->tri[res.triangle];
         /*
          * Whether this may be drawn again is not a matter of taste.
          *
@@ -516,3 +540,11 @@ unsigned long OSMGAMesaHookDrawn(void)    { return hookDrawn; }
 unsigned long OSMGAMesaHookDeclined(void) { return hookDeclined; }
 unsigned long OSMGAMesaHookSoftware(void) { return hookSoftware; }
 unsigned long OSMGAMesaHookUnsupported(void) { return hookUnsupported; }
+unsigned long OSMGAMesaHookVerdictCount(unsigned long v)
+{
+    return (v < OSMGA_MESA_VERDICTS) ? hookVerdictCount[v] : 0UL;
+}
+const OSMGAMesaRefusal *OSMGAMesaHookLastRefusal(void)
+{
+    return &hookLastRefusal;
+}
