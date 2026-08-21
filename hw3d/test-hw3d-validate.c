@@ -331,6 +331,15 @@ main(void)
     reset(); b.tri[0].h = 1;
  b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar2 = -(long)lim.maxEdgeWalk - 1;
                                                 expect("one row past the limit", OSMGA_HW3D_E_TRISLOPE);
+    /* The most negative long.  Taking its magnitude is undefined, which is
+     * why the check compares against the bound and its negation instead; a
+     * client can send this and the kernel has to survive it. */
+    reset(); b.tri[0].h = 20;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar2 = -2147483647L - 1L;
+                                                expect("the most negative long", OSMGA_HW3D_E_TRISLOPE);
+    reset(); b.tri[0].h = 20;
+ b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar4 = -2147483647L - 1L;
+                                                expect("the same in ar4", OSMGA_HW3D_E_TRISLOPE);
     reset(); b.tri[0].h = 20;
  b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar2 = -131071L;
                                                 expect("the widest an 18-bit field holds", OSMGA_HW3D_E_TRISLOPE);

@@ -238,48 +238,37 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
             return OSMGA_HW3D_E_TRIROW;
         if ((unsigned long)t->h > lim->clipY1 + 1UL - (unsigned long)t->y)
             return OSMGA_HW3D_E_TRIROW;
-        {   /* How far the two edges can travel over this triangle.  ar1
-             * and ar4 carry the same slope with the error term folded in,
-             * so take whichever is larger of each pair. */
-            unsigned long h = (unsigned long)t->h;
-            unsigned long sl = (t->ar2 < 0L) ? (unsigned long)(-t->ar2)
-                                             : (unsigned long)t->ar2;
-            unsigned long s1 = (t->ar1 < 0L) ? (unsigned long)(-t->ar1)
-                                             : (unsigned long)t->ar1;
-            unsigned long sr = (t->ar5 < 0L) ? (unsigned long)(-t->ar5)
-                                             : (unsigned long)t->ar5;
-            unsigned long s4 = (t->ar4 < 0L) ? (unsigned long)(-t->ar4)
-                                             : (unsigned long)t->ar4;
-
-            if (s1 > sl) sl = s1;
-            if (s4 > sr) sr = s4;
-            if (sr > sl) sl = sr;
+        {
             /*
-             * The value IS the travel; it must not be multiplied by the
-             * height again.
+             * How far each edge may travel across this triangle.
              *
              * AR2 and AR5 hold an edge's total horizontal displacement over
              * AR0/AR6 rows -- X.Org's own trapezoid setup writes dx into one
-             * and dy into the other -- so the distance an edge walks across
-             * a triangle is that number, and dividing the budget by the
-             * height made the test stricter by a factor of the height.
+             * and dy into the other -- so the distance an edge walks is that
+             * number.  It used to be compared against the budget divided by
+             * the height, which bounds the displacement TIMES the height and
+             * is stricter by a factor of it.  Measured on hardware: a
+             * triangle Mesa had clipped to a 320x240 surface, 236 rows tall
+             * with an edge moving 179 pixels, was refused because 179 exceeds
+             * 16384/236.  The constant's own comment offers "a 768-row edge
+             * at one pixel per row is 768" as comfortably inside the limit,
+             * and the old form refused that too.
              *
-             * It refused ordinary work.  Measured: a triangle Mesa had
-             * clipped to a 320x240 surface, 236 rows tall with an edge moving
-             * 179 pixels, was turned away because 179 exceeds 16384/236.  On
-             * that surface nothing taller than 51 rows could have an edge
-             * crossing the screen.  The constant's own comment gives "a
-             * 768-row edge at one pixel per row is 768" as an example of
-             * something far inside the limit, and the old form refused that
-             * too -- 768 against 16384/768.
+             * Compared against the bound AND ITS NEGATION rather than by
+             * taking a magnitude, for the reason this file already gives
+             * where texture increments are checked: negating the most
+             * negative long is undefined, and every one of these comes from
+             * a client.
              *
-             * Bounding the displacement still bounds the excursion, which is
-             * what the check is for: an edge starts inside the clip and moves
-             * at most this far, so containment does not rest on the clip
-             * alone.
+             * AR1 and AR4 carry the same displacement with the edge
+             * accumulator's error term folded in, so they are bounded too.
              */
-            (void)h;
-            if (sl > lim->maxEdgeWalk)
+            long lim2 = (long)lim->maxEdgeWalk;
+
+            if (t->ar2 > lim2 || t->ar2 < -lim2 ||
+                t->ar5 > lim2 || t->ar5 < -lim2 ||
+                t->ar1 > lim2 || t->ar1 < -lim2 ||
+                t->ar4 > lim2 || t->ar4 < -lim2)
                 return OSMGA_HW3D_E_TRISLOPE;
         }
         /*
