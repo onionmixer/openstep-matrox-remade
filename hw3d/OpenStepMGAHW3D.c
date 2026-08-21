@@ -28,83 +28,42 @@ osmgaHW3DReach(unsigned long org, unsigned long rows, unsigned long stride,
     return 1;
 }
 
+
 /*
- * Is the coordinate non-negative and within the reach we have measured, over
- * every pixel the primitive draws?  Written as divisions so no product can
- * overflow.
+ * One row of the engine's edge walk, and the ONLY copy of the recurrence.
  *
- * The x domain is [-spanLo, +spanHi] and not [0, spanX], because the
- * coordinate is anchored at the primitive's FIRST ROW'S left edge -- measured,
- * by drawing a triangle whose left edge opens leftward and reading the texels
- * along its bottom row: with a start of thirty-two texels the pixels came out
- * 1, 32 and 39, which is the start plus (x minus that first left edge), and
- * not the 41, 63, 63 a screen-anchored coordinate would have given.  A left
- * edge that later moves left therefore has pixels at NEGATIVE offsets, and
- * checking only from the box's own left would have hidden them.
+ * The rule is measured, not fitted: between rows a += AR2, and while a is
+ * negative x steps by the sign and a += AR0.  It used to be written out twice
+ * in this file and once in the builder, and when the fitted version turned out
+ * to be wrong all three were wrong together and the tests agreed with them.
+ * Two passes over a triangle now share this.
+ *
+ * Returns 0 when an edge leaves the rectangle, which is the caller's cue to
+ * refuse: the check is inside the loop because it is also what bounds the
+ * number of steps.
  */
 static int
-osmgaHW3DCoord(long start, long incX, long incY,
-               unsigned long spanLo, unsigned long spanHi, unsigned long spanY)
+osmgaHW3DStep(const OSMGAHW3DTri *t, long *lx, long *rx,
+              long *lacc, long *racc, long lsgn, long rsgn,
+              unsigned long clipX1)
 {
-    long room = (long)OSMGA_HW3D_TEX_COORD_MAX;
-    unsigned long spanX = spanLo + spanHi;
-    long cx, cy, base, v;
-
-    /*
-     * The start is itself a point of the domain, so the corners cannot all be
-     * in range unless it is: refusing it here adds no restriction, and it
-     * keeps every sum below inside a signed long whatever the client sent.
-     */
-    if (start < 0L || start > room)
-        return 0;
-
-    /*
-     * The coordinate is a plane, so it is monotone in x and in y and its
-     * extremes over the rectangle are at the four corners.  Checking those
-     * settles every pixel between them.
-     *
-     * Increments used to be required non-negative, which was a bound from
-     * when only increasing coordinates had been measured -- and it refused
-     * roughly half of all real texture mapping, since a triangle whose
-     * texture runs the other way across the screen has a negative gradient
-     * and is in no way exotic.  Sign is allowed now; staying inside the
-     * range is what is still required.
-     *
-     * The displacement across a span is checked before it is formed, and by
-     * comparing against a bound and its negation rather than by taking the
-     * increment's magnitude: negating the most negative long is undefined,
-     * and a client supplies these.  That is not merely to avoid overflow: if it exceeds the whole legal range
-     * then the values at the two ends differ by more than that range, so one
-     * of them lies outside it whatever the start may be.  Having refused
-     * that, every term below is at most the range plus a span, and three of
-     * them together stay well inside a signed long.
-     */
-    if (spanX != 0UL) {
-        long bound = room / (long)spanX;
-
-        if (incX > bound || incX < -bound)
+    *lacc += t->ar2;
+    while (*lacc < 0L) {
+        *lx += lsgn;
+        *lacc += t->ar0;
+        if (*lx < 0L || (unsigned long)*lx > clipX1 + 1UL)
             return 0;
     }
-    if (spanY != 0UL) {
-        long bound = room / (long)spanY;
-
-        if (incY > bound || incY < -bound)
-            return 0;
-    }
-
-    cx = incX * (long)spanX;
-    cy = incY * (long)spanY;
-    /* Move the origin to the leftmost pixel drawn, so the four corners below
-     * are the corners of the domain the primitive really has. */
-    base = start - incX * (long)spanLo;
-    for (v = 0L; v < 4L; v++) {
-        long at = base + ((v & 1L) ? cx : 0L) + ((v & 2L) ? cy : 0L);
-
-        if (at < 0L || at > room)
+    *racc += t->ar5;
+    while (*racc < 0L) {
+        *rx += rsgn;
+        *racc += t->ar6;
+        if (*rx < 0L || (unsigned long)*rx > clipX1 + 1UL)
             return 0;
     }
     return 1;
 }
+
 
 int
 osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
@@ -145,7 +104,7 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
      */
     unsigned long texSpanLo = 0UL, texSpanHi = 0UL, texSpanY = 0UL;
     unsigned long texMaxH = 0UL;
-    int texDrawn = 0;
+    int texDrawn = 0, texBad = 0;
 
     if (badTri != 0)
         *badTri = 0UL;
@@ -410,22 +369,10 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                 bx0 = lx; bx1 = lx; haveBox = 0;
             }
             for (row = 0L; row < t->h; row++) {
-                if (row > 0L) {
-                    lacc += t->ar2;
-                    while (lacc < 0L) {
-                        lx += lsgn;
-                        lacc += t->ar0;
-                        if (lx < 0L || (unsigned long)lx > lim->clipX1 + 1UL)
-                            return OSMGA_HW3D_E_TRICROSS;
-                    }
-                    racc += t->ar5;
-                    while (racc < 0L) {
-                        rx += rsgn;
-                        racc += t->ar6;
-                        if (rx < 0L || (unsigned long)rx > lim->clipX1 + 1UL)
-                            return OSMGA_HW3D_E_TRICROSS;
-                    }
-                }
+                if (row > 0L &&
+                    !osmgaHW3DStep(t, &lx, &rx, &lacc, &racc, lsgn, rsgn,
+                                   lim->clipX1))
+                    return OSMGA_HW3D_E_TRICROSS;
                 if (lx > rx)
                     return OSMGA_HW3D_E_TRICROSS;
                 /*
@@ -454,6 +401,96 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                         drewSome = 1;
                 }
             }
+            if (opcode == OSMGA_HW3D_OPCODE_TEX && haveBox && !texBad) {
+                /*
+                 * The coordinate, over the pixels this primitive actually
+                 * draws.
+                 *
+                 * It used to be read at the four corners of the bounding
+                 * rectangle, and a primitive is not its rectangle: the first
+                 * real textured triangle drawn through this driver was refused
+                 * because a negative dv/dx put v at -56742 in the corner above
+                 * its widest row, where the triangle has no pixel at all.  Over
+                 * the 4410 pixels it does draw, v ran from 8615 to 1027632 --
+                 * inside the range with room to spare.
+                 *
+                 * Within a row the coordinate is linear in x, so its extremes
+                 * there are at the two ends of the span; over every row, that
+                 * is exact for the whole primitive.  Checked against a brute
+                 * force over sixty thousand random trapezoids.
+                 *
+                 * The increments are bounded first, against THIS primitive's
+                 * own extent rather than the surface's -- bounding them
+                 * against the surface is the mistake this replaces.  A
+                 * gradient that moves the coordinate by more than the whole
+                 * permitted range across the primitive is refused, whether or
+                 * not the two axes would have cancelled: that bound is what
+                 * keeps every sum below inside a long, and no texture mapping
+                 * this back end offers comes near it.
+                 */
+                long ex = bx1 - bx0, ey = t->h - 1L;
+                long vy = texSpanY + ey;    /* v's row index runs on */
+                long room = (long)OSMGA_HW3D_TEX_COORD_MAX;
+
+                if ((ex > 0L && (b->state.tmr[0] > room / ex ||
+                                 b->state.tmr[0] < -(room / ex) ||
+                                 b->state.tmr[1] > room / ex ||
+                                 b->state.tmr[1] < -(room / ex))) ||
+                    (ey > 0L && (b->state.tmr[2] > room / ey ||
+                                 b->state.tmr[2] < -(room / ey))) ||
+                    (vy > 0L && (b->state.tmr[3] > room / vy ||
+                                 b->state.tmr[3] < -(room / vy))))
+                    texBad = 1;
+                else {
+                    long ux, vx2, ly, ry;
+                    int boxOK = 1;
+                    long k;
+
+                    /*
+                     * The cheap answer first.  The box contains every pixel
+                     * the primitive draws, so a coordinate that stays in
+                     * range over the box stays in range over the pixels --
+                     * and then there is nothing to walk.  Only when the box
+                     * says no is the exact walk needed, which is the case the
+                     * box is wrong about.
+                     */
+                    for (k = 0L; k < 4L; k++) {
+                        long dx = (k & 1L) ? (bx1 - lx0) : (bx0 - lx0);
+                        long dy = (k & 2L) ? ey : 0L;
+
+                        ux  = b->state.tmr[6] + b->state.tmr[0] * dx
+                              + b->state.tmr[2] * dy;
+                        vx2 = b->state.tmr[7] + b->state.tmr[1] * dx
+                              + b->state.tmr[3] * (texSpanY + dy);
+                        if (ux < 0L || ux > room || vx2 < 0L || vx2 > room)
+                            boxOK = 0;
+                    }
+                    if (boxOK)
+                        goto texDone;
+
+                    lx = (long)left; rx = (long)right;
+                    lacc = t->ar1 - t->ar2;
+                    racc = t->ar4 - t->ar5;
+                    for (row = 0L; row < t->h; row++) {
+                        if (row > 0L)
+                            (void)osmgaHW3DStep(t, &lx, &rx, &lacc, &racc,
+                                                lsgn, rsgn, lim->clipX1);
+                        if (lx >= rx)
+                            continue;           /* no pixel on this row */
+                        ux  = b->state.tmr[6] + b->state.tmr[0] * (lx - lx0)
+                              + b->state.tmr[2] * row;
+                        vx2 = b->state.tmr[7] + b->state.tmr[1] * (lx - lx0)
+                              + b->state.tmr[3] * (texSpanY + row);
+                        ly = ux + b->state.tmr[0] * (rx - 1L - lx);
+                        ry = vx2 + b->state.tmr[1] * (rx - 1L - lx);
+                        if (ux < 0L || ux > room || ly < 0L || ly > room ||
+                            vx2 < 0L || vx2 > room || ry < 0L || ry > room)
+                            texBad = 1;
+                    }
+                }
+              texDone: ;
+            }
+
             if (opcode == OSMGA_HW3D_OPCODE_TEX) {
                 /*
                  * v does not restart at a primitive; it runs on.
@@ -544,10 +581,18 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
             spanLo = texSpanLo;
             spanHi = texSpanHi;
         }
-        if (!osmgaHW3DCoord(b->state.tmr[6], b->state.tmr[0],
-                            b->state.tmr[2], spanLo, spanHi, spanUY) ||
-            !osmgaHW3DCoord(b->state.tmr[7], b->state.tmr[1],
-                            b->state.tmr[3], spanLo, spanHi, spanY)) {
+        /*
+         * The starts bound the arithmetic above whether or not any pixel
+         * samples them, so they are held to the range here; everything else
+         * was decided per row, over the pixels that exist.
+         */
+        if (b->state.tmr[6] < -(long)OSMGA_HW3D_TEX_COORD_MAX ||
+            b->state.tmr[6] > (long)OSMGA_HW3D_TEX_COORD_MAX ||
+            b->state.tmr[7] < -(long)OSMGA_HW3D_TEX_COORD_MAX ||
+            b->state.tmr[7] > (long)OSMGA_HW3D_TEX_COORD_MAX)
+            texBad = 1;
+        (void)spanLo; (void)spanHi; (void)spanUY; (void)spanY;
+        if (texBad) {
             if (badTri != 0)
                 *badTri = 0UL;
             return OSMGA_HW3D_E_TEXCOORD;

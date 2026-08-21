@@ -58,12 +58,20 @@ main(int argc, char **argv)
     b.state.texorg = lim.texStart;
     b.state.texW = 64; b.state.texH = 64; b.state.texPitch = 64;
     b.state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
-    b.state.tmr[0] = 0x4000; b.state.tmr[3] = 0x4000;
+    b.state.tmr[0] = 4L; b.state.tmr[3] = 4L;   /* gentle, so the
+                                                * batch is accepted and
+                                                * every row is walked */
 
     for (i = 0; i < (long)OSMGA_HW3D_MAX_TRI; i++) {
         OSMGAHW3DTri *t = &b.tri[i];
 
-        t->dwgctl = 0x4UL | (0x7UL << 4);
+        /*
+         * TEXTURED, because the coordinate work this measures only happens for
+         * a textured primitive.  With a plain TRAP the test walked the edges
+         * and reported a cost that had nothing to do with the check it was
+         * meant to bound.
+         */
+        t->dwgctl = OSMGA_HW3D_OPCODE_TEX | (0x7UL << 4);
         t->alphactrl = 0x0101UL;
         t->y = 0; t->h = 1200;
         /* left edge crosses the whole width over the whole height */
