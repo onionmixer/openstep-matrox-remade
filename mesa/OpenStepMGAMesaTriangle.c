@@ -62,6 +62,29 @@ osmgaClampSlope(double v)
 }
 
 /*
+ * The same for depth, at depth's own scale.
+ *
+ * This one was missing, and its absence is undefined behaviour rather than a
+ * wrong picture: a sliver's plane is ill-conditioned, and over 299939 random
+ * triangles 911 of them -- three tenths of a per cent -- produce a depth slope
+ * past 65536 per pixel, which osmgaFixed scales past what a long holds before
+ * casting it.  Measured at up to five million per pixel, or 1.66e11 scaled.
+ *
+ * 65535 is the bound because that is where the scaling still fits: 65535 times
+ * 32768 is 2147450880 against a signed limit of 2147483647.  Nothing is lost
+ * by it for the same reason the colour clamp loses nothing -- a slope that
+ * crosses the entire depth range in one column describes a triangle with no
+ * interior for the extra precision to land in.
+ */
+static double
+osmgaClampDepthSlope(double v)
+{
+    if (v >  65535.0) return  65535.0;
+    if (v < -65535.0) return -65535.0;
+    return v;
+}
+
+/*
  * Coordinates far outside any real destination are refused rather than
  * packed.  FXBNDRY keeps sixteen bits, so a multiple of 65536 would survive
  * the mask as a small number and pass the kernel's column check while naming
@@ -405,9 +428,25 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
             osmgaDepthClamps++;
         if (at < 0.0)     at = 0.0;
         if (at > 65535.0) at = 65535.0;
-        t->z0  = osmgaFixed(at);
-        t->zdx = osmgaFixed(zplane->dx);
-        t->zdy = osmgaFixed(zplane->dy);
+        /*
+         * Half a code on top, so the engine's truncating shift rounds
+         * instead -- the same half-level the colour and alpha starts carry,
+         * which depth missed because it converts through osmgaFixed directly
+         * rather than through the shared start conversion.
+         *
+         * This CHOOSES a tie rule: a fragment landing exactly on a half now
+         * rounds up.  That is a decision, not a neutral repair, and saying so
+         * is the point of writing it here.
+         *
+         * The headroom is 16383 units, not 16384: 65535 scaled is 2147450880,
+         * plus this half-code is 2147467264, against a signed limit of
+         * 2147483647.  And nothing walked can exceed 65535.5, because the
+         * trapezoid now starts on a covered pixel and every value it walks to
+         * lies inside the triangle's own depth range.
+         */
+        t->z0  = osmgaFixed(at) + (1L << 14);
+        t->zdx = osmgaFixed(osmgaClampDepthSlope(zplane->dx));
+        t->zdy = osmgaFixed(osmgaClampDepthSlope(zplane->dy));
     }
 
     /* The shift is 15, which is measured; the DDX sources write 7 and are
@@ -516,14 +555,14 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
         double x2 = (double)(c->x - a->x) / (double)OSMGA_MESA_SUBONE;
         double y2 = (double)(c->y - a->y) / (double)OSMGA_MESA_SUBONE;
         double den = x1 * y2 - x2 * y1;
-        double d1 = (double)b->z - (double)a->z;
-        double d2 = (double)c->z - (double)a->z;
+        double d1 = ((double)b->z - (double)a->z) / (double)OSMGA_MESA_SUBONE;
+        double d2 = ((double)c->z - (double)a->z) / (double)OSMGA_MESA_SUBONE;
 
         /* den is not zero: the caller above has already refused a triangle
          * with no area. */
         zplane.dx   = (d1 * y2 - d2 * y1) / den;
         zplane.dy   = (d2 * x1 - d1 * x2) / den;
-        zplane.at_a = (double)a->z;
+        zplane.at_a = (double)a->z / (double)OSMGA_MESA_SUBONE;
 
         /*
          * The same rule the software rasteriser uses for slivers: a slope

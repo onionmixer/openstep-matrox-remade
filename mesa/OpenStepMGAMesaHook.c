@@ -201,8 +201,8 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         (dst).x = osmgaFix((double)VB->Win.data[idx][0]);                \
         (dst).y = osmgaFix((double)VB->Win.data[idx][1]);                \
         (dst).z = (unsigned long)((zsnap =                               \
-                      osmgaSnap((double)VB->Win.data[idx][2],            \
-                                OSMGA_DEPTH_SNAP)) < 0.0 ? 0.0 : zsnap); \
+                      (double)osmgaFix((double)VB->Win.data[idx][2]))     \
+                          < 0.0 ? 0.0 : zsnap);                           \
         (dst).r = (unsigned long)VB->ColorPtr->data[idx][0];             \
         (dst).g = (unsigned long)VB->ColorPtr->data[idx][1];             \
         (dst).b = (unsigned long)VB->ColorPtr->data[idx][2];             \

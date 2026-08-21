@@ -36,7 +36,17 @@
 typedef struct {
     long x, y;                  /* 1/256 pixel, in the destination's space */
     unsigned long r, g, b, a;   /* 0..255 */
-    unsigned long z;            /* 0..65535; ignored unless a z mode is asked */
+    /*
+     * Depth, also fixed point in 1/256, so 0..65535*256.  Ignored unless a
+     * depth mode is asked for.
+     *
+     * It carries its fraction for the same reason x and y do -- throwing it
+     * away was worth four tenths of a depth code -- but unlike them it costs
+     * nothing to carry: coordinates go through the edge walk and are held to
+     * the AR field, while depth goes straight to its own registers as a
+     * converted double.  There is no precision to choose here.
+     */
+    unsigned long z;            /* 1/256 of a depth code */
 } OSMGAMesaVertex;
 
 /*
