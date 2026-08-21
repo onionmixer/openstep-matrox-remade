@@ -54,6 +54,20 @@ mmap((caddr_t)addr, ..., OSMGAMesaProbeDeviceFd(),
 포인터가 틀린 곳을 가리킨다.** 지금 아무도 그걸 읽지 않아서 안 드러났을
 수 있다.
 
+**그리고 그 포인터는 그냥 굴러다니는 것이 아니다.** Mesa 가 그것을
+`ctx->gl_buffer->DepthBuffer` 에 꽂는다:
+
+```c
+/* opennstep-mesa342/.../osmesa.c:476 */
+ctx->gl_buffer->DepthBuffer = accelDepth;
+ctx->gl_buffer->UseSoftwareDepthBuffer = GL_FALSE;
+```
+
+소프트웨어 래스터라이저는 폴백할 때 그 버퍼를 **읽고 쓴다.** 오프셋이
+무시된다면 소프트 경로의 깊이 쓰기와 `glClear(GL_DEPTH_BUFFER_BIT)` 가
+**색 표면 위에 떨어진다.** 아직 안 드러난 것은 지금까지 시험이 하드웨어
+경로만 탔기 때문일 수 있다.
+
 그리고 "창의 첫 페이지를 안 내준다" 같은 고침은 전부 이것에 기댄다.
 
 **재는 법**
