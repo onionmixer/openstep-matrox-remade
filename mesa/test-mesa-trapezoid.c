@@ -117,6 +117,54 @@ spansOf(const OSMGAHW3DTri *t, long *L, long *R)
     walk(right, magR, t->ar6, eR, sgnR, t->h, R);
 }
 
+/*
+ * And the kernel has to accept what the builder writes.  Covering the rule is
+ * only half of it: the validator used to demand that the edge divisor equal
+ * the trapezoid's height, which is exactly what this encoding stopped doing,
+ * so a builder that draws correctly and is refused has fixed nothing.
+ */
+static OSMGAHW3DLimits vlim;
+static OSMGAHW3DBatch  vbatch;
+
+static void
+limitsFor(long w, long h)
+{
+    memset(&vlim, 0, sizeof vlim);
+    vlim.clipX1 = (unsigned long)w - 1UL;
+    vlim.clipY1 = (unsigned long)h - 1UL;
+    vlim.pitchBytes = (unsigned long)w * 4UL;
+    vlim.colourStart = 4UL * 1024UL * 1024UL;
+    vlim.colourEnd   = vlim.colourStart + (unsigned long)(w * h) * 4UL;
+    vlim.depthStart  = vlim.colourEnd;
+    vlim.depthEnd    = vlim.depthStart + (unsigned long)(w * h) * 2UL;
+    vlim.texStart    = vlim.depthEnd;
+    vlim.texEnd      = vlim.texStart + 1024UL * 1024UL;
+    vlim.batchBytes  = OSMGA_HW3D_BATCH_BYTES;
+    vlim.maxEdgeWalk = 16384UL;
+}
+
+static int
+validateThese(const OSMGAHW3DTri *tri, long n, unsigned long *badTri)
+{
+    long k;
+
+    memset(&vbatch, 0, sizeof vbatch);
+    vbatch.magic = OSMGA_HW3D_MAGIC;
+    vbatch.version = OSMGA_HW3D_VERSION;
+    vbatch.triCount = (unsigned long)n;
+    vbatch.state.dstorg = vlim.colourStart;
+    vbatch.state.dstPitch = vlim.pitchBytes / 4UL;
+    vbatch.state.dstWidth = vlim.clipX1 + 1UL;
+    vbatch.state.dstHeight = vlim.clipY1 + 1UL;
+    vbatch.state.zorg = vlim.depthStart;
+    vbatch.state.texorg = vlim.texStart;
+    vbatch.state.texW = 64; vbatch.state.texH = 64; vbatch.state.texPitch = 64;
+    vbatch.state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
+    vbatch.state.tmr[0] = 0x4000; vbatch.state.tmr[3] = 0x4000;
+    for (k = 0; k < n; k++) vbatch.tri[k] = tri[k];
+    return osmgaHW3DValidate(&vbatch, &vlim, badTri);
+}
+
 static unsigned long seed = 20260821UL;
 static long
 pick(long n)
@@ -137,7 +185,7 @@ main(int argc, char **argv)
 {
     long rounds = (argc > 1) ? atol(argv[1]) : 400L;
     long i, badTri = 0, badRow = 0, totRow = 0, unsupported = 0;
-    long shown = 0;
+    long shown = 0, shownV = 0, refused = 0;
 
     /*
      * Random integer vertices almost never share a y, so the shapes that
@@ -161,6 +209,7 @@ main(int argc, char **argv)
     };
     long nfixed = (long)(sizeof fixed / sizeof fixed[0]);
 
+    limitsFor(W, H);
     printf("builder output vs the OpenGL rule, %ld random plus a fixed corpus\n\n",
            rounds);
 
@@ -226,6 +275,21 @@ main(int argc, char **argv)
             }
         }
         (void)off;
+        if (n > 0) {
+            unsigned long bt = 0;
+            int v = validateThese(tri, n, &bt);
+
+            if (v != OSMGA_HW3D_OK) {
+                refused++;
+                if (shownV < 6) {
+                    printf("   REFUSED %d: (%ld,%ld) (%ld,%ld) (%ld,%ld) "
+                           "trap %lu  h=%ld ar0=%ld ar6=%ld\n",
+                           v, a.x, a.y, b.x, b.y, c.x, c.y, bt,
+                           tri[bt].h, tri[bt].ar0, tri[bt].ar6);
+                    shownV++;
+                }
+            }
+        }
         /*
          * Say what the fixed corpus actually exercised.  A degenerate shape
          * and an empty rule agree for free, and a corpus that passes for
@@ -250,8 +314,9 @@ main(int argc, char **argv)
            badTri, rounds + nfixed);
     printf("   rows that differ               : %ld of %ld\n", badRow, totRow);
     printf("   refused as unsupported         : %ld\n", unsupported);
-    printf("\n%s\n", badTri == 0
-           ? "the builder covers exactly what the rule asks for"
-           : "the builder does NOT cover what the rule asks for");
-    return badTri == 0 ? 0 : 1;
+    printf("   refused by the kernel validator: %ld\n", refused);
+    printf("\n%s\n", (badTri == 0 && refused == 0)
+           ? "the builder covers the rule exactly and the kernel takes it"
+           : "the builder does NOT cover the rule, or the kernel refuses it");
+    return (badTri == 0 && refused == 0) ? 0 : 1;
 }

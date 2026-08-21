@@ -294,9 +294,17 @@ main(void)
      * The tests moved with the fix, and the case below that a real Mesa
      * triangle failed is now among them.
      */
+    /*
+     * These two used to be accepted, and that was the hole.  A displacement
+     * of sixteen thousand columns across a rectangle sixty-four wide leaves
+     * it on the first row; the bound said the number was allowed and left
+     * containment to the clip registers.  The walk now says where the edge
+     * actually goes, so the answer is a refusal, and the bound below still
+     * does its own job of catching the value before the walk starts.
+     */
     reset(); b.tri[0].h = 20;
  b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar2 = -(long)lim.maxEdgeWalk;
-                                                expect("slope at the walk limit", OSMGA_HW3D_OK);
+                                                expect("slope at the walk limit leaves the rectangle", OSMGA_HW3D_E_TRICROSS);
     reset(); b.tri[0].h = 20;
  b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar2 = -(long)lim.maxEdgeWalk - 1;
                                                 expect("slope one past the limit", OSMGA_HW3D_E_TRISLOPE);
@@ -345,7 +353,7 @@ main(void)
                                                 expect("the widest an 18-bit field holds", OSMGA_HW3D_E_TRISLOPE);
     reset(); b.tri[0].h = 1;
  b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h;  b.tri[0].ar2 = -(long)lim.maxEdgeWalk;
-                                                expect("one row, the whole budget", OSMGA_HW3D_OK);
+                                                expect("one row, the whole budget, still leaves it", OSMGA_HW3D_E_TRICROSS);
     reset(); b.tri[0].h = 1;
  b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h;  b.tri[0].ar2 = -(long)lim.maxEdgeWalk - 1;
                                                 expect("one row, one past it", OSMGA_HW3D_E_TRISLOPE);
@@ -365,7 +373,39 @@ main(void)
                                                 expect("a zero left-edge divisor", OSMGA_HW3D_E_EDGEDIV);
     reset(); b.tri[0].h = 8;
  b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h; b.tri[0].ar6 = 4;
-                                                expect("a divisor that is not the height", OSMGA_HW3D_E_EDGEDIV);
+                                                expect("a divisor that is not the height", OSMGA_HW3D_OK);
+    reset(); b.tri[0].ar0 = -1;
+                                                expect("a negative left-edge divisor", OSMGA_HW3D_E_EDGEDIV);
+    reset(); b.tri[0].ar6 = -1;
+                                                expect("a negative right-edge divisor", OSMGA_HW3D_E_EDGEDIV);
+    /*
+     * Displacements are written negated, always, with SGN carrying the
+     * direction.  A positive one would have its magnitude taken as a
+     * negative number by the walk below.
+     */
+    reset(); b.tri[0].ar2 = 4;
+                                                expect("a positive left displacement", OSMGA_HW3D_E_TRISLOPE);
+    reset(); b.tri[0].ar5 = 4;
+                                                expect("a positive right displacement", OSMGA_HW3D_E_TRISLOPE);
+    /*
+     * Two edges whose first and last rows are in order, crossing in between.
+     * Bounding each edge's travel on its own cannot see this: the difference
+     * of two monotone sequences is not monotone.  Here the left edge starts
+     * at 0 and advances a column a row while the right edge stands at 4, so
+     * they are in order for four rows and reversed after.
+     */
+    reset(); b.tri[0].h = 8;
+ b.tri[0].ar0 = b.tri[0].ar6 = 1;
+ b.tri[0].fxbndry = (4UL << 16) | 0UL;
+ b.tri[0].ar1 = b.tri[0].ar2 = -1;
+                                                expect("edges that cross partway down", OSMGA_HW3D_E_TRICROSS);
+    /*
+     * The same walk, going the other way, off the left of the rectangle.
+     */
+    reset(); b.tri[0].h = 4;
+ b.tri[0].ar0 = b.tri[0].ar6 = 1;
+ b.tri[0].ar1 = b.tri[0].ar2 = -1; b.tri[0].sgn = 0x2;
+                                                expect("an edge that walks off the rectangle", OSMGA_HW3D_E_TRICROSS);
     reset(); b.tri[0].h = 8;
  b.tri[0].ar0 = b.tri[0].ar6 = b.tri[0].h;
                                                 expect("divisors that are the height", OSMGA_HW3D_OK);

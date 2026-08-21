@@ -272,26 +272,75 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                 return OSMGA_HW3D_E_TRISLOPE;
         }
         /*
-         * AR0 and AR6 are what the edge accumulator divides by, and the
-         * bound just above assumes the edge advances by its displacement
-         * over that height.  Nothing checked them.  A zero divisor makes the
-         * accumulator stop decreasing, so the edge walks on and on and the
-         * slope bound stops meaning anything -- a client could pass a
+         * AR0 and AR6 are what the edge accumulator divides by.  A divisor of
+         * zero makes it stop decreasing, so the edge walks on and on and the
+         * slope bound above stops meaning anything -- a client could pass a
          * displacement of one and still leave the rectangle.
          *
-         * Requiring exactly the height is tighter than requiring non-zero,
-         * and costs nothing: it is what every caller already writes, because
-         * it is what makes the slope the ratio the geometry describes.
+         * This used to demand exactly the trapezoid's height, on the grounds
+         * that it was tighter and cost nothing.  It was not free.  The
+         * divisor belongs to the EDGE, and a triangle split at its middle
+         * vertex has one edge spanning both halves; forcing the two to agree
+         * is what made the lower half restart from a rounded position and
+         * leave the rasterisation rule (3-12).
          */
-        if (t->ar0 != t->h || t->ar6 != t->h)
+        if (t->ar0 <= 0L || t->ar6 <= 0L)
             return OSMGA_HW3D_E_EDGEDIV;
+        /*
+         * Displacements go in negated, always.  A positive one is not a
+         * direction -- SGN carries that -- it is a value this walk cannot
+         * read, and taking its magnitude below would then be wrong.
+         */
+        if (t->ar2 > 0L || t->ar5 > 0L)
+            return OSMGA_HW3D_E_TRISLOPE;
         {
             unsigned long left  = t->fxbndry & 0xFFFFUL;
             unsigned long right = (t->fxbndry >> 16) & 0xFFFFUL;
+            long lx, rx, lacc, racc, lmag, rmag, lsgn, rsgn, row;
 
             if (left > lim->clipX1 + 1UL || right > lim->clipX1 + 1UL ||
                 left > right)
                 return OSMGA_HW3D_E_TRICOL;
+
+            /*
+             * Then walk both edges the way the engine does, and require a
+             * span on every row rather than only at the ends.
+             *
+             * Bounding each edge's travel on its own is not enough: the
+             * difference of two monotone sequences is not monotone, so two
+             * edges whose first and last rows are in order can still cross in
+             * between.  Constructed rather than imagined -- rows 0 and h-1 in
+             * order and row 36 reversed.
+             *
+             * The work is bounded.  Every column step is checked against the
+             * rectangle and refused the moment it leaves it, and a walk only
+             * ever moves one way, so no edge can take more steps than the
+             * rectangle is wide.
+             */
+            lx = (long)left;   rx = (long)right;
+            lacc = t->ar1 - 1L; racc = t->ar4 - 1L;
+            lmag = -t->ar2;     rmag = -t->ar5;
+            lsgn = (t->sgn & 0x2L)  ? -1L : 1L;
+            rsgn = (t->sgn & 0x20L) ? -1L : 1L;
+
+            for (row = 0L; row < t->h; row++) {
+                lacc += lmag;
+                while (lacc >= 0L) {
+                    lx += lsgn;
+                    lacc -= t->ar0;
+                    if (lx < 0L || (unsigned long)lx > lim->clipX1 + 1UL)
+                        return OSMGA_HW3D_E_TRICROSS;
+                }
+                racc += rmag;
+                while (racc >= 0L) {
+                    rx += rsgn;
+                    racc -= t->ar6;
+                    if (rx < 0L || (unsigned long)rx > lim->clipX1 + 1UL)
+                        return OSMGA_HW3D_E_TRICROSS;
+                }
+                if (lx > rx)
+                    return OSMGA_HW3D_E_TRICROSS;
+            }
         }
     }
     if (badTri != 0)
