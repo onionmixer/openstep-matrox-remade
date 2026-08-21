@@ -60,6 +60,16 @@ typedef struct {
  * 187 at (63,8) -- which is the primitive origin exactly, and not the
  * destination origin's 63, 127, 251.
  */
+/*
+ * What the builder returns.
+ *
+ *   > 0   that many trapezoids were written
+ *     0   nothing to draw -- no area, and not an error
+ *   < 0   this triangle is outside what the back end can express, and the
+ *         caller must draw it some other way rather than drop it
+ */
+#define OSMGA_MESA_TRI_UNSUPPORTED  (-1)
+
 int OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
                            const OSMGAMesaVertex *b,
                            const OSMGAMesaVertex *c,

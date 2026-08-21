@@ -11,6 +11,9 @@
 #include "context.h"
 #include "types.h"
 #include "vb.h"
+/* gl_set_triangle_function -- Mesa's own chooser, called deliberately just
+ * before ours is installed so that what it picks can be the way back. */
+#include "triangle.h"
 
 #include "OpenStepMGAMesaProbe.h"
 #include "OpenStepMGAMesaTriangle.h"
@@ -19,6 +22,47 @@
 
 static unsigned long hookDrawn;
 static unsigned long hookDeclined;
+/* Triangles this back end could not draw and handed to the software path. */
+static unsigned long hookSoftware;
+/* Consecutive refusals that never reached the engine. */
+static unsigned long hookRefusedRun;
+/* Counted apart, because "this back end cannot express it" and "the kernel
+ * refused the batch" are different things to have to fix. */
+static unsigned long hookUnsupported;
+#define OSMGA_MESA_REFUSAL_LIMIT  8UL
+/*
+ * The software triangle function, and the context it belongs to.
+ *
+ * Stored as a pair rather than alone.  Only one context has our function
+ * installed at a time, which makes a bare pointer right by accident, and
+ * accidentally right is the thing this file keeps having to undo.
+ */
+static GLcontext *savedTriangleCtx;
+static triangle_func savedTriangle;
+
+/*
+ * Hand this triangle to the software path, and say whether that happened.
+ *
+ * Mesa dispatches a triangle to whatever is in Driver.TriangleFunc and there
+ * is no way back from inside the call, so a triangle we cannot draw used to
+ * be lost outright.  What is saved here was chosen by Mesa itself, one line
+ * before ours was installed over it.
+ */
+static int
+osmgaMesaSoftly(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
+{
+    if (savedTriangle == 0 || savedTriangleCtx != ctx)
+        return 0;
+    (*savedTriangle)(ctx, v0, v1, v2, pv);
+    /*
+     * It drew into the substituted surface and did not tell us.  Without
+     * this the copy back can decide there is nothing to copy and the
+     * triangle never reaches the application's buffer.
+     */
+    OSMGAMesaBufferSoiled();
+    hookSoftware++;
+    return 1;
+}
 static unsigned long osmgaHookMismatch;
 
 /*
@@ -40,9 +84,10 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     int n;
 
     if (batch == 0) {
-        /* The chooser already established this; if it has changed under us
-         * the triangle is lost, so say so rather than lose it quietly. */
+        /* The chooser established this; if it has gone away since, nothing
+         * was submitted and the triangle can still be drawn. */
         hookDeclined++;
+        (void)osmgaMesaSoftly(ctx, v0, v1, v2, pv);
         OSMGAMesaProbeRevoke("the command window went away mid-frame");
         return;
     }
@@ -104,6 +149,16 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         n = OSMGAMesaBuildTriangle(&a, &b, &c, (const OSMGAMesaVertex *)0,
                                    zmode, blend, batch->tri);
     }
+    if (n == OSMGA_MESA_TRI_UNSUPPORTED) {
+        /*
+         * Outside what this back end can express -- not empty.  The two used
+         * to share one answer and a triangle like this was dropped; now it
+         * goes to the path that can draw it, before anything is submitted.
+         */
+        hookUnsupported++;
+        (void)osmgaMesaSoftly(ctx, v0, v1, v2, pv);
+        return;
+    }
     if (n == 0)
         return;                 /* no area; nothing to draw and no error */
 
@@ -125,16 +180,38 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     batch->state.zorg      = OSMGAMesaBufferDepthOrigin();
 
     if (OSMGAMesaProbeSubmit(&res) != 0) {
-        /*
-         * This triangle is already lost -- Mesa dispatched it here and there
-         * is no returning it to the software path.  Giving up acceleration
-         * now at least stops the next one being lost the same way, and the
-         * loss is recorded rather than absorbed.
-         */
         hookDeclined++;
-        OSMGAMesaProbeRevoke("the driver refused a batch");
+        /*
+         * Whether this may be drawn again is not a matter of taste.
+         *
+         * The driver validates before it encodes anything and before it
+         * writes the addresses that start the engine, so a batch the
+         * validator refused was never drawn and the triangle can go to
+         * software.  A failure AFTER that -- the "did not complete" path --
+         * happens with the command list already handed over, and some or all
+         * of it may be on the screen; drawing it again would double it, and
+         * with depth or blending that is visible.
+         *
+         * The block says which: the verdict is the validator's answer, so a
+         * verdict of OK with a failing status means validation passed and
+         * the trouble came later.
+         */
+        if (res.verdict == OSMGA_HW3D_OK) {
+            OSMGAMesaProbeRevoke("a batch failed after the engine had it");
+            return;             /* lost, and losing it beats drawing it twice */
+        }
+        (void)osmgaMesaSoftly(ctx, v0, v1, v2, pv);
+        /*
+         * Refusing once costs one triangle's worth of software.  Refusing
+         * every time, and trying every time, is a performance cliff, so a run
+         * of them gives up.  The number is a first guess and is meant to be
+         * measured, not defended.
+         */
+        if (++hookRefusedRun >= OSMGA_MESA_REFUSAL_LIMIT)
+            OSMGAMesaProbeRevoke("the driver kept refusing batches");
         return;
     }
+    hookRefusedRun = 0;
     hookDrawn++;
     OSMGAMesaBufferSoiled();
 }
@@ -369,6 +446,8 @@ OpenStepMesaAccelUpdateState(GLcontext *ctx, int rowLength, int yUp)
      * this file, and every call site guards against NULL.
      */
     if (!OSMGAMesaBufferBoundTo(ctx->DriverCtx)) {
+        savedTriangle = 0;
+        savedTriangleCtx = 0;
         ctx->Driver.RenderStart = 0;
         ctx->Driver.RenderFinish = 0;
         ctx->Driver.Finish = 0;
@@ -390,8 +469,29 @@ OpenStepMesaAccelUpdateState(GLcontext *ctx, int rowLength, int yUp)
      * driver has just put its own choice here, and overwriting that with
      * NULL would take away an acceleration that has nothing to do with us.
      */
-    if (f != 0)
+    if (f != 0) {
+        /*
+         * Ask Mesa for a software triangle before putting ours over it.
+         *
+         * Saving whatever is in the field would usually save nothing:
+         * OSMesa's own chooser returns NULL for a textured state and for
+         * almost every other one, and it is Mesa's core chooser that has a
+         * textured software triangle to give.  That chooser runs after this
+         * hook and returns early when the field is already filled, which is
+         * why ours survives -- so it is called here, while the field is
+         * still whatever OSMesa left, and what it picks becomes the way back.
+         */
+        gl_set_triangle_function(ctx);
+        if (ctx->Driver.TriangleFunc != 0
+            && ctx->Driver.TriangleFunc != osmgaMesaTriangle) {
+            savedTriangle = ctx->Driver.TriangleFunc;
+            savedTriangleCtx = ctx;
+        } else {
+            savedTriangle = 0;
+            savedTriangleCtx = 0;
+        }
         ctx->Driver.TriangleFunc = f;
+    }
 
     /*
      * The mirror is installed whenever there is a surface to mirror, not
@@ -414,3 +514,5 @@ OpenStepMesaAccelUpdateState(GLcontext *ctx, int rowLength, int yUp)
 
 unsigned long OSMGAMesaHookDrawn(void)    { return hookDrawn; }
 unsigned long OSMGAMesaHookDeclined(void) { return hookDeclined; }
+unsigned long OSMGAMesaHookSoftware(void) { return hookSoftware; }
+unsigned long OSMGAMesaHookUnsupported(void) { return hookUnsupported; }

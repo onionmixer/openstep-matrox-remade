@@ -39,5 +39,11 @@ void OpenStepMesaAccelUpdateState(struct gl_context *ctx, int rowLength,
  */
 unsigned long OSMGAMesaHookDrawn(void);
 unsigned long OSMGAMesaHookDeclined(void);
+/* Triangles handed to the software path because this back end could not
+ * draw them -- a refusal that cost nothing rather than a triangle. */
+unsigned long OSMGAMesaHookSoftware(void);
+/* Of those, the ones this back end could not express at all -- as opposed to
+ * the ones the kernel refused. */
+unsigned long OSMGAMesaHookUnsupported(void);
 
 #endif /* OPENSTEP_MGA_MESA_HOOK_H */

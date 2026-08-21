@@ -113,13 +113,22 @@ main(void)
      * column check while naming a pixel nowhere near the screen.
      */
     {
-        static const struct { long ax, ay, bx, by, cx, cy; const char *what; }
+/*
+         * The last of these is not like the other four.  They have no area
+         * and there is genuinely nothing to draw; that one is outside the
+         * range the back end can express, which is a different answer and now
+         * has a different value.  Saying "nothing to draw" about it would let
+         * a caller drop a triangle that some other path could have drawn.
+         */
+        static const struct { long ax, ay, bx, by, cx, cy;
+                              int want; const char *what; }
         nothing[5] = {
-            {  10L, 0L,  10L, 0L,  20L, 10L, "two vertices the same" },
-            {  10L, 0L,  10L, 5L,  10L, 10L, "one column wide" },
-            {   0L, 0L,  10L, 5L,  20L, 10L, "three on one line" },
-            {   5L, 5L,   5L, 5L,   5L,  5L, "one point" },
-            { -65536L, 0L, -65536L, 1L, -65536L, 2L, "far off screen" }
+            {  10L, 0L,  10L, 0L,  20L, 10L, 0, "two vertices the same" },
+            {  10L, 0L,  10L, 5L,  10L, 10L, 0, "one column wide" },
+            {   0L, 0L,  10L, 5L,  20L, 10L, 0, "three on one line" },
+            {   5L, 5L,   5L, 5L,   5L,  5L, 0, "one point" },
+            { -65536L, 0L, -65536L, 1L, -65536L, 2L,
+              OSMGA_MESA_TRI_UNSUPPORTED, "far off screen" }
         };
         OSMGAHW3DTri scratch[2];
         OSMGAMesaVertex p0, p1, p2;
@@ -135,9 +144,10 @@ main(void)
             got = OSMGAMesaBuildTriangle(&p0, &p1, &p2, &p0,
                                OSMGA_MESA_ZMODE_NONE,
                                      OSMGA_MESA_BLEND_OPAQUE, scratch);
-            printf("   %-22s -> %d trapezoid(s)  %s\n",
-                   nothing[i].what, got, (got == 0) ? "ok" : "FAIL");
-            if (got != 0)
+            printf("   %-22s -> %2d (wanted %2d)  %s\n",
+                   nothing[i].what, got, nothing[i].want,
+                   (got == nothing[i].want) ? "ok" : "FAIL");
+            if (got != nothing[i].want)
                 failures++;
         }
     }

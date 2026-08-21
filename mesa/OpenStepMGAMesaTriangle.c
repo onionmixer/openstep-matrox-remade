@@ -230,10 +230,19 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
     long hTop, hBot, span, xSplit;
     int n = 0;
 
+    /*
+     * Two different answers used to share one value.
+     *
+     * Zero meant both "there is nothing to draw" and "this is outside what
+     * the back end can express", and the caller could only treat them the
+     * same way -- so a triangle whose coordinates ran past the range was
+     * quietly lost instead of being drawn by the software path.  A negative
+     * answer now means UNSUPPORTED and zero keeps its old meaning.
+     */
     if (a == 0 || b == 0 || c == 0 || out == 0)
-        return 0;
+        return OSMGA_MESA_TRI_UNSUPPORTED;
     if (!osmgaCoordOK(a) || !osmgaCoordOK(b) || !osmgaCoordOK(c))
-        return 0;
+        return OSMGA_MESA_TRI_UNSUPPORTED;
 
     {
         /*
