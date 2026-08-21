@@ -1190,6 +1190,113 @@ main(void)
         (void)say; (void)firstShort;
     }
 
+    printf("\n19. is the threshold on the offset or on the coordinate?\n");
+    {
+        /*
+         * Everything so far was measured from one start, 15873, and from
+         * there "the offset reached 65536" and "the coordinate reached 65536"
+         * name almost the same place -- the one column that could have told
+         * them apart happened to read the same index under both.  So the
+         * start has to move.
+         *
+         * With every gradient at zero the offset is identically zero at every
+         * covered pixel, so a rule on the offset must apply the bias at every
+         * start, while a rule on the coordinate must drop it once the start
+         * passes 65536.  Bisecting the turnover at each texel boundary reads
+         * the bias off directly: K = 511 means it was applied, K = 0 means it
+         * was not.
+         *
+         *      boundary k    offset rule    coordinate rule    bit 16 clear
+         *         1 .. 4         511             511                511
+         *         5 .. 8         511               0                  0
+         *         9 .. 12        511               0                511
+         *
+         * The last four are what separate a comparison against 65536 from a
+         * test of bit 16, which the first eight cannot tell apart.
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        long k;
+
+        long runFrom = 1L, runK = -1L;
+
+        printf("   %14s %10s %8s\n", "boundaries", "turnover", "implies K");
+        for (k = 1L; k <= 63L; k++) {
+            long lo = k * texel - 1200L, hi = k * texel + 400L, mid;
+            int it;
+
+            for (it = 0; it < 16 && lo < hi; it++) {
+                unsigned long p;
+
+                mid = (lo + hi) / 2L;
+                blank();
+                (void)setup(64UL, 0UL, 8UL, 4UL, 0L, 0UL);
+                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                batch->state.tmr[3] = 0L;
+                batch->state.tmr[6] = mid;
+                batch->state.tmr[7] = 0L;
+                (void)fire();
+                p = colour[0UL * STRIDE_DW + 0UL] & 0xFFUL;
+                if ((long)p >= k) hi = mid; else lo = mid + 1L;
+            }
+            if (k * texel - lo != runK) {
+                if (runK >= 0L)
+                    printf("   %6ld .. %-6ld %10s %8ld\n",
+                           runFrom, k - 1L, "", runK);
+                runFrom = k;
+                runK = k * texel - lo;
+            }
+            if (k == 63L)
+                printf("   %6ld .. %-6ld %10ld %8ld\n", runFrom, k, lo, runK);
+        }
+        printf("   511 throughout is the offset rule; 511,511,511,511 then"
+               " zeros is a rule on the coordinate\n");
+        printf("   and zeros returning to 511 at nine is a test of bit 16,"
+               " not a comparison\n");
+    }
+
+    printf("\n20. the same question with a live gradient\n");
+    {
+        /*
+         * Section 19 holds every gradient at zero, and a zero gradient could
+         * in principle be a different path through the setup.  The same three
+         * rules can be separated in one drawing with the gradient running:
+         * from a start of five texels less 511, stepping one texel a column,
+         *
+         *      offset rule       5 6 7 8 8
+         *      coordinate rule   4 5 6 7 8
+         *      bit 16 clear      4 5 6 7 9
+         *
+         * all three differ, so the five pixels name the rule outright.
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        unsigned long k;
+        static const unsigned long offs[5]  = { 5UL, 6UL, 7UL, 8UL, 8UL };
+        static const unsigned long coord[5] = { 4UL, 5UL, 6UL, 7UL, 8UL };
+        static const unsigned long bit16[5] = { 4UL, 5UL, 6UL, 7UL, 9UL };
+        unsigned long got[5];
+        int mo = 1, mc = 1, mb = 1;
+
+        blank();
+        (void)setup(64UL, 0UL, 8UL, 4UL, texel, 0UL);
+        batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+        batch->state.tmr[3] = 0L;
+        batch->state.tmr[6] = 5L * texel - 511L;
+        batch->state.tmr[7] = 0L;
+        (void)fire();
+        printf("   u:");
+        for (k = 0UL; k < 5UL; k++) {
+            got[k] = colour[0UL * STRIDE_DW + k] & 0xFFUL;
+            printf(" %lu", got[k]);
+            if (got[k] != offs[k])  mo = 0;
+            if (got[k] != coord[k]) mc = 0;
+            if (got[k] != bit16[k]) mb = 0;
+        }
+        printf("   ->  %s\n",
+               mo ? "the offset rule" :
+               mc ? "a rule on the coordinate" :
+               mb ? "bit 16 clear" : "none of the three");
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;
