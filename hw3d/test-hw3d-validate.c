@@ -326,6 +326,55 @@ main(void)
                 failures++;
             }
 
+            /*
+             * Which verdict wins when a batch is wrong in two ways.
+             *
+             * The coordinate check used to run BEFORE the triangle loop, so a
+             * bad coordinate beat every malformed triangle.  It has to run
+             * after the loop now, because what it needs is what the loop works
+             * out, and that reverses the order.  The plan said to freeze this
+             * and then this file did not -- so it is frozen here: a malformed
+             * triangle is reported first, and it names itself.
+             */
+            {   unsigned long which = 0xDEADUL;
+                int v;
+
+                reset();
+                b.triCount = 2;
+                b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                b.tri[1] = b.tri[0];
+                b.tri[1].y = -1;                    /* malformed triangle 1 */
+                b.state.tmr[6] = -1;                /* and a bad coordinate */
+                v = osmgaHW3DValidate(&b, &lim, &which);
+                if (v == OSMGA_HW3D_E_TRIROW && which == 1UL)
+                    printf("  ok    %-46s %d/%lu\n",
+                           "a bad triangle outranks a bad coordinate", v, which);
+                else {
+                    printf("  FAIL  %-46s %d/%lu, wanted %d/1\n",
+                           "a bad triangle outranks a bad coordinate", v, which,
+                           OSMGA_HW3D_E_TRIROW);
+                    failures++;
+                }
+                /* and with the triangles sound, the coordinate is still seen */
+                reset();
+                b.triCount = 2;
+                b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                b.tri[1] = b.tri[0];
+                b.state.tmr[6] = -1;
+                which = 0xDEADUL;
+                v = osmgaHW3DValidate(&b, &lim, &which);
+                if (v == OSMGA_HW3D_E_TEXCOORD && which == 0UL)
+                    printf("  ok    %-46s %d/%lu\n",
+                           "with sound triangles the coordinate still loses", v,
+                           which);
+                else {
+                    printf("  FAIL  %-46s %d/%lu, wanted %d/0\n",
+                           "with sound triangles the coordinate still loses", v,
+                           which, OSMGA_HW3D_E_TEXCOORD);
+                    failures++;
+                }
+            }
+
             lim.clipX1 = keepX; lim.clipY1 = keepY; lim.pitchBytes = keepP;
         }
     }
