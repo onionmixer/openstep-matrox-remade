@@ -610,6 +610,30 @@ main(int argc, char **argv)
                 (void)submitBatch(argHow, fd, master, objNum);
                 batch->state.tmr[0] = keep;
             }
+            /*
+             * Modes 5 and 6 submit nothing.  They read ONE word, and the
+             * question they ask is about the reading rather than about the
+             * drawing.
+             *
+             * Every arrangement of priming submissions left the number
+             * untouched, and the one short trial is always the first of a
+             * pass.  What sits in front of it, and in front of nothing else,
+             * is the validator section, whose only touch of this mapping is
+             * a single load of word zero.  Everywhere else the last thing
+             * read before a submission is the tail of the previous counting
+             * pass, which is a high address.
+             *
+             * So the two modes put a single load where that difference lies:
+             * one inside the first sixty-four bytes, one past them.
+             *
+             *   5  read dst[0]   -- expected to make every trial short
+             *   6  read dst[16]  -- expected to make none of them short
+             */
+            if (argPrime == 5)
+                (void)dst[0];
+            else if (argPrime == 6)
+                (void)dst[16];
+
             /* One row past the rectangle as well.  If the mapping's
              * offset were ignored, the client's base would still be the
              * window start while the engine honoured a dstorg further in --
@@ -622,6 +646,18 @@ main(int argc, char **argv)
                 (void)dst[0];
                 (void)dst[(DIM - 1UL) * STRIDE_DW];
             }
+            /*
+             * Mode 7 is the falsifier.
+             *
+             * The pair of reads just above cures the fault, and has since the
+             * beginning.  If what cures it is the LAST read before the
+             * submission, then the cure belongs to the second of them -- the
+             * one at a high address -- and keeping only the first should stop
+             * curing anything.  If keeping only the first still cures, the
+             * account is wrong.
+             */
+            else if (argPrime == 7)
+                (void)dst[0];
             if (submitBatch(argHow, fd, master, objNum) != OSMGA_HW3D_OK) {
                 printf("      trial %lu was refused\n", trial);
                 fails++;
