@@ -80,7 +80,18 @@ osmgaTexUsable(const struct gl_texture_image *img)
         return 0;
     if (img->Border != 0)               /* Width includes it; not handled */
         return 0;
-    if (img->Format != GL_RGBA)         /* one format, the one the engine has */
+    /*
+     * GL_RGB, and not GL_RGBA.
+     *
+     * Not because the engine cannot carry four bytes, but because of what
+     * GL_REPLACE means: with an RGBA texture the fragment's alpha comes from
+     * the TEXTURE (texture.c:2419-2426, "Av = At"), and with RGB it comes
+     * from the fragment -- which is the interpolated vertex alpha the builder
+     * already programs.  So RGB is right by construction, and RGBA would need
+     * the engine's texture alpha measured all the way to the destination
+     * before it could be offered.
+     */
+    if (img->Format != GL_RGB && img->Format != GL_RGBA)
         return 0;
     if (img->Width == 0 || img->Height == 0)
         return 0;
@@ -125,16 +136,17 @@ osmgaTexCopy(const struct gl_texture_image *img, unsigned long *dst,
              unsigned long pitch)
 {
     const GLubyte *src = img->Data;
+    unsigned long step = (img->Format == GL_RGB) ? 3UL : 4UL;
     unsigned long x, y;
 
     for (y = 0UL; y < (unsigned long)img->Height; y++) {
-        const GLubyte *row = src + y * (unsigned long)img->Width * 4UL;
+        const GLubyte *row = src + y * (unsigned long)img->Width * step;
         unsigned long *out = dst + y * pitch;
 
         for (x = 0UL; x < (unsigned long)img->Width; x++) {
-            out[x] = ((unsigned long)row[x * 4UL + 0UL] << 16)
-                   | ((unsigned long)row[x * 4UL + 1UL] << 8)
-                   |  (unsigned long)row[x * 4UL + 2UL];
+            out[x] = ((unsigned long)row[x * step + 0UL] << 16)
+                   | ((unsigned long)row[x * step + 1UL] << 8)
+                   |  (unsigned long)row[x * step + 2UL];
         }
     }
 }
@@ -160,7 +172,14 @@ OSMGAMesaTexResident(void *ctxv, struct gl_texture_object *tObj,
     if (origin != 0) *origin = 0UL;
     if (tObj == 0)
         return 0;
-    img = tObj->Image[0];
+    /*
+     * The level the software path would sample (triangle.c:658), not level
+     * zero.  Uploading one image while the other path reads another is a
+     * disagreement nobody would look for.
+     */
+    if (tObj->BaseLevel < 0 || tObj->BaseLevel >= MAX_TEXTURE_LEVELS)
+        return 0;
+    img = tObj->Image[tObj->BaseLevel];
     if (!osmgaTexUsable(img)) {
         texRefused++;
         return 0;
@@ -234,9 +253,14 @@ OSMGAMesaTexResidentCurrent(void *ctxv, unsigned long *origin,
 
     if (ctx == 0)
         return 0;
-    return OSMGAMesaTexResident(ctxv,
-               ctx->Texture.Unit[ctx->Texture.CurrentUnit].CurrentD[2],
-               origin, w, h, pitch);
+    /*
+     * Unit ZERO, not the active one.  glActiveTexture moves CurrentUnit and
+     * the client can leave it on a unit that is not enabled, while Mesa's
+     * single-unit texture path samples unit zero -- so following CurrentUnit
+     * would upload one object and draw with another.
+     */
+    return OSMGAMesaTexResident(ctxv, ctx->Texture.Unit[0].CurrentD[2],
+                                origin, w, h, pitch);
 }
 
 /* ---- the hooks ---- */

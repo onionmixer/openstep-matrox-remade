@@ -45,6 +45,9 @@ static unsigned long hookUnsupported;
  * These two are selection counts, not triangle counts -- the state may be
  * updated more than once between primitives, and once for none.
  */
+/* Textured triangles the affine gate turned away, and ones whose texture
+ * could not be got into video memory. */
+static unsigned long hookTexPersp, hookTexAbsent;
 static unsigned long hookHardState;
 static unsigned long hookSoftState;
 
@@ -202,8 +205,12 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     OSMGAHW3DBatch *batch = OSMGAMesaProbeBatch();
     OSMGAHW3DSubmitBlock res;
     OSMGAMesaVertex a, b, c, prov;
+    OSMGAHW3DTri built[4];
     unsigned long zmode, blend;
-    int nwin;
+    unsigned long texOrg = 0UL, texW = 0UL, texH = 0UL, texPitch = 0UL;
+    OSMGAMesaTex tex;
+    long tmr[4][9];
+    int texOn, nwin;
     double zsnap;
     int n;
 
@@ -231,7 +238,46 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         (dst).g = (unsigned long)VB->ColorPtr->data[idx][1];             \
         (dst).b = (unsigned long)VB->ColorPtr->data[idx][2];             \
         (dst).a = (unsigned long)VB->ColorPtr->data[idx][3];             \
+        (dst).s = texOn ? (double)VB->TexCoordPtr[0]->data[idx][0] : 0.0; \
+        (dst).tc = texOn ? (double)VB->TexCoordPtr[0]->data[idx][1] : 0.0;\
     } while (0)
+
+    /*
+     * Affine, or not accelerated.
+     *
+     * Win[3] is the INVERSE of W, so three equal values mean the perspective
+     * divide is a constant and s and t can be interpolated straight.  Exact
+     * comparison, on purpose: an epsilon can only let something wrong in,
+     * and refusing a triangle that would have been fine costs nothing but
+     * speed.  q lives in the fourth texture component when there is one, and
+     * is 1 when there is not.
+     */
+    texOn = (ctx->RasterMask & (GLuint)TEXTURE_BIT) != 0;
+    if (texOn) {
+        GLfloat w0 = VB->Win.data[v0][3];
+
+        if (VB->Win.data[v1][3] != w0 || VB->Win.data[v2][3] != w0) {
+            hookTexPersp++;
+            (void)osmgaMesaSoftly(ctx, v0, v1, v2, pv);
+            return;
+        }
+        if (VB->TexCoordPtr[0]->size > 3 &&
+            (VB->TexCoordPtr[0]->data[v0][3] != 1.0F ||
+             VB->TexCoordPtr[0]->data[v1][3] != 1.0F ||
+             VB->TexCoordPtr[0]->data[v2][3] != 1.0F)) {
+            hookTexPersp++;
+            (void)osmgaMesaSoftly(ctx, v0, v1, v2, pv);
+            return;
+        }
+        if (!OSMGAMesaTexResidentCurrent(ctx, &texOrg, &texW, &texH,
+                                         &texPitch)) {
+            hookTexAbsent++;
+            (void)osmgaMesaSoftly(ctx, v0, v1, v2, pv);
+            return;
+        }
+        tex.w = texW;
+        tex.h = texH;
+    }
 
     nwin = 0;
     OSMGA_LOAD(a, v0);
@@ -274,11 +320,14 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
          * the two things a caller can ask for.
          */
         a.a = b.a = c.a = prov.a;
-        n = OSMGAMesaBuildTriangle(&a, &b, &c, &prov, zmode, blend,
-                                   batch->tri);
+        n = OSMGAMesaBuildTriangleTex(&a, &b, &c, &prov, zmode, blend,
+                                      texOn ? &tex : (const OSMGAMesaTex *)0,
+                                      built, tmr);
     } else {
-        n = OSMGAMesaBuildTriangle(&a, &b, &c, (const OSMGAMesaVertex *)0,
-                                   zmode, blend, batch->tri);
+        n = OSMGAMesaBuildTriangleTex(&a, &b, &c, (const OSMGAMesaVertex *)0,
+                                      zmode, blend,
+                                      texOn ? &tex : (const OSMGAMesaTex *)0,
+                                      built, tmr);
     }
     if (n == OSMGA_MESA_TRI_UNSUPPORTED) {
         /*
@@ -293,9 +342,56 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     if (n == 0)
         return;                 /* no area; nothing to draw and no error */
 
+    /*
+     * One batch, or one batch each.
+     *
+     * tmr[] is batch state and the engine re-seeds the horizontal coordinate
+     * at every primitive's own first-row left edge, so the two trapezoids of
+     * a split textured triangle cannot share a start -- they go out
+     * separately.  Untextured work is unaffected and still goes in one.
+     *
+     * If the second batch is refused the first is already drawn, and the
+     * software redraw below puts the whole triangle down again.  That is only
+     * harmless because blending is refused for textured state: without it,
+     * writing the same pixel twice writes the same value, and with the depth
+     * test on GL_LESS the second write fails its own comparison.
+     */
+    {
+    int nb = texOn ? n : 1;
+    int bi;
+
+    for (bi = 0; bi < nb; bi++) {
+    int cnt = texOn ? 1 : n;
+    int j;
+
     batch->magic = OSMGA_HW3D_MAGIC;
     batch->version = OSMGA_HW3D_VERSION;
-    batch->triCount = (unsigned long)n;
+    batch->triCount = (unsigned long)cnt;
+    for (j = 0; j < cnt; j++)
+        batch->tri[j] = built[texOn ? bi : j];
+    if (texOn) {
+        batch->state.texorg = texOrg;
+        batch->state.texW = texW;
+        batch->state.texH = texH;
+        batch->state.texPitch = texPitch;
+        batch->state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
+        batch->state.texFlags = 0UL;
+        batch->state.tmr[0] = tmr[bi][0];
+        batch->state.tmr[1] = tmr[bi][1];
+        batch->state.tmr[2] = tmr[bi][2];
+        batch->state.tmr[3] = tmr[bi][3];
+        batch->state.tmr[4] = 0L;
+        batch->state.tmr[5] = 0L;
+        batch->state.tmr[6] = tmr[bi][6];
+        batch->state.tmr[7] = tmr[bi][7];
+        batch->state.tmr[8] = 1L << 16;
+    } else {
+        batch->state.texorg = 0UL;
+        batch->state.texW = batch->state.texH = batch->state.texPitch = 0UL;
+        batch->state.texFormat = 0UL;
+        batch->state.texFlags = 0UL;
+        memset(batch->state.tmr, 0, sizeof batch->state.tmr);
+    }
     /* Where the surface is, asked of the one place that decides it -- not
      * worked out again here, where it could disagree. */
     batch->state.dstorg = OSMGAMesaBufferOrigin();
@@ -352,6 +448,8 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
             OSMGAMesaProbeRevoke("the driver kept refusing batches");
         return;
     }
+    }
+    }
     hookRefusedRun = 0;
     hookDrawn++;
     OSMGAMesaBufferSoiled();
@@ -366,6 +464,67 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
  * but none of them is wired through this file yet, and drawing them wrong
  * would be worse than drawing them slowly.
  */
+/*
+ * Is the texture state one this back end can reproduce exactly?
+ *
+ * Per state, not per triangle -- whether a particular triangle is affine is
+ * decided where the vertices are, further down.
+ *
+ * Each of these is a thing that would change the drawn pixels, and the list
+ * is checked against Mesa's own conditions for its optimised 2D path
+ * (triangle.c:1568-1578), which is where the base level and the colour
+ * control came from.
+ */
+static int
+osmgaMesaTexStateOK(GLcontext *ctx)
+{
+    const struct gl_texture_object *t;
+    const struct gl_texture_image *img;
+
+    /* One unit, and 2D.  The global mask carries unit one's bits too, so
+     * asking unit zero alone would let a second unit through. */
+    if (ctx->Texture.ReallyEnabled != TEXTURE0_2D)
+        return 0;
+    if (ctx->Texture.Unit[0].TexGenEnabled != 0U)
+        return 0;
+    /*
+     * GL_REPLACE, which is what the engine does -- measured, by giving two
+     * triangles the same colour interpolators and texturing one of them.
+     */
+    if (ctx->Texture.Unit[0].EnvMode != GL_REPLACE)
+        return 0;
+    /* A second colour would be added after the texture and the engine has
+     * nowhere to put it. */
+    if (ctx->Light.Model.ColorControl != GL_SINGLE_COLOR)
+        return 0;
+
+    t = ctx->Texture.Unit[0].CurrentD[2];
+    if (t == 0)
+        return 0;
+    /* The kernel fixes CLAMPUV, so this is the only wrap it can honour. */
+    if (t->WrapS != GL_CLAMP || t->WrapT != GL_CLAMP)
+        return 0;
+    /* Bilinear is a bit the encoder can set, but what it draws has never been
+     * looked at -- only the verdict was. */
+    if (t->MinFilter != GL_NEAREST || t->MagFilter != GL_NEAREST)
+        return 0;
+    if (t->BaseLevel != 0)
+        return 0;
+    img = t->Image[0];
+    if (img == 0 || img->Data == 0 || img->IsCompressed || img->Border != 0)
+        return 0;
+    /*
+     * RGB only.  With GL_REPLACE an RGBA texture supplies the fragment's
+     * alpha as well (texture.c:2419-2426) and this back end does not carry
+     * texture alpha to the destination yet; with RGB the alpha is the
+     * fragment's, which is the interpolated vertex alpha the builder already
+     * programs.
+     */
+    if (img->Format != GL_RGB)
+        return 0;
+    return 1;
+}
+
 static triangle_func
 osmgaMesaChooseTriangle(GLcontext *ctx)
 {
@@ -497,8 +656,22 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
         if (OSMGAMesaBufferDepthOrigin() == 0UL)    return NULL;
     }
 
+    /*
+     * Texturing, when the state is one that can be reproduced.  Blending is
+     * refused alongside it: with blending off the alpha question does not
+     * arise at all, and a trapezoid drawn twice -- which is what a partly
+     * submitted split triangle plus a software redraw amounts to -- writes
+     * the same pixel twice instead of adding to it.
+     */
+    if ((ctx->RasterMask & (GLuint)TEXTURE_BIT) != 0) {
+        if ((ctx->RasterMask & (GLuint)BLEND_BIT) != 0)
+            return NULL;
+        if (!osmgaMesaTexStateOK(ctx))
+            return NULL;
+    }
+
     if ((ctx->RasterMask &
-         ~(GLuint)(ALPHABUF_BIT | DEPTH_BIT | BLEND_BIT)) != 0)
+         ~(GLuint)(ALPHABUF_BIT | DEPTH_BIT | BLEND_BIT | TEXTURE_BIT)) != 0)
         return NULL;
 
     return osmgaMesaTriangle;
@@ -675,6 +848,8 @@ unsigned long OSMGAMesaHookDeclined(void) { return hookDeclined; }
 unsigned long OSMGAMesaHookSoftware(void) { return hookSoftware; }
 unsigned long OSMGAMesaHookHardState(void) { return hookHardState; }
 unsigned long OSMGAMesaHookSoftState(void) { return hookSoftState; }
+unsigned long OSMGAMesaHookTexPersp(void)  { return hookTexPersp; }
+unsigned long OSMGAMesaHookTexAbsent(void) { return hookTexAbsent; }
 unsigned long OSMGAMesaHookUnsupported(void) { return hookUnsupported; }
 unsigned long OSMGAMesaHookVerdictCount(unsigned long v)
 {

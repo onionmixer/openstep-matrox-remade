@@ -48,6 +48,10 @@ unsigned long OSMGAMesaHookSoftware(void);
  * place.  Selections, not triangles -- see the definitions. */
 unsigned long OSMGAMesaHookHardState(void);
 unsigned long OSMGAMesaHookSoftState(void);
+/* Textured triangles refused here rather than by the kernel: not affine, and
+ * no room in video memory for the texture. */
+unsigned long OSMGAMesaHookTexPersp(void);
+unsigned long OSMGAMesaHookTexAbsent(void);
 /* Of those, the ones this back end could not express at all -- as opposed to
  * the ones the kernel refused. */
 unsigned long OSMGAMesaHookUnsupported(void);
