@@ -31,6 +31,21 @@ static unsigned long hookRefusedRun;
 /* Counted apart, because "this back end cannot express it" and "the kernel
  * refused the batch" are different things to have to fix. */
 static unsigned long hookUnsupported;
+/*
+ * How the chooser answered, counted where the chooser answers.
+ *
+ * The five counters above all live inside the triangle function, so they can
+ * only speak for triangles that reached it.  A state the chooser refuses
+ * never reaches it: the refusal is a NULL return and the software function
+ * Mesa already installed simply stays.  A frame that really was half
+ * accelerated therefore reported "drawn=N software=0 declined=0", which
+ * reads as "nothing fell back" and is the opposite of what happened.
+ *
+ * These two are selection counts, not triangle counts -- the state may be
+ * updated more than once between primitives, and once for none.
+ */
+static unsigned long hookHardState;
+static unsigned long hookSoftState;
 
 /*
  * Why the kernel turned a batch away, kept rather than counted and thrown.
@@ -586,6 +601,8 @@ OpenStepMesaAccelUpdateState(GLcontext *ctx, int rowLength, int yUp)
      * driver has just put its own choice here, and overwriting that with
      * NULL would take away an acceleration that has nothing to do with us.
      */
+    if (f != 0) hookHardState++; else hookSoftState++;
+
     if (f != 0) {
         /*
          * Ask Mesa for a software triangle before putting ours over it.
@@ -639,6 +656,8 @@ double OSMGAMesaHookLastWin(unsigned long v, unsigned long c)
 unsigned long OSMGAMesaHookDrawn(void)    { return hookDrawn; }
 unsigned long OSMGAMesaHookDeclined(void) { return hookDeclined; }
 unsigned long OSMGAMesaHookSoftware(void) { return hookSoftware; }
+unsigned long OSMGAMesaHookHardState(void) { return hookHardState; }
+unsigned long OSMGAMesaHookSoftState(void) { return hookSoftState; }
 unsigned long OSMGAMesaHookUnsupported(void) { return hookUnsupported; }
 unsigned long OSMGAMesaHookVerdictCount(unsigned long v)
 {

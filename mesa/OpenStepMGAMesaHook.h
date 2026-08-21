@@ -44,6 +44,10 @@ unsigned long OSMGAMesaHookDeclined(void);
 /* Triangles handed to the software path because this back end could not
  * draw them -- a refusal that cost nothing rather than a triangle. */
 unsigned long OSMGAMesaHookSoftware(void);
+/* How the chooser answered: hardware state selected, software state left in
+ * place.  Selections, not triangles -- see the definitions. */
+unsigned long OSMGAMesaHookHardState(void);
+unsigned long OSMGAMesaHookSoftState(void);
 /* Of those, the ones this back end could not express at all -- as opposed to
  * the ones the kernel refused. */
 unsigned long OSMGAMesaHookUnsupported(void);
