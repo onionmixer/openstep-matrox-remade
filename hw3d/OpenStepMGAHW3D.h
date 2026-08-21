@@ -190,6 +190,30 @@
 #define OSMGA_HW3D_TEX_SPAN     (1UL << 20)
 #define OSMGA_HW3D_TEX_COORD_MAX (8UL * OSMGA_HW3D_TEX_SPAN)
 
+/*
+ * What the engine adds to a texture coordinate before it picks a texel.
+ *
+ * Measured, where no gradient can hide it: with every increment at zero the
+ * coordinate is the start and nothing else, and the texel turns over at a
+ * start of 15873 rather than 16384 -- in both axes, for a 64-texel texture
+ * whose texel is 16384.  So the engine indexes with
+ *
+ *     texel = floor((u + 511) / texel size)
+ *
+ * which is the coordinate rounded up to a multiple of 512, one texture span
+ * divided by the largest texture it will take.
+ *
+ * It is subtracted in the ENCODER, immediately before the registers are
+ * written, so that this protocol and the validator go on speaking in the
+ * coordinates the caller means.  A caller sends what it wants sampled; the
+ * kernel is what knows this engine adds something.
+ *
+ * Signed on purpose: the corrected value is negative whenever the caller's
+ * start is below 511, which is the ordinary case of a texture beginning at a
+ * vertex.
+ */
+#define OSMGA_HW3D_TEX_BIAS     511L
+
 typedef struct {
     unsigned long dstorg;          /* colour origin, byte offset into VRAM */
     /*

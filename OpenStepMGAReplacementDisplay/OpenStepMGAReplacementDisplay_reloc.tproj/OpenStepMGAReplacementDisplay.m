@@ -6949,8 +6949,17 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                  MGA_TMR0 + 16UL, 0UL,
                  MGA_TMR0 + 20UL, 0UL);
         ok = ok && osmgaDmaBlock(list, listDwords, &pos,
-                 MGA_TMR0 + 24UL, (unsigned long)b->state.tmr[6],
-                 MGA_TMR0 + 28UL, (unsigned long)b->state.tmr[7],
+                 /*
+                  * The engine adds 511 to the coordinate before it picks a
+                  * texel -- measured at zero gradient -- so what it is given
+                  * is what the caller meant, less that.  Comparing the two
+                  * paths on one textured scene, 137 pixels of 25964 took the
+                  * neighbouring texel because of it.
+                  */
+                 MGA_TMR0 + 24UL,
+                 (unsigned long)(b->state.tmr[6] - OSMGA_HW3D_TEX_BIAS),
+                 MGA_TMR0 + 28UL,
+                 (unsigned long)(b->state.tmr[7] - OSMGA_HW3D_TEX_BIAS),
                  MGA_TMR8,        1UL << 16,
                  MGA_DMAPAD,      0UL);
     }
