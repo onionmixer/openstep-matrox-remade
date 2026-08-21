@@ -47,7 +47,33 @@ typedef struct {
      * converted double.  There is no precision to choose here.
      */
     unsigned long z;            /* 1/256 of a depth code */
+    /*
+     * Texture coordinates, NORMALISED -- s and t as GL gives them, not
+     * multiplied by the texture's size.
+     *
+     * Texel coordinates were the first choice and are wrong: they are
+     * dimension-dependent, so the same vertex means a different place when
+     * the bound texture changes size, and everything built from it would
+     * have to be built again.  The size is batch state; it reaches the
+     * builder as an argument instead.
+     *
+     * Ignored unless a texture is passed.
+     */
+    double s, tc;
 } OSMGAMesaVertex;
+
+/*
+ * The bound texture, as far as the builder needs it: the coordinate scale
+ * follows the size, and nothing else here does.
+ *
+ * The scale is NOT 2^20 divided by the size.  The engine's log2 field names
+ * the power of two that CONTAINS the texture and the exact size travels
+ * separately, so one texel is 1 << (20 - ceil(log2 size)) and a texture that
+ * is not a power of two spans less than the whole coordinate range.
+ */
+typedef struct {
+    unsigned long w, h;         /* texels */
+} OSMGAMesaTex;
 
 /*
  * Depth comparison, in the engine's own encoding, or NONE to draw without
@@ -102,5 +128,28 @@ int OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
                            unsigned long zmode,
                            unsigned long blend,
                            OSMGAHW3DTri *out);
+
+/*
+ * The same, with a texture.
+ *
+ * tmrOut receives ONE SET OF TMR VALUES PER TRAPEZOID, not one per triangle.
+ * The engine re-seeds the horizontal coordinate at every primitive, at that
+ * primitive's own first-row left edge -- measured -- so the two halves of a
+ * split triangle need different starts.  The batch protocol has only one
+ * tmr[] for the whole batch, so the caller has to put each trapezoid in a
+ * batch of its own until that changes; the builder's job is to say what each
+ * one needs.
+ *
+ * tex == 0 is exactly OSMGAMesaBuildTriangle.
+ */
+int OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
+                              const OSMGAMesaVertex *b,
+                              const OSMGAMesaVertex *c,
+                              const OSMGAMesaVertex *flat,
+                              unsigned long zmode,
+                              unsigned long blend,
+                              const OSMGAMesaTex *tex,
+                              OSMGAHW3DTri *out,
+                              long tmrOut[][9]);
 
 #endif /* OPENSTEP_MGA_MESA_TRIANGLE_H */

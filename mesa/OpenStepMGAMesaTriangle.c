@@ -5,6 +5,7 @@
  */
 
 #include <string.h>
+#include <math.h>
 
 #include "OpenStepMGAMesaTriangle.h"
 
@@ -28,6 +29,31 @@
 typedef struct {
     double dx, dy, at_a;
 } OSMGAColourPlane;
+
+/*
+ * The power of two that contains n, exactly as the kernel's encoder works it
+ * out (OpenStepMGAReplacementDisplay.m:6853).  The two must agree: the kernel
+ * puts this number in the engine's log2 field and the coordinate scale
+ * follows from it, so a different answer here would place the texture
+ * somewhere the hardware is not looking.
+ */
+static long
+osmgaLog2Ceil(unsigned long n)
+{
+    long l = 0L;
+
+    while ((1UL << l) < n && l < 31L)
+        l++;
+    return l;
+}
+
+/* Nearest long.  The coordinate registers are plain integers, not the
+ * shifted fixed point the colour registers use. */
+static long
+osmgaRound(double v)
+{
+    return (long)floor(v + 0.5);
+}
 
 /* (component << 15), rounded, as the two's complement the engine reads.
  * Increments are signed there even though the field is unsigned here. */
@@ -293,7 +319,9 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
                const OSMGAMesaVertex *flat,
                const OSMGAColourPlane *plane, const OSMGAMesaVertex *a,
                unsigned long zmode, const OSMGAColourPlane *zplane,
-               unsigned long blend, const OSMGAColourPlane *aplane)
+               unsigned long blend, const OSMGAColourPlane *aplane,
+               const OSMGAColourPlane *uplane, const OSMGAColourPlane *vplane,
+               long *tmr)
 {
     long left, lmag, ldy, lerr, lsgn;
     long right, rmag, rdy, rerr, rsgn;
@@ -307,6 +335,13 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
     memset(t, 0, sizeof *t);
     t->dwgctl   = (zmode != 0UL) ? (OSMGA_TRI_DWGCTL_Z | zmode)
                                 : OSMGA_TRI_DWGCTL;
+    /*
+     * The textured opcode, when there is a texture.  Getting the coordinates
+     * right and leaving the opcode alone would have been arithmetic nobody
+     * ever used.
+     */
+    if (tmr != 0)
+        t->dwgctl = (t->dwgctl & ~0xFUL) | OSMGA_HW3D_OPCODE_TEX;
     t->alphactrl = blend;
     t->y = y;
     t->h = h;
@@ -386,6 +421,33 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
                                  + aplane->dy * oy);
         t->adx = osmgaFixed(osmgaClampSlope(aplane->dx));
         t->ady = osmgaFixed(osmgaClampSlope(aplane->dy));
+    }
+
+    if (tmr != 0 && uplane != 0 && vplane != 0) {
+        /*
+         * The same origin the colour and depth starts use: this trapezoid's
+         * own first row and that row's left edge, at the pixel's centre.
+         *
+         * The engine samples the coordinate at the pixel's LEFT EDGE and
+         * steps once per column -- measured, two texels per pixel from a zero
+         * start gave 0, 2, 4 at columns 0, 1, 2 rather than 1, 3, 5.  GL wants
+         * the sample at the centre.  Putting the plane's value at the centre
+         * into the start makes the engine's value at every pixel equal the
+         * plane's value at that pixel's centre, and since the texel index is
+         * a truncation of the same real number on both sides, the truncation
+         * does not change the answer.
+         */
+        double ox = (double)left - (double)a->x / (double)OSMGA_MESA_SUBONE + 0.5;
+        double oy = (double)y    - (double)a->y / (double)OSMGA_MESA_SUBONE + 0.5;
+
+        tmr[0] = osmgaRound(uplane->dx);
+        tmr[1] = osmgaRound(vplane->dx);
+        tmr[2] = osmgaRound(uplane->dy);
+        tmr[3] = osmgaRound(vplane->dy);
+        tmr[4] = tmr[5] = 0L;
+        tmr[6] = osmgaRound(uplane->at_a + uplane->dx * ox + uplane->dy * oy);
+        tmr[7] = osmgaRound(vplane->at_a + vplane->dx * ox + vplane->dy * oy);
+        tmr[8] = 0L;
     }
 
     if (zmode != 0UL && zplane != 0) {
@@ -494,17 +556,19 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
 }
 
 int
-OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
+OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
                        const OSMGAMesaVertex *b,
                        const OSMGAMesaVertex *c,
                        const OSMGAMesaVertex *flat,
                        unsigned long zmode,
                        unsigned long blend,
-                       OSMGAHW3DTri *out)
+                       const OSMGAMesaTex *tex,
+                       OSMGAHW3DTri *out,
+                       long tmrOut[][9])
 {
     const OSMGAMesaVertex *t, *m, *lo, *tmp;
     OSMGAColourPlane plane[3];
-    OSMGAColourPlane zplane, aplane;
+    OSMGAColourPlane zplane, aplane, uplane, vplane;
     const OSMGAMesaVertex *shade = flat;
     long span, sub, rT, rM, rL;
     double crossD;
@@ -578,6 +642,56 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
             zplane.dx = 0.0;
             zplane.dy = 0.0;
         }
+    }
+
+    /*
+     * The texture coordinates, as the engine counts them.
+     *
+     * A texel is 1 << (20 - ceil(log2 size)) and NOT 2^20 over the size: the
+     * engine's log2 field names the power of two that CONTAINS the texture,
+     * and the exact size travels beside it, so a texture that is not a power
+     * of two spans less than the whole range.  The two axes scale
+     * independently, because the width and the height have their own fields.
+     */
+    if (tex != 0) {
+        double x1 = (double)(b->x - a->x) / (double)OSMGA_MESA_SUBONE;
+        double y1 = (double)(b->y - a->y) / (double)OSMGA_MESA_SUBONE;
+        double x2 = (double)(c->x - a->x) / (double)OSMGA_MESA_SUBONE;
+        double y2 = (double)(c->y - a->y) / (double)OSMGA_MESA_SUBONE;
+        double den = x1 * y2 - x2 * y1;
+        double us = (double)tex->w * (double)(1L << (20L - osmgaLog2Ceil(tex->w)));
+        double vs = (double)tex->h * (double)(1L << (20L - osmgaLog2Ceil(tex->h)));
+        double ua = a->s * us, ub = b->s * us, uc = c->s * us;
+        double va = a->tc * vs, vb = b->tc * vs, vc = c->tc * vs;
+        double lo, hi;
+
+        uplane.dx   = ((ub - ua) * y2 - (uc - ua) * y1) / den;
+        uplane.dy   = ((uc - ua) * x1 - (ub - ua) * x2) / den;
+        uplane.at_a = ua;
+        vplane.dx   = ((vb - va) * y2 - (vc - va) * y1) / den;
+        vplane.dy   = ((vc - va) * x1 - (vb - va) * x2) / den;
+        vplane.at_a = va;
+
+        /*
+         * Every pixel this triangle draws has its centre inside the triangle,
+         * and the coordinate is a plane, so its range over those pixels is
+         * inside the range over the three vertices.  Checking the vertices is
+         * therefore exact for what will actually be fetched -- and refusing
+         * here saves building a batch, submitting it, and being told no.
+         *
+         * The kernel checks a wider box and may still refuse; that is what
+         * the software fallback is for.
+         */
+        lo = hi = ua;
+        if (ub < lo) lo = ub;   if (ub > hi) hi = ub;
+        if (uc < lo) lo = uc;   if (uc > hi) hi = uc;
+        if (lo < 0.0 || hi > (double)OSMGA_HW3D_TEX_COORD_MAX)
+            return OSMGA_MESA_TRI_UNSUPPORTED;
+        lo = hi = va;
+        if (vb < lo) lo = vb;   if (vb > hi) hi = vb;
+        if (vc < lo) lo = vc;   if (vc > hi) hi = vc;
+        if (lo < 0.0 || hi > (double)OSMGA_HW3D_TEX_COORD_MAX)
+            return OSMGA_MESA_TRI_UNSUPPORTED;
     }
 
     /* Always, not only when blending: the destination's fourth byte is
@@ -750,7 +864,10 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
         skip = osmgaFirstDrawn(le, re, rT, rM - rT, sub);
         if (skip < rM - rT) {
             osmgaTrapezoid(&out[n], rT + skip, rM - rT - skip, sub, le, re,
-                           shade, plane, a, zmode, &zplane, blend, &aplane);
+                           shade, plane, a, zmode, &zplane, blend, &aplane,
+                           (tex != 0) ? &uplane : (const OSMGAColourPlane *)0,
+                           (tex != 0) ? &vplane : (const OSMGAColourPlane *)0,
+                           (tex != 0 && tmrOut != 0) ? tmrOut[n] : (long *)0);
             n++;
         }
     }
@@ -767,9 +884,31 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
         skip = osmgaFirstDrawn(le, re, rM, rL - rM, sub);
         if (skip < rL - rM) {
             osmgaTrapezoid(&out[n], rM + skip, rL - rM - skip, sub, le, re,
-                           shade, plane, a, zmode, &zplane, blend, &aplane);
+                           shade, plane, a, zmode, &zplane, blend, &aplane,
+                           (tex != 0) ? &uplane : (const OSMGAColourPlane *)0,
+                           (tex != 0) ? &vplane : (const OSMGAColourPlane *)0,
+                           (tex != 0 && tmrOut != 0) ? tmrOut[n] : (long *)0);
             n++;
         }
     }
     return n;
+}
+
+/*
+ * The untextured entry point, which is every caller there was.  Kept so that
+ * the shape of the old contract is unchanged: a texture is something a caller
+ * asks for, not something it has to say no to.
+ */
+int
+OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
+                       const OSMGAMesaVertex *b,
+                       const OSMGAMesaVertex *c,
+                       const OSMGAMesaVertex *flat,
+                       unsigned long zmode,
+                       unsigned long blend,
+                       OSMGAHW3DTri *out)
+{
+    return OSMGAMesaBuildTriangleTex(a, b, c, flat, zmode, blend,
+                                     (const OSMGAMesaTex *)0, out,
+                                     (long (*)[9])0);
 }
