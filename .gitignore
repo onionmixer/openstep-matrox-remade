@@ -26,3 +26,4 @@ sym/
 
 # Built libraries, kept only so a reboot does not cost a rebuild.
 build/mesa/
+scratch-cov/
