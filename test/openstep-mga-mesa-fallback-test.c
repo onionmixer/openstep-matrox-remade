@@ -172,14 +172,21 @@ main(void)
         }
     }
 
-    if (OSMGAMesaHookSoftware() - s0 == 0UL) {
-        printf("FAIL -- nothing was handed to software; the back end either "
-               "drew it or dropped it\n");
-        return 1;
-    }
+    /*
+     * What this asserts changed when the kernel stopped refusing these.
+     *
+     * It was written while an ordinary clipped triangle was turned away by
+     * the edge-slope check, and it asserted that such a triangle reached the
+     * software path instead of being lost.  The check was wrong -- it bounded
+     * the edge displacement multiplied by the height -- and with that fixed
+     * the same triangle is drawn by the engine.  So the assertion is now the
+     * other way round, and this file guards the fix rather than the fallback.
+     *
+     * The fallback itself is left without a test by that, which is recorded
+     * rather than papered over: see REMAINING_WORK.
+     */
     if (farPixels == 0L) {
-        printf("FAIL -- the refused triangle left no pixels: it was dropped, "
-               "which is what this exists to stop\n");
+        printf("FAIL -- the far triangle left no pixels at all\n");
         return 1;
     }
     if (both != nearOnly) {
@@ -187,9 +194,18 @@ main(void)
                "added\n");
         return 1;
     }
-    printf("PASS -- the triangle this back end could not draw was drawn by "
-           "software, %ld pixels of it; the accelerated one beside it is "
-           "untouched and still accelerated in the same frame\n", farPixels);
+    if (OSMGAMesaHookDeclined() - x0 != 0UL) {
+        printf("FAIL -- the kernel refused a batch for an ordinary clipped "
+               "triangle; the edge bound has come back\n");
+        return 1;
+    }
+    if (OSMGAMesaHookDrawn() - d0 == 0UL) {
+        printf("FAIL -- nothing was accelerated for the far triangle\n");
+        return 1;
+    }
+    printf("PASS -- an ordinary clipped triangle is accelerated, %ld pixels "
+           "of it, with no refusal; the one beside it is untouched\n",
+           farPixels);
     OSMesaDestroyContext(ctx);
     return 0;
 }
