@@ -48,6 +48,12 @@ static unsigned long hookUnsupported;
 /* Textured triangles the affine gate turned away, and ones whose texture
  * could not be got into video memory. */
 static unsigned long hookTexPersp, hookTexAbsent;
+/*
+ * Submissions, which is not the same as triangles: a textured triangle that
+ * splits goes out as two batches, because tmr[] is batch state.  hookDrawn
+ * counts triangles and cannot see that.
+ */
+static unsigned long hookBatches;
 static unsigned long hookHardState;
 static unsigned long hookSoftState;
 
@@ -406,6 +412,7 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     batch->state.dstPitch  = OSMGAMesaBufferStride();
     batch->state.zorg      = OSMGAMesaBufferDepthOrigin();
 
+    hookBatches++;
     if (OSMGAMesaProbeSubmit(&res) != 0) {
         hookDeclined++;
         if (res.verdict < OSMGA_MESA_VERDICTS)
@@ -850,6 +857,7 @@ unsigned long OSMGAMesaHookHardState(void) { return hookHardState; }
 unsigned long OSMGAMesaHookSoftState(void) { return hookSoftState; }
 unsigned long OSMGAMesaHookTexPersp(void)  { return hookTexPersp; }
 unsigned long OSMGAMesaHookTexAbsent(void) { return hookTexAbsent; }
+unsigned long OSMGAMesaHookBatches(void)   { return hookBatches; }
 unsigned long OSMGAMesaHookUnsupported(void) { return hookUnsupported; }
 unsigned long OSMGAMesaHookVerdictCount(unsigned long v)
 {

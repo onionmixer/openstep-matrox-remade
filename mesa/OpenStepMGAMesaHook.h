@@ -52,6 +52,8 @@ unsigned long OSMGAMesaHookSoftState(void);
  * no room in video memory for the texture. */
 unsigned long OSMGAMesaHookTexPersp(void);
 unsigned long OSMGAMesaHookTexAbsent(void);
+/* Submissions.  A textured triangle that splits makes two of them. */
+unsigned long OSMGAMesaHookBatches(void);
 /* Of those, the ones this back end could not express at all -- as opposed to
  * the ones the kernel refused. */
 unsigned long OSMGAMesaHookUnsupported(void);

@@ -17,6 +17,7 @@ extern unsigned long OSMGAMesaHookSoftware(void);
 extern unsigned long OSMGAMesaHookTexPersp(void);
 extern unsigned long OSMGAMesaHookTexAbsent(void);
 extern unsigned long OSMGAMesaTexUploads(void);
+extern unsigned long OSMGAMesaHookBatches(void);
 
 #define W 320
 #define H 240
@@ -81,14 +82,22 @@ painted(void)
     return n;
 }
 
+/*
+ * With an argument, draw one scene and print every drawn pixel instead of
+ * running the checks.  Two runs -- accelerated and not -- then say how the two
+ * paths differ, which is where the engine's constant first becomes a number.
+ */
+static int dumpMode;
+
 int
-main(void)
+main(int argc, char **argv)
 {
     OSMesaContext ctx;
     GLuint tex;
     unsigned long d0, s0, p0, a0;
     long drew;
 
+    dumpMode = (argc > 1);
     app = (unsigned long *)malloc((unsigned)(W * H) * sizeof(unsigned long));
     if (!app) { printf("no room\n"); return 2; }
     ctx = OSMesaCreateContext(OSMESA_ARGB, NULL);
@@ -106,6 +115,25 @@ main(void)
 
     maketex(&tex);
     glEnable(GL_TEXTURE_2D);
+
+    if (dumpMode) {
+        long x, y;
+
+        glClear(GL_COLOR_BUFFER_BIT);
+        /* one quad and one split triangle, so both shapes are compared */
+        quad(40.0, 40.0, 168.0, 168.0);
+        glBegin(GL_TRIANGLES);
+          glTexCoord2f(0.0f, 0.0f); glVertex2d(180.0,  30.0);
+          glTexCoord2f(1.0f, 0.2f); glVertex2d(300.0,  70.0);
+          glTexCoord2f(0.3f, 1.0f); glVertex2d(210.0, 200.0);
+        glEnd();
+        glFinish();
+        for (y = 0; y < H; y++)
+            for (x = 0; x < W; x++)
+                if (app[y * W + x] != CLEARC)
+                    printf("P %ld %ld %lu\n", x, y, app[y * W + x] & 0xFFFFFFUL);
+        return 0;
+    }
 
     /* 1. the ordinary case reaches the engine */
     glClear(GL_COLOR_BUFFER_BIT);
@@ -195,6 +223,80 @@ main(void)
         OSMGAMesaHookDrawn() == d0, 0);
     say("and by the affine gate, not by something else",
         OSMGAMesaHookTexPersp() - p0 >= 1UL, 0);
+
+    /* 4. a triangle that splits into two trapezoids */
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glOrtho(0.0, (double)W, 0.0, (double)H, -1.0, 1.0);
+    glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+    glClear(GL_COLOR_BUFFER_BIT);
+    d0 = OSMGAMesaHookBatches(); s0 = OSMGAMesaHookSoftware();
+    glBegin(GL_TRIANGLES);
+      glTexCoord2f(0.0f, 0.0f); glVertex2d( 20.0,  30.0);
+      glTexCoord2f(1.0f, 0.2f); glVertex2d(220.0,  70.0);
+      glTexCoord2f(0.3f, 1.0f); glVertex2d( 80.0, 200.0);
+    glEnd();
+    glFinish();
+    /*
+     * A middle vertex means two trapezoids, and tmr[] is batch state, so this
+     * is where one batch each earns its keep.  Two submissions from ONE
+     * triangle is the thing to see; one would mean the split never happened
+     * and the case proves nothing.
+     */
+    say("a split triangle goes out as two batches",
+        OSMGAMesaHookBatches() - d0 == 2UL, 0);
+    say("with nothing falling back", OSMGAMesaHookSoftware() - s0 == 0UL, 0);
+    {
+        long x, y, bad = 0, seen = 0;
+
+        for (y = 0; y < H; y++)
+            for (x = 0; x < W; x++) {
+                unsigned long p = app[y * W + x];
+                unsigned long r, g, b, tx, ty;
+
+                if (p == CLEARC) continue;
+                seen++;
+                r = (p >> 16) & 0xFFUL; g = (p >> 8) & 0xFFUL; b = p & 0xFFUL;
+                tx = (r - 8UL) / 16UL; ty = (g - 4UL) / 16UL;
+                if (r % 16UL != 8UL || g % 16UL != 4UL ||
+                    tx >= (unsigned long)TD || ty >= (unsigned long)TD ||
+                    b != tx + ty)
+                    bad++;
+            }
+        printf("# split: %ld pixels, %ld not a texel of ours\n", seen, bad);
+        say("every pixel of it is still a texel", bad == 0, 0);
+    }
+
+    /* 5. the arena, run out */
+    {
+        GLuint big[24];
+        static GLubyte fat[256 * 256 * 3];
+        int k, ran = 0;
+
+        memset(fat, 0x40, sizeof fat);
+        glGenTextures(24, big);
+        for (k = 0; k < 24; k++) {
+            glBindTexture(GL_TEXTURE_2D, big[k]);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 256, 256, 0,
+                         GL_RGB, GL_UNSIGNED_BYTE, fat);
+            glClear(GL_COLOR_BUFFER_BIT);
+            d0 = OSMGAMesaHookDrawn(); a0 = OSMGAMesaHookTexAbsent();
+            quad(40.0, 40.0, 168.0, 168.0);
+            glFinish();
+            if (OSMGAMesaHookDrawn() == d0) {
+                say("running out of arena falls back to software",
+                    OSMGAMesaHookTexAbsent() - a0 >= 1UL, 0);
+                say("and the quad is still drawn", painted() == 128L * 128L, 0);
+                ran = 1;
+                break;
+            }
+        }
+        say("the arena does run out", ran, 0);
+        glDeleteTextures(24, big);
+    }
 
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
