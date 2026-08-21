@@ -34,6 +34,7 @@ extern unsigned long OSMGAMesaHookDrawn(void);
 extern unsigned long OSMGAMesaHookDeclined(void);
 extern unsigned long OSMGAMesaHookSoftware(void);
 extern unsigned long OSMGAMesaBufferOrigin(void);
+extern unsigned long OSMGAMesaDepthClamps(void);
 
 #define W  320
 #define H  240
@@ -101,6 +102,20 @@ static const int nvert[NSHAPE] = { 4, 4, 4, 6, 8 };
 
 static unsigned long *app;
 
+/*
+ * Depth from the same kind of affine function, so both neighbours share one
+ * depth plane and a seam in it is a defect.  The window depth wanted is
+ * 20000 + 60*x + 40*y, and the calibration says a window code k comes from an
+ * object depth of 1 - k/32767.5.
+ */
+static double
+zfor(int s, int v)
+{
+    double code = 20000.5 + 60.37 * (double)vx[s][v] + 40.11 * (double)vy[s][v];
+
+    return 1.0 - code / 32767.5;
+}
+
 static void
 tri(int s, int t, int plane, int r, int g, int b)
 {
@@ -110,6 +125,11 @@ tri(int s, int t, int plane, int r, int g, int b)
       for (k = 0; k < 3; k++) {
           int v = tidx[s][t][k];
 
+          if (plane == 2) {
+              glColor4ub(200, 200, 200, 255);
+              glVertex3d((double)vx[s][v], (double)vy[s][v], zfor(s, v));
+              continue;
+          }
           if (plane) {
               int c = (int)(vx[s][v] / 4.0f + vy[s][v] / 4.0f + 120.0f);
 
@@ -164,7 +184,13 @@ main(int argc, char **argv)
             tri(s, t, 0, (t & 1) ? 255 : 0, (t & 1) ? 0 : 255, 0);
     } else if (strcmp(mode, "plane") == 0) {
         for (t = 0; t < ntri[s]; t++) tri(s, t, 1, 0, 0, 0);
-    } else { printf("mode: soloN both rev plane\n"); return 2; }
+    } else if (strcmp(mode, "zplane") == 0) {
+        /* GL_LESS against a far clear rejects nothing, so the depth value is
+         * measured rather than the depth test. */
+        glEnable(GL_DEPTH_TEST); glDepthFunc(GL_LESS); glDepthMask(GL_TRUE);
+        glClearDepth(1.0); glClear(GL_DEPTH_BUFFER_BIT);
+        for (t = 0; t < ntri[s]; t++) tri(s, t, 2, 0, 0, 0);
+    } else { printf("mode: soloN both rev plane zplane\n"); return 2; }
     glFinish();
 
     printf("# shape %c mode %s ntri %d\n", 'A' + s, mode, ntri[s]);
@@ -178,14 +204,29 @@ main(int argc, char **argv)
     printf("# mode %s\n",
            (OSMGAMesaBufferOrigin() == 0UL) ? "software"
            : ((OSMGAMesaHookSoftware() - s0 != 0UL) ? "MIXED" : "hardware"));
-    for (y = 0; y < H; y++)
-        for (x = 0; x < W; x++) {
-            unsigned long c = app[y * W + x];
+    if (strcmp(mode, "zplane") == 0) {
+        void *zb; GLint dw, dh, bpv;
 
-            if (c == CLEARC) continue;
-            printf("P %ld %ld %lu %lu %lu\n", x, y,
-                   (c >> 16) & 0xFFUL, (c >> 8) & 0xFFUL, c & 0xFFUL);
+        printf("# depth starts clamped: %lu\n", OSMGAMesaDepthClamps());
+        if (!OSMesaGetDepthBuffer(ctx, &dw, &dh, &bpv, &zb) || bpv != 2) {
+            printf("# no 16-bit depth buffer\n"); return 2;
         }
+        for (y = 0; y < H; y++)
+            for (x = 0; x < W; x++) {
+                if (app[y * W + x] == CLEARC) continue;
+                printf("Z %ld %ld %u\n", x, y,
+                       (unsigned)((unsigned short *)zb)[y * dw + x]);
+            }
+    } else {
+        for (y = 0; y < H; y++)
+            for (x = 0; x < W; x++) {
+                unsigned long c = app[y * W + x];
+
+                if (c == CLEARC) continue;
+                printf("P %ld %ld %lu %lu %lu\n", x, y,
+                       (c >> 16) & 0xFFUL, (c >> 8) & 0xFFUL, c & 0xFFUL);
+            }
+    }
     OSMesaDestroyContext(ctx);
     return 0;
 }
