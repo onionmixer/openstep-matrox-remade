@@ -50,6 +50,13 @@ unsigned long OSMGAMesaBufferStride(void);
 /* Is this the context drawing into the surface right now?  Not the same as
  * owning it: a rebind at another size is refused and leaves the owner set. */
 int OSMGAMesaBufferBoundTo(const void *ctx);
+/*
+ * Where a texture may live: after the colour surface and after the space a
+ * depth buffer would take, reserved whether or not one was asked for.  Zero
+ * means there is no room, which is a refusal and not a small arena.
+ */
+int OSMGAMesaBufferTextureArena(const void *ctx, unsigned long *origin,
+                                unsigned long *bytes);
 /* The application's own buffer, for putting back what was substituted. */
 void *OSMGAMesaBufferApp(void);
 

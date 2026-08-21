@@ -43,6 +43,96 @@ unsigned long OSMGAMesaBufferHeight(void) { return bufHeight; }
 unsigned long OSMGAMesaBufferStride(void) { return bufStride; }
 unsigned long OSMGAMesaBufferDepthOrigin(void) { return depthOrigin; }
 
+/*
+ * Where a texture may live.
+ *
+ * The window holds three things and has no owner: the kernel gives colour,
+ * depth and texture the WHOLE window as their permitted range and checks only
+ * that each reach lands inside it -- there is no intersection check anywhere
+ * in the validator, on purpose.  So the layout is entirely userland's to keep
+ * straight, and this is where it is decided:
+ *
+ *   [ colour ][ pad ][ depth reservation ][ pad ][ texture arena ... ] end
+ *
+ * The depth extent is RESERVED whether or not Mesa ever asks for a depth
+ * buffer.  Depth is allocated lazily, so a texture placed immediately after
+ * the colour surface would be sitting exactly where a later depth request
+ * lands -- and the kernel would allow it.  Reserving costs the depth extent
+ * on a surface that never uses depth (about six percent of the arena at
+ * 320x240) and buys a layout with one order instead of two.
+ *
+ * The reservation is not padded.  Only the two starts are rounded to a page,
+ * because only an offset has to be page-aligned to be mapped; the depth
+ * allocator leaves its own length exact for the same reason.
+ *
+ * Answers only the context currently bound.  A rebinding at a different size
+ * is refused rather than resized, and that refusal clears bufBound while
+ * deliberately leaving the old surface mapped -- so "a surface exists" is not
+ * the same question as "this caller may use it".
+ */
+int
+OSMGAMesaBufferTextureArena(const void *ctx, unsigned long *origin,
+                            unsigned long *bytes)
+{
+    OSMGAMesaProbe probe;
+    unsigned long page, colourEnd, depthStart, depthEnd, texStart, avail;
+
+    if (origin != 0) *origin = 0UL;
+    if (bytes != 0)  *bytes  = 0UL;
+    if (origin == 0 || bytes == 0)
+        return 0;
+    if (bufMapped == 0 || ctx == 0 || bufBound != ctx)
+        return 0;
+
+    page = (unsigned long)vm_page_size;
+    if (page == 0UL || (page & (page - 1UL)) != 0UL)
+        return 0;               /* not a power of two: the mask below lies */
+
+    OSMGAMesaProbeRun(&probe);
+    if (probe.verdict != OSMGA_PROBE_HARDWARE)
+        return 0;
+    if (bufOrigin < probe.caps[OSMGA_HW3D_CAP_VRAMOFF])
+        return 0;
+    avail = probe.caps[OSMGA_HW3D_CAP_VRAMLEN];
+
+    /*
+     * Everything below is an offset from the window start, and no product is
+     * formed without first proving it fits -- a check that overflows is not a
+     * check, which is the rule the rest of this file already follows.
+     */
+    colourEnd = bufOrigin - probe.caps[OSMGA_HW3D_CAP_VRAMOFF];
+    if (bufStride == 0UL || bufHeight == 0UL)
+        return 0;
+    if (bufHeight > (0xFFFFFFFFUL - colourEnd) / (bufStride * 4UL))
+        return 0;
+    colourEnd += bufHeight * bufStride * 4UL;
+
+    if (colourEnd > 0xFFFFFFFFUL - (page - 1UL))
+        return 0;
+    depthStart = (colourEnd + (page - 1UL)) & ~(page - 1UL);
+
+    if (bufHeight > (0xFFFFFFFFUL - depthStart) / (bufStride * 2UL))
+        return 0;
+    depthEnd = depthStart + bufHeight * bufStride * 2UL;
+
+    if (depthEnd > 0xFFFFFFFFUL - (page - 1UL))
+        return 0;
+    texStart = (depthEnd + (page - 1UL)) & ~(page - 1UL);
+
+    /*
+     * At the display's own resolution the colour surface is the whole window,
+     * and there is no arena.  Nothing is returned rather than something small
+     * and overlapping: zero here means "no texture acceleration", which is a
+     * refusal the caller can act on.
+     */
+    if (texStart >= avail)
+        return 0;
+
+    *origin = probe.caps[OSMGA_HW3D_CAP_VRAMOFF] + texStart;
+    *bytes  = avail - texStart;
+    return 1;
+}
+
 /* Is this the context drawing into the surface right now? */
 int OSMGAMesaBufferBoundTo(const void *ctx)
 {
@@ -94,8 +184,37 @@ OpenStepMesaAccelDepthBuffer(void *ctx, int width, int height,
     unsigned long need, tail, avail, page;
     vm_address_t addr = 0;
 
-    if (depthMapped != 0)
-        return depthMapped;
+    /*
+     * The fork check first, because the fast path below returns without it.
+     *
+     * OSMGAMesaProbeRun notices a changed pid and lets go of everything the
+     * child inherited, including this depth mapping -- but only if it is
+     * reached.  It was reached after the return below, so a child was handed
+     * its parent's depth buffer, through a descriptor that was about to
+     * become the parent's alone.
+     */
+    OSMGAMesaProbeRun(&probe);
+    if (probe.verdict != OSMGA_PROBE_HARDWARE)
+        return 0;
+
+    /*
+     * The same buffer only to the caller it was made for, at the size and
+     * width it was made at.
+     *
+     * This used to return the mapping to anybody who asked.  A caller asking
+     * for 32-bit depth, or for a different size, or from another context, got
+     * the 16-bit buffer belonging to the first caller -- the checks that would
+     * have refused all three are below this return, not above it.  Nothing
+     * else ever allocates a second one, so the wrong buffer was never made;
+     * it was handed over.
+     */
+    if (depthMapped != 0) {
+        if (bufCtx == ctx && bytesPerValue == 2 &&
+            (unsigned long)width == bufWidth &&
+            (unsigned long)height == bufHeight)
+            return depthMapped;
+        return 0;
+    }
     /*
      * Only alongside a colour surface of ours, and only at sixteen bits:
      * that is what the engine writes, and a depth buffer the software path
@@ -117,10 +236,6 @@ OpenStepMesaAccelDepthBuffer(void *ctx, int width, int height,
         return 0;
     if ((unsigned long)width != bufWidth ||
         (unsigned long)height != bufHeight)
-        return 0;
-
-    OSMGAMesaProbeRun(&probe);
-    if (probe.verdict != OSMGA_PROBE_HARDWARE)
         return 0;
 
     /*
@@ -329,6 +444,15 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
      * against an origin of zero and a size of zero -- the description has to
      * stay true for as long as anything might still be drawing through it.
      */
+    /*
+     * The fork check before the fast path, for the same reason as in the
+     * depth function: the return inside the block below never reached the
+     * probe, so a child went on drawing into the surface it inherited.
+     */
+    OSMGAMesaProbeRun(&probe);
+    if (probe.verdict != OSMGA_PROBE_HARDWARE)
+        return 0;
+
     if (bufMapped != 0) {
         /*
          * There is one surface, and it belongs to the context that got it.
@@ -365,10 +489,6 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
      * fault no amount of looking at one triangle will reveal.
      */
     if (rshift != 16 || gshift != 8 || bshift != 0)
-        return 0;
-
-    OSMGAMesaProbeRun(&probe);
-    if (probe.verdict != OSMGA_PROBE_HARDWARE)
         return 0;
 
     /*
