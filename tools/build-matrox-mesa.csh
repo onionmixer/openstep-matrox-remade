@@ -7,12 +7,59 @@
 # one macro -- so a machine without this package has the Mesa it always had,
 # rather than one restored to look like it.
 #
-# Run on the target:  sh /ndrv/openstep-matrox-remade/tools/build-matrox-mesa.csh
+# Run on the target:  csh -f /ndrv/openstep-matrox-remade/tools/build-matrox-mesa.csh
+#
+# csh, not sh: this file is csh syntax and always has been, and the line here
+# said sh for long enough that it was worth fixing rather than working around.
 
-set mesa_src  = /tmp/OpenStepMesa342/src/Mesa-3.4.2
+#
+# Where the staged Mesa is, and where this build's own output goes.  Both are
+# PARENTS with the leaf appended here, so that the removal below can only ever
+# be pointed at a directory of the expected name.  Unset means /tmp, which is
+# what it has always been and what a one-off build wants; a tree that should
+# survive a restart wants somewhere else.
+#
+# They must not nest.  If the output were inside the staged tree the clearing
+# of the output would take the stock library this reads with it.
+#
+#
+# The names are short because they have to be: this csh refuses a variable
+# name longer than 18 characters with "Variable syntax." and nothing else.
+# Measured on the machine -- 18 works, 19 does not.
+#
+if (! $?MESA_STAGE_PARENT) setenv MESA_STAGE_PARENT /tmp
+if (! $?MGA_OUT_PARENT)      setenv MGA_OUT_PARENT /tmp
+#
+# switch rather than a comparison: csh expands an unquoted /* in an if into
+# every entry of the root directory, which is a syntax error and not a test.
+# A switch pattern is matched, not globbed, and it answers no for an empty
+# value as well -- checked on the machine.
+#
+switch ("$MESA_STAGE_PARENT")
+case /*:
+    breaksw
+default:
+    echo "build-matrox-mesa: MESA_STAGE_PARENT must be absolute"
+    exit 2
+endsw
+switch ("$MGA_OUT_PARENT")
+case /*:
+    breaksw
+default:
+    echo "build-matrox-mesa: MGA_OUT_PARENT must be absolute"
+    exit 2
+endsw
+set mesa_src  = "$MESA_STAGE_PARENT/OpenStepMesa342/src/Mesa-3.4.2"
 set mga_src   = /ndrv/openstep-matrox-remade
 set port_src  = /ndrv/opennstep-mesa342/upstream/Mesa-3.4.2
-set out       = /tmp/OpenStepMesaMGA
+set out       = "$MGA_OUT_PARENT/OpenStepMesaMGA"
+
+# Enforced, not only asked for in the comment above: the two must be separate
+# places, or clearing one destroys what the other is read from.
+if ("$out" == "$MESA_STAGE_PARENT/OpenStepMesa342") then
+    echo "build-matrox-mesa: the output would be the staged tree itself"
+    exit 2
+endif
 set accel     = -DOPENSTEP_MESA_ACCEL_HOOK
 
 if (! -r $mesa_src/Make-config) then
@@ -30,7 +77,7 @@ if (! -r $stock) then
     exit 2
 endif
 
-rm -rf $out
+rm -rf "$out"
 mkdir $out
 cp $stock $out/libGL_mga.a
 
