@@ -158,6 +158,30 @@ blank(void)
             colour[r * STRIDE_DW + c] = BLANK;
 }
 
+/*
+ * Read a drawn pixel.
+ *
+ * The submit call returns when the batch has been handed to the engine, not
+ * when the engine has finished with it, so a read taken straight afterwards
+ * can catch a column the engine has not reached yet -- and the further right
+ * the column, the likelier that is.  Bisecting on such a read converges on
+ * the previous iteration's picture instead of this one's.  BLANK is a value
+ * no texel can produce, so waiting for it to go is a sound way to wait for
+ * the column to be written.
+ */
+static unsigned long
+pixat(unsigned long r, unsigned long c)
+{
+    unsigned long v, spin;
+
+    for (spin = 0UL; spin < 2000000UL; spin++) {
+        v = colour[r * STRIDE_DW + c];
+        if (v != BLANK)
+            return v;
+    }
+    return colour[r * STRIDE_DW + c];
+}
+
 int
 main(void)
 {
@@ -1295,6 +1319,151 @@ main(void)
                mo ? "the offset rule" :
                mc ? "a rule on the coordinate" :
                mb ? "bit 16 clear" : "none of the three");
+    }
+
+    printf("\n21. is the coordinate cut at the sample, or in the accumulator?\n");
+    {
+        /*
+         * Section 19 says the coordinate loses low bits as it grows, but not
+         * WHERE it loses them, and the difference decides whether the encoder
+         * may compensate at all.
+         *
+         * If the cut happens when the sample is taken, from a coordinate that
+         * accumulated exactly, then taking 511 off the start costs at most
+         * g-1 units anywhere along the span.  If instead the accumulator
+         * itself is cut at every step, an increment smaller than g is thrown
+         * away entirely and the coordinate STALLS -- and then compensating at
+         * the start would drift by a texel over a long enough span.
+         *
+         * Every live-gradient measurement so far used 8192, 16384 or 32768,
+         * every one a multiple of every g, which is precisely the blind spot.
+         * So: sit in the g = 16 region (past 2^19, texel 32 and up) and step
+         * by less than 16.  The starts are chosen so that a coordinate which
+         * really accumulates reaches texel 33 within the columns read.
+         *
+         *      increment 15 from 539760   crosses at column 28
+         *      increment  5 from 540048   crosses at column 26
+         *      increment  1 from 540160   crosses at column 16
+         *
+         * A cut accumulator never crosses at all.
+         */
+        static const long incs[3]   = { 15L, 5L, 1L };
+        static const long begins[3] = { 539760L, 540048L, 540160L };
+        static const long cross[3]  = { 28L, 26L, 16L };
+        int j;
+
+        for (j = 0; j < 3; j++) {
+            unsigned long c;
+            long first = -1L;
+
+            blank();
+            (void)setup(64UL, 0UL, 32UL, 4UL, incs[j], 0UL);
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = begins[j];
+            batch->state.tmr[7] = 0L;
+            (void)fire();
+            printf("   increment %2ld  u:", incs[j]);
+            for (c = 0UL; c < 32UL; c++) {
+                unsigned long got = pixat(0UL, c) & 0xFFUL;
+
+                printf("%c", (got >= 33UL) ? '1' : '0');
+                if (first < 0L && got >= 33UL) first = (long)c;
+            }
+            if (first < 0L)
+                printf("   never crossed -- the accumulator is cut\n");
+            else
+                printf("   crossed at %ld (a cut accumulator never would;"
+                       " section 22 measures the %ld)\n",
+                       first, first - cross[j]);
+        }
+    }
+
+    printf("\n22. how much does a step add, exactly?\n");
+    {
+        /*
+         * Section 21 crossed a column earlier than the model in two of three
+         * runs, so the effective coordinate is not exactly what the model
+         * says.  Measuring it by bisecting the start turned out to be a bad
+         * instrument: sixteen submissions in a row, each preceded by clearing
+         * a quarter of a megabyte, and the engine does not keep up -- the
+         * columns further right come back holding the blank pattern, and a
+         * bisection reading those converges on nothing.
+         *
+         * One drawing per start, and an increment of ONE, is a better
+         * instrument than any bisection: each column then advances the
+         * coordinate by exactly one unit, so the column where the texel turns
+         * over pins the effective coordinate to a single unit.
+         *
+         *      K = 33 * texel  -  start  -  (turnover column)
+         *
+         * A flat K across thirty-two starts is a constant bias; a K that
+         * moves with the column is a per-step term.  The same sweep is then
+         * repeated at increments 5 and 15 to see whether the step size
+         * enters.
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        long tgt = 33L * texel;
+        static const long incs[3] = { 1L, 5L, 15L };
+        int j;
+
+        for (j = 0; j < 3; j++) {
+            long n;
+
+            printf("   increment %2ld, K at each start:", incs[j]);
+            for (n = 0L; n < 12L; n++) {
+                long begin = tgt - 496L - incs[j] * 20L + n * incs[j];
+                unsigned long c;
+                long first = -1L;
+                int blanks = 0;
+
+                blank();
+                (void)setup(64UL, 0UL, 32UL, 4UL, incs[j], 0UL);
+                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                batch->state.tmr[3] = 0L;
+                batch->state.tmr[6] = begin;
+                batch->state.tmr[7] = 0L;
+                (void)fire();
+                for (c = 0UL; c < 32UL; c++) {
+                    unsigned long got = pixat(0UL, c);
+
+                    if (got == BLANK) { blanks++; continue; }
+                    if (first < 0L && (got & 0xFFUL) >= 33UL)
+                        first = (long)c;
+                }
+                if (blanks)
+                    printf(" b%d", blanks);
+                else if (first < 0L)
+                    printf("   --");
+                else
+                    printf(" %4ld", tgt - begin - incs[j] * first);
+            }
+            printf("\n");
+        }
+        printf("   a flat row is a constant bias; a row that climbs by the"
+               " increment is a per-step term\n");
+        {   /* and the columns themselves, one unit of start at a time */
+            long n, jj;
+
+            for (jj = 0; jj < 3; jj++)
+            for (n = 0L; n < 4L; n++) {
+                long begin = tgt - 496L - incs[jj] * 20L + n;
+                unsigned long c;
+
+                blank();
+                (void)setup(64UL, 0UL, 32UL, 4UL, incs[jj], 0UL);
+                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                batch->state.tmr[3] = 0L;
+                batch->state.tmr[6] = begin;
+                batch->state.tmr[7] = 0L;
+                (void)fire();
+                printf("   inc %2ld start %ld  ", incs[jj], begin);
+                for (c = 0UL; c < 32UL; c++)
+                    printf("%c", ((pixat(0UL, c) & 0xFFUL) >= 33UL)
+                                 ? '1' : '0');
+                printf("\n");
+            }
+        }
     }
 
     printf("\n%s (%d failing)\n",
