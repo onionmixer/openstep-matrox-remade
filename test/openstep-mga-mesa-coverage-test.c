@@ -101,6 +101,24 @@ shape(int n)
      * wrong some further way and I have been explaining the wrong thing.
      */
     case 8: tri( 40.5f,40.5f, 200.5f,40.5f, 120.5f,180.5f, 0,255,0); break;
+    /*
+     * Shape 1 again, but offset by 37/128 rather than a half.
+     *
+     * Half a pixel was the right choice for asking whether the back end sees
+     * a truncated vertex -- it maximises the shift -- and the wrong one for
+     * asking how far the truncation puts us from the rule.  With vertices on
+     * exact half pixels the edges run through pixel centres: 200 samples land
+     * exactly on an edge of shape 8, where no abstract rule decides anything
+     * and each implementation's own convention does.  Mesa's is its 11-bit
+     * fixed point, and it came within 2 pixels of "include every on-edge
+     * sample", which is not the top-left rule at all.
+     *
+     * 37/128 is a large fraction that creates no ties -- checked, along with
+     * a quarter, a third, and a mixed pair, all of which give zero.  This is
+     * the shape for measuring what the sub-pixel truncation actually costs.
+     */
+    case 9: tri( 40.2890625f, 40.2890625f, 200.2890625f, 40.2890625f,
+                 120.2890625f, 180.2890625f, 0,255,0); break;
     default: break;
     }
 }
@@ -113,7 +131,7 @@ main(int argc, char **argv)
     long x, y;
     unsigned long d0, s0, u0, x0;
 
-    if (which < 1 || which > 8) { printf("shape 1..8\n"); return 2; }
+    if (which < 1 || which > 9) { printf("shape 1..9\n"); return 2; }
 
     app = (unsigned long *)malloc((unsigned)(W * H) * sizeof(unsigned long));
     if (!app) { printf("no room\n"); return 2; }
