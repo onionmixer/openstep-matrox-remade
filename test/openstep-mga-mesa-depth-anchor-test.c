@@ -43,10 +43,36 @@ extern unsigned long OSMGAMesaBufferDepthOrigin(void);
 #define W       320
 #define H       240
 
-/* Shapes: integral window x and y, and they split at the middle vertex.
- * The depth values are filled in from the calibration. */
-static const long sx[2][3] = { { 190, 198, 150 }, { 108,  89,  47 } };
-static const long sy[2][3] = { {  53,  61, 189 }, {  86, 105, 220 } };
+/*
+ * Shapes: integral window x and y, so the hook's cast of x and y is a no-op
+ * and cannot change the plane underneath the depth question.
+ *
+ *   1, 2  ordinary, middle vertex on opposite sides of the long edge
+ *   3     steep depth reaching the far end -- the CORNER start computes
+ *         67461.8 and clamps today, the centre would compute 63380.5 and not.
+ *         This is the class moving the sample point REMOVES.
+ *   4     the class it INTRODUCES: the centre start computes 65540.2 and
+ *         clamps by 5.2 codes while the corner at 65487 is fine.  Found by
+ *         search, and not a sliver -- twice its area is 23090 and it draws
+ *         11546 pixels, so this is not a corner case being dismissed.
+ *
+ * Depths are given as window codes and converted with the measured mapping,
+ * so the intent is legible instead of buried in an object coordinate.
+ */
+#define NSHAPE 4
+static const long sx[NSHAPE][3] = { { 190, 198, 150 }, { 108,  89,  47 },
+                                    { 160, 168, 150 }, { 265, 313, 146 } };
+static const long sy[NSHAPE][3] = { {  53,  61, 189 }, {  86, 105, 220 },
+                                    {  40,  48, 200 }, {  10, 152, 139 } };
+static const double sz[NSHAPE][3] = {
+    { 57343.125, 14745.375, 29490.75 },     /* the original pair, unchanged */
+    { 57343.125, 14745.375, 29490.75 },
+    { 65500.0,     200.0,   30000.0 },
+    { 65487.0,   61670.0,   29285.0 }
+};
+
+/* window code -> object z, from the calibration: code = round(32767.5*(1-z)) */
+#define OBJZ(code)  (1.0 - (code) / 32767.5)
 
 static unsigned long *app;
 static OSMesaContext ctx;
@@ -61,6 +87,8 @@ depthAt(long x, long y, unsigned long *out)
     *out = (unsigned long)((unsigned short *)zb)[y * dw + x];
     return 1;
 }
+
+static int wantDepth = 1;
 
 static void
 setup(void)
@@ -93,9 +121,19 @@ setup(void)
      * either, as long as no fragment is AT the far value; the analysis
      * asserts that rather than assuming it.
      */
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LESS);
-    glDepthMask(GL_TRUE);
+    if (wantDepth) {
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        glDepthMask(GL_TRUE);
+    } else {
+        /*
+         * The same geometry with depth off, which changes the access type the
+         * batch asks for from ZI to I.  Every earlier coverage measurement
+         * was taken without depth, so if coverage differs between these two
+         * runs the difference belongs to that, not to the geometry.
+         */
+        glDisable(GL_DEPTH_TEST);
+    }
 }
 
 static void
@@ -115,8 +153,11 @@ main(int argc, char **argv)
 {
     const char *mode = (argc > 1) ? argv[1] : "calib";
     int sh = (argc > 2) ? (atoi(argv[2]) - 1) : 0;
+    long bg = (argc > 3) ? atol(argv[3]) : -1;
     long i;
     unsigned long d0, s0, u0, x0;
+
+    if (argc > 4 && strcmp(argv[4], "nodepth") == 0) wantDepth = 0;
 
     app = (unsigned long *)malloc((unsigned)(W * H) * sizeof(unsigned long));
     if (!app) { printf("no room\n"); return 2; }
@@ -176,25 +217,43 @@ main(int argc, char **argv)
         return 0;
     }
 
-    if (strcmp(mode, "slope") == 0) {
+    if (strcmp(mode, "slope") == 0 || strcmp(mode, "layer") == 0) {
         double vz[3];
         long x, y;
 
-        if (sh < 0 || sh > 1) { printf("shape 1 or 2\n"); return 2; }
-        /* A depth gradient steep enough that half a pixel is many codes. */
-        vz[0] = -0.75; vz[1] = 0.55; vz[2] = 0.10;
+        if (sh < 0 || sh >= NSHAPE) { printf("shape 1..%d\n", NSHAPE); return 2; }
+        for (i = 0; i < 3; i++) vz[i] = OBJZ(sz[sh][i]);
 
         glClearDepth(1.0);
         glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
+        if (bg >= 0) {
+            /*
+             * A flat background first, at a depth the calibration names, so
+             * GL_LESS actually decides something.  Coverage being unchanged
+             * against a far-cleared buffer only says the edge walker stood
+             * still; this is where a wrong depth becomes a wrong picture.
+             */
+            static const long bx[3] = { -400, 900, -400 };
+            static const long by[3] = { -400, -400, 900 };
+            double bz[3];
+
+            bz[0] = bz[1] = bz[2] = OBJZ((double)bg);
+            glBegin(GL_TRIANGLES);
+              glColor4ub(60, 60, 60, 255);
+              for (i = 0; i < 3; i++)
+                  glVertex3d((double)bx[i], (double)by[i], bz[i]);
+            glEnd();
+            glFinish();
+        }
         d0 = OSMGAMesaHookDrawn();  s0 = OSMGAMesaHookSoftware();
         u0 = OSMGAMesaHookUnsupported(); x0 = OSMGAMesaHookDeclined();
         triangle(sx[sh], sy[sh], vz);
         glFinish();
 
-        printf("# shape %d\n", sh + 1);
+        printf("# shape %d  background %ld\n", sh + 1, bg);
         for (i = 0; i < 3; i++)
-            printf("# vertex %ld  %ld %ld  objz %.10f\n",
-                   i, sx[sh][i], sy[sh][i], vz[i]);
+            printf("# vertex %ld  %ld %ld  objz %.10f  wantcode %.4f\n",
+                   i, sx[sh][i], sy[sh][i], vz[i], sz[sh][i]);
         printf("# counters drawn=%lu software=%lu unsupported=%lu declined=%lu\n",
                OSMGAMesaHookDrawn() - d0, OSMGAMesaHookSoftware() - s0,
                OSMGAMesaHookUnsupported() - u0, OSMGAMesaHookDeclined() - x0);
@@ -202,14 +261,20 @@ main(int argc, char **argv)
                (OSMGAMesaBufferOrigin() == 0UL) ? "software"
                : ((OSMGAMesaHookSoftware() - s0 != 0UL ||
                    OSMGAMesaHookDeclined() - x0 != 0UL) ? "MIXED" : "hardware"));
-        /* Colour marks coverage; depth is what is being measured. */
+        /*
+         * Colour says which primitive won the pixel, depth says what it left
+         * behind.  Both are printed: with a background present, "who is
+         * visible" is the thing under test and a depth alone cannot say it.
+         */
         for (y = 0; y < H; y++)
             for (x = 0; x < W; x++) {
-                unsigned long code;
+                unsigned long c = app[y * W + x], code;
+                int who;
 
-                if ((app[y * W + x] & 0xFFFFFFUL) == 0UL) continue;
+                if ((c & 0xFFFFFFUL) == 0UL) continue;
                 if (!depthAt(x, y, &code)) return 2;
-                printf("P %ld %ld %lu\n", x, y, code);
+                who = (((c >> 16) & 0xFFUL) == 200UL) ? 1 : 0;   /* 1 = shape */
+                printf("P %ld %ld %lu %d\n", x, y, code, who);
             }
         OSMesaDestroyContext(ctx);
         return 0;

@@ -211,7 +211,8 @@ main(int argc, char **argv)
         {  30,30, 200,31,  40,32 },    /* two rows, nearly flat */
         {  50,20,  51,200, 52,60 },    /* a sliver two columns wide */
         {   0,0,  319,0,    0,239 },   /* the whole surface corner */
-        { 300,10, 319,239,  0,120 }    /* spans the width */
+        { 300,10, 319,239,  0,120 },   /* spans the width */
+        { 265,10, 313,152, 146,139 }   /* the depth round's shape 4 */
     };
     long nfixed = (long)(sizeof fixed / sizeof fixed[0]);
 
