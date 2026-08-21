@@ -327,6 +327,43 @@ main(void)
             }
 
             /*
+             * A left edge that opens LEFTWARD.
+             *
+             * The coordinate is anchored at the first row's left edge --
+             * measured on the machine -- so those later pixels sit at
+             * negative offsets.  Normalising the box to its own left would
+             * hide them, and a zero start would then be accepted while the
+             * hardware ran the coordinate below zero on pixels it drew.
+             */
+            {   long ident = (long)(OSMGA_HW3D_TEX_SPAN / 64UL);
+
+                reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                         b.tri[0].fxbndry = (48UL << 16) | 40UL;
+                         b.tri[0].h = 32; b.tri[0].ar6 = 32;
+                         b.tri[0].ar0 = 32; b.tri[0].ar2 = -32; b.tri[0].ar1 = -1;
+                         b.tri[0].sgn = 0x2;         /* left edge decreasing */
+                         b.state.tmr[0] = ident;
+                                                expect("a left-opening edge with a zero start", OSMGA_HW3D_E_TEXCOORD);
+                reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                         b.tri[0].fxbndry = (48UL << 16) | 40UL;
+                         b.tri[0].h = 32; b.tri[0].ar6 = 32;
+                         b.tri[0].ar0 = 32; b.tri[0].ar2 = -32; b.tri[0].ar1 = -1;
+                         b.tri[0].sgn = 0x2;
+                         b.state.tmr[0] = ident;
+                         b.state.tmr[6] = ident * 31L;   /* enough to cover the
+                                                          * whole excursion */
+                                                expect("the same edge with a start that covers it", OSMGA_HW3D_OK);
+                reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                         b.tri[0].fxbndry = (48UL << 16) | 40UL;
+                         b.tri[0].h = 32; b.tri[0].ar6 = 32;
+                         b.tri[0].ar0 = 32; b.tri[0].ar2 = -32; b.tri[0].ar1 = -1;
+                         b.tri[0].sgn = 0x2;
+                         b.state.tmr[0] = ident;
+                         b.state.tmr[6] = ident * 30L;   /* one short */
+                                                expect("one texel short of covering it", OSMGA_HW3D_E_TEXCOORD);
+            }
+
+            /*
              * Which verdict wins when a batch is wrong in two ways.
              *
              * The coordinate check used to run BEFORE the triangle loop, so a

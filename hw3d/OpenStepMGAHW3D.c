@@ -28,14 +28,35 @@ osmgaHW3DReach(unsigned long org, unsigned long rows, unsigned long stride,
     return 1;
 }
 
-/* Is start + spanX*incX + spanY*incY non-negative and within the reach we
- * have measured?  Written as divisions so no product can overflow. */
+/*
+ * Is the coordinate non-negative and within the reach we have measured, over
+ * every pixel the primitive draws?  Written as divisions so no product can
+ * overflow.
+ *
+ * The x domain is [-spanLo, +spanHi] and not [0, spanX], because the
+ * coordinate is anchored at the primitive's FIRST ROW'S left edge -- measured,
+ * by drawing a triangle whose left edge opens leftward and reading the texels
+ * along its bottom row: with a start of thirty-two texels the pixels came out
+ * 1, 32 and 39, which is the start plus (x minus that first left edge), and
+ * not the 41, 63, 63 a screen-anchored coordinate would have given.  A left
+ * edge that later moves left therefore has pixels at NEGATIVE offsets, and
+ * checking only from the box's own left would have hidden them.
+ */
 static int
 osmgaHW3DCoord(long start, long incX, long incY,
-               unsigned long spanX, unsigned long spanY)
+               unsigned long spanLo, unsigned long spanHi, unsigned long spanY)
 {
     long room = (long)OSMGA_HW3D_TEX_COORD_MAX;
-    long cx, cy, v;
+    unsigned long spanX = spanLo + spanHi;
+    long cx, cy, base, v;
+
+    /*
+     * The start is itself a point of the domain, so the corners cannot all be
+     * in range unless it is: refusing it here adds no restriction, and it
+     * keeps every sum below inside a signed long whatever the client sent.
+     */
+    if (start < 0L || start > room)
+        return 0;
 
     /*
      * The coordinate is a plane, so it is monotone in x and in y and its
@@ -73,8 +94,11 @@ osmgaHW3DCoord(long start, long incX, long incY,
 
     cx = incX * (long)spanX;
     cy = incY * (long)spanY;
+    /* Move the origin to the leftmost pixel drawn, so the four corners below
+     * are the corners of the domain the primitive really has. */
+    base = start - incX * (long)spanLo;
     for (v = 0L; v < 4L; v++) {
-        long at = start + ((v & 1L) ? cx : 0L) + ((v & 2L) ? cy : 0L);
+        long at = base + ((v & 1L) ? cx : 0L) + ((v & 2L) ? cy : 0L);
 
         if (at < 0L || at > room)
             return 0;
@@ -104,7 +128,7 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
      * for saying it fetches nothing.  Such a batch keeps the old, wider
      * check rather than being trusted or waved through.
      */
-    unsigned long texSpanX = 0UL, texSpanY = 0UL;
+    unsigned long texSpanLo = 0UL, texSpanHi = 0UL, texSpanY = 0UL;
     int texEmpty = 0, texDrawn = 0;
 
     if (badTri != 0)
@@ -310,7 +334,7 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
             unsigned long left  = t->fxbndry & 0xFFFFUL;
             unsigned long right = (t->fxbndry >> 16) & 0xFFFFUL;
             long lx, rx, lacc, racc, lsgn, rsgn, row;
-            long bx0 = 0L, bx1 = 0L;
+            long bx0 = 0L, bx1 = 0L, lx0;
             int haveBox = 0;
 
             if (left > lim->clipX1 + 1UL || right > lim->clipX1 + 1UL ||
@@ -350,6 +374,9 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
             lsgn = (t->sgn & 0x2L)  ? -1L : 1L;
             rsgn = (t->sgn & 0x20L) ? -1L : 1L;
 
+            /* Where this primitive's coordinate is anchored: the left edge
+             * of its first row, before any stepping. */
+            lx0 = lx;
             if (opcode == OSMGA_HW3D_OPCODE_TEX) {
                 bx0 = lx; bx1 = lx; haveBox = 0;
             }
@@ -388,11 +415,17 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                 if (!haveBox) {
                     texEmpty = 1;
                 } else {
-                    unsigned long sx = (unsigned long)(bx1 - bx0);
+                    /* Both sides of the anchor.  A left edge that opens
+                     * leftward puts pixels before it; one that closes puts
+                     * none, and the clamp keeps that at zero. */
+                    long lo = lx0 - bx0, hi = bx1 - lx0;
                     unsigned long sy = (unsigned long)t->h - 1UL;
 
+                    if (lo < 0L) lo = 0L;
+                    if (hi < 0L) hi = 0L;
                     texDrawn = 1;
-                    if (sx > texSpanX) texSpanX = sx;
+                    if ((unsigned long)lo > texSpanLo) texSpanLo = (unsigned long)lo;
+                    if ((unsigned long)hi > texSpanHi) texSpanHi = (unsigned long)hi;
                     if (sy > texSpanY) texSpanY = sy;
                 }
             }
@@ -407,16 +440,18 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
      * badTri goes back to zero before it is reported.
      */
     if (anyTex) {
-        unsigned long spanX = lim->clipX1, spanY = lim->clipY1;
+        unsigned long spanLo = 0UL, spanHi = lim->clipX1;
+        unsigned long spanY = lim->clipY1;
 
         if (texDrawn && !texEmpty) {
-            spanX = texSpanX;
+            spanLo = texSpanLo;
+            spanHi = texSpanHi;
             spanY = texSpanY;
         }
         if (!osmgaHW3DCoord(b->state.tmr[6], b->state.tmr[0],
-                            b->state.tmr[2], spanX, spanY) ||
+                            b->state.tmr[2], spanLo, spanHi, spanY) ||
             !osmgaHW3DCoord(b->state.tmr[7], b->state.tmr[1],
-                            b->state.tmr[3], spanX, spanY)) {
+                            b->state.tmr[3], spanLo, spanHi, spanY)) {
             if (badTri != 0)
                 *badTri = 0UL;
             return OSMGA_HW3D_E_TEXCOORD;

@@ -209,3 +209,103 @@ TMR6 = 0 인데 64..127 자리의 사각형도 **텍셀 0 에서 다시 시작�
 * 실기 — probe 여섯 폭이 모두 승인되고, **그리고** 진짜 위반 하나는 여전히
   거절된다.  verdict 만 보지 않고 그려진 화소도 읽는다.
 * 실기 — 기존 텍스처 클라이언트가 그대로 PASS.
+
+## 11. 재부팅 뒤 실측 (2026-08-22)
+
+### 11-1 바뀐 것이 실제로 동작한다
+
+```
+1. the same 32-column triangle, only the declared width changes
+   ok  surface 64 / 128 / 256 / 320 / 512 / 1024 wide     verdict 0
+2. and the accepted drawing is the right texels, read back
+   ok  every drawn pixel took its texel                   1024 of 1024
+   ok  nothing drawn outside the 32 columns, whole row
+3. a violation an emitted pixel really reaches stays refused
+   ok  the same gradient across a 320-column primitive     verdict 13
+   ok  seventeen times the identity gradient on 32 columns verdict 13
+   ok  a negative start                                    verdict 13
+4. height but no columns -- still encoded, so still refused
+   ok  an empty span with a coordinate past the bound      verdict 13
+5. a sloped edge, where the widest row is not the first
+   ok  a right edge opening to 8 + 32 columns              verdict 0
+   ok  a gradient that only overruns after the edge opens  verdict 13
+```
+
+전에는 320 부터 거절이었다.  그리고 **"여섯 폭 전부 승인"만으로는 검사를
+지워버려도 똑같이 나오므로**, 위반이 여전히 거절되는지를 함께 요구한다.
+5 의 둘째가 가장 날카롭다: 그 기울기는 행 0 의 7 열에서는 예산 8388608 중
+1835008 만 쓰고 전체 38 열에서는 9961472 를 쓴다.  거절됐으므로 상자는
+행 0 이 아니라 **모든 행에서 모인 것**이다.
+
+기존 `openstep-mga-hw3d-tex-client.m` 도 그대로 PASS 한다.
+
+### 11-2 내 기댓값 둘이 틀렸다 (python 으로 재계산)
+
+* "항등의 9 배"는 31 열에서 한계를 안 넘는다 — **16.5 배**부터 넘는다.
+  17 배로 고쳤다.
+* `SPAN/8` 은 38 열에서 안 넘는다 — `SPAN/4` 가 넘는다.  게다가 `SPAN/4` 는
+  *행 0 만 보면 통과하고 전체를 보면 거절되는* 구간(220753..1198372) 안에
+  있어서 두 규칙을 가른다.  구간 밖 값을 골랐다면 아무것도 증명 못 했다.
+
+### 11-3 좌표 원점을 다시, 더 세게
+
+codex 가 옳게 지적했다: 원점 probe 의 둘째 사각형이 x=64 인데 **그것이 정확히
+텍스처 한 주기**라, 그 자리만으로는 "프리미티브마다 다시 시작"과 "화면 원점에
+감김"을 구별하지 못한다.
+
+주기 경계가 아닌 자리에서 다시 쟀다.  왼쪽 변이 왼쪽으로 열리는 삼각형
+(행 0 은 열 40..47), TMR6 = 32 텍셀:
+
+| | x=9 | x=40 | x=47 |
+|---|---|---|---|
+| 화면 원점이면 | 41 | 63(포화) | 63(포화) |
+| 프리미티브 원점이면 | 1 | 32 | 39 |
+| **실측** | **1** | **32** | **39** |
+
+그리고 v 도 같은 방법으로: 같은 사각형을 y=0 과 **y=17**(주기가 아니다)에
+그리고 TMR7 = 32 텍셀로 두니 둘 다 첫 행이 v=32 다.
+
+**원점은 프리미티브의 첫 행 왼쪽 변이고, u = TMR6 + (x − lx0)·TMR0 이다.**
+
+### 11-4 그래서 드러난 구멍 — 그리고 닫았다
+
+원점이 첫 행의 왼쪽이라면, **왼쪽 변이 왼쪽으로 열리는 삼각형은 음수 오프셋을
+가진다.**  그런데 검사는 상자를 자기 왼쪽으로 정규화해서 `0..bx1-bx0` 만
+보았으므로 그 부분을 못 봤다.  TMR6 = 0 으로 같은 도형을 그려 확인했다:
+
+```
+   ok    a left-opening triangle with a zero start   verdict 0   <-- 승인됐다
+         bottom row (v,u): x=9 -> (31,0), x=40 -> (31,0), x=47 -> (31,7)
+         texture words changed by the draw: 0
+```
+
+즉 **검증기가 통과시켰고**, 하드웨어는 음수 좌표를 텍셀 0 으로 클램프했으며
+텍스처는 한 낱말도 바뀌지 않았다.  이 범위에서는 온순하지만, "좌표는 음수가
+되지 않는다"는 검증기의 약속은 지켜지지 않고 있었다.
+
+이 구멍은 **이번 변경이 만든 것이 아니다.**  예전 검사도 화면 원점을 가정해
+오프셋을 0 부터 셌으므로 똑같이 못 봤다.  다만 모델을 바로잡은 지금이
+닫을 자리다.
+
+`osmgaHW3DCoord` 가 이제 x 정의역을 `[-spanLo, +spanHi]` 로 받고, 원점을 옮겨
+같은 네 모서리 검사를 한다.  누산은 삼각형마다 `lo = lx0 - bx0`,
+`hi = bx1 - lx0` 를 모은다(음수는 0 으로 자른다).  덤으로 `start` 를 먼저
+범위 검사해서, 클라이언트가 어떤 값을 보내도 아래 덧셈이 signed long 을
+넘지 않게 했다 — 원래 있던 노출이다.
+
+호스트 시험 **126 사례** 통과.  새 셋이 경계를 고정한다: 시작 0 이면 거절,
+전 구간을 덮는 시작이면 승인, **한 텍셀 모자라면 거절.**
+
+### 11-5 codex 교차분석 판정
+
+| 주장 | 검증 | 결과 |
+|---|---|---|
+| x=64 는 정확히 한 주기라 원점 probe 만으로는 감김과 구별 못 한다 | 한 텍셀 16384 × 64 = SPAN.  맞다 | ✅**채택, 내가 틀렸다** — 11-3 으로 다시 쟀다 |
+| 왼쪽으로 여는 변이 가장 중요한 미시험 사례다 | 그렇다 | ✅채택 — 11-4 (회신 전에 이미 재고 있었다) |
+| 약속한 "오류 우선순위" 시험이 없다 | 전수 grep, 없었다 | ✅**채택, 내가 틀렸다** — 넣었다 |
+| "1024 화소가 자기 텍셀"은 사실 u 만 본 것이다(텍스처 행이 전부 같다) | `tex[r*DIM+c] = c` | ✅**채택** — `(r<<8)|c` 로 바꿔 u·v 둘 다 본다 |
+| 흘림 검사가 열 32..199 만 본다 | 그렇다 | ✅채택 — 행 전체로 넓혔다 |
+| bilinear·음수 기울기는 승인만 보고 그림은 안 본다 | 그렇다 | ⏭️기록 — 다음에 |
+| 빈 행이 섞인 삼각형은 `texEmpty` 를 세우지 않는다 | 설계대로다.  근거는 미측정 | ⏭️기록 |
+| 여러 삼각형에서 최대를 따로 잡는 것은 보수적이다 | 맞다.  더 큰 상자를 만들 뿐 | ✅사실 |
+| 빈 스팬 대체 경로는 죽은 코드가 아니다 | `h==0` 은 `E_TRIROW`, `left==right` 는 통과 | ✅사실 |
