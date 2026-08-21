@@ -1272,10 +1272,11 @@ main(void)
             if (k == 63L)
                 printf("   %6ld .. %-6ld %10ld %8ld\n", runFrom, k, lo, runK);
         }
-        printf("   511 throughout is the offset rule; 511,511,511,511 then"
-               " zeros is a rule on the coordinate\n");
-        printf("   and zeros returning to 511 at nine is a test of bit 16,"
-               " not a comparison\n");
+        printf("   the engine's own ladder is 511 510 508 504 496;"
+               " the kernel takes %ld off, so what a client sees is\n",
+               (long)OSMGA_HW3D_TEX_BIAS);
+        printf("   16 - g, that is 15 14 12 8 0 -- and a row of 511s would"
+               " mean the correction never went out\n");
     }
 
     printf("\n20. the same question with a live gradient\n");
@@ -1360,7 +1361,9 @@ main(void)
             (void)setup(64UL, 0UL, 32UL, 4UL, incs[j], 0UL);
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = begins[j];
+            /* the kernel takes OSMGA_HW3D_TEX_BIAS off on the way out,
+             * and this section is about the ENGINE, so put it back */
+            batch->state.tmr[6] = begins[j] + OSMGA_HW3D_TEX_BIAS;
             batch->state.tmr[7] = 0L;
             (void)fire();
             printf("   increment %2ld  u:", incs[j]);
@@ -1421,7 +1424,7 @@ main(void)
                 (void)setup(64UL, 0UL, 32UL, 4UL, incs[j], 0UL);
                 batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
                 batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] = begin;
+                batch->state.tmr[6] = begin + OSMGA_HW3D_TEX_BIAS;
                 batch->state.tmr[7] = 0L;
                 (void)fire();
                 for (c = 0UL; c < 32UL; c++) {
@@ -1454,7 +1457,7 @@ main(void)
                 (void)setup(64UL, 0UL, 32UL, 4UL, incs[jj], 0UL);
                 batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
                 batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] = begin;
+                batch->state.tmr[6] = begin + OSMGA_HW3D_TEX_BIAS;
                 batch->state.tmr[7] = 0L;
                 (void)fire();
                 printf("   inc %2ld start %ld  ", incs[jj], begin);
@@ -1520,8 +1523,10 @@ main(void)
                        bias, bad, blanks ? "  (undrawn columns!)" : "");
             }
         }
-        printf("   subtracting the smallest of the ladder cannot undershoot:"
-               " at most 15 of 600 in the first band, none past 2^19\n");
+        printf("   with the kernel correcting, the plain row is the one that"
+               " matters: 15 of 600 in the first band, 1 past 2^19\n");
+        printf("   the second row corrects a second time and can only"
+               " UNDERSHOOT, which this shape cannot see at all\n");
     }
 
     printf("\n24. and the case that vetoed the first attempt\n");
@@ -1546,9 +1551,9 @@ main(void)
         int mode;
 
         for (mode = 0; mode < 3; mode++) {
-            static const char *what[3] = { "as the engine is",
-                                           "less 496 (what goes in)",
-                                           "less 511 (the first attempt)" };
+            static const char *what[3] = { "the coordinate, as meant",
+                                           "corrected twice, by 496",
+                                           "corrected twice, by 511" };
             long bias = (mode == 0) ? 0L
                       : (mode == 1) ? OSMGA_HW3D_TEX_BIAS : 511L;
             unsigned long c, bad = 0UL;
@@ -1569,8 +1574,49 @@ main(void)
             }
             printf("   %lu wrong\n", bad);
         }
-        printf("   wanted 1 3 5 7 9 ... -- the first attempt is the one that"
-               " loses them\n");
+        printf("   wanted 1 3 5 7 9 ...  The first row is the one that has to"
+               " pass, and it is what the first attempt broke.\n");
+        printf("   The other two are over-corrected by about a thousand and"
+               " agree because 15 units apart is mid-texel.\n");
+    }
+
+    printf("\n25. which coordinate is the one that still misses?\n");
+    {
+        /*
+         * Section 23 leaves one wrong of six hundred past 2^19, and the
+         * ladder does not account for it: there the engine adds 496 and the
+         * kernel takes 496 off, so every coordinate should read the texel it
+         * names.  A count is not a diagnosis -- name the coordinate.
+         *
+         * A row of 33 columns stepping one unit, ending ON the boundary, is
+         * every offset from 32 below it to the boundary itself.  Columns 0 to
+         * 31 must read the texel below and column 32 the texel at it, so the
+         * string must be 32 noughts and a one.  Three texels of the same band
+         * say whether it is one place or every boundary.
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        static const long ks[3] = { 37L, 39L, 41L };
+        int j;
+
+        for (j = 0; j < 3; j++) {
+            long bnd = ks[j] * texel;
+            unsigned long c;
+
+            blank();
+            (void)setup(1024UL, 0UL, 33UL, 4UL, 1L, 0UL);
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = bnd - 32L;
+            batch->state.tmr[7] = 0L;
+            (void)fire();
+            printf("   texel %2ld, offsets -32..0:", ks[j]);
+            for (c = 0UL; c < 33UL; c++)
+                printf("%c", ((long)(pixat(0UL, c) & 0xFFUL) >= ks[j])
+                             ? '1' : '0');
+            printf("\n");
+        }
+        printf("   wanted 32 noughts and a one; a one further left is a"
+               " coordinate read too high\n");
     }
 
     printf("\n%s (%d failing)\n",
