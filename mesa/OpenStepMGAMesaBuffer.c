@@ -35,6 +35,23 @@ static unsigned long bufAppRow;  /* and how its rows are laid out */
 static int   bufDirty;
 static void *depthMapped;
 static unsigned long depthOrigin, depthBytes;
+/*
+ * The texture arena, mapped.  Colour and depth each have a mapping of their
+ * own and the arena had none, so nothing could be copied into it -- the only
+ * textures drawn so far were written by a raw client that mapped the device
+ * itself.
+ */
+static void *texMapped;
+static unsigned long texMapOrigin, texMapBytes;
+/*
+ * Which surface the arena belongs to.
+ *
+ * Not the origin: a surface released and another bound can be handed the same
+ * origin with unrelated contents, and a residency record that compared
+ * origins would call that its own.  This counts bindings instead, so a record
+ * from a previous surface is refused by a number that never repeats.
+ */
+static unsigned long texEpoch;
 static unsigned long bufBytes;
 
 unsigned long OSMGAMesaBufferOrigin(void) { return bufOrigin; }
@@ -131,6 +148,50 @@ OSMGAMesaBufferTextureArena(const void *ctx, unsigned long *origin,
     *origin = probe.caps[OSMGA_HW3D_CAP_VRAMOFF] + texStart;
     *bytes  = avail - texStart;
     return 1;
+}
+
+unsigned long OSMGAMesaBufferTexEpoch(void) { return texEpoch; }
+
+/*
+ * The texture arena with a pointer to it.
+ *
+ * Mapped once and kept: the arena moves only when the surface changes, and
+ * then the epoch moves with it.
+ */
+void *
+OSMGAMesaBufferTextureMap(const void *ctx, unsigned long *origin,
+                          unsigned long *bytes)
+{
+    unsigned long org = 0UL, len = 0UL;
+    vm_address_t addr = 0;
+
+    if (origin != 0) *origin = 0UL;
+    if (bytes != 0)  *bytes = 0UL;
+    if (!OSMGAMesaBufferTextureArena(ctx, &org, &len))
+        return 0;
+    if (texMapped != 0 && texMapOrigin == org && texMapBytes == len) {
+        if (origin != 0) *origin = org;
+        if (bytes != 0)  *bytes = len;
+        return texMapped;
+    }
+    if (texMapped != 0) {
+        (void)vm_deallocate(task_self(), (vm_address_t)texMapped,
+                            (vm_size_t)texMapBytes);
+        texMapped = 0; texMapBytes = 0UL; texMapOrigin = 0UL;
+    }
+    if (vm_allocate(task_self(), &addr, (vm_size_t)len, TRUE) != KERN_SUCCESS)
+        return 0;
+    if ((int)mmap((caddr_t)addr, (int)len, PROT_READ | PROT_WRITE,
+                  MAP_SHARED, OSMGAMesaProbeDeviceFd(), (long)org) == -1) {
+        (void)vm_deallocate(task_self(), addr, (vm_size_t)len);
+        return 0;
+    }
+    texMapped = (void *)addr;
+    texMapOrigin = org;
+    texMapBytes = len;
+    if (origin != 0) *origin = org;
+    if (bytes != 0)  *bytes = len;
+    return texMapped;
 }
 
 /* Is this the context drawing into the surface right now? */
@@ -364,6 +425,16 @@ OpenStepMesaAccelReleaseBuffer(void *ctx)
         depthBytes = 0UL;
     }
     depthOrigin = 0UL;
+    if (texMapped != 0) {
+        (void)vm_deallocate(task_self(), (vm_address_t)texMapped,
+                            (vm_size_t)texMapBytes);
+        texMapped = 0;
+        texMapBytes = 0UL;
+        texMapOrigin = 0UL;
+    }
+    /* Every residency made against this surface is now stale, and saying so
+     * is a number nobody can accidentally match. */
+    texEpoch++;
     if (bufMapped != 0) {
         (void)vm_deallocate(task_self(), (vm_address_t)bufMapped,
                             (vm_size_t)bufBytes);

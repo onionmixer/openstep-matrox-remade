@@ -57,6 +57,18 @@ int OSMGAMesaBufferBoundTo(const void *ctx);
  */
 int OSMGAMesaBufferTextureArena(const void *ctx, unsigned long *origin,
                                 unsigned long *bytes);
+/*
+ * The same arena, mapped.  Colour and depth each had a mapping and this did
+ * not, so there was no way to put anything in it.
+ */
+void *OSMGAMesaBufferTextureMap(const void *ctx, unsigned long *origin,
+                                unsigned long *bytes);
+/*
+ * Which surface the arena belongs to.  A residency record carries this and is
+ * refused when it no longer matches -- an origin would not do, because the
+ * next surface can be handed the same one.
+ */
+unsigned long OSMGAMesaBufferTexEpoch(void);
 /* The application's own buffer, for putting back what was substituted. */
 void *OSMGAMesaBufferApp(void);
 
