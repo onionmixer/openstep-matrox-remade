@@ -39,6 +39,7 @@ extern unsigned long OSMGAMesaHookSoftware(void);
 extern unsigned long OSMGAMesaHookUnsupported(void);
 extern unsigned long OSMGAMesaBufferOrigin(void);
 extern unsigned long OSMGAMesaBufferDepthOrigin(void);
+extern unsigned long OSMGAMesaDepthClamps(void);
 
 #define W       320
 #define H       240
@@ -257,6 +258,7 @@ main(int argc, char **argv)
         printf("# counters drawn=%lu software=%lu unsupported=%lu declined=%lu\n",
                OSMGAMesaHookDrawn() - d0, OSMGAMesaHookSoftware() - s0,
                OSMGAMesaHookUnsupported() - u0, OSMGAMesaHookDeclined() - x0);
+        printf("# depth starts clamped: %lu\n", OSMGAMesaDepthClamps());
         printf("# mode %s\n",
                (OSMGAMesaBufferOrigin() == 0UL) ? "software"
                : ((OSMGAMesaHookSoftware() - s0 != 0UL ||

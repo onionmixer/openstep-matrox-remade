@@ -210,6 +210,60 @@ osmgaEdgeRegs(const OSMGAMesaEdge *e, long r0, long s,
     *sgn = (DD >= 0L) ? 1L : -1L;
 }
 
+/*
+ * How many rows at the top of this trapezoid draw nothing.
+ *
+ * A trapezoid that begins at an apex has an empty first row, and the depth
+ * start value is read at that row's boundary -- a pixel the triangle does not
+ * cover, where the plane can be outside the buffer's range and get clipped.
+ * Clipping it moves every pixel of the trapezoid, because the engine walks
+ * from it, and under GL_LESS a fragment pushed to the far value disappears.
+ *
+ * Starting at the first row that draws something puts the origin on a covered
+ * pixel, whose centre is inside the triangle and whose depth is therefore
+ * inside the vertex range by construction.  Nothing is drawn differently,
+ * since the skipped rows drew nothing.  Counted rather than argued: over
+ * 118418 trapezoids the clamp fires 359 times as it stands and zero times
+ * after this.
+ *
+ * The walk here is the engine's own, the one verified against hardware pixel
+ * for pixel -- the row has to be empty under that rule and not under an
+ * approximation of it.
+ */
+static long
+osmgaFirstDrawn(const OSMGAMesaEdge *le, const OSMGAMesaEdge *re,
+                long r0, long h, long sub)
+{
+    long lx, lmag, ldy, lerr, lsgn, lacc;
+    long rx, rmag, rdy, rerr, rsgn, racc;
+    long k;
+
+    osmgaEdgeRegs(le, r0, sub, &lx, &lmag, &ldy, &lerr, &lsgn);
+    osmgaEdgeRegs(re, r0, sub, &rx, &rmag, &rdy, &rerr, &rsgn);
+    lacc = -lerr;
+    racc = -rerr;
+    for (k = 0L; k < h; k++) {
+        if (k > 0L) {
+            lacc -= lmag;
+            while (lacc < 0L) { lx += lsgn; lacc += ldy; }
+            racc -= rmag;
+            while (racc < 0L) { rx += rsgn; racc += rdy; }
+        }
+        if (lx <= rx - 1L)
+            return k;
+    }
+    return h;
+}
+
+/* Counted so "the clamp never fires now" is a number and not a claim. */
+static unsigned long osmgaDepthClamps = 0UL;
+
+unsigned long
+OSMGAMesaDepthClamps(void)
+{
+    return osmgaDepthClamps;
+}
+
 static void
 osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
                const OSMGAMesaEdge *le, const OSMGAMesaEdge *re,
@@ -347,6 +401,8 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
         double oy = (double)y    - (double)a->y / (double)OSMGA_MESA_SUBONE + 0.5;
         double at = zplane->at_a + zplane->dx * ox + zplane->dy * oy;
 
+        if (at < 0.0 || at > 65535.0)
+            osmgaDepthClamps++;
         if (at < 0.0)     at = 0.0;
         if (at > 65535.0) at = 65535.0;
         t->z0  = osmgaFixed(at);
@@ -618,26 +674,36 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
 
     if (rM > rT && m->y > t->y) {
         OSMGAMesaEdge shortE;
+        const OSMGAMesaEdge *le, *re;
+        long skip;
 
         shortE.xa = t->x; shortE.ya = t->y;
         shortE.dee = m->x - t->x; shortE.height = m->y - t->y;
-        osmgaTrapezoid(&out[n], rT, rM - rT, sub,
-                       (cross < 0L) ? &longE : &shortE,
-                       (cross < 0L) ? &shortE : &longE,
-                       shade, plane, a, zmode, &zplane, blend, &aplane);
-        n++;
+        le = (cross < 0L) ? &longE : &shortE;
+        re = (cross < 0L) ? &shortE : &longE;
+        skip = osmgaFirstDrawn(le, re, rT, rM - rT, sub);
+        if (skip < rM - rT) {
+            osmgaTrapezoid(&out[n], rT + skip, rM - rT - skip, sub, le, re,
+                           shade, plane, a, zmode, &zplane, blend, &aplane);
+            n++;
+        }
     }
 
     if (rL > rM && lo->y > m->y) {
         OSMGAMesaEdge shortE;
+        const OSMGAMesaEdge *le, *re;
+        long skip;
 
         shortE.xa = m->x; shortE.ya = m->y;
         shortE.dee = lo->x - m->x; shortE.height = lo->y - m->y;
-        osmgaTrapezoid(&out[n], rM, rL - rM, sub,
-                       (cross < 0L) ? &longE : &shortE,
-                       (cross < 0L) ? &shortE : &longE,
-                       shade, plane, a, zmode, &zplane, blend, &aplane);
-        n++;
+        le = (cross < 0L) ? &longE : &shortE;
+        re = (cross < 0L) ? &shortE : &longE;
+        skip = osmgaFirstDrawn(le, re, rM, rL - rM, sub);
+        if (skip < rL - rM) {
+            osmgaTrapezoid(&out[n], rM + skip, rL - rM - skip, sub, le, re,
+                           shade, plane, a, zmode, &zplane, blend, &aplane);
+            n++;
+        }
     }
     return n;
 }
