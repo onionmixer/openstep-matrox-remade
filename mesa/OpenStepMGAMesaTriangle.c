@@ -440,9 +440,20 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
         double ox = (double)left - (double)a->x / (double)OSMGA_MESA_SUBONE + 0.5;
         double oy = (double)y    - (double)a->y / (double)OSMGA_MESA_SUBONE + 0.5;
 
+        /*
+         * TMR1 is s per Y and TMR2 is t per X, not the other way round.
+         *
+         * They went in swapped, and the first textured triangle came out with
+         * v wrong on half its pixels.  Isolating the terms did not settle it
+         * either, because the test that was supposed to tell them apart gave
+         * both the same value and so could not.  The DDX names them in its
+         * own comments -- mga_storm.c:332-335 writes TMR0 "sx inc", TMR1
+         * "sy inc", TMR2 "tx inc", TMR3 "ty inc" -- and putting them that way
+         * round takes the disagreement from 2157 pixels of 4410 to none.
+         */
         tmr[0] = osmgaRound(uplane->dx);
-        tmr[1] = osmgaRound(vplane->dx);
-        tmr[2] = osmgaRound(uplane->dy);
+        tmr[1] = osmgaRound(uplane->dy);
+        tmr[2] = osmgaRound(vplane->dx);
         tmr[3] = osmgaRound(vplane->dy);
         tmr[4] = tmr[5] = 0L;
         tmr[6] = osmgaRound(uplane->at_a + uplane->dx * ox + uplane->dy * oy);

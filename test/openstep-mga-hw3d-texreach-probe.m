@@ -832,6 +832,167 @@ main(void)
         say("sgn bits 0x22, which it does model", fire(), OSMGA_HW3D_OK);
     }
 
+    printf("\n11. where in the pixel is the coordinate sampled?\n");
+    {
+        /*
+         * Everything so far used one texel per pixel, where the left edge and
+         * the centre of a pixel give the same texel and the question does not
+         * arise.  Two texels per pixel separates them: with a start of zero,
+         * pixel zero reads texel 0 if the sample is at the pixel's left edge
+         * and texel 1 if it is at the centre.  The Mesa side cannot place a
+         * texture without this.
+         */
+        OSMGAHW3DTri *t;
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        unsigned long a, b4, c3;
+
+        blank();
+        t = setup(64UL, 0UL, 16UL, 8UL, 2L * texel, 0UL);
+        batch->state.tmr[3] = 0L;
+        batch->state.tmr[6] = 0L;
+        batch->state.tmr[7] = 0L;
+        say("two texels per pixel from a zero start", fire(), OSMGA_HW3D_OK);
+        a  = colour[0UL * STRIDE_DW + 0UL] & 0xFFUL;
+        b4 = colour[0UL * STRIDE_DW + 1UL] & 0xFFUL;
+        c3 = colour[0UL * STRIDE_DW + 2UL] & 0xFFUL;
+        printf("         u at columns 0,1,2: %lu, %lu, %lu\n", a, b4, c3);
+        printf("         0,2,4 means the sample is at the pixel's left edge;"
+               " 1,3,5 means its centre\n");
+
+        /* and a half-texel start, which separates them again the other way */
+        blank();
+        t = setup(64UL, 0UL, 16UL, 8UL, texel, 0UL);
+        batch->state.tmr[3] = 0L;
+        batch->state.tmr[6] = texel / 2L;
+        batch->state.tmr[7] = 0L;
+        say("one texel per pixel from a half-texel start", fire(),
+            OSMGA_HW3D_OK);
+        a  = colour[0UL * STRIDE_DW + 0UL] & 0xFFUL;
+        b4 = colour[0UL * STRIDE_DW + 1UL] & 0xFFUL;
+        printf("         u at columns 0,1: %lu, %lu\n", a, b4);
+        printf("         a start of half a texel lands mid-texel either way,"
+               " so this shows the rounding, not the position\n");
+    }
+
+    printf("\n12. inside ONE primitive: how do the row terms apply?\n");
+    {
+        /*
+         * Every earlier measurement of TMR2/TMR3 compared the FIRST rows of
+         * two primitives.  Within a primitive, across rows, nothing has been
+         * measured -- and the model built from those measurements does not
+         * reproduce a real drawn triangle.
+         *
+         * A rectangle, so the left edge does not move: u gets one texel per
+         * ROW and nothing per column, v gets one per COLUMN and nothing per
+         * row.  Then u reads the row and v reads the column, and each says
+         * what its own cross term does.
+         */
+        OSMGAHW3DTri *t;
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        unsigned long k;
+
+        blank();
+        t = setup(64UL, 0UL, 16UL, 8UL, 0L, 0UL);   /* tmr[0] = 0 */
+        batch->state.tmr[1] = texel;                /* v per column */
+        batch->state.tmr[2] = texel;                /* u per row */
+        batch->state.tmr[3] = 0L;
+        batch->state.tmr[6] = 0L;
+        batch->state.tmr[7] = 0L;
+        say("u per row, v per column, on a rectangle", fire(), OSMGA_HW3D_OK);
+        printf("         column 0, rows 0..5  u =");
+        for (k = 0UL; k < 6UL; k++)
+            printf(" %lu", colour[k * STRIDE_DW + 0UL] & 0xFFUL);
+        printf("   (0 1 2 3 4 5 means TMR2 steps once a row)\n");
+        printf("         row 0, columns 0..5  v =");
+        for (k = 0UL; k < 6UL; k++)
+            printf(" %lu", colour[0UL * STRIDE_DW + k] >> 8);
+        printf("   (0 1 2 3 4 5 means TMR1 steps once a column)\n");
+    }
+
+    printf("\n13. a SLOPED left edge: is x measured from the row or the anchor?\n");
+    {
+        /*
+         * The left edge moves one column right per row.  u gets one texel per
+         * column and nothing per row.  If x is measured from the primitive's
+         * anchor, the first pixel of row r reads texel r; if it restarts at
+         * each row's own left edge, every row's first pixel reads 0.
+         */
+        OSMGAHW3DTri *t;
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        unsigned long k;
+
+        blank();
+        t = setup(64UL, 0UL, 8UL, 8UL, texel, 0UL);
+        t->ar0 = 8L; t->ar2 = -8L; t->ar1 = -1L;    /* left edge steps right */
+        t->sgn = 0L;
+        t->ar6 = 8L; t->ar5 = -8L; t->ar4 = -1L;    /* right edge too */
+        batch->state.tmr[1] = 0L;
+        batch->state.tmr[2] = 0L;
+        batch->state.tmr[3] = 0L;
+        batch->state.tmr[6] = 0L;
+        batch->state.tmr[7] = 0L;
+        say("a left edge stepping right, u per column", fire(), OSMGA_HW3D_OK);
+        printf("         each row's FIRST pixel, rows 0..5  u =");
+        for (k = 0UL; k < 6UL; k++)
+            printf(" %lu", colour[k * STRIDE_DW + k] & 0xFFUL);
+        printf("\n         0 1 2 3 4 5 means x is from the anchor;"
+               " 0 0 0 0 0 0 means it restarts each row\n");
+    }
+
+    printf("\n14. does the hardware honour a NEGATIVE increment?\n");
+    {
+        /*
+         * The validator was changed to allow negative increments, on the
+         * grounds that a triangle whose texture runs the other way across the
+         * screen is in no way exotic.  That was reasoning, not measurement:
+         * the probe that followed only read the verdict.  A real textured
+         * triangle then came out wrong, and isolating its terms showed v not
+         * moving at all across a row where its increment was negative.
+         *
+         * Each of the four increments is given a negative value with a start
+         * high enough to keep the coordinate non-negative.  A coordinate that
+         * falls across the span is honoured; one that stands still is not.
+         */
+        static const int idx[4]  = { 0, 1, 2, 3 };
+        static const char *nm[4] = { "u per column (TMR0)", "v per column (TMR1)",
+                                     "u per row (TMR2)",    "v per row (TMR3)" };
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        int j;
+
+        for (j = 0; j < 4; j++) {
+            OSMGAHW3DTri *t;
+            unsigned long a, b5;
+            unsigned ver;
+            int isU = (idx[j] == 0 || idx[j] == 2);
+            int isCol = (idx[j] == 0 || idx[j] == 1);
+
+            blank();
+            t = setup(64UL, 0UL, 16UL, 8UL, 0L, 0UL);
+            batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+            batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+            batch->state.tmr[idx[j]] = -texel;      /* one texel DOWN */
+            /* enough to cover sixteen columns or eight rows going down */
+            batch->state.tmr[6] = 40L * texel;
+            batch->state.tmr[7] = 40L * texel;
+            ver = fire();
+            if (isCol) {
+                a  = colour[0UL * STRIDE_DW + 0UL];
+                b5 = colour[0UL * STRIDE_DW + 5UL];
+            } else {
+                a  = colour[0UL * STRIDE_DW + 0UL];
+                b5 = colour[5UL * STRIDE_DW + 0UL];
+            }
+            printf("   %-22s verdict %u  start 40, five steps later:"
+                   " %lu -> %lu   %s\n",
+                   nm[j], ver,
+                   isU ? (a & 0xFFUL) : (a >> 8),
+                   isU ? (b5 & 0xFFUL) : (b5 >> 8),
+                   (ver != OSMGA_HW3D_OK) ? "(refused)"
+                   : ((isU ? (b5 & 0xFFUL) : (b5 >> 8)) == 35UL
+                       ? "honoured" : "NOT honoured"));
+        }
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;

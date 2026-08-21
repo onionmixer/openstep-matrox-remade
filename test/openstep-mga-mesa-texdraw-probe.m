@@ -76,12 +76,15 @@ main(int argc, char **argv)
     caddr_t cmd, cwin, twin;
     int fd, i, n;
     unsigned long r, c, dim = 64UL;
+    int only = 0;
     OSMGAMesaVertex va, vb, vc;
     OSMGAHW3DTri out[4];
     OSMGAMesaTex tx;
     long tmr[4][9];
 
     if (argc > 1) dim = (unsigned long)atoi(argv[1]);
+    if (argc > 2) only = atoi(argv[2]);   /* 0 all, 1 u/col, 2 u/row,
+                                           * 3 v/col, 4 v/row */
 
     master = [IODeviceMaster new];
     if ([master lookUpByDeviceName:"Display0" objectNumber:&objNum
@@ -141,6 +144,29 @@ main(int argc, char **argv)
         batch->state.tmr[3] = tmr[i][3];
         batch->state.tmr[6] = tmr[i][6];
         batch->state.tmr[7] = tmr[i][7];
+        /*
+         * One increment at a time, with both starts at zero, so that a term
+         * that misbehaves shows up alone instead of inside a sum.
+         */
+        if (only != 0) {
+            batch->state.tmr[0] = (only == 1) ? tmr[i][0] : 0L;
+            batch->state.tmr[2] = (only == 2) ? tmr[i][2] : 0L;
+            batch->state.tmr[1] = (only == 3) ? tmr[i][1] : 0L;
+            batch->state.tmr[3] = (only == 4) ? tmr[i][3] : 0L;
+            batch->state.tmr[6] = 0L;
+            batch->state.tmr[7] = 0L;
+            /* the row term is negative for u here; give it a positive one so
+             * the coordinate stays non-negative */
+            if (only == 2) batch->state.tmr[2] = -tmr[i][2];
+            /*
+             * v's column term is negative, so a zero start would run the
+             * coordinate below zero and the batch would be refused for a
+             * reason that has nothing to do with the question.  Start it high
+             * enough to cover the whole width instead.
+             */
+            if (only == 3)
+                batch->state.tmr[7] = -tmr[i][1] * (long)DSTW;
+        }
         batch->state.tmr[8] = 1L << 16;
         batch->tri[0] = out[i];
         (void)[master setIntValues:&one forParameter:SUBMIT_PARAM
@@ -150,6 +176,9 @@ main(int argc, char **argv)
         printf("# trapezoid %d y %ld h %ld left %lu verdict %u\n", i,
                out[i].y, out[i].h,
                (unsigned long)(out[i].fxbndry & 0xFFFFUL), st[0]);
+        printf("# tmr %d %ld %ld %ld %ld %ld %ld\n", i,
+               tmr[i][0], tmr[i][1], tmr[i][2], tmr[i][3],
+               tmr[i][6], tmr[i][7]);
         if (st[0] != OSMGA_HW3D_OK) return 2;
     }
 
