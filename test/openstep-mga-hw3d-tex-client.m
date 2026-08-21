@@ -118,6 +118,44 @@ texState(OSMGAHW3DBatch *b)
     b->state.tmr[8] = 1UL << 16;        /* H, which takes no decal */
 }
 
+/*
+ * ---- M1-3i step 0: the same batch, submitted two different ways ----
+ *
+ * Mesa submits by ioctl; everything measured so far went through the Mach
+ * round trip instead.  The two were compared once by running two different
+ * programs, which is no comparison at all: one drew a 380-pixel untextured
+ * triangle and the other a textured band, so a difference in the numbers had
+ * two explanations and the workload was the likelier one.
+ *
+ * Here the batch, the fill and the counting are all the same code; only the
+ * call that hands it to the driver changes.  Both calls reach the same
+ * -runHW3DSubmit, which the driver says in as many words, so any difference
+ * that survives belongs to the submission and nothing else.
+ */
+#define SUBMIT_RPC      0
+#define SUBMIT_IOCTL    1
+
+static unsigned long
+submitBatch(int how, int fd, IODeviceMaster *master, IOObjectNumber objNum)
+{
+    if (how == SUBMIT_IOCTL) {
+        OSMGAHW3DSubmitBlock blk;
+
+        blk.status = 0UL;
+        blk.verdict = OSMGA_HW3D_NOT_RUN;
+        blk.triangle = 0UL;
+        blk.dwords = 0UL;
+        blk.spins = 0UL;
+        if (ioctl(fd, (long)OSMGA_IOC_SUBMIT, &blk) < 0)
+            return OSMGA_HW3D_NOT_RUN;
+        return blk.verdict;
+    }
+    (void)fd;
+    (void)[master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
+                  objectNumber:objNum count:0];
+    return verdict(master, objNum);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -143,6 +181,11 @@ main(int argc, char **argv)
      * pair that says whether the stale bytes belong to the mapping or to a
      * particular place in the card's memory. */
     unsigned long argMapRows = 0UL;
+    /* argv[6]: "ioctl" to submit the way Mesa does; anything else keeps the
+     * Mach round trip.  argv[7]: non-zero to put a priming submission in
+     * front of EVERY trial, so every one of the forty is a state transition
+     * rather than only the first. */
+    int argHow = SUBMIT_RPC, argPrime = 0;
     IODeviceMaster *master;
     IOObjectNumber objNum;
     IOString kind;
@@ -179,6 +222,10 @@ main(int argc, char **argv)
         argRows = (unsigned long)atoi(argv[4]);
     if (argc > 5)
         argMapRows = (unsigned long)atoi(argv[5]);
+    if (argc > 6 && strcmp(argv[6], "ioctl") == 0)
+        argHow = SUBMIT_IOCTL;
+    if (argc > 7)
+        argPrime = atoi(argv[7]);
 
     printf("M1-2g: texture through the batch path\n");
 
@@ -447,7 +494,7 @@ main(int argc, char **argv)
      * shell loop because loops over this link do not survive.
      */
     {
-        unsigned long trial, shortRuns = 0UL, worst = DIM * DIM;
+        unsigned long trial, pass, shortRuns = 0UL, worst = DIM * DIM;
         unsigned long lost[40], nlost = 0UL;
         /*
          * Which destination word to touch FIRST, and how long to wait on the
@@ -469,6 +516,10 @@ main(int argc, char **argv)
         unsigned long firstIdx = argFirst, spin = argSpin;
         /* The rectangle, wherever it has been pushed to. */
         volatile unsigned long *dst = colour + argRows * STRIDE_DW;
+        /* Where the priming batch draws: far enough down the driver's window
+         * to miss everything this program looks at, including the row just
+         * past the rectangle. */
+        unsigned long tOrg, pOrg = COLOUR_ORG + 200UL * STRIDE_DW * 4UL;
         int haveFirst = argHaveFirst, firstStale = 0;
         /*
          * Counted separately from the short runs, because the two are not
@@ -484,8 +535,8 @@ main(int argc, char **argv)
         batch->magic = OSMGA_HW3D_MAGIC;
         batch->version = OSMGA_HW3D_VERSION;
         batch->triCount = 1;
-        batch->state.dstorg = COLOUR_ORG
-                            + (argMapRows + argRows) * STRIDE_DW * 4UL;
+        tOrg = COLOUR_ORG + (argMapRows + argRows) * STRIDE_DW * 4UL;
+        batch->state.dstorg = tOrg;
         batch->state.dstWidth  = 64UL;
         /* The claim has to shrink by as much as the origin moved, or its
          * reach runs past the end of the window and the kernel refuses it. */
@@ -494,9 +545,71 @@ main(int argc, char **argv)
         texState(batch);
         rect(&batch->tri[0], 0UL, DIM, DWG_TEX);
 
+        /*
+         * Twice through, in one process.
+         *
+         * Every arrangement tried so far leaves exactly one short trial and
+         * it is always the first, whichever way the batch is submitted and
+         * whatever is submitted in front of it.  The program has already made
+         * many accepted submissions and already read the whole band before
+         * this loop is entered, so "the first draw of the process" does not
+         * describe it either.  Running the identical loop a second time says
+         * whether the thing is spent once and gone, or whether entering the
+         * loop is itself what arms it.
+         */
+        for (pass = 0UL; pass < 2UL; pass++) {
+        shortRuns = 0UL; worst = DIM * DIM; firstStaleCount = 0UL;
         for (trial = 0UL; trial < 40UL; trial++) {
             unsigned long n = 0UL;
 
+            /*
+             * A priming submission in front of every trial, so that the
+             * question "what makes the first one different" can be asked
+             * one variable at a time.
+             *
+             *   1  same batch but drawn somewhere else -- a state change
+             *      with a different destination
+             *   2  the very same batch again -- no state change at all
+             *   3  the same destination, one texture register different --
+             *      a state change with the destination left alone
+             *
+             * Mode 1 did not stop the fault, which is what killed the idea
+             * that any change of register values was enough.
+             */
+            if (argPrime == 1) {
+                batch->state.dstorg = pOrg;
+                (void)submitBatch(argHow, fd, master, objNum);
+                batch->state.dstorg = tOrg;
+            }
+            else if (argPrime == 2) {
+                (void)submitBatch(argHow, fd, master, objNum);
+            }
+            else if (argPrime == 4) {
+                /*
+                 * A submission the kernel REFUSES, which therefore draws
+                 * nothing.
+                 *
+                 * The one short trial is always the first of a pass, and a
+                 * second pass through the identical loop has none at all --
+                 * so whatever this is, it is spent once.  What sits between
+                 * the program's last full read of the band and that first
+                 * trial is the validator section, which is nothing but
+                 * refused submissions.  If a refusal is what arms it, doing
+                 * one in front of every trial should make every trial short.
+                 */
+                unsigned long keep = batch->state.dstPitch;
+
+                batch->state.dstPitch = 0UL;
+                (void)submitBatch(argHow, fd, master, objNum);
+                batch->state.dstPitch = keep;
+            }
+            else if (argPrime == 3) {
+                unsigned long keep = batch->state.tmr[0];
+
+                batch->state.tmr[0] = keep / 2UL;
+                (void)submitBatch(argHow, fd, master, objNum);
+                batch->state.tmr[0] = keep;
+            }
             /* One row past the rectangle as well.  If the mapping's
              * offset were ignored, the client's base would still be the
              * window start while the engine honoured a dstorg further in --
@@ -509,9 +622,7 @@ main(int argc, char **argv)
                 (void)dst[0];
                 (void)dst[(DIM - 1UL) * STRIDE_DW];
             }
-            (void)[master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
-                          objectNumber:objNum count:0];
-            if (verdict(master, objNum) != OSMGA_HW3D_OK) {
+            if (submitBatch(argHow, fd, master, objNum) != OSMGA_HW3D_OK) {
                 printf("      trial %lu was refused\n", trial);
                 fails++;
                 continue;
@@ -578,9 +689,12 @@ main(int argc, char **argv)
                 }
             }
         }
-        printf("   through the RPC, %s", noSettle
+        printf("   pass %lu: through the %s%s, %s", pass,
+               argHow == SUBMIT_IOCTL ? "ioctl" : "RPC",
+               argPrime ? " (primed every trial)" : "", noSettle
                ? "no read between fill and submit"
                : "with the client settling too");
+        (void)0;
         if (haveFirst) printf(", first word read = index %lu", firstIdx);
         if (spin != 0UL) printf(", %lu spins first", spin);
         printf(": %lu of 40 runs short, worst %lu of %lu\n",
@@ -594,6 +708,7 @@ main(int argc, char **argv)
                    "pixels (0 means the rectangle landed where it was "
                    "asked to)\n", past);
         }
+        }   /* pass */
         if (haveFirst)
             printf("   and the word touched first was stale on %lu of 40\n",
                    firstStaleCount);
