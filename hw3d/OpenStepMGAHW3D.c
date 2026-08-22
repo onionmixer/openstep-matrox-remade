@@ -470,14 +470,31 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                  * corner checks below then work on values that are known to
                  * be representable.
                  */
-                if (persp &&
-                    (b->state.tmr[8] < OSMGA_HW3D_Q_MIN ||
-                     b->state.tmr[8] > OSMGA_HW3D_Q_MAX ||
-                     b->state.tmr[4] >  OSMGA_HW3D_Q_SLOPE_MAX ||
-                     b->state.tmr[4] < -OSMGA_HW3D_Q_SLOPE_MAX ||
-                     b->state.tmr[5] >  OSMGA_HW3D_Q_SLOPE_MAX ||
-                     b->state.tmr[5] < -OSMGA_HW3D_Q_SLOPE_MAX))
-                    texBad = 1;
+                if (persp) {
+                    /*
+                     * The slopes are bounded by what evaluating q can hold,
+                     * against the surface THIS batch declared rather than
+                     * against a span baked in here -- an assumed maximum is
+                     * a bound that stops being true when something else
+                     * changes.  Written as a division so the check itself
+                     * cannot overflow.
+                     */
+                    long budget = (1L << 30) - OSMGA_HW3D_Q_MAX;
+                    long sw = (long)b->state.dstWidth;
+                    long sh = (long)b->state.dstHeight;
+                    long a4 = (b->state.tmr[4] < 0L)
+                              ? -b->state.tmr[4] : b->state.tmr[4];
+                    long a5 = (b->state.tmr[5] < 0L)
+                              ? -b->state.tmr[5] : b->state.tmr[5];
+
+                    if (sw < 1L) sw = 1L;
+                    if (sh < 1L) sh = 1L;
+                    if (b->state.tmr[8] < OSMGA_HW3D_Q_MIN ||
+                        b->state.tmr[8] > OSMGA_HW3D_Q_MAX ||
+                        a4 > budget / (2L * sw) ||
+                        a5 > budget / (2L * sh))
+                        texBad = 1;
+                }
 
                 if ((ex > 0L && (b->state.tmr[0] > room / ex ||
                                  b->state.tmr[0] < -(room / ex) ||

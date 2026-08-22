@@ -2643,6 +2643,61 @@ main(void)
                " anything else is a different format\n");
     }
 
+    printf("\n43. does the denominator's row index run on, or restart?\n");
+    {
+        /*
+         * The validator admits a perspective primitive only if BOTH readings
+         * of the denominator's row index are in range, because which one the
+         * engine uses was not known -- v's index runs on across a batch and
+         * u's restarts.  Now that the divider is known to work, the question
+         * can be answered instead of hedged.
+         *
+         * Two textured primitives in one batch, the first eight rows tall,
+         * with q climbing a sixteenth a row.  Read the SECOND one's first
+         * row: restarting reads texel 8, running on reads what eight rows of
+         * climb leaves.
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        unsigned long got;
+
+        blank();
+        memset(batch, 0, sizeof *batch);
+        batch->magic = OSMGA_HW3D_MAGIC;
+        batch->version = OSMGA_HW3D_VERSION;
+        batch->triCount = 2UL;
+        batch->state.dstorg = COLOUR_ORG;
+        batch->state.dstWidth = 1024UL;
+        batch->state.dstHeight = 64UL;
+        batch->state.dstPitch = STRIDE_DW;
+        batch->state.texorg = TEX_ORG;
+        batch->state.texW = DIM; batch->state.texH = DIM;
+        batch->state.texPitch = DIM;
+        batch->state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
+        batch->state.texFlags = OSMGA_HW3D_TEXF_PERSP;
+        batch->state.tmr[6] = 8L * texel;
+        batch->state.tmr[8] = OSMGA_HW3D_Q_ONE;
+        batch->state.tmr[5] = 4096L;            /* dq/dy = 1/16 */
+        {
+            int k;
+
+            for (k = 0; k < 2; k++) {
+                OSMGAHW3DTri *t = &batch->tri[k];
+
+                t->dwgctl = DWG_TEX;
+                t->alphactrl = 0x00000101UL;
+                t->y = (long)(k * 8);
+                t->h = 8L;
+                t->ar0 = 8L; t->ar6 = 8L;
+                t->fxbndry = (8UL << 16) | 0UL;
+                t->dr[0] = 200UL << 15;
+            }
+        }
+        printf("   verdict %u", fire());
+        got = pixat(8UL, 0UL) & 0xFFUL;         /* second primitive, row 0 */
+        printf("   second primitive's first row reads texel %lu\n", got);
+        printf("   restarting gives 8, running on gives 5\n");
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;

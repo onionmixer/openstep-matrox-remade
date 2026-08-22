@@ -284,8 +284,17 @@
 #define OSMGA_HW3D_Q_ONE         65536L         /* q = 1.0, 16.16 */
 #define OSMGA_HW3D_Q_MIN         256L           /* 1/256 */
 #define OSMGA_HW3D_Q_MAX         (1L << 23)     /* 128.0 */
-/* dq/dx and dq/dy, bounded so evaluating q over a surface cannot overflow */
-#define OSMGA_HW3D_Q_SLOPE_MAX   (OSMGA_HW3D_Q_MAX / 4096L)
+/*
+ * dq/dx and dq/dy are bounded only so that EVALUATING q cannot leave a long,
+ * and the bound is taken against the surface the batch DECLARES rather than
+ * against a span written down here -- see the check in the validator.  The
+ * first attempt used Q_MAX/4096, a thirty-second of a unit per pixel, which
+ * was the arithmetic done backwards: it bounded the slope by the coordinate
+ * range instead of by the overflow, and turned away a denominator climbing a
+ * sixteenth a row, which is an ordinary one.  What limits the slope in any
+ * real sense is the corner check keeping q inside [Q_MIN, Q_MAX] over the
+ * pixels the primitive actually draws.
+ */
 
 /*
  * How far a texture coordinate may reach.
