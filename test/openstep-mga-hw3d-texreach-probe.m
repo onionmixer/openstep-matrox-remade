@@ -182,6 +182,32 @@ pixat(unsigned long r, unsigned long c)
     return colour[r * STRIDE_DW + c];
 }
 
+/*
+ * One reading for section 56: which texel a constant v coordinate lands on,
+ * on the 2048-tall texture under repeat.  Only the one pixel that is read is
+ * cleared -- blanking the whole surface for each of these would dominate the
+ * run, and a bisection asks for a lot of them.
+ */
+static unsigned long
+osmgaProbeReadV(long v7)
+{
+    unsigned v;
+
+    colour[0] = BLANK;
+    (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV);
+    batch->state.texW = 8UL;
+    batch->state.texH = 2048UL;
+    batch->state.texPitch = 8UL;
+    batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+    batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+    batch->state.tmr[6] = 0L; batch->state.tmr[7] = v7;
+    v = fire();
+    if (v != OSMGA_HW3D_OK)
+        return 99999UL;
+    return pixat(0UL, 0UL) & 0xFFFFUL;
+}
+
 int
 main(void)
 {
@@ -3411,6 +3437,62 @@ main(void)
             printf(" %3lu", (got == BLANK) ? 999UL : ((got >> 16) & 0xFFUL));
         }
         printf("\n     python fits this against GL's straddle rule\n");
+    }
+
+    printf("\n56. the addend above 2^20, where repeat does not clamp\n");
+    {
+        /*
+         * The header argues the ladder stops mattering above 2^20 "because a
+         * coordinate past the last texel is clamped".  That holds under
+         * clamp.  Under REPEAT nothing is clamped -- the coordinate wraps,
+         * and a few units decide which side of a texel boundary it wraps to.
+         * And the positive reach is already eight whole textures, so ordinary
+         * tiling puts coordinates in those bands today.
+         *
+         * A texel is 512 units on this texture, so the offset at which the
+         * reading steps IS the net bias, negated.  The reading rises with the
+         * coordinate, so the step is found by bisection rather than by
+         * walking: the walk needed hundreds of submissions per band and the
+         * step in the high bands turned out to be outside the window I first
+         * guessed.
+         */
+        static const unsigned long band[5] = {
+            1UL << 19, 1UL << 20, 1UL << 21, 1UL << 22, 1UL << 23
+        };
+        int bi;
+        unsigned long rr, cc;
+
+        /* 55 left only the last row carrying anything; put the row numbers
+         * back or every reading here is a nought that means nothing. */
+        for (rr = 0UL; rr < 2048UL; rr++)
+            for (cc = 0UL; cc < 8UL; cc++)
+                tex[rr * 8UL + cc] = rr;
+
+        for (bi = 0; bi < 5; bi++) {
+            long base = (long)band[bi] - 512L;   /* still inside the band */
+            long lo = -256L, hi = 512L;
+            unsigned long vlo = osmgaProbeReadV(base + lo);
+            unsigned long vhi = osmgaProbeReadV(base + hi);
+
+            if (vlo == 99999UL || vhi == 99999UL || vlo == vhi) {
+                printf("   band 2^%-2d  no step between %ld and %ld"
+                       "  (%lu .. %lu)\n",
+                       19 + bi, lo, hi, vlo, vhi);
+                continue;
+            }
+            while (hi - lo > 1L) {
+                long mid = (lo + hi) / 2L;
+
+                if (osmgaProbeReadV(base + mid) == vlo) lo = mid;
+                else hi = mid;
+            }
+            printf("   band 2^%-2d  texel %lu -> %lu at offset %+ld"
+                   "   net bias %+ld\n",
+                   19 + bi, vlo, vhi, hi, -hi);
+        }
+        printf("   the ladder below 2^20 gives +15, +14, +12, +8, 0;\n"
+               "   a NEGATIVE net bias means the encoder takes off more than\n"
+               "   the engine puts back, and the coordinate lands low\n");
     }
 
     printf("\n%s (%d failing)\n",

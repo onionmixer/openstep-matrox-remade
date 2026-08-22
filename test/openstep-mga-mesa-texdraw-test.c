@@ -262,6 +262,95 @@ main(int argc, char **argv)
         }
         /* "tile" runs the quad's texture coordinates out to three, which
          * only means anything with repeat */
+        if (argc > 2 && strcmp(argv[2], "tilebnd") == 0) {
+            /*
+             * Seven textures across fifty-six pixels is exactly two texels
+             * per pixel, so every sample -- taken at a pixel centre -- lands
+             * exactly ON a texel boundary.  That is the position the encoder
+             * was built to keep exact, and the position where a coordinate
+             * that lands even one unit low reads the texel before.
+             *
+             * The first eight columns stay under 2^20, where the addend the
+             * engine puts back is at least the 496 the encoder takes off.
+             * Past that the ladder keeps stepping -- probe section 56
+             * measured 480, 448 and 384 in the three bands above -- so the
+             * encoder takes off MORE than is put back and the coordinate
+             * lands low.  python predicts columns 8 to 55 read one texel
+             * below what GL asks for, and the first eight agree.
+             */
+            glClear(GL_COLOR_BUFFER_BIT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+            glBegin(GL_TRIANGLES);
+              glTexCoord2f(0.0f, 0.0f); glVertex2d(40.0, 40.0);
+              glTexCoord2f(7.0f, 0.0f); glVertex2d(96.0, 40.0);
+              glTexCoord2f(7.0f, 0.5f); glVertex2d(96.0, 72.0);
+              glTexCoord2f(0.0f, 0.0f); glVertex2d(40.0, 40.0);
+              glTexCoord2f(7.0f, 0.5f); glVertex2d(96.0, 72.0);
+              glTexCoord2f(0.0f, 0.5f); glVertex2d(40.0, 72.0);
+            glEnd();
+            glFinish();
+            fprintf(stderr,
+                    "# tilebnd: drawn %lu software %lu persp %lu"
+                    " unsupported %lu declined %lu\n",
+                    OSMGAMesaHookDrawn(), OSMGAMesaHookSoftware(),
+                    OSMGAMesaHookTexPersp(),
+                    OSMGAMesaHookUnsupported(), OSMGAMesaHookDeclined());
+            for (y = 0; y < H; y++)
+                for (x = 0; x < W; x++)
+                    if (app[y * W + x] != CLEARC)
+                        printf("P %ld %ld %lu\n", x, y, app[y * W + x]);
+            return 0;
+        }
+        if (argc > 2 && strcmp(argv[2], "tileneg") == 0) {
+            /*
+             * The same tiling as "tile", moved one whole texture down and
+             * left so the coordinates run from -1 to 2 instead of 0 to 3.
+             * GL treats the two identically under GL_REPEAT -- the picture
+             * should be the same tiling -- so anything that falls back here
+             * and not in "tile" is the reach being lopsided about the sign,
+             * not the hardware being unable.
+             */
+            glClear(GL_COLOR_BUFFER_BIT);
+            if (argc > 3) {
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                                GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+                                GL_LINEAR);
+            }
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+            glBegin(GL_TRIANGLES);
+              glTexCoord2f(-1.0f, -1.0f); glVertex2d(40.0, 40.0);
+              glTexCoord2f( 2.0f, -1.0f); glVertex2d(168.0, 40.0);
+              glTexCoord2f( 2.0f,  2.0f); glVertex2d(168.0, 168.0);
+              glTexCoord2f(-1.0f, -1.0f); glVertex2d(40.0, 40.0);
+              glTexCoord2f( 2.0f,  2.0f); glVertex2d(168.0, 168.0);
+              glTexCoord2f(-1.0f,  2.0f); glVertex2d(40.0, 168.0);
+            glEnd();
+            glFinish();
+            fprintf(stderr,
+                    "# tileneg: drawn %lu software %lu persp %lu"
+                    " unsupported %lu declined %lu\n",
+                    OSMGAMesaHookDrawn(), OSMGAMesaHookSoftware(),
+                    OSMGAMesaHookTexPersp(),
+                    OSMGAMesaHookUnsupported(), OSMGAMesaHookDeclined());
+            {
+                unsigned long qv;
+
+                for (qv = 0UL; qv < 24UL; qv++)
+                    if (OSMGAMesaHookVerdictCount(qv) != 0UL)
+                        fprintf(stderr, "#   verdict %lu x%lu\n", qv,
+                                OSMGAMesaHookVerdictCount(qv));
+            }
+            for (y = 0; y < H; y++)
+                for (x = 0; x < W; x++)
+                    if (app[y * W + x] != CLEARC)
+                        printf("P %ld %ld %lu\n", x, y, app[y * W + x]);
+            return 0;
+        }
         if (argc > 2 && strcmp(argv[2], "tile") == 0) {
             /* this path returns before the clear further down, so it has to
              * do its own -- without it the dump is uninitialised memory and
