@@ -2773,13 +2773,19 @@ main(void)
          * settle it instead of the guess being believed.
          */
         long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        /*
+         * The denominators moved above Q_MIN when that became an accuracy
+         * budget rather than a guess.  The mantissas are the same ones --
+         * the addend has no exponent term -- so the science is unchanged.
+         */
         static const long qs[10] = {
-            256L, 257L, 300L, 384L, 511L, 512L, 1024L, 4096L, 16385L, 65536L
+            8192L, 8224L, 9600L, 12288L, 14336L, 16352L,
+            16384L, 24576L, 65536L, 262144L
         };
         int j;
 
-        printf("   %8s %10s %10s %8s %s\n",
-               "q", "measured", "arithmetic", "error", "in coordinate");
+        printf("   %8s %10s %10s %8s %8s\n",
+               "q", "measured", "arithmetic", "error", "model");
         for (j = 0; j < 10; j++) {
             long q = qs[j];
             long want = (9L * q + 3L) / 4L;
@@ -2813,11 +2819,32 @@ main(void)
                 printf("   %8ld %10s\n", q, "refused");
                 continue;
             }
-            printf("   %8ld %10ld %10ld %8ld %ld\n",
-                   q, lo, want, lo - want, (lo - want) * (65536L / q));
+            {
+                /*
+                 * Two things sit between the plain arithmetic and the step,
+                 * and they compose: the affine ladder, which is 512 less a
+                 * granularity taken from the NUMERATOR's magnitude and which
+                 * the kernel has already had 496 taken off, and the
+                 * perspective addend of 512 times q's mantissa.
+                 *
+                 * The first version of this line had only the addend and
+                 * called the two largest denominators wrong -- they are the
+                 * ones whose numerator is big enough for the ladder to have
+                 * stepped.
+                 */
+                long p2 = 1L, e2, gg = 1L, hi2 = 1L << 16, n = lo - 496L;
+
+                while (p2 * 2L <= q) p2 *= 2L;
+                e2 = (512L * (q - p2)) / p2;
+                if (n < 0L) n = -n;
+                while (hi2 <= n) { hi2 <<= 1; gg <<= 1; }
+                printf("   %8ld %10ld %10ld %8ld %8ld %s\n",
+                       q, lo, want, lo - want, -((16L - gg) + e2),
+                       (lo - want == -((16L - gg) + e2)) ? "" : "<<");
+            }
         }
-        printf("   an error of nought is the arithmetic exactly;"
-               " one unit of s is 65536/q of coordinate\n");
+        printf("   the error must be -((16 - g) + 512f), the ladder and the"
+               " addend together\n");
         (void)texel;
     }
 
@@ -2866,61 +2893,6 @@ main(void)
                " past 8388608\n");
     }
 
-    printf("\n47. is it the divisor, or an addend on the numerator?\n");
-    {
-        /*
-         * Backing a divisor out of ONE texel boundary cannot tell a distorted
-         * divisor from an exact one with something added to the numerator:
-         * an addend E shows up in the inferred divisor as 4E/k, so at the
-         * ninth boundary it wears a factor of a ninth -- which is exactly the
-         * "one ninth" the first measurement produced, and a suspicious number
-         * for binary hardware to hold.
-         *
-         * And the two fit equally.  With the divisor exactly q and an addend
-         * of -2*(q - 2^e) on the numerator, all five denominators land to
-         * within a fifth of a unit.
-         *
-         * A SECOND boundary separates them, because an addend is a constant
-         * while a divisor scales: at the twenty-fifth they part by hundreds.
-         */
-        static const long qs[5] = { 256L, 300L, 384L, 511L, 512L };
-        static const long mA[5] = { 1585L, 1616L, 1674L, 1763L, 3185L };
-        static const long mB[5] = { 1585L, 1948L, 2641L, 3689L, 3185L };
-        int j;
-
-        printf("   %6s %10s %10s %10s %s\n",
-               "q", "measured", "divisor", "addend", "which");
-        for (j = 0; j < 5; j++) {
-            long q = qs[j];
-            long lo = 1L, hi = 8000L, mid;
-            int it, blanked = 0;
-
-            for (it = 0; it < 14 && lo < hi; it++) {
-                unsigned long p;
-
-                mid = (lo + hi) / 2L;
-                blank();
-                (void)setup(64UL, 0UL, 8UL, 4UL, 0L, OSMGA_HW3D_TEXF_PERSP);
-                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
-                batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] = mid;
-                batch->state.tmr[7] = 0L;
-                batch->state.tmr[4] = 0L; batch->state.tmr[5] = 0L;
-                batch->state.tmr[8] = q;
-                if (fire() != OSMGA_HW3D_OK) { blanked = 1; break; }
-                p = pixat(0UL, 0UL);
-                if (p == BLANK) { blanked = 1; break; }
-                if ((p & 0xFFUL) >= 25UL) hi = mid; else lo = mid + 1L;
-            }
-            if (blanked) { printf("   %6ld %10s\n", q, "refused"); continue; }
-            printf("   %6ld %10ld %10ld %10ld %s\n", q, lo, mA[j], mB[j],
-                   (lo == mA[j]) ? "divisor"
-                   : (lo == mB[j]) ? "addend" : "neither");
-        }
-        printf("   the two agree at 256 and 512 by construction;"
-               " the three between them are the question\n");
-    }
-
     printf("\n48. the addend across octaves, not just inside one\n");
     {
         /*
@@ -2938,8 +2910,8 @@ main(void)
          *      D = (b - a) / 4             E = 9D/4 - a
          */
         static const long qs[12] = {
-            256L, 257L, 300L, 384L, 448L, 511L,
-            512L, 513L, 600L, 768L, 1200L, 1536L
+            8192L, 8224L, 9600L, 12288L, 14336L, 16352L,
+            16384L, 16416L, 19200L, 24576L, 38400L, 49152L
         };
         int j;
 
@@ -2990,8 +2962,56 @@ main(void)
                        (4L * e) / q, ((400L * e) / q) % 100L);
             }
         }
-        printf("   D must be q; the two families 300/600/1200 and"
-               " 384/768/1536 must show the same texels\n");
+        printf("   D must be q, and E must be 512 times the mantissa --"
+               " 9600/19200/38400 all 88, 12288/24576/49152 all 256\n");
+    }
+
+    printf("\n49. and with the denominator VARYING, which is what perspective is\n");
+    {
+        /*
+         * Everything so far held q constant over the primitive, which is not
+         * perspective at all.  A row with dq/dx running, crossing an octave
+         * of q partway, asks whether the addend really is evaluated per pixel
+         * from the local mantissa -- because if it is, it climbs towards 512
+         * as q approaches the power of two and drops to nought as it crosses.
+         *
+         * q runs 12288 to 24576 across 64 columns, so it passes 16384 at
+         * column 22.  The reset is 512 * 65536 / 16384 = 2048 coordinate
+         * units, an eighth of a texel.
+         *
+         * The row is printed whole and checked against the model outside;
+         * a single engineered column would be too easy to read into.
+         */
+        long q0 = 12288L;
+        /*
+         * An eighth of a texel is small against an oracle that reads texels,
+         * so ONE row only disagrees with the no-addend model in three or four
+         * columns.  Six numerator phases, chosen so each disagrees in five or
+         * more, put forty-odd discriminating observations on the table
+         * instead of three.
+         */
+        static const long ss[6] = { 36260L, 36416L, 36845L, 37222L, 37989L };
+        int j;
+
+        for (j = 0; j < 6; j++) {
+            unsigned long c;
+
+            blank();
+            (void)setup(1024UL, 0UL, 64UL, 4UL, 0L, OSMGA_HW3D_TEXF_PERSP);
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = ss[j];
+            batch->state.tmr[7] = 0L;
+            batch->state.tmr[4] = 192L;          /* dq/dx */
+            batch->state.tmr[5] = 0L;
+            batch->state.tmr[8] = q0;
+            printf("   s=%ld v=%u:", ss[j], fire());
+            for (c = 0UL; c < 64UL; c++)
+                printf(" %lu", pixat(0UL, c) & 0xFFUL);
+            printf("\n");
+        }
+        printf("   q runs %ld to %ld, crossing 16384 at column 22\n",
+               q0, q0 + 192L * 63L);
     }
 
     printf("\n%s (%d failing)\n",
