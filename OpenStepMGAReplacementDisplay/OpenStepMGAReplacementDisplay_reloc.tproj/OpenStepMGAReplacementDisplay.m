@@ -6940,13 +6940,26 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
          * One texture-environment word per lane; see the flags in
          * OpenStepMGAHW3D.h for why the diagnostic ones exist.
          */
-        tds0 = MGA_TDS_ALPHA_SEL_ARG2;
-        tds1 = MGA_TDS_ALPHA_SEL_ARG2;
+        /*
+         * ARG1 is the texture's alpha and ARG2, with every other field of the
+         * word left at zero, is the interpolated one.  Which of them GL wants
+         * depends on whether the texture has an alpha at all, so the client
+         * says; see OSMGA_HW3D_TEXF_TEXALPHA.
+         */
+        tds0 = ((b->state.texFlags & OSMGA_HW3D_TEXF_TEXALPHA) != 0UL)
+               ? 0UL : MGA_TDS_ALPHA_SEL_ARG2;
+        tds1 = tds0;
         if ((b->state.texFlags & OSMGA_HW3D_TEXF_TDS1ZERO) != 0UL)
             tds1 = 0UL;
         if ((b->state.texFlags & OSMGA_HW3D_TEXF_TDSSWAP) != 0UL) {
-            tds0 = 0UL;
-            tds1 = MGA_TDS_ALPHA_SEL_ARG2;
+            unsigned long t = tds0;
+
+            tds0 = tds1;
+            tds1 = t;
+            if (tds0 == tds1) {         /* nothing to exchange; make it one */
+                tds0 = 0UL;
+                tds1 = MGA_TDS_ALPHA_SEL_ARG2;
+            }
         }
         ok = ok && osmgaDmaBlock(list, listDwords, &pos,
                  MGA_TEXCTL2,      MGA_TEXCTL2_G400_MAGIC |

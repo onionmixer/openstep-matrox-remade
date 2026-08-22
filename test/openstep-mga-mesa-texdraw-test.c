@@ -59,6 +59,34 @@ maketex(GLuint *id)
                  GL_RGB, GL_UNSIGNED_BYTE, px);
 }
 
+/*
+ * The same texels with an alpha of their own, and an alpha that is nobody
+ * else's value: not 0, not 255, and not the vertex alpha the quad is drawn
+ * with, so taking the wrong operand cannot look right by accident.
+ */
+static void
+maketexRGBA(GLuint *id)
+{
+    static GLubyte px[TD * TD * 4];
+    int x, y;
+
+    for (y = 0; y < TD; y++)
+        for (x = 0; x < TD; x++) {
+            px[(y * TD + x) * 4 + 0] = (GLubyte)(x * 16 + 8);
+            px[(y * TD + x) * 4 + 1] = (GLubyte)(y * 16 + 4);
+            px[(y * TD + x) * 4 + 2] = (GLubyte)(x + y);
+            px[(y * TD + x) * 4 + 3] = (GLubyte)(x * 8 + y * 3 + 17);
+        }
+    glGenTextures(1, id);
+    glBindTexture(GL_TEXTURE_2D, *id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, TD, TD, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, px);
+}
+
 static void
 quad(double x0, double y0, double x1, double y1)
 {
@@ -124,7 +152,18 @@ main(int argc, char **argv)
          * takes -- with CLAMP_TO_EDGE, since under a linear filter GL_CLAMP
          * blends a border colour that the engine's clamp does not have.
          */
-        if (argc > 2) {
+        /*
+         * "rgba" swaps in a texture that has an alpha of its own and draws it
+         * with a vertex alpha that is a different value again, so a wrong
+         * operand shows on every pixel.
+         */
+        if (argc > 2 && strcmp(argv[2], "rgba") == 0) {
+            GLuint rt;
+
+            maketexRGBA(&rt);
+            glColor4f(1.0f, 1.0f, 1.0f, 0.5f);
+        }
+        if (argc > 2 && strcmp(argv[2], "lin") == 0) {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
                             GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
@@ -253,6 +292,34 @@ main(int argc, char **argv)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+
+    /* an RGBA texture is taken too, and takes its alpha from itself */
+    {
+        GLuint rt;
+        unsigned long before;
+
+        maketexRGBA(&rt);
+        glClear(GL_COLOR_BUFFER_BIT);
+        before = OSMGAMesaHookDrawn();
+        quad(40.0, 40.0, 168.0, 168.0);
+        glFinish();
+        say("an RGBA texture reaches the engine",
+            OSMGAMesaHookDrawn() - before >= 2UL, 0);
+        {
+            /*
+             * The texel at (0,0) has alpha 17 and the vertex alpha is 255, so
+             * the pixel that samples it says which operand won.
+             */
+            unsigned long a = (app[41L * W + 41L] >> 24) & 0xFFUL;
+            char d[48];
+
+            sprintf(d, "alpha %lu", a);
+            say("and its alpha is the texture's, not the fragment's",
+                a != 255UL, d);
+        }
+        glDeleteTextures(1, &rt);
+        glBindTexture(GL_TEXTURE_2D, tex);
     }
 
     /* and it comes back after they are put right */

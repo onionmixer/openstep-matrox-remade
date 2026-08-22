@@ -385,9 +385,23 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
          * The gate has already required MinFilter == MagFilter and that both
          * are GL_NEAREST or GL_LINEAR, so one of them decides it.
          */
-        batch->state.texFlags =
-            (ctx->Texture.Unit[0].CurrentD[2]->MagFilter == GL_LINEAR)
-            ? OSMGA_HW3D_TEXF_BILIN : 0UL;
+        {
+            const struct gl_texture_object *to =
+                ctx->Texture.Unit[0].CurrentD[2];
+            const struct gl_texture_image *ti = to->Image[to->BaseLevel];
+
+            batch->state.texFlags =
+                ((to->MagFilter == GL_LINEAR) ? OSMGA_HW3D_TEXF_BILIN : 0UL)
+                /*
+                 * GL_REPLACE gives Av = At for a texture that has an alpha
+                 * and Av = Af for one that has not, and Format is the STORED
+                 * format -- Mesa derives it from internalFormat, not from the
+                 * pixels the caller handed over -- so RGB data uploaded into
+                 * an RGBA texture reads GL_RGBA here, which is right.
+                 */
+                | ((ti != 0 && ti->Format == GL_RGBA)
+                   ? OSMGA_HW3D_TEXF_TEXALPHA : 0UL);
+        }
         batch->state.tmr[0] = tmr[bi][0];
         batch->state.tmr[1] = tmr[bi][1];
         batch->state.tmr[2] = tmr[bi][2];
@@ -566,13 +580,16 @@ osmgaMesaTexStateOK(GLcontext *ctx)
     if (img == 0 || img->Data == 0 || img->IsCompressed || img->Border != 0)
         return 0;
     /*
-     * RGB only.  With GL_REPLACE an RGBA texture supplies the fragment's
-     * alpha as well (texture.c:2419-2426) and this back end does not carry
-     * texture alpha to the destination yet; with RGB the alpha is the
-     * fragment's, which is the interpolated vertex alpha the builder already
-     * programs.
+     * RGB and RGBA, and the difference between them is one bit.
+     *
+     * GL_REPLACE gives Cv = Ct for both, and for the alpha Av = At where the
+     * texture has one and Av = Af where it has not (texture.c:2419-2426).  So
+     * the batch says which operand the engine should take and the encoder
+     * puts it in both lanes' texture-environment word.  Anything with fewer
+     * channels -- ALPHA, LUMINANCE, INTENSITY -- is a different substitution
+     * and is not offered.
      */
-    if (img->Format != GL_RGB)
+    if (img->Format != GL_RGB && img->Format != GL_RGBA)
         return 0;
     return 1;
 }

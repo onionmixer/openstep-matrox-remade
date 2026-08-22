@@ -144,9 +144,24 @@ osmgaTexCopy(const struct gl_texture_image *img, unsigned long *dst,
         unsigned long *out = dst + y * pitch;
 
         for (x = 0UL; x < (unsigned long)img->Width; x++) {
+            /*
+             * The top byte carries the texture's own alpha for GL_RGBA and
+             * is left at NOUGHT for GL_RGB -- not 0xFF.
+             *
+             * An RGB texture's alpha is never meant to be read: the engine is
+             * told to take the interpolated one instead.  Leaving the byte
+             * empty means that if it ever IS read the picture goes black in
+             * the alpha channel and says so, which is exactly how the last
+             * such bug was found.  A texture carrying 255 would have hidden
+             * it.  This is a poison value and it is only safe while the gate
+             * takes GL_REPLACE alone; a mode that can reference texture alpha
+             * has to revisit it.
+             */
             out[x] = ((unsigned long)row[x * step + 0UL] << 16)
                    | ((unsigned long)row[x * step + 1UL] << 8)
-                   |  (unsigned long)row[x * step + 2UL];
+                   |  (unsigned long)row[x * step + 2UL]
+                   | ((step == 4UL)
+                      ? ((unsigned long)row[x * step + 3UL] << 24) : 0UL);
         }
     }
 }

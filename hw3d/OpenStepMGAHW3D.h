@@ -190,6 +190,18 @@
  */
 #define OSMGA_HW3D_TEXF_TDS1ZERO 0x2UL   /* stage 1 left at zero, as it was */
 #define OSMGA_HW3D_TEXF_TDSSWAP  0x4UL   /* the two lanes' words exchanged */
+/*
+ * Where the destination's alpha comes from.
+ *
+ * Clear, the engine is told to take the INTERPOLATED alpha -- what the
+ * triangle carries in ALPHASTART -- which is what GL_REPLACE means for a
+ * texture with no alpha of its own: Av = Af.  Set, it takes the TEXTURE's,
+ * which is what the same mode means for one that has: Av = At.
+ *
+ * It is one bit rather than a mode because that is the whole of the
+ * difference between the two formats here.  The colour is Ct either way.
+ */
+#define OSMGA_HW3D_TEXF_TEXALPHA 0x8UL   /* Av = At rather than Av = Af */
 
 /*
  * How far a texture coordinate may reach.
