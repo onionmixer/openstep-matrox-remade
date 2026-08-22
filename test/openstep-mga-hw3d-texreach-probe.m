@@ -2921,6 +2921,79 @@ main(void)
                " the three between them are the question\n");
     }
 
+    printf("\n48. the addend across octaves, not just inside one\n");
+    {
+        /*
+         * "E is twice q's distance above the power of two below it" was
+         * fitted to five denominators, four of them in one octave.  That is
+         * not enough to call a law, and the sharp test is a MANTISSA one:
+         * 300, 600 and 1200 share a normalised fraction, as do 384, 768 and
+         * 1536, so if the rule really turns on the mantissa each family must
+         * show the SAME offset in texels even though E itself doubles.
+         *
+         * Two boundaries per denominator, solved together, because one cannot
+         * separate an addend from a distorted divisor:
+         *
+         *      s9  + 15 = 9D/4  - E        s25 + 15 = 25D/4 - E
+         *      D = (b - a) / 4             E = 9D/4 - a
+         */
+        static const long qs[12] = {
+            256L, 257L, 300L, 384L, 448L, 511L,
+            512L, 513L, 600L, 768L, 1200L, 1536L
+        };
+        int j;
+
+        printf("   %6s %8s %8s %8s %8s %8s %s\n",
+               "q", "s9", "s25", "D", "E", "2(q-2^e)", "texels");
+        for (j = 0; j < 12; j++) {
+            long q = qs[j];
+            long got[2];
+            static const long ks[2] = { 9L, 25L };
+            int b2, bad = 0;
+
+            for (b2 = 0; b2 < 2; b2++) {
+                long k = ks[b2];
+                long lo = 1L, hi = k * q, mid;
+                int it;
+
+                for (it = 0; it < 22 && lo < hi; it++) {
+                    unsigned long p;
+
+                    mid = (lo + hi) / 2L;
+                    blank();
+                    (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                                OSMGA_HW3D_TEXF_PERSP);
+                    batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                    batch->state.tmr[3] = 0L;
+                    batch->state.tmr[6] = mid;
+                    batch->state.tmr[7] = 0L;
+                    batch->state.tmr[4] = 0L; batch->state.tmr[5] = 0L;
+                    batch->state.tmr[8] = q;
+                    if (fire() != OSMGA_HW3D_OK) { bad = 1; break; }
+                    p = pixat(0UL, 0UL);
+                    if (p == BLANK) { bad = 1; break; }
+                    if ((long)(p & 0xFFUL) >= k) hi = mid; else lo = mid + 1L;
+                }
+                if (bad) break;
+                got[b2] = lo;
+            }
+            if (bad) { printf("   %6ld %8s\n", q, "refused"); continue; }
+            {
+                long a = got[0] + 15L, bb = got[1] + 15L;
+                long d4 = bb - a;                 /* four times the divisor */
+                long e  = (9L * d4 - 16L * a) / 16L;
+                long p2 = 1L;
+
+                while (p2 * 2L <= q) p2 *= 2L;
+                printf("   %6ld %8ld %8ld %8ld %8ld %8ld %ld.%02ld\n",
+                       q, got[0], got[1], d4 / 4L, e, 2L * (q - p2),
+                       (4L * e) / q, ((400L * e) / q) % 100L);
+            }
+        }
+        printf("   D must be q; the two families 300/600/1200 and"
+               " 384/768/1536 must show the same texels\n");
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;
