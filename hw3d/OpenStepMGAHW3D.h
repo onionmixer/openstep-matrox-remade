@@ -273,6 +273,12 @@
  * is a convex combination of its corner values and cannot dip below them,
  * and s/q is likewise a convex combination of the corner values of s/q.
  *
+ * The row the denominator is evaluated at is the accumulated count of
+ * TEXTURED rows in the batch, the same index v uses -- measured, by leaving a
+ * gap between two primitives and finding that the far one reads what the
+ * near one's rows left behind rather than what its own screen position would
+ * give.  So it is an accumulator and not a plane in screen coordinates.
+ *
  * Q_MIN and Q_MAX are NOT the safety argument.  What keeps the address inside
  * the texture is the addressing -- clamped it saturates, repeating it is
  * masked, measured out to eight texture spans in both.  The two bounds keep

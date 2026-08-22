@@ -527,19 +527,17 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                         vx2 = b->state.tmr[7] + b->state.tmr[1] * dx
                               + b->state.tmr[3] * (texSpanY + dy);
                         /*
-                         * The denominator's row index: v's runs on across a
-                         * batch and u's restarts, and which of the two the
-                         * H accumulator follows has not been measured, so
-                         * BOTH have to be in range.  Conservative under
-                         * either answer, and it costs one comparison.
+                         * The denominator's row index is the accumulated
+                         * count of textured rows in the batch, exactly as v's
+                         * is -- measured, by leaving a gap between two
+                         * primitives and finding that the far one reads what
+                         * the near one's rows left behind rather than what
+                         * its own screen position would give.
                          */
-                        qa = osmgaHW3DQAt(b, persp, dx, dy);
-                        qb = osmgaHW3DQAt(b, persp, dx,
+                        qa = osmgaHW3DQAt(b, persp, dx,
                                           (long)texSpanY + dy);
                         if (!osmgaHW3DRatioOK(ux, qa, roomHi) ||
-                            !osmgaHW3DRatioOK(ux, qb, roomHi) ||
-                            !osmgaHW3DRatioOK(vx2, qa, roomHi) ||
-                            !osmgaHW3DRatioOK(vx2, qb, roomHi))
+                            !osmgaHW3DRatioOK(vx2, qa, roomHi))
                             boxOK = 0;
                     }
                     if (boxOK)
@@ -560,8 +558,17 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                               + b->state.tmr[3] * (texSpanY + row);
                         ly = ux + b->state.tmr[0] * (rx - 1L - lx);
                         ry = vx2 + b->state.tmr[1] * (rx - 1L - lx);
-                        qa = osmgaHW3DQAt(b, persp, lx - lx0, row);
-                        qb = osmgaHW3DQAt(b, persp, rx - 1L - lx0, row);
+                        /*
+                         * The accumulated row index here too.  This walk had
+                         * the primitive's own row, which is the reading the
+                         * measurement rules out -- and unlike the box above
+                         * it checked only that one, so it was checking a
+                         * denominator the engine does not use.
+                         */
+                        qa = osmgaHW3DQAt(b, persp, lx - lx0,
+                                          (long)texSpanY + row);
+                        qb = osmgaHW3DQAt(b, persp, rx - 1L - lx0,
+                                          (long)texSpanY + row);
                         if (!osmgaHW3DRatioOK(ux,  qa, roomHi) ||
                             !osmgaHW3DRatioOK(vx2, qa, roomHi) ||
                             !osmgaHW3DRatioOK(ly,  qb, roomHi) ||

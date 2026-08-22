@@ -2698,6 +2698,62 @@ main(void)
         printf("   restarting gives 8, running on gives 5\n");
     }
 
+    printf("\n44. is that a screen plane, or an accumulator?\n");
+    {
+        /*
+         * Section 43 stacks the two primitives so they touch, which makes
+         * "q is a plane in screen coordinates" and "q is an accumulator that
+         * ran eight rows" the same answer.  Leave a GAP and they part: a
+         * plane reads the gap, an accumulator does not.
+         *
+         * It matters because the validator models the row index as the
+         * accumulated count of TEXTURED rows, which is what v does.  If the
+         * denominator follows the screen instead, that model is wrong.
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        unsigned long got;
+
+        blank();
+        memset(batch, 0, sizeof *batch);
+        batch->magic = OSMGA_HW3D_MAGIC;
+        batch->version = OSMGA_HW3D_VERSION;
+        batch->triCount = 2UL;
+        batch->state.dstorg = COLOUR_ORG;
+        batch->state.dstWidth = 1024UL;
+        batch->state.dstHeight = 64UL;
+        batch->state.dstPitch = STRIDE_DW;
+        batch->state.texorg = TEX_ORG;
+        batch->state.texW = DIM; batch->state.texH = DIM;
+        batch->state.texPitch = DIM;
+        batch->state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
+        batch->state.texFlags = OSMGA_HW3D_TEXF_PERSP;
+        batch->state.tmr[6] = 8L * texel;
+        batch->state.tmr[8] = OSMGA_HW3D_Q_ONE;
+        batch->state.tmr[5] = 4096L;            /* dq/dy = 1/16 */
+        {
+            static const long ys[2] = { 0L, 20L };
+            static const long hs[2] = { 8L, 4L };
+            int k;
+
+            for (k = 0; k < 2; k++) {
+                OSMGAHW3DTri *t = &batch->tri[k];
+
+                t->dwgctl = DWG_TEX;
+                t->alphactrl = 0x00000101UL;
+                t->y = ys[k];
+                t->h = hs[k];
+                t->ar0 = hs[k]; t->ar6 = hs[k];
+                t->fxbndry = (8UL << 16) | 0UL;
+                t->dr[0] = 200UL << 15;
+            }
+        }
+        printf("   verdict %u", fire());
+        got = pixat(20UL, 0UL) & 0xFFUL;
+        printf("   the far primitive's first row reads texel %lu\n", got);
+        printf("   a screen plane gives 3, an accumulator that walked eight"
+               " rows gives 5\n");
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;
