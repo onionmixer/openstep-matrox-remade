@@ -169,6 +169,26 @@ main(int argc, char **argv)
          * product alone.  "modg" gives the quad a colour that varies, which
          * puts the interpolator back in and lets the two be told apart.
          */
+        /* "tile" runs the quad's texture coordinates out to three, which
+         * only means anything with repeat */
+        if (argc > 2 && strcmp(argv[2], "tile") == 0) {
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+            glBegin(GL_TRIANGLES);
+              glTexCoord2f(0.0f, 0.0f); glVertex2d(40.0, 40.0);
+              glTexCoord2f(3.0f, 0.0f); glVertex2d(168.0, 40.0);
+              glTexCoord2f(3.0f, 3.0f); glVertex2d(168.0, 168.0);
+              glTexCoord2f(0.0f, 0.0f); glVertex2d(40.0, 40.0);
+              glTexCoord2f(3.0f, 3.0f); glVertex2d(168.0, 168.0);
+              glTexCoord2f(0.0f, 3.0f); glVertex2d(40.0, 168.0);
+            glEnd();
+            glFinish();
+            for (y = 0; y < H; y++)
+                for (x = 0; x < W; x++)
+                    if (app[y * W + x] != CLEARC)
+                        printf("P %ld %ld %lu\n", x, y, app[y * W + x]);
+            return 0;
+        }
         if (argc > 2 && strncmp(argv[2], "mod", 3) == 0) {
             glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
             /*
@@ -296,7 +316,7 @@ main(int argc, char **argv)
          * primitive that could want either is not one the engine can draw.
          */
         cases[1].name = "MagFilter linear, MinFilter still nearest";
-        cases[2].name = "GL_REPEAT instead of GL_CLAMP";
+        cases[2].name = "GL_REPEAT with a linear filter";
         cases[3].name = "blending on";
         /*
          * Linear IS taken now, but only with CLAMP_TO_EDGE: under a linear
@@ -309,7 +329,15 @@ main(int argc, char **argv)
             before = OSMGAMesaHookDrawn();
             if (k == 0) glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL);
             if (k == 1) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            if (k == 2) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            if (k == 2) {
+                /* repeat is taken under nearest; under linear the seam is
+                 * not measured, so it must still be refused */
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                                GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+                                GL_LINEAR);
+            }
             if (k == 3) glEnable(GL_BLEND);
             if (k == 4) {
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -320,7 +348,13 @@ main(int argc, char **argv)
             say(cases[k].name, OSMGAMesaHookDrawn() == before, 0);
             if (k == 0) glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
             if (k == 1) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            if (k == 2) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+            if (k == 2) {
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                                GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+                                GL_NEAREST);
+            }
             if (k == 3) glDisable(GL_BLEND);
             if (k == 4) {
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -348,6 +382,22 @@ main(int argc, char **argv)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+
+    /* GL_REPEAT is taken under a nearest filter, on both axes */
+    {
+        unsigned long before;
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glClear(GL_COLOR_BUFFER_BIT);
+        before = OSMGAMesaHookDrawn();
+        quad(40.0, 40.0, 168.0, 168.0);
+        glFinish();
+        say("GL_REPEAT reaches the engine", 
+            OSMGAMesaHookDrawn() - before >= 2UL, 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
     }
 
     /* GL_MODULATE is taken, and with GL's default white it is exact */

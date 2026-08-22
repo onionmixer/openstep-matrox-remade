@@ -2396,6 +2396,8 @@ main(void)
         }
         printf("   u out of range: texel 32 is a wrap, 63 is the edge;"
                " v out of range: v 32 is a wrap, 63 the edge\n");
+        printf("   REPEATU must wrap u and leave v, and REPEATV the other"
+               " way about; anything else and the names are wrong\n");
     }
 
     printf("\n38. is the wrap periodic all the way out?\n");

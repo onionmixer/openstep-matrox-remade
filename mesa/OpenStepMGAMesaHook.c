@@ -402,7 +402,9 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
                 | ((ti != 0 && ti->Format == GL_RGBA)
                    ? OSMGA_HW3D_TEXF_TEXALPHA : 0UL)
                 | ((ctx->Texture.Unit[0].EnvMode == GL_MODULATE)
-                   ? OSMGA_HW3D_TEXF_MODULATE : 0UL);
+                   ? OSMGA_HW3D_TEXF_MODULATE : 0UL)
+                | ((to->WrapS == GL_REPEAT) ? OSMGA_HW3D_TEXF_REPEATU : 0UL)
+                | ((to->WrapT == GL_REPEAT) ? OSMGA_HW3D_TEXF_REPEATV : 0UL);
         }
         batch->state.tmr[0] = tmr[bi][0];
         batch->state.tmr[1] = tmr[bi][1];
@@ -559,9 +561,27 @@ osmgaMesaTexStateOK(GLcontext *ctx)
          * texel for every coordinate in [0,1] -- Mesa's own two branches in
          * COMPUTE_NEAREST_TEXEL_LOCATION agree -- so both may be taken.
          */
-        if ((t->WrapS != GL_CLAMP && t->WrapS != GL_CLAMP_TO_EDGE) ||
-            (t->WrapT != GL_CLAMP && t->WrapT != GL_CLAMP_TO_EDGE))
+        if ((t->WrapS != GL_CLAMP && t->WrapS != GL_CLAMP_TO_EDGE &&
+             t->WrapS != GL_REPEAT) ||
+            (t->WrapT != GL_CLAMP && t->WrapT != GL_CLAMP_TO_EDGE &&
+             t->WrapT != GL_REPEAT))
             return 0;
+        /*
+         * And GL_REPEAT, per axis, under a NEAREST filter only: what the
+         * engine's repeat does to a linear filter's blend at the seam has
+         * not been measured, and an unmeasured seam is not something to
+         * advertise.
+         *
+         * The engine wraps by masking, which is GL's modulo only for a
+         * power-of-two dimension, so that is refused here.  It also needs a
+         * packed surface, since a masked index into a padded one addresses
+         * the wrong row; that holds by construction -- the arena packs a
+         * texture at its own width and the residency reports that width as
+         * the pitch -- and the kernel checks it again before it clears a
+         * clamp bit.  Both matter because the kernel answers a request it
+         * cannot honour by clamping, and a silently clamped axis is a wrong
+         * picture rather than a refusal.
+         */
     } else if (t->MagFilter == GL_LINEAR) {
         /*
          * Under a linear filter the two wraps part company: GL_CLAMP blends
@@ -593,6 +613,20 @@ osmgaMesaTexStateOK(GLcontext *ctx)
         return 0;
     img = t->Image[0];
     if (img == 0 || img->Data == 0 || img->IsCompressed || img->Border != 0)
+        return 0;
+    /*
+     * The power-of-two check for repeat lives HERE, after the image is in
+     * hand: it was written above the line that fetches it, where the pointer
+     * had not been set yet, and the test caught it before the machine did.
+     */
+    if ((t->WrapS == GL_REPEAT &&
+         (img->Width == 0 ||
+          ((unsigned long)img->Width & ((unsigned long)img->Width - 1UL))
+              != 0UL)) ||
+        (t->WrapT == GL_REPEAT &&
+         (img->Height == 0 ||
+          ((unsigned long)img->Height & ((unsigned long)img->Height - 1UL))
+              != 0UL)))
         return 0;
     /*
      * RGB and RGBA, and the difference between them is one bit.

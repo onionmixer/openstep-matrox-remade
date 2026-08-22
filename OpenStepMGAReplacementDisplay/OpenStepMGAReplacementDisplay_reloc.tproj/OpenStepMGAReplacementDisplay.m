@@ -550,8 +550,17 @@
 #define MGA_TEXCTL_NOPERSP      0x00200000UL
 #define MGA_TEXCTL_TAKEY        0x02000000UL
 #define MGA_TEXCTL_CLAMPUV      0x18000000UL
-#define MGA_TEXCTL_CLAMPU       0x08000000UL
-#define MGA_TEXCTL_CLAMPV       0x10000000UL
+/*
+ * Which half of CLAMPUV is which axis, measured rather than guessed: clearing
+ * one bit at a time with ONE axis out of range wraps exactly one axis, and it
+ * is the other one from the obvious reading.  Clearing 0x08000000 wraps v and
+ * clearing 0x10000000 wraps u.  Each clear wraps one axis and not both, so
+ * they are axes and not a mode encoding, and what comes back out of range is
+ * a texel from the opposite side rather than a constant, so it is a repeat
+ * and not a border.
+ */
+#define MGA_TEXCTL_CLAMPU       0x10000000UL
+#define MGA_TEXCTL_CLAMPV       0x08000000UL
 #define MGA_TEXCTL_TW32         0x00000006UL
 #define MGA_TEXCTL2_G400_MAGIC  0x00008000UL
 #define MGA_TEXCTL2_CKSTRANSDIS 0x00000010UL
