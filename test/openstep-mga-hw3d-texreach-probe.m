@@ -2021,6 +2021,110 @@ main(void)
                 tex[r * DIM + c] = (r << 8) | c;
     }
 
+    printf("\n33. are the lanes fixed to the screen, or to the primitive?\n");
+    {
+        /*
+         * Section 32 proves there are two lanes and which register belongs to
+         * which, but not what decides a pixel's lane.  It matters: the
+         * texture coordinate has a fine structure that also turns on column
+         * parity, and whether that parity is counted from the screen or from
+         * the primitive's own left edge is the difference between one rule
+         * and another.
+         *
+         * The alpha is now a LANE MARKER.  With the second lane's word left
+         * at zero, a pixel drawn by lane 1 keeps the texture's alpha of 0xAB
+         * and a pixel drawn by lane 0 takes the interpolated one.  So draw
+         * the same thing at four different left edges and see whether the
+         * 0xAB columns stay on the odd SCREEN positions or follow the
+         * primitive.
+         */
+        unsigned long r, c;
+        long x0;
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = 0xAB000000UL | (r << 8) | c;
+
+        for (x0 = 0L; x0 < 4L; x0++) {
+            blank();
+            {
+                OSMGAHW3DTri *t = setup(1024UL, (unsigned long)x0, 12UL, 4UL,
+                                        0L, OSMGA_HW3D_TEXF_TDS1ZERO);
+
+                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                batch->state.tmr[3] = 0L;
+                batch->state.tmr[6] =
+                    4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+                batch->state.tmr[7] =
+                    4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+                t->a0  = 0x20UL << 15;
+                t->adx = 0UL;
+                t->ady = 0UL;
+            }
+            (void)fire();
+            printf("   left edge %ld, screen x %ld..%ld:  ",
+                   x0, x0, x0 + 11L);
+            for (c = 0UL; c < 12UL; c++)
+                printf("%c", (((pixat(0UL, (unsigned long)x0 + c) >> 24)
+                               & 0xFFUL) == 0xABUL) ? '1' : '.');
+            printf("   (1 = lane 1)\n");
+        }
+        printf("   lanes fixed to the screen keep the 1s on odd screen x;"
+               " fixed to the primitive they start at the same place\n");
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = (r << 8) | c;
+    }
+
+    printf("\n34. is the coordinate's parity the same parity?\n");
+    {
+        /*
+         * The lanes are fixed to the screen (section 33).  The texture
+         * coordinate has a fine structure that turns on column parity, and if
+         * that parity is the SAME parity then the two anomalies are one thing
+         * and the mechanism has a name; if it moves with the primitive
+         * instead, they are two.
+         *
+         * Same programmed start, same increment, one drawing at left edge
+         * nought and one at left edge one.  With an increment of one, a
+         * column is worth one coordinate unit, so the turnover column is
+         * pinned to a single unit.
+         *
+         *      the lanes' parity   the turnover stays on the same SCREEN x
+         *      the primitive's     it stays on the same relative column
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        long tgt = 33L * texel;
+        long begin = tgt - 496L - 20L;
+        long x0;
+
+        for (x0 = 0L; x0 < 2L; x0++) {
+            unsigned long c;
+            long first = -1L;
+
+            blank();
+            (void)setup(1024UL, (unsigned long)x0, 32UL, 4UL, 1L, 0UL);
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = begin + OSMGA_HW3D_TEX_BIAS;
+            batch->state.tmr[7] = 0L;
+            (void)fire();
+            printf("   left edge %ld  ", x0);
+            for (c = 0UL; c < 32UL; c++) {
+                unsigned long got =
+                    pixat(0UL, (unsigned long)x0 + c) & 0xFFUL;
+
+                printf("%c", (got >= 33UL) ? '1' : '0');
+                if (first < 0L && got >= 33UL) first = (long)c;
+            }
+            printf("   turns at column %ld, screen x %ld\n",
+                   first, first + x0);
+        }
+        printf("   the same screen x twice means the coordinate's parity IS"
+               " the lanes'\n");
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;
