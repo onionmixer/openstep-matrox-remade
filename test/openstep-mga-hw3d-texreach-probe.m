@@ -2504,6 +2504,65 @@ main(void)
                 tex[r * DIM + c] = (r << 8) | c;
     }
 
+    printf("\n40. and the phase either side of the seam, not just on it\n");
+    {
+        /*
+         * Section 39 reads the two seams exactly ON them, and an endpoint can
+         * be special-cased.  Walking THROUGH each seam a sixty-fourth of a
+         * texel at a time says whether the rule holds in the interval or only
+         * at the point.
+         *
+         * With the first texel 0, the last 255 and the middle 128, GL's rule
+         * gives a curve that a special case would not reproduce:
+         *
+         *   from u = 0     127 down to 0 at half a texel, then up towards 64
+         *   from u = 63.5  255 down through 127 at the seam to 0 past it
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        unsigned long r, c;
+        static const long starts[2] = { 0L, 63L * 16384L + 8192L };
+        static const char *name[2] = { "from u = 0      ",
+                                       "from u = 63.5   " };
+        int j;
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] =
+                      ((c == 0UL) ? 0UL : (c == DIM - 1UL) ? 255UL : 128UL)
+                    | (128UL << 8);
+
+        for (j = 0; j < 2; j++) {
+            blank();
+            (void)setup(1024UL, 0UL, 64UL, 4UL, texel / 64L,
+                        OSMGA_HW3D_TEXF_BILIN
+                        | OSMGA_HW3D_TEXF_REPEATU
+                        | OSMGA_HW3D_TEXF_REPEATV);
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = starts[j];
+            batch->state.tmr[7] = 16L * texel + texel / 2L;
+            if (fire() != OSMGA_HW3D_OK) {
+                printf("   %s refused\n", name[j]);
+                continue;
+            }
+            printf("   %s", name[j]);
+            for (c = 0UL; c < 64UL; c += 8UL)
+                printf(" %3lu", pixat(0UL, c) & 0xFFUL);
+            printf("\n");
+        }
+        /* Mesa's own arithmetic, weights rounded then the sum shifted --
+         * not a hand-written guess, which is what these two lines were the
+         * first time and they were wrong */
+        printf("   Mesa            127  95  63  31   0  16  32  48\n");
+        printf("   and             255 223 191 159 127  95  63  31\n");
+        printf("   the shape, the slope and where it turns are the rule;"
+               " a last few one-level differences are the usual rounding\n");
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = (r << 8) | c;
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;
