@@ -2433,6 +2433,77 @@ main(void)
                " by subtracting once\n");
     }
 
+    printf("\n39. does a linear filter's blend wrap at the seam?\n");
+    {
+        /*
+         * Repeat is open for nearest sampling only, because a linear filter
+         * has to do something at the texture's edge that nearest never does:
+         * blend across it.  GL's rule masks BOTH taps, so at s = 0 -- where
+         * the lower tap is texel -1 -- the answer is half the last texel and
+         * half the first, and at s = 1, where the UPPER tap is texel 64, the
+         * same.  Clamping either tap gives the edge texel alone instead.
+         *
+         * The two seams test different taps, which is why both are here: an
+         * engine that wraps the tap it is asked for but clamps its neighbour
+         * fails one and passes the other.
+         *
+         * The texture's first column is 0 and its last 255 with 128 between,
+         * and the rows likewise in green, so the corner where both axes wrap
+         * can be read at the same time.
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        long span = (long)OSMGA_HW3D_TEX_SPAN;
+        long mid = 16L * texel + texel / 2L;
+        unsigned long r, c;
+        static const char *what[3] = { "u at the near seam",
+                                       "u at the far seam",
+                                       "both axes, the corner" };
+        long uu[3], vv[3];
+        int j;
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] =
+                      ((c == 0UL) ? 0UL : (c == DIM - 1UL) ? 255UL : 128UL)
+                    | (((r == 0UL) ? 0UL
+                        : (r == DIM - 1UL) ? 255UL : 128UL) << 8);
+
+        uu[0] = 0L;    vv[0] = mid;
+        uu[1] = span;  vv[1] = mid;
+        uu[2] = 0L;    vv[2] = 0L;
+
+        for (j = 0; j < 3; j++) {
+            unsigned long p;
+            unsigned v;
+
+            blank();
+            (void)setup(1024UL, 0UL, 8UL, 4UL, 0L,
+                        OSMGA_HW3D_TEXF_BILIN
+                        | OSMGA_HW3D_TEXF_REPEATU
+                        | OSMGA_HW3D_TEXF_REPEATV);
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = uu[j];
+            batch->state.tmr[7] = vv[j];
+            v = fire();
+            if (v != OSMGA_HW3D_OK) {
+                printf("   %-24s refused (%u)\n", what[j], v);
+                continue;
+            }
+            p = pixat(0UL, 0UL);
+            printf("   %-24s u-axis %3lu  v-axis %3lu\n",
+                   what[j], p & 0xFFUL, (p >> 8) & 0xFFUL);
+        }
+        printf("   a wrapped blend reads about 127 where a clamped tap reads"
+               " 0; the corner wants 127 in both\n");
+        printf("   (the column's value is the low byte and the row's the next"
+               " one up)\n");
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = (r << 8) | c;
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;

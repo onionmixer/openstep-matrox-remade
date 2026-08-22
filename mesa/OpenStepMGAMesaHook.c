@@ -567,12 +567,7 @@ osmgaMesaTexStateOK(GLcontext *ctx)
              t->WrapT != GL_REPEAT))
             return 0;
         /*
-         * And GL_REPEAT, per axis, under a NEAREST filter only: what the
-         * engine's repeat does to a linear filter's blend at the seam has
-         * not been measured, and an unmeasured seam is not something to
-         * advertise.
-         *
-         * The engine wraps by masking, which is GL's modulo only for a
+         * And GL_REPEAT, per axis.  The engine wraps by masking, which is GL's modulo only for a
          * power-of-two dimension, so that is refused here.  It also needs a
          * packed surface, since a masked index into a padded one addresses
          * the wrong row; that holds by construction -- the arena packs a
@@ -604,7 +599,18 @@ osmgaMesaTexStateOK(GLcontext *ctx)
          * rule -- u' = u * N - 0.5 and blend the two either side -- and 32 of
          * 32 samples matched a model of it exactly.
          */
-        if (t->WrapS != GL_CLAMP_TO_EDGE || t->WrapT != GL_CLAMP_TO_EDGE)
+        /*
+         * Repeat is taken here too.  A linear filter has to do something at
+         * the texture's edge that nearest never does -- blend across it --
+         * and GL's rule masks BOTH taps, so at s = 0 the lower tap is the
+         * last texel and at s = 1 the upper tap is the first.  Measured at
+         * both seams and at the corner where the two axes wrap together, the
+         * engine reads the half-and-half blend every time, which rules out
+         * the implementation that wraps the tap it was asked for and clamps
+         * its neighbour: that one passes one seam and fails the other.
+         */
+        if ((t->WrapS != GL_CLAMP_TO_EDGE && t->WrapS != GL_REPEAT) ||
+            (t->WrapT != GL_CLAMP_TO_EDGE && t->WrapT != GL_REPEAT))
             return 0;
     } else {
         return 0;

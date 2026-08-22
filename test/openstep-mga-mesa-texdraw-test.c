@@ -172,6 +172,16 @@ main(int argc, char **argv)
         /* "tile" runs the quad's texture coordinates out to three, which
          * only means anything with repeat */
         if (argc > 2 && strcmp(argv[2], "tile") == 0) {
+            /* this path returns before the clear further down, so it has to
+             * do its own -- without it the dump is uninitialised memory and
+             * the comparison is of two different piles of rubbish */
+            glClear(GL_COLOR_BUFFER_BIT);
+            if (argc > 3) {
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                                GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+                                GL_LINEAR);
+            }
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
             glBegin(GL_TRIANGLES);
@@ -316,7 +326,14 @@ main(int argc, char **argv)
          * primitive that could want either is not one the engine can draw.
          */
         cases[1].name = "MagFilter linear, MinFilter still nearest";
-        cases[2].name = "GL_REPEAT with a linear filter";
+        /*
+         * Every wrap GL offers is taken now, so the slot holds something
+         * that really is refused: GL's DEFAULT minification filter, which is
+         * mipmapped.  That is worth an assertion of its own -- it is the
+         * reason a program that never touches its filters is drawn in
+         * software.
+         */
+        cases[2].name = "the default mipmapped min filter";
         cases[3].name = "blending on";
         /*
          * Linear IS taken now, but only with CLAMP_TO_EDGE: under a linear
@@ -329,15 +346,9 @@ main(int argc, char **argv)
             before = OSMGAMesaHookDrawn();
             if (k == 0) glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL);
             if (k == 1) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            if (k == 2) {
-                /* repeat is taken under nearest; under linear the seam is
-                 * not measured, so it must still be refused */
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            if (k == 2)
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
-                                GL_LINEAR);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
-                                GL_LINEAR);
-            }
+                                GL_NEAREST_MIPMAP_LINEAR);
             if (k == 3) glEnable(GL_BLEND);
             if (k == 4) {
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -348,13 +359,9 @@ main(int argc, char **argv)
             say(cases[k].name, OSMGAMesaHookDrawn() == before, 0);
             if (k == 0) glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
             if (k == 1) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            if (k == 2) {
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+            if (k == 2)
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
                                 GL_NEAREST);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
-                                GL_NEAREST);
-            }
             if (k == 3) glDisable(GL_BLEND);
             if (k == 4) {
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -394,8 +401,18 @@ main(int argc, char **argv)
         before = OSMGAMesaHookDrawn();
         quad(40.0, 40.0, 168.0, 168.0);
         glFinish();
-        say("GL_REPEAT reaches the engine", 
+        say("GL_REPEAT reaches the engine",
             OSMGAMesaHookDrawn() - before >= 2UL, 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glClear(GL_COLOR_BUFFER_BIT);
+        before = OSMGAMesaHookDrawn();
+        quad(40.0, 40.0, 168.0, 168.0);
+        glFinish();
+        say("and with a linear filter as well",
+            OSMGAMesaHookDrawn() - before >= 2UL, 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
     }
