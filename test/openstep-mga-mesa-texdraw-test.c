@@ -18,6 +18,9 @@ extern unsigned long OSMGAMesaHookTexPersp(void);
 extern unsigned long OSMGAMesaHookTexAbsent(void);
 extern unsigned long OSMGAMesaTexUploads(void);
 extern unsigned long OSMGAMesaHookBatches(void);
+extern unsigned long OSMGAMesaHookUnsupported(void);
+extern unsigned long OSMGAMesaHookDeclined(void);
+extern unsigned long OSMGAMesaHookVerdictCount(unsigned long v);
 
 #define W 320
 #define H 240
@@ -177,32 +180,80 @@ main(int argc, char **argv)
          */
         if (argc > 2 && strncmp(argv[2], "persp", 5) == 0) {
             int flip = (strcmp(argv[2], "perspd") == 0);
+            GLfloat s0 = 0.0f, s1 = 1.0f;
+            double zfar = (strcmp(argv[2], "perspfar") == 0) ? -24.0 : -6.0;
 
+            /*
+             * A third argument turns on one more thing at a time, so that a
+             * combination that the perspective path cannot take shows up as
+             * a fallback rather than as a wrong picture nobody looked at.
+             */
+            if (argc > 3) {
+                if (strchr(argv[3], 'l') != 0) {
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
+                                    GL_CLAMP_TO_EDGE);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
+                                    GL_CLAMP_TO_EDGE);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                                    GL_LINEAR);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+                                    GL_LINEAR);
+                }
+                if (strchr(argv[3], 'm') != 0)
+                    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE,
+                              GL_MODULATE);
+                if (strchr(argv[3], 'r') != 0) {
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
+                                    GL_REPEAT);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
+                                    GL_REPEAT);
+                }
+            }
+            /*
+             * "i" insets the texture coordinates a little.  A coordinate of
+             * exactly nought at an edge is the one the validator refuses if
+             * rounding takes the numerator a unit below it, so if the inset
+             * makes a fallback go away that is what it was.
+             */
+            if (argc > 3 && strchr(argv[3], 'i') != 0) {
+                s0 = 0.02f; s1 = 0.98f;
+            }
             glClear(GL_COLOR_BUFFER_BIT);
             glMatrixMode(GL_PROJECTION); glLoadIdentity();
             glFrustum(-1.0, 1.0, -0.75, 0.75, 1.0, 100.0);
             glMatrixMode(GL_MODELVIEW); glLoadIdentity();
             glBegin(GL_TRIANGLES);
             if (!flip) {
-                glTexCoord2f(0.0f, 0.0f); glVertex3d(-1.0, -0.8, -1.5);
+                glTexCoord2f(s0, s0); glVertex3d(-1.0, -0.8, -1.5);
                 glTexCoord2f(1.0f, 0.0f); glVertex3d( 1.0, -0.8, -1.5);
-                glTexCoord2f(1.0f, 1.0f); glVertex3d( 1.0,  0.8, -6.0);
-                glTexCoord2f(0.0f, 0.0f); glVertex3d(-1.0, -0.8, -1.5);
-                glTexCoord2f(1.0f, 1.0f); glVertex3d( 1.0,  0.8, -6.0);
-                glTexCoord2f(0.0f, 1.0f); glVertex3d(-1.0,  0.8, -6.0);
+                glTexCoord2f(1.0f, 1.0f); glVertex3d( 1.0,  0.8, zfar);
+                glTexCoord2f(s0, s0); glVertex3d(-1.0, -0.8, -1.5);
+                glTexCoord2f(1.0f, 1.0f); glVertex3d( 1.0,  0.8, zfar);
+                glTexCoord2f(0.0f, 1.0f); glVertex3d(-1.0,  0.8, zfar);
             } else {
-                glTexCoord2f(0.0f, 0.0f); glVertex3d(-1.0, -0.8, -1.5);
+                glTexCoord2f(s0, s0); glVertex3d(-1.0, -0.8, -1.5);
                 glTexCoord2f(1.0f, 0.0f); glVertex3d( 1.0, -0.8, -1.5);
-                glTexCoord2f(0.0f, 1.0f); glVertex3d(-1.0,  0.8, -6.0);
+                glTexCoord2f(0.0f, 1.0f); glVertex3d(-1.0,  0.8, zfar);
                 glTexCoord2f(1.0f, 0.0f); glVertex3d( 1.0, -0.8, -1.5);
-                glTexCoord2f(1.0f, 1.0f); glVertex3d( 1.0,  0.8, -6.0);
-                glTexCoord2f(0.0f, 1.0f); glVertex3d(-1.0,  0.8, -6.0);
+                glTexCoord2f(1.0f, 1.0f); glVertex3d( 1.0,  0.8, zfar);
+                glTexCoord2f(0.0f, 1.0f); glVertex3d(-1.0,  0.8, zfar);
             }
             glEnd();
             glFinish();
-            fprintf(stderr, "# persp: drawn %lu software %lu persp %lu\n",
+            fprintf(stderr,
+                    "# persp: drawn %lu software %lu persp %lu"
+                    " unsupported %lu declined %lu\n",
                     OSMGAMesaHookDrawn(), OSMGAMesaHookSoftware(),
-                    OSMGAMesaHookTexPersp());
+                    OSMGAMesaHookTexPersp(),
+                    OSMGAMesaHookUnsupported(), OSMGAMesaHookDeclined());
+            {
+                unsigned long q;
+
+                for (q = 0UL; q < 24UL; q++)
+                    if (OSMGAMesaHookVerdictCount(q) != 0UL)
+                        fprintf(stderr, "#   verdict %lu x%lu\n", q,
+                                OSMGAMesaHookVerdictCount(q));
+            }
             for (y = 0; y < H; y++)
                 for (x = 0; x < W; x++)
                     if (app[y * W + x] != CLEARC)

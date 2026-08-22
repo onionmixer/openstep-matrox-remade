@@ -4,6 +4,8 @@
  * at most a few thousand, so nothing here can leave 32 bits.
  */
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 
@@ -584,6 +586,13 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
         } else {
             tmr[4] = tmr[5] = tmr[8] = 0L;
         }
+        if (tmr[8] != 0L && getenv("OSMGA_TMR_DUMP") != 0)
+            fprintf(stderr,
+                    "# tmr y=%ld h=%ld fx=%08lx  u %ld %ld %ld  v %ld %ld %ld"
+                    "  q %ld %ld %ld\n",
+                    (long)t->y, (long)t->h, (unsigned long)t->fxbndry,
+                    tmr[6], tmr[0], tmr[1], tmr[7], tmr[2], tmr[3],
+                    tmr[8], tmr[4], tmr[5]);
     }
 
     if (zmode != 0UL && zplane != 0) {
