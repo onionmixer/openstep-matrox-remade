@@ -2866,6 +2866,61 @@ main(void)
                " past 8388608\n");
     }
 
+    printf("\n47. is it the divisor, or an addend on the numerator?\n");
+    {
+        /*
+         * Backing a divisor out of ONE texel boundary cannot tell a distorted
+         * divisor from an exact one with something added to the numerator:
+         * an addend E shows up in the inferred divisor as 4E/k, so at the
+         * ninth boundary it wears a factor of a ninth -- which is exactly the
+         * "one ninth" the first measurement produced, and a suspicious number
+         * for binary hardware to hold.
+         *
+         * And the two fit equally.  With the divisor exactly q and an addend
+         * of -2*(q - 2^e) on the numerator, all five denominators land to
+         * within a fifth of a unit.
+         *
+         * A SECOND boundary separates them, because an addend is a constant
+         * while a divisor scales: at the twenty-fifth they part by hundreds.
+         */
+        static const long qs[5] = { 256L, 300L, 384L, 511L, 512L };
+        static const long mA[5] = { 1585L, 1616L, 1674L, 1763L, 3185L };
+        static const long mB[5] = { 1585L, 1948L, 2641L, 3689L, 3185L };
+        int j;
+
+        printf("   %6s %10s %10s %10s %s\n",
+               "q", "measured", "divisor", "addend", "which");
+        for (j = 0; j < 5; j++) {
+            long q = qs[j];
+            long lo = 1L, hi = 8000L, mid;
+            int it, blanked = 0;
+
+            for (it = 0; it < 14 && lo < hi; it++) {
+                unsigned long p;
+
+                mid = (lo + hi) / 2L;
+                blank();
+                (void)setup(64UL, 0UL, 8UL, 4UL, 0L, OSMGA_HW3D_TEXF_PERSP);
+                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                batch->state.tmr[3] = 0L;
+                batch->state.tmr[6] = mid;
+                batch->state.tmr[7] = 0L;
+                batch->state.tmr[4] = 0L; batch->state.tmr[5] = 0L;
+                batch->state.tmr[8] = q;
+                if (fire() != OSMGA_HW3D_OK) { blanked = 1; break; }
+                p = pixat(0UL, 0UL);
+                if (p == BLANK) { blanked = 1; break; }
+                if ((p & 0xFFUL) >= 25UL) hi = mid; else lo = mid + 1L;
+            }
+            if (blanked) { printf("   %6ld %10s\n", q, "refused"); continue; }
+            printf("   %6ld %10ld %10ld %10ld %s\n", q, lo, mA[j], mB[j],
+                   (lo == mA[j]) ? "divisor"
+                   : (lo == mB[j]) ? "addend" : "neither");
+        }
+        printf("   the two agree at 256 and 512 by construction;"
+               " the three between them are the question\n");
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;
