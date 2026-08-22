@@ -6904,7 +6904,7 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                 const OSMGAHW3DBatch *b, unsigned long *outTail)
 {
     unsigned long pos = 0UL, i;
-    unsigned long tds0 = 0UL, tds1 = 0UL, clampBits = 0UL;
+    unsigned long tds0 = 0UL, tds1 = 0UL, clampBits = 0UL, perspBits = 0UL;
     int anyZI = 0, anyTex = 0;
     int ok = 1;
 
@@ -6952,6 +6952,12 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
          * padded surface would address the wrong row.  See the flags in
          * OpenStepMGAHW3D.h.
          */
+        /*
+         * NOPERSPECTIVE unless the client sent a denominator plane and the
+         * validator admitted it; see OSMGA_HW3D_TEXF_PERSP.
+         */
+        perspBits = ((b->state.texFlags & OSMGA_HW3D_TEXF_PERSP) != 0UL)
+                    ? 0UL : MGA_TEXCTL_NOPERSP;
         clampBits = MGA_TEXCTL_CLAMPU | MGA_TEXCTL_CLAMPV;
         if (b->state.texPitch == b->state.texW) {
             if ((b->state.texFlags & OSMGA_HW3D_TEXF_REPEATU) != 0UL &&
@@ -6971,7 +6977,7 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                  MGA_TEXCTL,    clampBits |
                                 MGA_TEXCTL_PITCHLIN |
                                 ((b->state.texPitch & 2047UL) << 9) |
-                                MGA_TEXCTL_NOPERSP | MGA_TEXCTL_TAKEY |
+                                perspBits | MGA_TEXCTL_TAKEY |
                                 MGA_TEXCTL_TW32);
         /*
          * One texture-environment word per lane; see the flags in
@@ -7066,8 +7072,18 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
         ok = ok && osmgaDmaBlock(list, listDwords, &pos,
                  MGA_TMR0 +  8UL, (unsigned long)b->state.tmr[2],
                  MGA_TMR0 + 12UL, (unsigned long)b->state.tmr[3],
-                 MGA_TMR0 + 16UL, 0UL,
-                 MGA_TMR0 + 20UL, 0UL);
+                 /*
+                  * TMR4 and TMR5 -- the denominator's slopes.  They were the
+                  * kernel's and stayed at nought while NOPERSPECTIVE was on;
+                  * with it off they are the client's, bounded by the
+                  * validator.
+                  */
+                 MGA_TMR0 + 16UL,
+                 ((b->state.texFlags & OSMGA_HW3D_TEXF_PERSP) != 0UL)
+                     ? (unsigned long)b->state.tmr[4] : 0UL,
+                 MGA_TMR0 + 20UL,
+                 ((b->state.texFlags & OSMGA_HW3D_TEXF_PERSP) != 0UL)
+                     ? (unsigned long)b->state.tmr[5] : 0UL);
         ok = ok && osmgaDmaBlock(list, listDwords, &pos,
                  /*
                   * The start the caller meant, less what the engine will add
@@ -7077,7 +7093,9 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                  (unsigned long)(b->state.tmr[6] - OSMGA_HW3D_TEX_BIAS),
                  MGA_TMR0 + 28UL,
                  (unsigned long)(b->state.tmr[7] - OSMGA_HW3D_TEX_BIAS),
-                 MGA_TMR8,        1UL << 16,
+                 MGA_TMR8,
+                 ((b->state.texFlags & OSMGA_HW3D_TEXF_PERSP) != 0UL)
+                     ? (unsigned long)b->state.tmr[8] : (1UL << 16),
                  MGA_DMAPAD,      0UL);
     }
 

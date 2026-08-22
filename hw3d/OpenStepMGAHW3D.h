@@ -240,6 +240,52 @@
  */
 #define OSMGA_HW3D_TEXF_REPEATU  0x20UL
 #define OSMGA_HW3D_TEXF_REPEATV  0x40UL
+/*
+ * Perspective.  Set, tmr[4], tmr[5] and tmr[8] stop being ignored and become
+ * the DENOMINATOR plane -- dq/dx, dq/dy and q at the primitive's anchor --
+ * and the encoder clears TEXCTL's NOPERSPECTIVE so the engine samples s/q
+ * rather than s.
+ *
+ * The format is not a guess.  xf86-video-mga's mga_exa.c documents the nine
+ * TMR registers as a 3x3 projective matrix whose elements are all 16.16, and
+ * converts only the two numerator rows into the texture unit's own fixed
+ * point by shifting them by 20 - log2(width) - 16; the denominator row it
+ * writes unconverted, and its identity case is 0, 0, 1<<16.  That conversion
+ * also cross-checks this driver's own measurement: for a 64-wide texture the
+ * shift is -2, so one texel, 1<<16 in 16.16, becomes 1<<14 = 16384 register
+ * units, which is the texel size measured here on the machine.
+ *
+ * So q is 16.16 with 1.0 = 65536, and the coordinate the engine samples is
+ *
+ *      coordinate = s * 65536 / q
+ *
+ * which the validator bounds WITHOUT dividing.  The existing rule is
+ * 0 <= coordinate <= OSMGA_HW3D_TEX_COORD_MAX, and that span is a multiple
+ * of 65536, so the rule is exactly
+ *
+ *      0 <= s  and  s <= (OSMGA_HW3D_TEX_COORD_MAX >> 16) * q
+ *
+ * with nothing wider than a long anywhere in it.  At q = 65536 it reduces to
+ * the affine rule it replaces, term for term, so the affine path does not
+ * change behaviour by being written this way.
+ *
+ * The corners are enough: q is affine and the region is convex, so q inside
+ * is a convex combination of its corner values and cannot dip below them,
+ * and s/q is likewise a convex combination of the corner values of s/q.
+ *
+ * Q_MIN and Q_MAX are NOT the safety argument.  What keeps the address inside
+ * the texture is the addressing -- clamped it saturates, repeating it is
+ * masked, measured out to eight texture spans in both.  The two bounds keep
+ * the divider's inputs inside the range whose behaviour has been looked at,
+ * which is the same rule the coordinate bound has always been, and they keep
+ * the validator's own arithmetic inside a long.
+ */
+#define OSMGA_HW3D_TEXF_PERSP    0x80UL
+#define OSMGA_HW3D_Q_ONE         65536L         /* q = 1.0, 16.16 */
+#define OSMGA_HW3D_Q_MIN         256L           /* 1/256 */
+#define OSMGA_HW3D_Q_MAX         (1L << 23)     /* 128.0 */
+/* dq/dx and dq/dy, bounded so evaluating q over a surface cannot overflow */
+#define OSMGA_HW3D_Q_SLOPE_MAX   (OSMGA_HW3D_Q_MAX / 4096L)
 
 /*
  * How far a texture coordinate may reach.

@@ -42,6 +42,33 @@ osmgaHW3DReach(unsigned long org, unsigned long rows, unsigned long stride,
  * refuse: the check is inside the loop because it is also what bounds the
  * number of steps.
  */
+/*
+ * Is 0 <= p * 65536 / q <= room, without dividing and without leaving a long?
+ *
+ * roomHi is room >> 16, exact because the coordinate bound is a multiple of
+ * 65536, and q is bounded so the product cannot overflow.  At q = 65536 this
+ * is p >= 0 && p <= room, which is the affine rule it replaces.
+ */
+static int
+osmgaHW3DRatioOK(long p, long q, long roomHi)
+{
+    if (q < OSMGA_HW3D_Q_MIN || q > OSMGA_HW3D_Q_MAX)
+        return 0;
+    if (p < 0L)
+        return 0;
+    return p <= roomHi * q;
+}
+
+/* the denominator plane at an offset from the primitive's anchor */
+static long
+osmgaHW3DQAt(const OSMGAHW3DBatch *b, int persp, long dx, long dy)
+{
+    if (!persp)
+        return OSMGA_HW3D_Q_ONE;
+    return b->state.tmr[8] + b->state.tmr[4] * dx + b->state.tmr[5] * dy;
+}
+
+
 static int
 osmgaHW3DStep(const OSMGAHW3DTri *t, long *lx, long *rx,
               long *lacc, long *racc, long lsgn, long rsgn,
@@ -431,6 +458,26 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                 long ex = bx1 - bx0, ey = t->h - 1L;
                 long vy = texSpanY + ey;    /* v's row index runs on */
                 long room = (long)OSMGA_HW3D_TEX_COORD_MAX;
+                long roomHi = room >> 16;
+                int persp = (b->state.texFlags
+                             & OSMGA_HW3D_TEXF_PERSP) != 0UL;
+
+                /*
+                 * The denominator plane's own bounds, before it is evaluated
+                 * anywhere: the anchor inside the range the divider has been
+                 * looked at over, and the two slopes small enough that
+                 * evaluating q across a surface cannot leave a long.  The
+                 * corner checks below then work on values that are known to
+                 * be representable.
+                 */
+                if (persp &&
+                    (b->state.tmr[8] < OSMGA_HW3D_Q_MIN ||
+                     b->state.tmr[8] > OSMGA_HW3D_Q_MAX ||
+                     b->state.tmr[4] >  OSMGA_HW3D_Q_SLOPE_MAX ||
+                     b->state.tmr[4] < -OSMGA_HW3D_Q_SLOPE_MAX ||
+                     b->state.tmr[5] >  OSMGA_HW3D_Q_SLOPE_MAX ||
+                     b->state.tmr[5] < -OSMGA_HW3D_Q_SLOPE_MAX))
+                    texBad = 1;
 
                 if ((ex > 0L && (b->state.tmr[0] > room / ex ||
                                  b->state.tmr[0] < -(room / ex) ||
@@ -442,7 +489,7 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                                  b->state.tmr[3] < -(room / vy))))
                     texBad = 1;
                 else {
-                    long ux, vx2, ly, ry;
+                    long ux, vx2, ly, ry, qa, qb;
                     int boxOK = 1;
                     long k;
 
@@ -462,7 +509,20 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                               + b->state.tmr[2] * dy;
                         vx2 = b->state.tmr[7] + b->state.tmr[1] * dx
                               + b->state.tmr[3] * (texSpanY + dy);
-                        if (ux < 0L || ux > room || vx2 < 0L || vx2 > room)
+                        /*
+                         * The denominator's row index: v's runs on across a
+                         * batch and u's restarts, and which of the two the
+                         * H accumulator follows has not been measured, so
+                         * BOTH have to be in range.  Conservative under
+                         * either answer, and it costs one comparison.
+                         */
+                        qa = osmgaHW3DQAt(b, persp, dx, dy);
+                        qb = osmgaHW3DQAt(b, persp, dx,
+                                          (long)texSpanY + dy);
+                        if (!osmgaHW3DRatioOK(ux, qa, roomHi) ||
+                            !osmgaHW3DRatioOK(ux, qb, roomHi) ||
+                            !osmgaHW3DRatioOK(vx2, qa, roomHi) ||
+                            !osmgaHW3DRatioOK(vx2, qb, roomHi))
                             boxOK = 0;
                     }
                     if (boxOK)
@@ -483,8 +543,12 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                               + b->state.tmr[3] * (texSpanY + row);
                         ly = ux + b->state.tmr[0] * (rx - 1L - lx);
                         ry = vx2 + b->state.tmr[1] * (rx - 1L - lx);
-                        if (ux < 0L || ux > room || ly < 0L || ly > room ||
-                            vx2 < 0L || vx2 > room || ry < 0L || ry > room)
+                        qa = osmgaHW3DQAt(b, persp, lx - lx0, row);
+                        qb = osmgaHW3DQAt(b, persp, rx - 1L - lx0, row);
+                        if (!osmgaHW3DRatioOK(ux,  qa, roomHi) ||
+                            !osmgaHW3DRatioOK(vx2, qa, roomHi) ||
+                            !osmgaHW3DRatioOK(ly,  qb, roomHi) ||
+                            !osmgaHW3DRatioOK(ry,  qb, roomHi))
                             texBad = 1;
                     }
                 }

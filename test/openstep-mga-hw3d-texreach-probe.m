@@ -2610,6 +2610,39 @@ main(void)
                " addressing is not what contains it\n");
     }
 
+    printf("\n42. does the engine divide by the denominator plane?\n");
+    {
+        /*
+         * The H family stopped being the kernel's own with TEXF_PERSP: it is
+         * now a plane the client sends and the validator bounds, and the
+         * encoder clears NOPERSPECTIVE.  Whether the engine then divides by
+         * it -- and whether 16.16 is really the format -- is a picture, not a
+         * reading of somebody else's driver.
+         *
+         * Hold s at texel eight and let q climb a sixty-fourth a column from
+         * one.  If the engine divides, the texel walks BACK from eight as the
+         * denominator grows, in the ratio the arithmetic says.
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        unsigned long c;
+
+        blank();
+        (void)setup(1024UL, 0UL, 64UL, 4UL, 0L, OSMGA_HW3D_TEXF_PERSP);
+        batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+        batch->state.tmr[3] = 0L;
+        batch->state.tmr[6] = 8L * texel;      /* s = texel 8, flat */
+        batch->state.tmr[7] = 0L;
+        batch->state.tmr[4] = 1024L;           /* dq/dx = 1/64 */
+        batch->state.tmr[5] = 0L;
+        batch->state.tmr[8] = OSMGA_HW3D_Q_ONE;
+        printf("   verdict %u   u:", fire());
+        for (c = 0UL; c < 64UL; c += 8UL)
+            printf(" %lu", pixat(0UL, c) & 0xFFUL);
+        printf("\n   dividing gives  8 7 6 5 5 4 4 4\n");
+        printf("   a flat 8 means the plane was ignored;"
+               " anything else is a different format\n");
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;
