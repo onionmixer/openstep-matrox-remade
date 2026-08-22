@@ -3121,6 +3121,68 @@ main(void)
         }
     }
 
+    printf("\n51. the sliver of negative coordinate that is now admitted\n");
+    {
+        /*
+         * A coordinate a hair below nought is admitted now, because the edge
+         * walk's integer x sits a fraction of a pixel outside the true edge
+         * and a coordinate that is nought along that edge comes out just
+         * under it -- measured at 0.00088 of a texel, and refusing it sent a
+         * whole triangle of a perspective quad to software.
+         *
+         * The allowance is a quarter of a texel, which is far wider than what
+         * was measured, so the whole of it is swept here rather than assumed:
+         * every value must read the texel the addressing says it should --
+         * nought clamped, sixty-three repeating -- and one unit past the
+         * allowance must still be refused.
+         */
+        /*
+         * All of these stay negative AFTER the kernel takes its 496 off and
+         * the engine adds its ladder back -- the net is fifteen, so a
+         * programmed -1 would come out at +14 and read texel nought in both
+         * modes, which would prove nothing.  Sixteen is the smallest that
+         * still lands below.
+         */
+        static const long ps[7] = { -4096L, -3000L, -2000L, -1000L,
+                                    -500L, -100L, -16L };
+        int j, k;
+
+        for (k = 0; k < 2; k++) {
+            printf("   %-9s", k ? "repeating" : "clamped");
+            for (j = 0; j < 7; j++) {
+                unsigned long got;
+                unsigned v;
+
+                blank();
+                (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                            k ? (OSMGA_HW3D_TEXF_REPEATU
+                                 | OSMGA_HW3D_TEXF_REPEATV) : 0UL);
+                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                batch->state.tmr[3] = 0L;
+                batch->state.tmr[6] = ps[j];
+                batch->state.tmr[7] = 0L;
+                v = fire();
+                if (v != OSMGA_HW3D_OK) { printf("  ref"); continue; }
+                got = pixat(0UL, 0UL);
+                printf("  %3lu", (got == BLANK) ? 999UL : (got & 0xFFUL));
+            }
+            printf("      wanted %s\n", k ? "63 throughout" : "0 throughout");
+        }
+        {
+            unsigned v;
+
+            blank();
+            (void)setup(64UL, 0UL, 8UL, 4UL, 0L, 0UL);
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = -4097L;
+            batch->state.tmr[7] = 0L;
+            v = fire();
+            say("one unit past the allowance is still refused",
+                (v == OSMGA_HW3D_OK) ? 0U : 1U, 1U);
+        }
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;

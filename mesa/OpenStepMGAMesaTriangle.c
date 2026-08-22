@@ -586,13 +586,27 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
         } else {
             tmr[4] = tmr[5] = tmr[8] = 0L;
         }
-        if (tmr[8] != 0L && getenv("OSMGA_TMR_DUMP") != 0)
+        if (tmr[8] != 0L && getenv("OSMGA_TMR_DUMP") != 0) {
+            /*
+             * Everything the walk needs, and the plane BEFORE rounding, so
+             * that the two can be told apart outside: a coordinate that the
+             * integers take below nought while the real plane stays above it
+             * is rounding, and one where the real plane goes under too is a
+             * span that starts outside the triangle.
+             */
             fprintf(stderr,
-                    "# tmr y=%ld h=%ld fx=%08lx  u %ld %ld %ld  v %ld %ld %ld"
-                    "  q %ld %ld %ld\n",
+                    "# tmr y=%ld h=%ld fx=%08lx ar %ld %ld %ld %ld %ld %ld"
+                    " sgn %lu\n",
                     (long)t->y, (long)t->h, (unsigned long)t->fxbndry,
-                    tmr[6], tmr[0], tmr[1], tmr[7], tmr[2], tmr[3],
-                    tmr[8], tmr[4], tmr[5]);
+                    (long)t->ar0, (long)t->ar1, (long)t->ar2,
+                    (long)t->ar4, (long)t->ar5, (long)t->ar6,
+                    (unsigned long)t->sgn);
+            fprintf(stderr,
+                    "#   int u %ld %ld %ld   real u %.4f %.4f %.4f\n",
+                    tmr[6], tmr[0], tmr[1],
+                    uplane->at_a + uplane->dx * ox + uplane->dy * oy,
+                    uplane->dx, uplane->dy);
+        }
     }
 
     if (zmode != 0UL && zplane != 0) {

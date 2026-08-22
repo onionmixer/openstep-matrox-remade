@@ -54,7 +54,12 @@ osmgaHW3DRatioOK(long p, long q, long roomHi)
 {
     if (q < OSMGA_HW3D_Q_MIN || q > OSMGA_HW3D_Q_MAX)
         return 0;
-    if (p < 0L)
+    /*
+     * Below nought by a sliver is admitted; see OSMGA_HW3D_TEX_NEG_ALLOW.
+     * The bound is written against q so that it is the same COORDINATE at
+     * every scale, and the division cannot overflow.
+     */
+    if (p < -(q / 16L))
         return 0;
     return p <= roomHi * q;
 }

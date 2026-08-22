@@ -287,6 +287,25 @@
  * the validator's own arithmetic inside a long.
  */
 #define OSMGA_HW3D_TEXF_PERSP    0x80UL
+
+/*
+ * How far below nought a coordinate may go before it is refused.
+ *
+ * Not a licence to sample outside the texture -- the addressing does not let
+ * it, clamped or repeating -- but an acknowledgement that the edge walk's
+ * integer x sits a fraction of a pixel outside the true edge, so a coordinate
+ * that is nought along that edge comes out a hair below it.  Measured on a
+ * perspective quad: the walk was 0.00135 of a pixel out and the coordinate
+ * 0.00088 of a texel below nought, and refusing that sent a whole triangle to
+ * software.
+ *
+ * A quarter of a texel, which is two hundred and ninety times the excursion
+ * that was measured and narrow enough that the whole of it can be swept and
+ * compared against the software path rather than assumed.  Expressed against
+ * the denominator so the same coordinate means the same thing at any scale:
+ * a coordinate of -SPAN/256 is a numerator of -q/16.
+ */
+#define OSMGA_HW3D_TEX_NEG_ALLOW (OSMGA_HW3D_TEX_SPAN / 256UL)
 #define OSMGA_HW3D_Q_ONE         65536L         /* q = 1.0, 16.16 */
 /*
  * The smallest denominator, and it is an ACCURACY budget rather than a place
