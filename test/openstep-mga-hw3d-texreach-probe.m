@@ -199,7 +199,9 @@ main(void)
     if ((fd = open(DEV_PATH, O_RDWR)) < 0) { printf("no %s\n", DEV_PATH); return 1; }
     cmd  = mapDevice(fd, CMD_MMAP_BASE, CMD_MMAP_LEN);
     cwin = mapDevice(fd, COLOUR_ORG, (int)(64UL * STRIDE_DW * 4UL));
-    twin = mapDevice(fd, TEX_ORG, (int)(DIM * DIM * 4UL));
+    /* Wide enough for section 52's other shapes as well as the 64 square:
+     * the tallest is eight by 2048, which is exactly this. */
+    twin = mapDevice(fd, TEX_ORG, (int)(64UL * 1024UL));
     if (cmd == (caddr_t)-1 || cwin == (caddr_t)-1 || twin == (caddr_t)-1) {
         printf("a window will not map\n"); return 1;
     }
@@ -298,8 +300,19 @@ main(void)
     {
         OSMGAHW3DTri *t = setup(1024UL, 0UL, 32UL, 32UL, (long)step, 0UL);
 
+        /*
+         * This used to assert a refusal, because every negative coordinate
+         * was refused.  One unit below nought is now inside the allowance --
+         * deliberately, since the edge walk puts a coordinate there -- and
+         * section 51 sweeps the whole of it while 52 shows the engine reads
+         * such a coordinate exactly as GL says.  So the assertion is turned
+         * over rather than deleted: what still has to hold is that a value
+         * PAST the allowance is refused, which is what 51 checks, and that a
+         * value inside it is admitted, which is this.
+         */
         batch->state.tmr[6] = -1L;
-        say("a negative start", fire(), OSMGA_HW3D_E_TEXCOORD);
+        say("a start one unit below nought is admitted", fire(),
+            OSMGA_HW3D_OK);
         (void)t;
     }
 
@@ -3130,11 +3143,12 @@ main(void)
          * under it -- measured at 0.00088 of a texel, and refusing it sent a
          * whole triangle of a perspective quad to software.
          *
-         * The allowance is a quarter of a texel, which is far wider than what
-         * was measured, so the whole of it is swept here rather than assumed:
-         * every value must read the texel the addressing says it should --
-         * nought clamped, sixty-three repeating -- and one unit past the
-         * allowance must still be refused.
+         * The allowance is 4096 coordinate units.  Calling that "a quarter
+         * of a texel" was wrong: a texel is 2^20/size units, so the quarter
+         * holds only on a 64 texture, which is the one below.  What this
+         * section does is SAMPLE seven points of the interval and check that
+         * one unit past it is still refused; the interval itself is walked a
+         * unit at a time in 53, its boundaries in 54, and other sizes in 52.
          */
         /*
          * All of these stay negative AFTER the kernel takes its 496 off and
@@ -3181,6 +3195,222 @@ main(void)
             say("one unit past the allowance is still refused",
                 (v == OSMGA_HW3D_OK) ? 0U : 1U, 1U);
         }
+    }
+
+    printf("\n52. the same negative coordinates on other texture sizes\n");
+    {
+        /*
+         * Section 51 swept the allowance on the 64 square, where one texel is
+         * 16384 units -- so every value in the sweep is inside the SAME texel
+         * and the reading cannot tell -4096 from -16.  On a 1024 texture one
+         * texel is 1024 units and the sweep crosses four of them; on a 2048
+         * one it crosses eight.  Those shapes therefore measure the wrap
+         * arithmetic itself, and with it whatever the engine really adds to a
+         * negative coordinate, which the 64 square cannot see.
+         *
+         * No verdict is asserted here.  The numbers are printed and fitted
+         * against the models in python, because the point is to find out what
+         * the engine does, not to confirm what I assumed.
+         *
+         * Width is capped below 2048 by the pitch field rather than by
+         * TEX_MAX_DIM: pitch must be at least the width and at most 2047, so
+         * a 2048-wide texture cannot be described at all.  Height has no such
+         * companion, so the eight-texel case is reached down the v axis.
+         */
+        static const long ps[7] = { -4096L, -3000L, -2000L, -1000L,
+                                    -500L, -100L, -16L };
+        static const unsigned long cw[3] = { 8UL, 1024UL, 8UL };
+        static const unsigned long chh[3] = { 8UL, 4UL, 2048UL };
+        static const int cax[3] = { 0, 0, 1 };
+        static const char *cnm[3] = { "8 wide u", "1024 wide u", "2048 tall v" };
+        int ci, j, k;
+
+        for (ci = 0; ci < 3; ci++) {
+            unsigned long rr, cc;
+
+            for (rr = 0UL; rr < chh[ci]; rr++)
+                for (cc = 0UL; cc < cw[ci]; cc++)
+                    tex[rr * cw[ci] + cc] = cax[ci] ? rr : cc;
+
+            printf("   %-12s texel %6lu units\n", cnm[ci],
+                   OSMGA_HW3D_TEX_SPAN / (cax[ci] ? chh[ci] : cw[ci]));
+            for (k = 0; k < 2; k++) {
+                printf("     %-9s", k ? "repeating" : "clamped");
+                for (j = 0; j < 7; j++) {
+                    unsigned long got;
+                    unsigned v;
+
+                    blank();
+                    (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                                k ? (OSMGA_HW3D_TEXF_REPEATU
+                                     | OSMGA_HW3D_TEXF_REPEATV) : 0UL);
+                    batch->state.texW = cw[ci];
+                    batch->state.texH = chh[ci];
+                    batch->state.texPitch = cw[ci];
+                    batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+                    batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+                    batch->state.tmr[6] = cax[ci] ? 0L : ps[j];
+                    batch->state.tmr[7] = cax[ci] ? ps[j] : 0L;
+                    v = fire();
+                    if (v != OSMGA_HW3D_OK) { printf("   ref"); continue; }
+                    got = pixat(0UL, 0UL);
+                    printf("  %4lu", (got == BLANK) ? 9999UL
+                                                    : (got & 0xFFFFUL));
+                }
+                printf("\n");
+            }
+        }
+        printf("     values swept:");
+        for (j = 0; j < 7; j++) printf("  %4ld", ps[j]);
+        printf("\n");
+
+        blank();
+        {
+            unsigned v;
+
+            (void)setup(64UL, 0UL, 8UL, 4UL, 0L, 0UL);
+            batch->state.texW = 2048UL;
+            batch->state.texH = 8UL;
+            batch->state.texPitch = 2048UL;
+            v = fire();
+            say("a 2048-wide texture cannot be described",
+                (v == OSMGA_HW3D_E_TEXSIZE) ? 1U : 0U, 1U);
+        }
+    }
+
+    printf("\n53. walking a texel boundary, to try to break the model\n");
+    {
+        /*
+         * Sections 51 and 52 are confirmations, and a confirmation of a model
+         * that already fits is worth little.  This one is built to REFUTE.
+         *
+         * The model fitted in python is texel = floor(coordinate / texel) mod
+         * size.  Its most fragile point is a texel boundary, where floor is
+         * about to step and where the flat 496 the encoder subtracts and
+         * whatever the engine adds back decide which side of the boundary the
+         * coordinate lands on.  On the 2048-tall texture a texel is 512 units,
+         * so a contiguous walk of twenty-three units straddles one boundary
+         * and the step must appear at exactly one place.  Where it appears is
+         * the net bias, which neither 51 nor 52 could see: their values sit
+         * far from any boundary, and I am not going to pretend they pinned it.
+         *
+         * A step in the wrong place, more than one step, or no step at all
+         * each refutes the model.  (Truncation toward nought is already dead:
+         * it wants texel 0 at -16 and section 52 read 2047.)
+         */
+        long q;
+
+        printf("     p from -530 to -508, repeating, 2048 tall\n     ");
+        for (q = -530L; q <= -508L; q++) {
+            unsigned long got;
+            unsigned v;
+
+            blank();
+            (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                        OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV);
+            batch->state.texW = 8UL;
+            batch->state.texH = 2048UL;
+            batch->state.texPitch = 8UL;
+            batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+            batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = 0L;
+            batch->state.tmr[7] = q;
+            v = fire();
+            if (v != OSMGA_HW3D_OK) { printf(" ref"); continue; }
+            got = pixat(0UL, 0UL);
+            printf(" %4lu", (got == BLANK) ? 9999UL : (got & 0xFFFFUL));
+            if (((q + 530L) % 12L) == 11L) printf("\n     ");
+        }
+        printf("\n     the step names the net bias; python fits it\n");
+    }
+
+    printf("\n54. the same boundary, every 512 units down to the allowance\n");
+    {
+        /*
+         * One boundary in the right place is a coincidence away from meaning
+         * nothing.  The model says the step recurs every 512 units with the
+         * same phase, so each boundary is tested with the pair that straddles
+         * it: p = -512k - 16 must be one texel lower than p = -512k - 15.
+         * Seven boundaries fit inside the allowance; the eighth would be
+         * -4111, past it.
+         */
+        long k;
+
+        for (k = 1L; k <= 7L; k++) {
+            unsigned long lo, hi;
+            long j;
+            unsigned long got[2];
+
+            for (j = 0L; j < 2L; j++) {
+                unsigned v;
+
+                blank();
+                (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                            OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV);
+                batch->state.texW = 8UL;
+                batch->state.texH = 2048UL;
+                batch->state.texPitch = 8UL;
+                batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+                batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+                batch->state.tmr[6] = 0L;
+                batch->state.tmr[7] = -512L * k - 16L + j;
+                v = fire();
+                got[j] = (v != OSMGA_HW3D_OK) ? 9999UL
+                                              : (pixat(0UL, 0UL) & 0xFFFFUL);
+            }
+            lo = 2048UL - (unsigned long)k - 1UL;
+            hi = 2048UL - (unsigned long)k;
+            printf("   p=%-6ld %4lu   p=%-6ld %4lu   wanted %lu then %lu %s\n",
+                   -512L * k - 16L, got[0], -512L * k - 15L, got[1], lo, hi,
+                   (got[0] == lo && got[1] == hi) ? "" : "  <<");
+            if (got[0] != lo || got[1] != hi) failures++;
+        }
+    }
+
+    printf("\n55. the linear filter on a negative coordinate, across the seam\n");
+    {
+        /*
+         * Everything measured so far picked ONE texel.  The allowance does
+         * not depend on the filter, so a bilinear primitive with a negative
+         * coordinate is admitted too, and that has never been measured: the
+         * filter reaches a neighbouring texel, and below nought under repeat
+         * the neighbour is at the far end of the texture.  If the phase is
+         * wrong there, the kernel is admitting something it draws wrongly.
+         *
+         * Only row 2047 carries any red, so the red that comes back IS the
+         * weight the engine gave the last row.  GL's rule is that the taps
+         * straddle (coordinate/texel - 0.5); python checks the numbers
+         * against that rather than against an eyeballed ramp.
+         */
+        unsigned long rr, cc;
+        long q;
+
+        for (rr = 0UL; rr < 2048UL; rr++)
+            for (cc = 0UL; cc < 8UL; cc++)
+                tex[rr * 8UL + cc] = (rr == 2047UL) ? 0x00FF0000UL : 0UL;
+
+        printf("     p from -800 to -270 by 32, red is the weight of row 2047\n     ");
+        for (q = -800L; q <= -270L; q += 32L) {
+            unsigned long got;
+            unsigned v;
+
+            blank();
+            (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                        OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV
+                        | OSMGA_HW3D_TEXF_BILIN);
+            batch->state.texW = 8UL;
+            batch->state.texH = 2048UL;
+            batch->state.texPitch = 8UL;
+            batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+            batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = 0L;
+            batch->state.tmr[7] = q;
+            v = fire();
+            if (v != OSMGA_HW3D_OK) { printf(" ref"); continue; }
+            got = pixat(0UL, 0UL);
+            printf(" %3lu", (got == BLANK) ? 999UL : ((got >> 16) & 0xFFUL));
+        }
+        printf("\n     python fits this against GL's straddle rule\n");
     }
 
     printf("\n%s (%d failing)\n",
