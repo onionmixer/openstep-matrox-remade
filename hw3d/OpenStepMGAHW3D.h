@@ -288,7 +288,37 @@
  */
 #define OSMGA_HW3D_TEXF_PERSP    0x80UL
 #define OSMGA_HW3D_Q_ONE         65536L         /* q = 1.0, 16.16 */
-#define OSMGA_HW3D_Q_MIN         256L           /* 1/256 */
+/*
+ * The smallest denominator, and it is an ACCURACY budget rather than a place
+ * the divider fails -- the divider does not fail.  Measured: the divisor is
+ * exactly q at all twelve denominators tried, and what goes wrong is an
+ * addend on the numerator of 512 times q's normalised fraction, which has no
+ * exponent term and so is bounded by 512 whatever q is.  One texel is q/4 in
+ * numerator units, so the error is at most 2048/q texels:
+ *
+ *      q = 2048   one texel        q = 8192   a quarter
+ *      q = 32768  a sixteenth
+ *
+ * The old value of 256 was chosen with no reason and permitted eight texels.
+ *
+ * 8192 buys a quarter of a texel.  It is not free: a projective triple can be
+ * scaled by any constant without changing the quotient, so a builder makes q
+ * as large as the numerator bound allows, and for a primitive spanning one
+ * whole texture that bound is s <= 2^23, which caps q at 2^39 / 2^20.  The
+ * depth ratio a single primitive may then span is 2^39 / (2^20 * Q_MIN), and
+ *
+ *      depth ratio  x  1/error-in-texels  =  256
+ *
+ * always -- the register widths fix the product, and Q_MIN only says where on
+ * that curve to sit.  A quarter texel buys 64 to one, which is comfortable
+ * for one triangle; a sixteenth would buy only 16 to one.
+ *
+ * Widening the numerator bound under perspective would move the whole curve,
+ * but it cannot be done alone: the slope bounds are the affine ones, written
+ * when tmr[6] WAS the coordinate, and they would have to become aware of q
+ * as well.  That is its own design.
+ */
+#define OSMGA_HW3D_Q_MIN         8192L          /* a quarter of a texel */
 #define OSMGA_HW3D_Q_MAX         (1L << 23)     /* 128.0 */
 /*
  * dq/dx and dq/dy are bounded only so that EVALUATING q cannot leave a long,
