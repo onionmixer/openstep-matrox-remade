@@ -163,6 +163,17 @@ main(int argc, char **argv)
             maketexRGBA(&rt);
             glColor4f(1.0f, 1.0f, 1.0f, 0.5f);
         }
+        if (argc > 2 && strcmp(argv[2], "rgbalin") == 0) {
+            GLuint rt;
+
+            maketexRGBA(&rt);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
+                            GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
+                            GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        }
         if (argc > 2 && strcmp(argv[2], "lin") == 0) {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
                             GL_CLAMP_TO_EDGE);
@@ -318,6 +329,78 @@ main(int argc, char **argv)
             say("and its alpha is the texture's, not the fragment's",
                 a != 255UL, d);
         }
+
+        /*
+         * Redefining the same object, both ways.  A stale flag that was set
+         * and a stale flag that was clear fail differently, so neither
+         * direction stands in for the other.
+         */
+        {
+            static GLubyte rgb[TD * TD * 3];
+            int x, y;
+            unsigned long a;
+            char d[48];
+
+            for (y = 0; y < TD; y++)
+                for (x = 0; x < TD; x++) {
+                    rgb[(y * TD + x) * 3 + 0] = (GLubyte)(x * 16 + 8);
+                    rgb[(y * TD + x) * 3 + 1] = (GLubyte)(y * 16 + 4);
+                    rgb[(y * TD + x) * 3 + 2] = (GLubyte)(x + y);
+                }
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, TD, TD, 0,
+                         GL_RGB, GL_UNSIGNED_BYTE, rgb);
+            glClear(GL_COLOR_BUFFER_BIT);
+            quad(40.0, 40.0, 168.0, 168.0);
+            glFinish();
+            a = (app[41L * W + 41L] >> 24) & 0xFFUL;
+            sprintf(d, "alpha %lu", a);
+            say("redefined RGBA -> RGB, the alpha follows", a == 255UL, d);
+
+            {
+                static GLubyte px[TD * TD * 4];
+
+                for (y = 0; y < TD; y++)
+                    for (x = 0; x < TD; x++) {
+                        px[(y * TD + x) * 4 + 0] = (GLubyte)(x * 16 + 8);
+                        px[(y * TD + x) * 4 + 1] = (GLubyte)(y * 16 + 4);
+                        px[(y * TD + x) * 4 + 2] = (GLubyte)(x + y);
+                        px[(y * TD + x) * 4 + 3] = (GLubyte)(x * 8 + y * 3 + 17);
+                    }
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, TD, TD, 0,
+                             GL_RGBA, GL_UNSIGNED_BYTE, px);
+            }
+            glClear(GL_COLOR_BUFFER_BIT);
+            quad(40.0, 40.0, 168.0, 168.0);
+            glFinish();
+            a = (app[41L * W + 41L] >> 24) & 0xFFUL;
+            sprintf(d, "alpha %lu", a);
+            say("redefined RGB -> RGBA, the alpha follows", a == 17UL, d);
+        }
+
+        /*
+         * And two objects of different formats alive at once, drawn one after
+         * the other in a single frame -- which is what a real program does,
+         * and what a single static texture can never test.
+         */
+        {
+            unsigned long a1, a2;
+            char d[64];
+
+            glClear(GL_COLOR_BUFFER_BIT);
+            glBindTexture(GL_TEXTURE_2D, rt);
+            quad(40.0, 40.0, 104.0, 104.0);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            quad(140.0, 40.0, 204.0, 104.0);
+            glBindTexture(GL_TEXTURE_2D, rt);
+            quad(40.0, 120.0, 104.0, 184.0);
+            glFinish();
+            a1 = (app[41L * W + 41L] >> 24) & 0xFFUL;
+            a2 = (app[41L * W + 141L] >> 24) & 0xFFUL;
+            sprintf(d, "rgba %lu, rgb %lu", a1, a2);
+            say("two formats in one frame keep their own alpha",
+                a1 == 17UL && a2 == 255UL, d);
+        }
+
         glDeleteTextures(1, &rt);
         glBindTexture(GL_TEXTURE_2D, tex);
     }
