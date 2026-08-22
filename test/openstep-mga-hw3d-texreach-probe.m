@@ -2563,6 +2563,53 @@ main(void)
                 tex[r * DIM + c] = (r << 8) | c;
     }
 
+    printf("\n41. what actually keeps the address inside the texture?\n");
+    {
+        /*
+         * The header says the coordinate bound is there so the coordinate
+         * stays inside the range that has been MEASURED.  That is a rule
+         * about not going where nobody has looked -- it is not what keeps
+         * the address inside the texture.  What does that is the addressing
+         * itself: clamped, the index saturates; repeating, it is masked.
+         *
+         * The distinction matters for perspective, where a division can make
+         * the coordinate enormous.  So check the claim at the far end of the
+         * admitted range rather than near the texture: at eight spans, which
+         * is the most the validator allows, both modes must still name a
+         * texel of this texture and not something past it.
+         */
+        long span = (long)OSMGA_HW3D_TEX_SPAN;
+        static const long us[3] = { 1L, 4L, 8L };   /* spans out */
+        int j, k;
+
+        for (k = 0; k < 2; k++) {
+            printf("   %-9s", k ? "repeating" : "clamped");
+            for (j = 0; j < 3; j++) {
+                unsigned long got;
+                unsigned v;
+
+                blank();
+                (void)setup(1024UL, 0UL, 8UL, 4UL, 0L,
+                            k ? (OSMGA_HW3D_TEXF_REPEATU
+                                 | OSMGA_HW3D_TEXF_REPEATV) : 0UL);
+                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                batch->state.tmr[3] = 0L;
+                /* a quarter of a texel short of a whole number of spans, so
+                 * clamping names the last texel and repeating the last too */
+                batch->state.tmr[6] = us[j] * span - span / (long)DIM / 4L;
+                batch->state.tmr[7] = us[j] * span - span / (long)DIM / 4L;
+                v = fire();
+                if (v != OSMGA_HW3D_OK) { printf("  %ld spans refused", us[j]); continue; }
+                got = pixat(0UL, 0UL) & 0xFFFFUL;
+                printf("  %ld spans -> v %lu u %lu", us[j],
+                       (got >> 8) & 0xFFUL, got & 0xFFUL);
+            }
+            printf("\n");
+        }
+        printf("   every one must name a texel of 0..63; anything else and the"
+               " addressing is not what contains it\n");
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;
