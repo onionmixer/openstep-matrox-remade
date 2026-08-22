@@ -472,27 +472,39 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                  */
                 if (persp) {
                     /*
-                     * The slopes are bounded by what evaluating q can hold,
-                     * against the surface THIS batch declared rather than
-                     * against a span baked in here -- an assumed maximum is
-                     * a bound that stops being true when something else
-                     * changes.  Written as a division so the check itself
-                     * cannot overflow.
+                     * Bound the slopes by the indices q is ACTUALLY evaluated
+                     * at, not by the surface.
+                     *
+                     * The first version of this used dstWidth and dstHeight,
+                     * and that is not a bound: dx is measured from the
+                     * primitive's own left edge, which a clipped primitive
+                     * can sit far to the left of, and the row index is
+                     * texSpanY + row, which accumulates across every earlier
+                     * textured primitive in the batch and so passes dstHeight
+                     * as soon as there are a few of them.  The check would
+                     * have admitted a slope whose evaluation leaves a long.
+                     *
+                     * Half the budget to each axis, each as a division so the
+                     * check cannot overflow in doing its job.
                      */
-                    long budget = (1L << 30) - OSMGA_HW3D_Q_MAX;
-                    long sw = (long)b->state.dstWidth;
-                    long sh = (long)b->state.dstHeight;
+                    long budget = ((1L << 30) - OSMGA_HW3D_Q_MAX) / 2L;
+                    long dxlo = (long)bx0 - lx0, dxhi = (long)bx1 - lx0;
+                    long mdx, mrow;
                     long a4 = (b->state.tmr[4] < 0L)
                               ? -b->state.tmr[4] : b->state.tmr[4];
                     long a5 = (b->state.tmr[5] < 0L)
                               ? -b->state.tmr[5] : b->state.tmr[5];
 
-                    if (sw < 1L) sw = 1L;
-                    if (sh < 1L) sh = 1L;
+                    if (dxlo < 0L) dxlo = -dxlo;
+                    if (dxhi < 0L) dxhi = -dxhi;
+                    mdx = (dxlo > dxhi) ? dxlo : dxhi;
+                    mrow = (long)texSpanY + t->h;
+                    if (mdx < 1L) mdx = 1L;
+                    if (mrow < 1L) mrow = 1L;
                     if (b->state.tmr[8] < OSMGA_HW3D_Q_MIN ||
                         b->state.tmr[8] > OSMGA_HW3D_Q_MAX ||
-                        a4 > budget / (2L * sw) ||
-                        a5 > budget / (2L * sh))
+                        a4 > budget / mdx ||
+                        a5 > budget / mrow)
                         texBad = 1;
                 }
 
