@@ -246,6 +246,7 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         (dst).a = (unsigned long)VB->ColorPtr->data[idx][3];             \
         (dst).s = texOn ? (double)VB->TexCoordPtr[0]->data[idx][0] : 0.0; \
         (dst).tc = texOn ? (double)VB->TexCoordPtr[0]->data[idx][1] : 0.0;\
+        (dst).qw = (double)VB->Win.data[idx][3];                         \
     } while (0)
 
     /*
@@ -260,9 +261,17 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
      */
     texOn = (ctx->RasterMask & (GLuint)TEXTURE_BIT) != 0;
     if (texOn) {
-        GLfloat w0 = VB->Win.data[v0][3];
-
-        if (VB->Win.data[v1][3] != w0 || VB->Win.data[v2][3] != w0) {
+        /*
+         * The three reciprocals of w no longer have to agree: the builder
+         * carries them into a denominator plane and the engine divides.  What
+         * is still required is that each is strictly positive -- w at or
+         * below nought is a vertex on or behind the eye, which the clip
+         * inequalities should already have removed, and which is a projective
+         * singularity rather than something to interpolate through.
+         */
+        if (!(VB->Win.data[v0][3] > 0.0F) ||
+            !(VB->Win.data[v1][3] > 0.0F) ||
+            !(VB->Win.data[v2][3] > 0.0F)) {
             hookTexPersp++;
             (void)osmgaMesaSoftly(ctx, v0, v1, v2, pv);
             return;
@@ -404,17 +413,23 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
                 | ((ctx->Texture.Unit[0].EnvMode == GL_MODULATE)
                    ? OSMGA_HW3D_TEXF_MODULATE : 0UL)
                 | ((to->WrapS == GL_REPEAT) ? OSMGA_HW3D_TEXF_REPEATU : 0UL)
-                | ((to->WrapT == GL_REPEAT) ? OSMGA_HW3D_TEXF_REPEATV : 0UL);
+                | ((to->WrapT == GL_REPEAT) ? OSMGA_HW3D_TEXF_REPEATV : 0UL)
+                | ((tmr[bi][8] != 0L) ? OSMGA_HW3D_TEXF_PERSP : 0UL);
         }
         batch->state.tmr[0] = tmr[bi][0];
         batch->state.tmr[1] = tmr[bi][1];
         batch->state.tmr[2] = tmr[bi][2];
         batch->state.tmr[3] = tmr[bi][3];
-        batch->state.tmr[4] = 0L;
-        batch->state.tmr[5] = 0L;
+        /*
+         * The builder leaves tmr[8] at nought when it solved an affine
+         * triangle and puts the denominator's start there when it solved a
+         * perspective one, so that is what says which this is.
+         */
+        batch->state.tmr[4] = tmr[bi][4];
+        batch->state.tmr[5] = tmr[bi][5];
         batch->state.tmr[6] = tmr[bi][6];
         batch->state.tmr[7] = tmr[bi][7];
-        batch->state.tmr[8] = 1L << 16;
+        batch->state.tmr[8] = (tmr[bi][8] != 0L) ? tmr[bi][8] : (1L << 16);
     } else {
         batch->state.texorg = 0UL;
         batch->state.texW = batch->state.texH = batch->state.texPitch = 0UL;

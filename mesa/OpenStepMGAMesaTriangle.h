@@ -35,6 +35,13 @@
 
 typedef struct {
     long x, y;                  /* 1/256 pixel, in the destination's space */
+    /*
+     * The reciprocal of w, straight from Mesa's Win[3].  It is 1 for an
+     * orthographic or 2D vertex and the perspective path uses it to weight
+     * the texture coordinates; a value at or below nought is refused before
+     * it reaches here.
+     */
+    double qw;
     unsigned long r, g, b, a;   /* 0..255 */
     /*
      * Depth, also fixed point in 1/256, so 0..65535*256.  Ignored unless a

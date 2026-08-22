@@ -169,6 +169,46 @@ main(int argc, char **argv)
          * product alone.  "modg" gives the quad a colour that varies, which
          * puts the interpolator back in and lets the two be told apart.
          */
+        /*
+         * "persp" and "perspd" are the same receding quad split along
+         * opposite diagonals.  A projective mapping gives the same picture
+         * either way; an affine one kinks at the diagonal, so the two dumps
+         * differing is the failure and their agreeing is the result.
+         */
+        if (argc > 2 && strncmp(argv[2], "persp", 5) == 0) {
+            int flip = (strcmp(argv[2], "perspd") == 0);
+
+            glClear(GL_COLOR_BUFFER_BIT);
+            glMatrixMode(GL_PROJECTION); glLoadIdentity();
+            glFrustum(-1.0, 1.0, -0.75, 0.75, 1.0, 100.0);
+            glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+            glBegin(GL_TRIANGLES);
+            if (!flip) {
+                glTexCoord2f(0.0f, 0.0f); glVertex3d(-1.0, -0.8, -1.5);
+                glTexCoord2f(1.0f, 0.0f); glVertex3d( 1.0, -0.8, -1.5);
+                glTexCoord2f(1.0f, 1.0f); glVertex3d( 1.0,  0.8, -6.0);
+                glTexCoord2f(0.0f, 0.0f); glVertex3d(-1.0, -0.8, -1.5);
+                glTexCoord2f(1.0f, 1.0f); glVertex3d( 1.0,  0.8, -6.0);
+                glTexCoord2f(0.0f, 1.0f); glVertex3d(-1.0,  0.8, -6.0);
+            } else {
+                glTexCoord2f(0.0f, 0.0f); glVertex3d(-1.0, -0.8, -1.5);
+                glTexCoord2f(1.0f, 0.0f); glVertex3d( 1.0, -0.8, -1.5);
+                glTexCoord2f(0.0f, 1.0f); glVertex3d(-1.0,  0.8, -6.0);
+                glTexCoord2f(1.0f, 0.0f); glVertex3d( 1.0, -0.8, -1.5);
+                glTexCoord2f(1.0f, 1.0f); glVertex3d( 1.0,  0.8, -6.0);
+                glTexCoord2f(0.0f, 1.0f); glVertex3d(-1.0,  0.8, -6.0);
+            }
+            glEnd();
+            glFinish();
+            fprintf(stderr, "# persp: drawn %lu software %lu persp %lu\n",
+                    OSMGAMesaHookDrawn(), OSMGAMesaHookSoftware(),
+                    OSMGAMesaHookTexPersp());
+            for (y = 0; y < H; y++)
+                for (x = 0; x < W; x++)
+                    if (app[y * W + x] != CLEARC)
+                        printf("P %ld %ld %lu\n", x, y, app[y * W + x]);
+            return 0;
+        }
         /* "tile" runs the quad's texture coordinates out to three, which
          * only means anything with repeat */
         if (argc > 2 && strcmp(argv[2], "tile") == 0) {
@@ -540,7 +580,7 @@ main(int argc, char **argv)
     say("acceleration returns when the state does",
         OSMGAMesaHookDrawn() - d0 >= 2UL, 0);
 
-    /* 3. perspective must be refused by the affine gate and nothing else */
+    /* 3. perspective is drawn by the engine now, not turned away */
     glClear(GL_COLOR_BUFFER_BIT);
     d0 = OSMGAMesaHookDrawn(); p0 = OSMGAMesaHookTexPersp();
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
@@ -552,10 +592,15 @@ main(int argc, char **argv)
       glTexCoord2f(1.0f, 1.0f); glVertex3d( 0.6,  0.6, -8.0);
     glEnd();
     glFinish();
-    say("a perspective triangle is refused",
-        OSMGAMesaHookDrawn() == d0, 0);
-    say("and by the affine gate, not by something else",
-        OSMGAMesaHookTexPersp() - p0 >= 1UL, 0);
+    say("a perspective triangle reaches the engine",
+        OSMGAMesaHookDrawn() - d0 >= 1UL, 0);
+    /*
+     * And for the right reason: the counter that used to record the affine
+     * refusal must not move.  It still counts a vertex whose w is at or
+     * below nought, which is a different thing and is still refused.
+     */
+    say("and the affine gate did not turn it away",
+        OSMGAMesaHookTexPersp() == p0, 0);
 
     /* 4. a triangle that splits into two trapezoids */
     glMatrixMode(GL_PROJECTION); glLoadIdentity();

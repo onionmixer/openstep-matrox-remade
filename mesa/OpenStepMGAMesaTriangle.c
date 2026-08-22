@@ -313,6 +313,120 @@ OSMGAMesaDepthClamps(void)
     return osmgaDepthClamps;
 }
 
+static double
+osmgaAbsD(double v)
+{
+    return (v < 0.0) ? -v : v;
+}
+
+/*
+ * The three planes a perspective-correct triangle needs, and the one scale
+ * that is free to choose.
+ *
+ * Perspective correction is s/w and 1/w interpolated linearly in screen
+ * space and then divided, and the engine performs exactly that division:
+ * it samples numerator * 65536 / denominator.  So the numerators carry
+ * s/w and t/w, the denominator carries 1/w, and the quotient is s -- the
+ * projective scale cancels out of it entirely.
+ *
+ * That freedom is worth spending.  The engine adds to the numerator an
+ * amount bounded by 512, measured, which costs 2048/q texels, so the larger
+ * the denominator the smaller the error.  The scale is therefore taken as
+ * large as every bound will allow rather than merely large enough:
+ *
+ *      the denominator's floor and ceiling, over the whole triangle;
+ *      the numerator start, which the validator holds to the coordinate
+ *          limit -- bounded here over the BOUNDING BOX, since the trapezoid
+ *          anchor the emitter uses lies inside it and not at vertex a;
+ *      the numerator slopes, against the limit over each span;
+ *      the denominator slopes, against what evaluating q may hold.
+ *
+ * If the floor asks for more than the ceilings allow, this returns nought
+ * and the triangle is drawn in software.  A refusal is cheap; a wrong
+ * picture is not.
+ */
+static int
+osmgaPerspPlanes(const OSMGAMesaVertex *a, const OSMGAMesaVertex *b,
+                 const OSMGAMesaVertex *c,
+                 double ua, double ub, double uc,
+                 double va, double vb, double vc,
+                 double x1, double y1, double x2, double y2, double den,
+                 OSMGAColourPlane *up, OSMGAColourPlane *vp,
+                 OSMGAColourPlane *qp)
+{
+    double qa = a->qw, qb = b->qw, qc = c->qw;
+    double na = ua * qa, nb = ub * qb, nc = uc * qc;
+    double ma = va * qa, mb = vb * qb, mc = vc * qc;
+    double ndx, ndy, mdx, mdy, qdx, qdy;
+    double qlo, qhi, dxlo, dxhi, dylo, dyhi, ex, ey;
+    double lamLo, lamHi, t, room, budget;
+    int k;
+
+    (void)c;
+    ndx = ((nb - na) * y2 - (nc - na) * y1) / den;
+    ndy = ((nc - na) * x1 - (nb - na) * x2) / den;
+    mdx = ((mb - ma) * y2 - (mc - ma) * y1) / den;
+    mdy = ((mc - ma) * x1 - (mb - ma) * x2) / den;
+    qdx = ((qb - qa) * y2 - (qc - qa) * y1) / den;
+    qdy = ((qc - qa) * x1 - (qb - qa) * x2) / den;
+
+    qlo = qhi = qa;
+    if (qb < qlo) qlo = qb;   if (qb > qhi) qhi = qb;
+    if (qc < qlo) qlo = qc;   if (qc > qhi) qhi = qc;
+    if (qlo <= 0.0)
+        return 0;
+
+    dxlo = dxhi = 0.0;
+    if (x1 < dxlo) dxlo = x1;   if (x1 > dxhi) dxhi = x1;
+    if (x2 < dxlo) dxlo = x2;   if (x2 > dxhi) dxhi = x2;
+    dylo = dyhi = 0.0;
+    if (y1 < dylo) dylo = y1;   if (y1 > dyhi) dyhi = y1;
+    if (y2 < dylo) dylo = y2;   if (y2 > dyhi) dyhi = y2;
+    ex = dxhi - dxlo;   if (ex < 1.0) ex = 1.0;
+    ey = dyhi - dylo;   if (ey < 1.0) ey = 1.0;
+
+    room   = (double)OSMGA_HW3D_TEX_COORD_MAX;
+    budget = ((double)(1L << 30) - (double)OSMGA_HW3D_Q_MAX) / 2.0;
+
+    lamLo = (double)OSMGA_HW3D_Q_MIN / (qlo * 65536.0);
+    lamHi = (double)OSMGA_HW3D_Q_MAX / (qhi * 65536.0);
+
+    /* the numerator start, over the box rather than at one vertex */
+    for (k = 0; k < 4; k++) {
+        double dx = (k & 1) ? dxhi : dxlo;
+        double dy = (k & 2) ? dyhi : dylo;
+        double n = osmgaAbsD(na + ndx * dx + ndy * dy);
+        double m = osmgaAbsD(ma + mdx * dx + mdy * dy);
+
+        if (m > n) n = m;
+        if (n > 0.0) { t = room / n; if (t < lamHi) lamHi = t; }
+    }
+    /* the numerator slopes, each against its own span */
+    t = osmgaAbsD(ndx); if (t > 0.0) { t = (room / ex) / t; if (t < lamHi) lamHi = t; }
+    t = osmgaAbsD(mdx); if (t > 0.0) { t = (room / ex) / t; if (t < lamHi) lamHi = t; }
+    t = osmgaAbsD(ndy); if (t > 0.0) { t = (room / ey) / t; if (t < lamHi) lamHi = t; }
+    t = osmgaAbsD(mdy); if (t > 0.0) { t = (room / ey) / t; if (t < lamHi) lamHi = t; }
+    /* the denominator slopes */
+    t = osmgaAbsD(qdx) * 65536.0;
+    if (t > 0.0) { t = (budget / ex) / t; if (t < lamHi) lamHi = t; }
+    t = osmgaAbsD(qdy) * 65536.0;
+    if (t > 0.0) { t = (budget / ey) / t; if (t < lamHi) lamHi = t; }
+
+    if (lamHi < lamLo)
+        return 0;
+
+    up->dx   = ndx * lamHi;
+    up->dy   = ndy * lamHi;
+    up->at_a = na  * lamHi;
+    vp->dx   = mdx * lamHi;
+    vp->dy   = mdy * lamHi;
+    vp->at_a = ma  * lamHi;
+    qp->dx   = qdx * lamHi * 65536.0;
+    qp->dy   = qdy * lamHi * 65536.0;
+    qp->at_a = qa  * lamHi * 65536.0;
+    return 1;
+}
+
 static void
 osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
                const OSMGAMesaEdge *le, const OSMGAMesaEdge *re,
@@ -321,7 +435,7 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
                unsigned long zmode, const OSMGAColourPlane *zplane,
                unsigned long blend, const OSMGAColourPlane *aplane,
                const OSMGAColourPlane *uplane, const OSMGAColourPlane *vplane,
-               long *tmr)
+               const OSMGAColourPlane *qplane, long *tmr)
 {
     long left, lmag, ldy, lerr, lsgn;
     long right, rmag, rdy, rerr, rsgn;
@@ -455,10 +569,21 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
         tmr[1] = osmgaRound(uplane->dy);
         tmr[2] = osmgaRound(vplane->dx);
         tmr[3] = osmgaRound(vplane->dy);
-        tmr[4] = tmr[5] = 0L;
         tmr[6] = osmgaRound(uplane->at_a + uplane->dx * ox + uplane->dy * oy);
         tmr[7] = osmgaRound(vplane->at_a + vplane->dx * ox + vplane->dy * oy);
-        tmr[8] = 0L;
+        /*
+         * The denominator at the same anchor, in the same fixed point the
+         * engine reads it in.  Nought here is what tells the caller this was
+         * an affine solve and the H family is the kernel's again.
+         */
+        if (qplane != 0 && qplane->at_a != 0.0) {
+            tmr[4] = osmgaRound(qplane->dx);
+            tmr[5] = osmgaRound(qplane->dy);
+            tmr[8] = osmgaRound(qplane->at_a + qplane->dx * ox
+                                + qplane->dy * oy);
+        } else {
+            tmr[4] = tmr[5] = tmr[8] = 0L;
+        }
     }
 
     if (zmode != 0UL && zplane != 0) {
@@ -579,7 +704,7 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
 {
     const OSMGAMesaVertex *t, *m, *lo, *tmp;
     OSMGAColourPlane plane[3];
-    OSMGAColourPlane zplane, aplane, uplane, vplane;
+    OSMGAColourPlane zplane, aplane, uplane, vplane, qplane;
     const OSMGAMesaVertex *shade = flat;
     long span, sub, rT, rM, rL;
     double crossD;
@@ -676,19 +801,13 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
         double va = a->tc * vs, vb = b->tc * vs, vc = c->tc * vs;
         double lo, hi;
 
-        uplane.dx   = ((ub - ua) * y2 - (uc - ua) * y1) / den;
-        uplane.dy   = ((uc - ua) * x1 - (ub - ua) * x2) / den;
-        uplane.at_a = ua;
-        vplane.dx   = ((vb - va) * y2 - (vc - va) * y1) / den;
-        vplane.dy   = ((vc - va) * x1 - (vb - va) * x2) / den;
-        vplane.at_a = va;
-
         /*
-         * Every pixel this triangle draws has its centre inside the triangle,
-         * and the coordinate is a plane, so its range over those pixels is
-         * inside the range over the three vertices.  Checking the vertices is
-         * therefore exact for what will actually be fetched -- and refusing
-         * here saves building a batch, submitting it, and being told no.
+         * The coordinate the ENGINE will sample is the same either way -- an
+         * affine plane through the three vertex values, or the quotient of
+         * two planes that reproduces it -- so the range check below is on the
+         * unweighted values in both cases, and it is exact for the pixels
+         * this triangle draws because every one of their centres is inside
+         * the triangle.
          *
          * The kernel checks a wider box and may still refuse; that is what
          * the software fallback is for.
@@ -703,6 +822,23 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
         if (vc < lo) lo = vc;   if (vc > hi) hi = vc;
         if (lo < 0.0 || hi > (double)OSMGA_HW3D_TEX_COORD_MAX)
             return OSMGA_MESA_TRI_UNSUPPORTED;
+
+        if (a->qw == b->qw && a->qw == c->qw) {
+            /* w is the same at all three, so the divide is a constant and
+             * the coordinate interpolates straight.  Unchanged. */
+            uplane.dx   = ((ub - ua) * y2 - (uc - ua) * y1) / den;
+            uplane.dy   = ((uc - ua) * x1 - (ub - ua) * x2) / den;
+            uplane.at_a = ua;
+            vplane.dx   = ((vb - va) * y2 - (vc - va) * y1) / den;
+            vplane.dy   = ((vc - va) * x1 - (vb - va) * x2) / den;
+            vplane.at_a = va;
+            qplane.at_a = 0.0;          /* nought says "affine" downstream */
+            qplane.dx = qplane.dy = 0.0;
+        } else if (!osmgaPerspPlanes(a, b, c, ua, ub, uc, va, vb, vc,
+                                     x1, y1, x2, y2, den,
+                                     &uplane, &vplane, &qplane)) {
+            return OSMGA_MESA_TRI_UNSUPPORTED;
+        }
     }
 
     /* Always, not only when blending: the destination's fourth byte is
@@ -878,6 +1014,7 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
                            shade, plane, a, zmode, &zplane, blend, &aplane,
                            (tex != 0) ? &uplane : (const OSMGAColourPlane *)0,
                            (tex != 0) ? &vplane : (const OSMGAColourPlane *)0,
+                           (tex != 0) ? &qplane : (const OSMGAColourPlane *)0,
                            (tex != 0 && tmrOut != 0) ? tmrOut[n] : (long *)0);
             n++;
         }
@@ -898,6 +1035,7 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
                            shade, plane, a, zmode, &zplane, blend, &aplane,
                            (tex != 0) ? &uplane : (const OSMGAColourPlane *)0,
                            (tex != 0) ? &vplane : (const OSMGAColourPlane *)0,
+                           (tex != 0) ? &qplane : (const OSMGAColourPlane *)0,
                            (tex != 0 && tmrOut != 0) ? tmrOut[n] : (long *)0);
             n++;
         }
