@@ -3058,6 +3058,67 @@ main(void)
         }
         printf("   each must be refused; an admitted one is a slope bounded"
                " against the wrong span\n");
+
+        /*
+         * Those four are refused by the slope MAGNITUDE check on its own, so
+         * they say nothing about whether the coordinate evaluation was fixed
+         * as well.  This pair does: a slope exactly at what the magnitude
+         * check allows -- room over the height, so it passes -- with a start
+         * halfway up the range, so the last row leaves it.  Only an
+         * evaluation that puts tmr[1] into u can see that, and only one that
+         * puts tmr[2] into v can see its mirror.
+         */
+        {
+            long room2 = (long)OSMGA_HW3D_TEX_COORD_MAX;
+            long slope = room2 / 31L;
+            int k;
+
+            for (k = 0; k < 2; k++) {
+                unsigned got;
+
+                blank();
+                {
+                    OSMGAHW3DTri *t = setup(1024UL, 0UL, 8UL, 32UL, 0L, 0UL);
+
+                    batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+                    batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+                    batch->state.tmr[k ? 3 : 1] = slope;
+                    batch->state.tmr[6] = k ? 0L : room2 / 2L;
+                    batch->state.tmr[7] = k ? room2 / 2L : 0L;
+                    t->ar0 = 32L; t->ar6 = 32L;
+                }
+                got = fire();
+                say(k ? "v carried out of range by its own dy"
+                      : "u carried out of range by its own dy",
+                    (got == OSMGA_HW3D_OK) ? 0U : 1U, 1U);
+            }
+            /*
+             * And the control, so that "the slope alone is legal" is a
+             * measurement rather than something I worked out: the same slope
+             * with the start at nought keeps the coordinate inside the range
+             * all the way down, and must be ADMITTED.  If this were refused
+             * the pair above would prove nothing about the evaluation.
+             */
+            {
+                unsigned got;
+
+                blank();
+                {
+                    OSMGAHW3DTri *t = setup(1024UL, 0UL, 8UL, 32UL, 0L, 0UL);
+
+                    batch->state.tmr[0] = 0L; batch->state.tmr[1] = slope;
+                    batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+                    batch->state.tmr[6] = 0L;
+                    batch->state.tmr[7] = 0L;
+                    t->ar0 = 32L; t->ar6 = 32L;
+                }
+                got = fire();
+                say("the same slope from nought is admitted", got,
+                    OSMGA_HW3D_OK);
+            }
+            printf("   so the refusals above are the coordinate evaluation"
+                   " and not the slope check\n");
+        }
     }
 
     printf("\n%s (%d failing)\n",
