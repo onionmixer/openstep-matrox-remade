@@ -2125,6 +2125,85 @@ main(void)
                " the lanes'\n");
     }
 
+    printf("\n35. what product does the engine call GL_MODULATE?\n");
+    {
+        /*
+         * GL_MODULATE is Cv = Cf Ct, and what that means in eight bits is a
+         * convention.  Mesa's is
+         *
+         *      PROD(A, B) = (A * (B + 1)) >> 8         (texture.c:2367)
+         *
+         * with A the fragment's component and B the texel's, which is not
+         * the same as A*B/255 -- they part company by one at, for instance,
+         * 192 by 192, where Mesa says 144 and the rounded quotient says 145.
+         * So the engine has to be measured against MESA, not against the
+         * ideal, since matching Mesa is the whole point.
+         *
+         * One drawing gives the whole curve: paint the texture so that its
+         * red runs 0, 4, 8 ... across the texels and hold the triangle's own
+         * red at 128, and column c is then the product of 128 and 4c.  The
+         * other three channels are held at values that check the ends --
+         * green against 255, blue against nought, and the alpha against 255.
+         */
+        unsigned long r, c;
+        int bad = 0, first = -1;
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = 0xFF000000UL          /* At  = 255 */
+                                 | ((c * 4UL) << 16)     /* Ct.r = 4c  */
+                                 | (0xFFUL << 8)         /* Ct.g = 255 */
+                                 | 0UL;                  /* Ct.b = 0   */
+
+        blank();
+        {
+            OSMGAHW3DTri *t = setup(1024UL, 0UL, 64UL, 4UL,
+                                    (long)(OSMGA_HW3D_TEX_SPAN / DIM),
+                                    OSMGA_HW3D_TEXF_MODULATE
+                                    | OSMGA_HW3D_TEXF_TEXALPHA);
+
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = 0L;
+            batch->state.tmr[7] = 0L;
+            t->dr[0] = 128UL << 15;      /* Cf.r */
+            t->dr[3] = 200UL << 15;      /* Cf.g */
+            t->dr[6] = 100UL << 15;      /* Cf.b */
+            t->a0    = 128UL << 15;      /* Af   */
+        }
+        (void)fire();
+        printf("   red, every eighth column:");
+        for (c = 0UL; c < 64UL; c += 8UL)
+            printf(" %lu", (pixat(0UL, c) >> 16) & 0xFFUL);
+        printf("\n   Mesa would say:          ");
+        for (c = 0UL; c < 64UL; c += 8UL)
+            printf(" %lu", (128UL * (c * 4UL + 1UL)) >> 8);
+        printf("\n");
+        for (c = 0UL; c < 64UL; c++) {
+            unsigned long got = (pixat(0UL, c) >> 16) & 0xFFUL;
+
+            if (got != ((128UL * (c * 4UL + 1UL)) >> 8)) {
+                bad++;
+                if (first < 0) first = (int)c;
+            }
+        }
+        printf("   %d of 64 columns differ from Mesa's product%s",
+               bad, (first >= 0) ? "" : "\n");
+        if (first >= 0)
+            printf(", first at column %d\n", first);
+        {
+            unsigned long p = pixat(0UL, 0UL);
+
+            printf("   green %lu (Mesa 200)   blue %lu (Mesa 0)"
+                   "   alpha %lu (Mesa 128)\n",
+                   (p >> 8) & 0xFFUL, p & 0xFFUL, (p >> 24) & 0xFFUL);
+        }
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = (r << 8) | c;
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;

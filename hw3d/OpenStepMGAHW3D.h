@@ -202,6 +202,21 @@
  * difference between the two formats here.  The colour is Ct either way.
  */
 #define OSMGA_HW3D_TEXF_TEXALPHA 0x8UL   /* Av = At rather than Av = Af */
+/*
+ * GL_MODULATE rather than GL_REPLACE: the texel multiplies the interpolated
+ * colour instead of standing in for it.
+ *
+ *      REPLACE   Cv = Ct      MODULATE   Cv = Cf Ct
+ *      and the alpha follows OSMGA_HW3D_TEXF_TEXALPHA, except that under
+ *      MODULATE a texture that HAS an alpha multiplies it too:
+ *
+ *          RGB   REPLACE   Av = Af      RGBA  REPLACE   Av = At
+ *          RGB   MODULATE  Av = Af      RGBA  MODULATE  Av = Af At
+ *
+ * which is Mesa's own table (texture.c, apply_texture) and four words of the
+ * combiner, not four code paths.
+ */
+#define OSMGA_HW3D_TEXF_MODULATE 0x10UL
 
 /*
  * How far a texture coordinate may reach.

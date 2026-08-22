@@ -562,6 +562,8 @@
  * and stays at ARG1, which is the GL_REPLACE the driver already gets.
  */
 #define MGA_TDS_ALPHA_SEL_ARG2  0x40000000UL
+#define MGA_TDS_COLOR_SEL_MUL   0x00600000UL
+#define MGA_TDS_ALPHA_SEL_MUL   0xc0000000UL
 #define MGA_ALPHACTRL_OPAQUE    0x00000101UL   /* ALPHACHANNEL|SRC_ONE|DST_ZERO */
 
 #define OSMGA_D3_TEXORG         (6UL * 1024UL * 1024UL)
@@ -6946,9 +6948,26 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
          * depends on whether the texture has an alpha at all, so the client
          * says; see OSMGA_HW3D_TEXF_TEXALPHA.
          */
-        tds0 = ((b->state.texFlags & OSMGA_HW3D_TEXF_TEXALPHA) != 0UL)
-               ? 0UL : MGA_TDS_ALPHA_SEL_ARG2;
-        tds1 = tds0;
+        {
+            /*
+             * ARG1 is the texture and ARG2, with the operand fields left at
+             * zero, is the interpolated value; SEL says which of them, or
+             * their product, comes out.  The four combinations are GL's own
+             * table for REPLACE and MODULATE over a texture with and without
+             * an alpha of its own.
+             */
+            unsigned long mod =
+                (b->state.texFlags & OSMGA_HW3D_TEXF_MODULATE) != 0UL;
+            unsigned long ta =
+                (b->state.texFlags & OSMGA_HW3D_TEXF_TEXALPHA) != 0UL;
+
+            tds0 = mod ? MGA_TDS_COLOR_SEL_MUL : 0UL;
+            if (ta)
+                tds0 |= mod ? MGA_TDS_ALPHA_SEL_MUL : 0UL;
+            else
+                tds0 |= MGA_TDS_ALPHA_SEL_ARG2;
+            tds1 = tds0;
+        }
         if ((b->state.texFlags & OSMGA_HW3D_TEXF_TDS1ZERO) != 0UL)
             tds1 = 0UL;
         if ((b->state.texFlags & OSMGA_HW3D_TEXF_TDSSWAP) != 0UL) {
