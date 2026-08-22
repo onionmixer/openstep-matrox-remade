@@ -508,12 +508,21 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                         texBad = 1;
                 }
 
+                /*
+                 * A slope is bounded against the span of ITS OWN axis: what a
+                 * slope in y can displace is itself times the height.  This
+                 * had tmr[1] against the width and tmr[2] against the height,
+                 * which is the same transposition as below and just as wrong.
+                 *
+                 *      tmr[0] = ds/dx   width      tmr[1] = ds/dy   height
+                 *      tmr[2] = dt/dx   width      tmr[3] = dt/dy   height
+                 */
                 if ((ex > 0L && (b->state.tmr[0] > room / ex ||
                                  b->state.tmr[0] < -(room / ex) ||
-                                 b->state.tmr[1] > room / ex ||
-                                 b->state.tmr[1] < -(room / ex))) ||
-                    (ey > 0L && (b->state.tmr[2] > room / ey ||
-                                 b->state.tmr[2] < -(room / ey))) ||
+                                 b->state.tmr[2] > room / ex ||
+                                 b->state.tmr[2] < -(room / ex))) ||
+                    (ey > 0L && (b->state.tmr[1] > room / ey ||
+                                 b->state.tmr[1] < -(room / ey))) ||
                     (vy > 0L && (b->state.tmr[3] > room / vy ||
                                  b->state.tmr[3] < -(room / vy))))
                     texBad = 1;
@@ -535,8 +544,8 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                         long dy = (k & 2L) ? ey : 0L;
 
                         ux  = b->state.tmr[6] + b->state.tmr[0] * dx
-                              + b->state.tmr[2] * dy;
-                        vx2 = b->state.tmr[7] + b->state.tmr[1] * dx
+                              + b->state.tmr[1] * dy;
+                        vx2 = b->state.tmr[7] + b->state.tmr[2] * dx
                               + b->state.tmr[3] * (texSpanY + dy);
                         /*
                          * The denominator's row index is the accumulated
@@ -565,11 +574,11 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                         if (lx >= rx)
                             continue;           /* no pixel on this row */
                         ux  = b->state.tmr[6] + b->state.tmr[0] * (lx - lx0)
-                              + b->state.tmr[2] * row;
-                        vx2 = b->state.tmr[7] + b->state.tmr[1] * (lx - lx0)
+                              + b->state.tmr[1] * row;
+                        vx2 = b->state.tmr[7] + b->state.tmr[2] * (lx - lx0)
                               + b->state.tmr[3] * (texSpanY + row);
                         ly = ux + b->state.tmr[0] * (rx - 1L - lx);
-                        ry = vx2 + b->state.tmr[1] * (rx - 1L - lx);
+                        ry = vx2 + b->state.tmr[2] * (rx - 1L - lx);
                         /*
                          * The accumulated row index here too.  This walk had
                          * the primitive's own row, which is the reading the

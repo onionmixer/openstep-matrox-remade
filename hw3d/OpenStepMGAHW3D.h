@@ -426,7 +426,29 @@ typedef struct {
     unsigned long texPitch;        /* texels per row, >= texW */
     unsigned long texFormat;       /* OSMGA_HW3D_TEXFMT_* */
     unsigned long texFlags;        /* OSMGA_HW3D_TEXF_* */
-    /* tmr[0..3] are the increments, tmr[6] and tmr[7] the starts.  All six
+    /*
+     * WHICH INCREMENT IS WHICH.  Everything that reads these must use these
+     * four equations and not its own recollection:
+     *
+     *      u = tmr[6] + tmr[0] * dx + tmr[1] * dy
+     *      v = tmr[7] + tmr[2] * dx + tmr[3] * dy
+     *
+     * so tmr[0] is ds/dx, tmr[1] ds/dy, tmr[2] dt/dx, tmr[3] dt/dy.
+     *
+     * It is written here because the two sides of this interface once
+     * disagreed about it.  The builder had it right -- and said so with a
+     * measurement, since the other arrangement disagreed with the software
+     * rasteriser on 2157 pixels of 4410 and this one on none -- while the
+     * validator had tmr[1] and tmr[2] the other way round and so bounded the
+     * wrong slope for each axis.  It went unseen because almost every probe
+     * leaves both at nought, where the two readings agree.
+     *
+     * The references disagree too, which is how the wrong reading survived a
+     * check: xf86-video-mga's mga_exa.c makes TMR1 the second row's x
+     * increment, while mga_storm.c's own comment calls it "sy inc".  The
+     * machine settles it in favour of mga_storm.c.
+     *
+     * tmr[0..3] are the increments, tmr[6] and tmr[7] the starts.  All six
      * are bounded, and MAY BE NEGATIVE: what is required is that the
      * coordinate stays inside the measured range at every pixel, which for a
      * plane means at each of the four corners.  They were required

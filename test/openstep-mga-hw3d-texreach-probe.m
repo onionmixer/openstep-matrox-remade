@@ -3014,6 +3014,52 @@ main(void)
                q0, q0 + 192L * 63L);
     }
 
+    printf("\n50. one derivative at a time, on a shape that is not square\n");
+    {
+        /*
+         * The builder and the validator once disagreed about which of tmr[1]
+         * and tmr[2] was which, and it went unseen because nearly every probe
+         * leaves both at nought -- where the two readings agree.  What catches
+         * a transposition is ONE derivative at a time on a primitive whose
+         * width and height differ, with a slope chosen to leave the range
+         * along its own axis while staying inside it along the other.
+         *
+         * With a shape 8 by 32 and the limit at 8 texture spans, a slope of
+         * about a tenth of the limit runs out over 31 rows and not over 7
+         * columns.  So a y slope must be refused on the tall shape, and an x
+         * slope on the wide one, and a validator that has the two swapped
+         * admits exactly one of each pair.
+         */
+        long v = (long)OSMGA_HW3D_TEX_COORD_MAX / 10L;
+        static const char *nm[4] = { "ds/dx wide", "ds/dy tall",
+                                     "dt/dx wide", "dt/dy tall" };
+        int j;
+
+        for (j = 0; j < 4; j++) {
+            int tall = (j & 1);
+            unsigned got;
+
+            blank();
+            {
+                OSMGAHW3DTri *t = setup(1024UL, 0UL,
+                                        tall ? 8UL : 32UL,
+                                        tall ? 32UL : 8UL, 0L, 0UL);
+
+                batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+                batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+                batch->state.tmr[j] = v;
+                batch->state.tmr[6] = 0L;
+                batch->state.tmr[7] = 0L;
+                t->ar0 = tall ? 32L : 8L;
+                t->ar6 = t->ar0;
+            }
+            got = fire();
+            say(nm[j], (got == OSMGA_HW3D_OK) ? 0U : 1U, 1U);
+        }
+        printf("   each must be refused; an admitted one is a slope bounded"
+               " against the wrong span\n");
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;
