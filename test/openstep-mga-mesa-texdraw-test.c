@@ -163,6 +163,23 @@ main(int argc, char **argv)
             maketexRGBA(&rt);
             glColor4f(1.0f, 1.0f, 1.0f, 0.5f);
         }
+        /*
+         * "mod" is GL_MODULATE with ONE vertex colour, so the colour
+         * interpolator contributes nothing and any difference is the
+         * product alone.  "modg" gives the quad a colour that varies, which
+         * puts the interpolator back in and lets the two be told apart.
+         */
+        if (argc > 2 && strncmp(argv[2], "mod", 3) == 0) {
+            glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+            /*
+             * "modw" keeps GL's default white.  It is not an arbitrary
+             * choice: the two products agree for EVERY texel value when the
+             * fragment component is 0, 128, 254 or 255, so an unlit program
+             * -- which is what most textured drawing is -- comes out exact.
+             */
+            if (strcmp(argv[2], "modw") != 0)
+                glColor3f(0.6f, 0.8f, 0.35f);
+        }
         if (argc > 2 && strcmp(argv[2], "rgbalin") == 0) {
             GLuint rt;
 
@@ -183,6 +200,29 @@ main(int argc, char **argv)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         }
         glClear(GL_COLOR_BUFFER_BIT);
+        if (argc > 2 && strcmp(argv[2], "modg") == 0) {
+            /* a colour of its own at each corner */
+            glBegin(GL_TRIANGLES);
+              glColor3f(1.0f, 0.2f, 0.4f);
+              glTexCoord2f(0.0f, 0.0f); glVertex2d(40.0, 40.0);
+              glColor3f(0.2f, 1.0f, 0.6f);
+              glTexCoord2f(1.0f, 0.0f); glVertex2d(168.0, 40.0);
+              glColor3f(0.3f, 0.5f, 1.0f);
+              glTexCoord2f(1.0f, 1.0f); glVertex2d(168.0, 168.0);
+              glColor3f(1.0f, 0.2f, 0.4f);
+              glTexCoord2f(0.0f, 0.0f); glVertex2d(40.0, 40.0);
+              glColor3f(0.3f, 0.5f, 1.0f);
+              glTexCoord2f(1.0f, 1.0f); glVertex2d(168.0, 168.0);
+              glColor3f(0.9f, 0.9f, 0.1f);
+              glTexCoord2f(0.0f, 1.0f); glVertex2d(40.0, 168.0);
+            glEnd();
+            glFinish();
+            for (y = 0; y < H; y++)
+                for (x = 0; x < W; x++)
+                    if (app[y * W + x] != CLEARC)
+                        printf("P %ld %ld %lu\n", x, y, app[y * W + x]);
+            return 0;
+        }
         /* one quad and one split triangle, so both shapes are compared */
         quad(40.0, 40.0, 168.0, 168.0);
         glBegin(GL_TRIANGLES);
@@ -244,7 +284,12 @@ main(int argc, char **argv)
         unsigned long before;
         int k;
 
-        cases[0].name = "GL_MODULATE instead of GL_REPLACE";
+        /*
+         * GL_DECAL, not GL_MODULATE: modulate is taken now.  Decal is the
+         * next mode along and is still refused, so it keeps this slot
+         * honest -- a refusal list that refuses nothing proves nothing.
+         */
+        cases[0].name = "GL_DECAL, which is not offered";
         /*
          * One filter changed and not the other.  The engine has a single
          * filter switch and GL picks between the two per fragment, so a
@@ -262,7 +307,7 @@ main(int argc, char **argv)
         for (k = 0; k < 5; k++) {
             glClear(GL_COLOR_BUFFER_BIT);
             before = OSMGAMesaHookDrawn();
-            if (k == 0) glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+            if (k == 0) glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL);
             if (k == 1) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             if (k == 2) glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
             if (k == 3) glEnable(GL_BLEND);
@@ -303,6 +348,21 @@ main(int argc, char **argv)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+
+    /* GL_MODULATE is taken, and with GL's default white it is exact */
+    {
+        unsigned long before;
+
+        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+        glClear(GL_COLOR_BUFFER_BIT);
+        before = OSMGAMesaHookDrawn();
+        quad(40.0, 40.0, 168.0, 168.0);
+        glFinish();
+        say("GL_MODULATE reaches the engine",
+            OSMGAMesaHookDrawn() - before >= 2UL, 0);
+        say("and it covered the quad", painted() == 128L * 128L, 0);
+        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
     }
 
     /* an RGBA texture is taken too, and takes its alpha from itself */

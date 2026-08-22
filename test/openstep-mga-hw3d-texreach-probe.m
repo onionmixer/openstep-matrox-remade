@@ -2204,6 +2204,121 @@ main(void)
                 tex[r * DIM + c] = (r << 8) | c;
     }
 
+    printf("\n36. the whole product surface, not one line of it\n");
+    {
+        /*
+         * Section 35 holds the fragment's red at 128 and only walks the
+         * texel's, which is a weak place to look: at 128 the two candidate
+         * conventions agree almost everywhere, so agreeing there says little.
+         *
+         * Both operands have to move.  The texel's red climbs across the
+         * columns as before, and the fragment's red climbs down the ROWS
+         * using the colour interpolator's y increment, so the drawing is a
+         * 64 by 64 table of products at a stride of four -- 4096 samples of
+         * the surface rather than 64 of one line.
+         */
+        unsigned long r, c;
+        unsigned long bad = 0UL, worst = 0UL;
+        long bx = -1L, by = -1L;
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = 0xFF000000UL | ((c * 4UL) << 16);
+
+        blank();
+        {
+            OSMGAHW3DTri *t = setup(1024UL, 0UL, 64UL, 64UL,
+                                    (long)(OSMGA_HW3D_TEX_SPAN / DIM),
+                                    OSMGA_HW3D_TEXF_MODULATE
+                                    | OSMGA_HW3D_TEXF_TEXALPHA);
+
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = 0L;
+            batch->state.tmr[7] = 0L;
+            t->ar0 = 64L; t->ar6 = 64L; t->h = 64L;
+            t->dr[0] = 0UL;              /* Cf.r at the top row */
+            t->dr[1] = 0UL;              /* and no change across a row */
+            t->dr[2] = 4UL << 15;        /* four a row going down */
+            t->a0    = 255UL << 15;
+        }
+        (void)fire();
+        {
+            /*
+             * Five conventions that all call themselves an eight-bit product.
+             * Counting the whole surface against each says which one the
+             * engine is, where a single line could not.
+             */
+            unsigned long miss[5];
+            int k;
+
+            for (k = 0; k < 5; k++) miss[k] = 0UL;
+            for (r = 0UL; r < DIM; r++)
+                for (c = 0UL; c < DIM; c++) {
+                    unsigned long got = (pixat(r, c) >> 16) & 0xFFUL;
+                    unsigned long a = r * 4UL, b = c * 4UL, t = a * b;
+                    unsigned long w[5];
+
+                    w[0] = (a * (b + 1UL)) >> 8;        /* Mesa's PROD    */
+                    w[1] = (t + 127UL) / 255UL;         /* rounded /255   */
+                    w[2] = t >> 8;                      /* plain shift    */
+                    w[3] = (t + 128UL) >> 8;            /* rounded shift  */
+                    w[4] = (t + 128UL + ((t + 128UL) >> 8)) >> 8;
+                    for (k = 0; k < 5; k++)
+                        if (got != w[k]) miss[k]++;
+                    if (got != w[0]) {
+                        unsigned long d = (got > w[0]) ? got - w[0]
+                                                       : w[0] - got;
+                        bad++;
+                        if (d > worst) {
+                            worst = d; bx = (long)b; by = (long)a;
+                        }
+                    }
+                }
+            /* a count is not a diagnosis: name the samples that miss */
+            printf("   samples the /255 rule does not predict:");
+            {
+                int shown = 0;
+
+                for (r = 0UL; r < DIM && shown < 8; r++)
+                    for (c = 0UL; c < DIM && shown < 8; c++) {
+                        unsigned long a = r * 4UL, b = c * 4UL;
+                        unsigned long got = (pixat(r, c) >> 16) & 0xFFUL;
+                        unsigned long w = (a * b + 127UL) / 255UL;
+
+                        if (got != w) {
+                            printf("  Cf %lu Ct %lu got %lu want %lu",
+                                   a, b, got, w);
+                            shown++;
+                        }
+                    }
+                if (shown == 0) printf("  none");
+            }
+            printf("\n");
+            printf("   of 4096 samples, wrong under each rule:\n");
+            printf("   %6s %6s %6s %6s %6s\n",
+                   "Mesa", "/255", ">>8", "+128", "approx");
+            printf("   %6lu %6lu %6lu %6lu %6lu\n",
+                   miss[0], miss[1], miss[2], miss[3], miss[4]);
+        }
+        if (bad)
+            printf("   against Mesa the worst is %lu, at texel red %ld,"
+                   " fragment red %ld\n", worst, bx, by);
+        {
+            /* and the two ends, where a wrong shift shows up loudest */
+            unsigned long lo = (pixat(0UL, 0UL) >> 16) & 0xFFUL;
+            unsigned long hi = (pixat(63UL, 63UL) >> 16) & 0xFFUL;
+
+            printf("   nought by nought %lu (Mesa 0),"
+                   "  252 by 252 %lu (Mesa %lu)\n",
+                   lo, hi, (252UL * 253UL) >> 8);
+        }
+
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = (r << 8) | c;
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;

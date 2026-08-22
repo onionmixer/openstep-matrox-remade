@@ -400,7 +400,9 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
                  * an RGBA texture reads GL_RGBA here, which is right.
                  */
                 | ((ti != 0 && ti->Format == GL_RGBA)
-                   ? OSMGA_HW3D_TEXF_TEXALPHA : 0UL);
+                   ? OSMGA_HW3D_TEXF_TEXALPHA : 0UL)
+                | ((ctx->Texture.Unit[0].EnvMode == GL_MODULATE)
+                   ? OSMGA_HW3D_TEXF_MODULATE : 0UL);
         }
         batch->state.tmr[0] = tmr[bi][0];
         batch->state.tmr[1] = tmr[bi][1];
@@ -515,10 +517,23 @@ osmgaMesaTexStateOK(GLcontext *ctx)
     if (ctx->Texture.Unit[0].TexGenEnabled != 0U)
         return 0;
     /*
-     * GL_REPLACE, which is what the engine does -- measured, by giving two
-     * triangles the same colour interpolators and texturing one of them.
+     * GL_REPLACE and GL_MODULATE, which are two words of the combiner.
+     *
+     * The engine's product is not Mesa's.  Measured over a 64 by 64 table of
+     * value pairs, the engine is (a * b * 257 + 32768) >> 16 -- a faithful
+     * normalised product -- where Mesa is (a * (b + 1)) >> 8, and the two
+     * disagree on 28.6% of pairs by exactly one level, the hardware being the
+     * more accurate of them.  Nothing can reconcile them: at a texel of 255
+     * both reduce to the fragment's own value, so there is no pre-bias of the
+     * interpolated colour left to give.
+     *
+     * It is taken anyway.  MODULATE is GL's default environment, so refusing
+     * it means an ordinary program is never accelerated at all, and one level
+     * in eight bits is smaller than the texel-phase difference this back end
+     * already carries.
      */
-    if (ctx->Texture.Unit[0].EnvMode != GL_REPLACE)
+    if (ctx->Texture.Unit[0].EnvMode != GL_REPLACE &&
+        ctx->Texture.Unit[0].EnvMode != GL_MODULATE)
         return 0;
     /* A second colour would be added after the texture and the engine has
      * nowhere to put it. */
