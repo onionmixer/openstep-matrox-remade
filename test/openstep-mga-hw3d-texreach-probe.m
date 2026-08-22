@@ -3495,6 +3495,297 @@ main(void)
                "   the engine puts back, and the coordinate lands low\n");
     }
 
+    printf("\n57. is the band a property of the pixel, or of how I measured it\n");
+    {
+        /*
+         * Every reading in 56 was taken with the gradients at nought, so the
+         * coordinate was the same at every pixel AND equal to the register.
+         * That cannot tell a band chosen from the pixel's coordinate from a
+         * band chosen from the register the kernel wrote -- and if it is the
+         * register, section 56 measures an artefact of the instrument and the
+         * whole account is wrong.
+         *
+         * So: two primitives whose coordinate at the READ pixel is the same
+         * value, reached in two different ways.  One has no gradient and puts
+         * that value straight in the register.  The other starts at nought
+         * and climbs to it, so its register is in a different band entirely.
+         * If the band belongs to the pixel they read the same texel.
+         */
+        long C = (1L << 21) - 512L;             /* on a boundary, band 2^21 */
+        long g = C / 4L;                        /* reached at column four */
+        unsigned long flat, climbed;
+        unsigned v;
+
+        blank();
+        (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                    OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV);
+        batch->state.texW = 8UL; batch->state.texH = 2048UL;
+        batch->state.texPitch = 8UL;
+        batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+        batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+        batch->state.tmr[6] = 0L; batch->state.tmr[7] = C;
+        v = fire();
+        flat = (v != OSMGA_HW3D_OK) ? 99999UL : (pixat(0UL, 4UL) & 0xFFFFUL);
+
+        blank();
+        (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                    OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV);
+        batch->state.texW = 8UL; batch->state.texH = 2048UL;
+        batch->state.texPitch = 8UL;
+        batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+        batch->state.tmr[2] = g;  batch->state.tmr[3] = 0L;
+        batch->state.tmr[6] = 0L; batch->state.tmr[7] = 0L;
+        v = fire();
+        climbed = (v != OSMGA_HW3D_OK) ? 99999UL : (pixat(0UL, 4UL) & 0xFFFFUL);
+
+        printf("   coordinate %ld at column four:  register %lu   climbed %lu\n",
+               C, flat, climbed);
+        printf("   the register sits in band 2^21 one way and 2^19 the other;\n"
+               "   equal readings mean the band belongs to the pixel\n");
+        say("the band follows the pixel, not the register",
+            (flat == climbed && flat != 99999UL) ? 1U : 0U, 1U);
+    }
+
+    printf("\n58. inside the bands, not only at the top of them\n");
+    {
+        /*
+         * 56 measured each band at 2^n - 512, which is the very top of the
+         * interval below 2^n.  That shows what the addend is THERE; it does
+         * not show that it is the same throughout the interval.  If the
+         * addend actually varies inside a band -- with the column, or with
+         * some finer structure -- then "the smallest addend is the one the
+         * top of the range implies" is false and every bias scheme built on
+         * it is unsafe.
+         *
+         * So each interval is measured at a quarter, a half, three quarters
+         * and at a deliberately unround place, all on texel boundaries, by
+         * the same bisection.  A single disagreement inside a band refutes
+         * the ladder as a description of the addend.
+         */
+        static const long bases[16] = {
+            1310720L, 1572864L, 1835008L, 1416704L,      /* inside 2^21 */
+            2621440L, 3145728L, 3670016L, 2833408L,      /* inside 2^22 */
+            5242880L, 6291456L, 7340032L, 5666816L,      /* inside 2^23 */
+            655360L,  786432L,  917504L,  708608L        /* inside 2^20 */
+        };
+        static const char *bnm[4] = { "2^21", "2^22", "2^23", "2^20" };
+        int i;
+
+        for (i = 0; i < 16; i++) {
+            long base = bases[i];
+            long lo = -256L, hi = 512L;
+            unsigned long vlo = osmgaProbeReadV(base + lo);
+            unsigned long vhi = osmgaProbeReadV(base + hi);
+
+            if ((i % 4) == 0) printf("   %s ", bnm[i / 4]);
+            if (vlo == 99999UL || vhi == 99999UL || vlo == vhi) {
+                printf("  %8ld:  ref ", base);
+            } else {
+                while (hi - lo > 1L) {
+                    long mid = (lo + hi) / 2L;
+
+                    if (osmgaProbeReadV(base + mid) == vlo) lo = mid;
+                    else hi = mid;
+                }
+                printf("  %8ld:%+5ld", base, -hi);
+            }
+            if ((i % 4) == 3) printf("\n");
+        }
+        printf("   wanted the same net bias across each row:"
+               " -16, -48, -112, 0\n");
+    }
+
+    printf("\n59. the same coordinate reached other ways, and other columns\n");
+    {
+        /*
+         * 57 showed the band follows the pixel and not the register, but with
+         * one gradient, one sign, one axis and one column.  The header also
+         * records a fine structure of up to fifteen units that involves the
+         * column and that no rule fits; at a band where the net bias is -16
+         * that is the same size as the thing being measured, so it has to be
+         * looked at here rather than assumed to stay small.
+         *
+         * Everything below reads a coordinate sitting exactly ON a texel
+         * boundary in band 2^21, where the net bias is -16 and the reading
+         * must therefore be the texel BELOW: 2046, not 2047.
+         */
+        long C = (1L << 21) - 512L;
+        unsigned long got;
+        int col;
+        unsigned v;
+
+        printf("     columns 0..7, constant coordinate:");
+        blank();
+        (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                    OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV);
+        batch->state.texW = 8UL; batch->state.texH = 2048UL;
+        batch->state.texPitch = 8UL;
+        batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+        batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+        batch->state.tmr[6] = 0L; batch->state.tmr[7] = C;
+        v = fire();
+        if (v != OSMGA_HW3D_OK) printf("  refused");
+        else
+            for (col = 0; col < 8; col++)
+                printf(" %4lu", pixat(0UL, (unsigned long)col) & 0xFFFFUL);
+        printf("\n");
+
+        blank();
+        (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                    OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV);
+        batch->state.texW = 8UL; batch->state.texH = 2048UL;
+        batch->state.texPitch = 8UL;
+        batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+        batch->state.tmr[2] = -(C / 4L); batch->state.tmr[3] = 0L;
+        batch->state.tmr[6] = 0L; batch->state.tmr[7] = 2L * C;
+        v = fire();
+        got = (v != OSMGA_HW3D_OK) ? 99999UL : (pixat(0UL, 4UL) & 0xFFFFUL);
+        printf("     descending to it from twice as high: %lu\n", got);
+        say("a negative gradient lands on the same texel",
+            (got == 2046UL) ? 1U : 0U, 1U);
+    }
+
+    printf("\n60. the band edges themselves, and whether the step is single\n");
+    {
+        /*
+         * 56 and 58 measured INSIDE the bands.  Which band a coordinate
+         * sitting exactly ON a power of two belongs to was inferred from the
+         * ladder's wording, not measured -- and it decides something real:
+         * the validator's cheap box path is conservative, so an affine scene
+         * whose sampled coordinates stay just under 2^20 can still report a
+         * maximum of exactly 2^20.  If that value belongs to the band above,
+         * a scene that is untouched today would have its bias moved.
+         *
+         * Each of these is a multiple of the 512-unit texel, so a
+         * non-negative net bias reads texel nought (1024 at 2^19) and a
+         * negative one reads the texel below.  One reading each settles it.
+         *
+         * Then a unit-by-unit walk across 2^20: the addend must step ONCE.
+         * More than one step, or a step back, breaks the monotonicity that
+         * the whole bias argument rests on.
+         */
+        static const long edge[5] = {
+            1L << 19, 1L << 20, 1L << 21, 1L << 22, 1L << 23
+        };
+        int i;
+        long w;
+        unsigned long prev = 99999UL;
+        int steps = 0;
+
+        for (i = 0; i < 5; i++) {
+            unsigned long got = osmgaProbeReadV(edge[i]);
+
+            printf("   exactly 2^%d = %8ld  ->  texel %lu   %s\n",
+                   19 + i, edge[i], got,
+                   (got == 99999UL) ? "refused"
+                     : ((got == 0UL || got == 1024UL)
+                          ? "net bias is not negative: the LOWER band"
+                          : "net bias is negative: the HIGHER band"));
+        }
+
+        printf("   walking 2^20 a unit at a time:");
+        for (w = -12L; w <= 12L; w++) {
+            unsigned long got = osmgaProbeReadV((1L << 20) + w);
+
+            if (prev != 99999UL && got != prev) {
+                steps++;
+                printf("  step at %+ld (%lu->%lu)", w, prev, got);
+            }
+            prev = got;
+        }
+        printf("\n");
+        say("exactly one step across the band edge",
+            (steps == 1) ? 1U : 0U, 1U);
+    }
+
+    printf("\n61. where the addend actually changes, measured not inferred\n");
+    {
+        /*
+         * 60 read texel nought at exactly 2^20 AND found only one step in the
+         * twelve units above it, so the addend is still 496 there -- the band
+         * does not turn over at the power of two, which is what I had assumed
+         * from the way the ladder is written down.  Since the bias rule has to
+         * evaluate "which addend applies at this coordinate", the turnover has
+         * to be measured rather than inferred.
+         *
+         * At a coordinate that is a multiple of the 512-unit texel, a net bias
+         * of nought or more reads base/512, and a negative one reads one less.
+         * That is a yes/no answer at any multiple of 512, so the turnover can
+         * be bisected over the multiples.
+         */
+        static const long lo0[3] = { 1L << 20, 1L << 21, 1L << 22 };
+        static const long hi0[3] = { 1L << 21, 1L << 22, 1L << 23 };
+        int i;
+
+        for (i = 0; i < 3; i++) {
+            long lo = lo0[i], hi = hi0[i];
+            unsigned long want;
+
+            /* lo is known non-negative, hi known negative, from 60 */
+            while (hi - lo > 512L) {
+                long mid = lo + ((hi - lo) / 1024L) * 512L;
+                unsigned long got;
+
+                if (mid == lo) break;
+                got = osmgaProbeReadV(mid);
+                want = ((unsigned long)(mid / 512L)) & 2047UL;
+                if (got == want) lo = mid;
+                else hi = mid;
+            }
+            printf("   addend drops between %ld and %ld", lo, hi);
+            printf("   = 2^%d x %.4f\n", 20 + i,
+                   (double)hi / (double)(1L << (20 + i)));
+        }
+    }
+
+    printf("\n62. the u axis at a high band, lane by lane\n");
+    {
+        /*
+         * The safety of the whole bias scheme rests on the addend never being
+         * SMALLER than the ladder says, because the bias is set to the ladder
+         * value at the primitive's maximum.  The header records a fine
+         * structure of up to fifteen units that involves the column and that
+         * no rule fits; 59 looked for it on v and found nothing, but v is
+         * constant across a row.  u is not: the two texture stages drive even
+         * and odd screen columns, so if the residue has a lane component this
+         * is where it shows, and at a band where the ladder step is sixteen
+         * units a residue of a few units can flip a boundary-aligned texel.
+         *
+         * A 1024-wide texture puts a texel at 1024 units.  The coordinate is
+         * held constant across the row and sits exactly on a texel boundary
+         * in the band above 2^20, where the net bias is -16, so every column
+         * must read the texel BELOW: 1022, and any column reading 1023 is a
+         * positive residue while 1021 would be a negative one -- the
+         * dangerous direction.
+         */
+        long C = (1L << 21) - 1024L;
+        unsigned long rr, cc;
+        unsigned v;
+        int col;
+
+        for (rr = 0UL; rr < 4UL; rr++)
+            for (cc = 0UL; cc < 1024UL; cc++)
+                tex[rr * 1024UL + cc] = cc;
+
+        blank();
+        (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                    OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV);
+        batch->state.texW = 1024UL; batch->state.texH = 4UL;
+        batch->state.texPitch = 1024UL;
+        batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+        batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+        batch->state.tmr[6] = C;  batch->state.tmr[7] = 0L;
+        v = fire();
+        printf("     columns 0..7:");
+        if (v != OSMGA_HW3D_OK) printf("  refused %u", v);
+        else
+            for (col = 0; col < 8; col++)
+                printf(" %4lu", pixat(0UL, (unsigned long)col) & 0xFFFFUL);
+        printf("      wanted 1022 throughout\n");
+        printf("     1023 anywhere is a positive residue and harmless;\n"
+               "     1021 is a NEGATIVE one and would sink the bias scheme\n");
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;

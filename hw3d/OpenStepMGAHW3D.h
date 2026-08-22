@@ -698,6 +698,42 @@ typedef int OSMGAHW3DSubmitFits[
 typedef int OSMGAHW3DCapsFits[
     (sizeof(OSMGAHW3DCapsBlock) <= OSMGA_IOC_PARM_MASK) ? 1 : -1];
 
+/*
+ * How far each texture coordinate actually reaches in a batch.
+ *
+ * The engine's addend depends on which band the coordinate is in, and the
+ * encoder has to take off the SMALLEST addend the batch can meet or a
+ * coordinate sitting on a texel boundary is pushed into the texel below.
+ * Below 2^20 that smallest is 496 and always has been; above it the ladder
+ * carries on -- 480, 448, 384, measured in docs/M1_4D5_LADDER_ABOVE_2E20.md --
+ * so the encoder needs to know how high this batch goes.
+ *
+ * Only the maximum is carried: the addend does not rise again, so the
+ * smallest one the batch can meet is the one its largest coordinate implies.
+ */
+typedef struct {
+    long uMax;
+    long vMax;
+} OSMGAHW3DTexReach;
+
+/*
+ * What the encoder must subtract for a coordinate that reaches this far.
+ *
+ * 496 for anything at or below 2^20, which is every batch the driver drew
+ * before this was measured, so those are unchanged.  The band edges are the
+ * measured ones: exactly 2^20 still gets 496, and the addend drops within the
+ * 512 units above each power of two (probe sections 60 and 61).
+ */
+long osmgaHW3DTexBiasFor(long maxCoord);
+
+/*
+ * The validator, with the reach handed back.  osmgaHW3DValidate is this with
+ * nowhere to put it -- the tests and the self-checks do not need it and are
+ * left alone.
+ */
+int osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
+                           unsigned long *badTri, OSMGAHW3DTexReach *reach);
+
 int osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                       unsigned long *badTri);
 

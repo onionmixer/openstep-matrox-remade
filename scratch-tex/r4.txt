@@ -1,0 +1,153 @@
+texture reach after the change
+
+1. the same 32-column triangle, only the declared width changes
+   ok    surface 64 wide                                      verdict 0
+   ok    surface 128 wide                                     verdict 0
+   ok    surface 256 wide                                     verdict 0
+   ok    surface 320 wide                                     verdict 0
+   ok    surface 512 wide                                     verdict 0
+   ok    surface 1024 wide                                    verdict 0
+
+2. and the accepted drawing is the right texels, read back
+   ok    every drawn pixel took its texel                     1024 of 1024
+   ok    nothing drawn outside the 32 columns, whole row     
+
+3. a violation an emitted pixel really reaches stays refused
+   ok    the same gradient across a 320-column primitive      verdict 13
+   ok    seventeen times the identity gradient on 32 columns  verdict 13
+   ok    a negative start                                     verdict 13
+
+4. height but no columns -- still encoded, so still refused
+   ok    a textured span that draws nothing                   verdict 19
+
+5. a sloped edge, where the widest row is not the first
+   ok    a right edge opening to 8 + 32 columns               verdict 0
+         last drawn column on the bottom row: 38
+   ok    a gradient that only overruns after the edge opens   verdict 13
+
+6. a left edge that opens LEFTWARD -- where is the origin?
+   ok    a left edge opening leftward                         verdict 0
+         bottom row (v,u): x=9 -> (31,1), x=40 -> (31,32), x=47 -> (31,39)
+         u of 1, 32, 39 means the origin is row 0's left; 41, 63, 63 would mean the screen
+
+6b. the negative side of the anchor -- the check now sees it
+   ok    a left-opening edge with a zero start                verdict 13
+   ok    the same edge with a start that covers it            verdict 0
+         bottom row (v,u): x=9 -> (31,0), x=40 -> (31,31), x=47 -> (31,38)
+   ok    and it draws 0, 31, 38 as the anchor says           
+   ok    the texture is untouched                            
+   ok    one texel short of covering it                       verdict 13
+
+6c. and the same question for v: two rows apart, one batch each
+         first row at y= 0 -> (v,u) = (32,0)
+         first row at y=17 -> (v,u) = (32,0)
+         v of 32 both times means the origin is the primitive; 32 then 49 would mean the screen
+
+7. bilinear, and a negative gradient
+   ok    bilinear filtering on the same triangle              verdict 0
+   ok    a negative u gradient with a start that covers it    verdict 0
+
+8. two textured primitives in ONE batch -- does the coordinate
+   restart at the second, or carry on from the first?
+   ok    a two-primitive textured batch                       verdict 0
+         first primitive  at (0,0)   -> (v,u) = (3,5)
+         second primitive at (17,20) -> (v,u) = (11,5)
+         (3,5) twice means it restarts inside the batch; (23,22) would mean it carries on
+         u restarts (5 = the start); v does not (11 = start + the first primitive's 8 rows)
+
+8b. three primitives -- is v exactly the running sum of rows?
+   ok    three textured primitives                            verdict 0
+         v at each primitive's first row: 3, 11, 19  (a running sum would be 3, 11, 19)
+         u at each: 5, 5, 5  (a per-primitive anchor gives 5, 5, 5)
+
+8c. does an UNTEXTURED primitive in the batch move v too?
+   ok    one flat primitive then one textured                 verdict 0
+         the textured one starts at v = 3  (3 means the flat one did not move it, 11 means it did)
+
+8d. heights that DIFFER -- a sum, or a constant per primitive?
+   ok    four primitives, heights 5, 11, flat 7, 3            verdict 0
+         v at the three textured firsts: 3, 8, 19
+         a sum of heights gives 3, 8, 19; a constant eight would give 3, 11, 19+
+   ok    v is the sum of the textured heights                
+
+8e. does an EMPTY textured primitive step the accumulator?
+   ok    a batch containing one                               verdict 19
+
+8f. u has a y component too (TMR2) -- does IT accumulate?
+   ok    two primitives with a u-per-row gradient             verdict 0
+         u at the two firsts: 0, 0
+         8 means u's row index accumulates like v; 0 means it re-seeds with u
+
+9. the vertical span is the batch total, not the tallest
+   ok    1 textured primitives of eight rows                  verdict 0
+   ok    8 textured primitives of eight rows                  verdict 0
+   ok    9 textured primitives of eight rows                  verdict 13
+
+9b. an empty primitive must not hide the accumulated height
+   ok    7 drawn plus one empty, 64 rows in all               verdict 19
+   ok    8 drawn plus one empty, 72 rows in all               verdict 19
+
+9c. does a textured STATE TRANSITION reset the accumulator?
+         verdict 0
+         v at the first and the third: 3, 19
+         19 means the ZI primitive stepped it too (3+3+13); 3 means the transition reset it
+   ok    an atype transition does not reset it               
+
+9d. does the accumulator carry ACROSS submissions?
+         v at the first primitive, two submissions: 3, 3
+         3 both times means each batch re-seeds it; 27 the second time would mean it carries
+   ok    every batch starts the accumulator afresh           
+
+10. a direction bit the walk does not model
+   ok    sgn bit 0x4                                          verdict 18
+   ok    sgn bits 0x22, which it does model                   verdict 0
+
+11. where in the pixel is the coordinate sampled?
+   ok    two texels per pixel from a zero start               verdict 0
+         u at columns 0,1,2: 0, 2, 4
+         0,2,4 means the sample is at the pixel's left edge; 1,3,5 means its centre
+   ok    one texel per pixel from a half-texel start          verdict 0
+         u at columns 0,1: 0, 1
+         a start of half a texel lands mid-texel either way, so this shows the rounding, not the position
+
+12. inside ONE primitive: how do the row terms apply?
+   ok    u per row, v per column, on a rectangle              verdict 0
+         TMR1 = 3 texels, TMR2 = 5 texels
+         column 0, rows 0..5  u = 0 3 6 9 12 15   (0 3 6 9 12 15 means TMR1 is u per ROW)
+         row 0, columns 0..5  v = 0 5 10 15 20 25   (0 5 10 15 20 25 means TMR2 is v per COLUMN)
+
+13. a SLOPED left edge: is x measured from the row or the anchor?
+   ok    a left edge stepping right, u per column             verdict 0
+         each row's FIRST pixel, rows 0..5  u = 0 1 2 3 4 5
+         0 1 2 3 4 5 means x is from the anchor; 0 0 0 0 0 0 means it restarts each row
+
+14. does the hardware honour a NEGATIVE increment?
+   u per column (TMR0)    verdict 0  start 40, five steps later: 40 -> 35   honoured
+   v per column (TMR1)    verdict 0  start 40, five steps later: 40 -> 40   NOT honoured
+   u per row (TMR2)       verdict 0  start 40, five steps later: 40 -> 40   NOT honoured
+   v per row (TMR3)       verdict 0  start 40, five steps later: 40 -> 35   honoured
+
+15. constant, or a sample taken slightly inside the pixel?
+   increment   500: first column with texel 1 is 32
+   increment  1000: first column with texel 1 is 16
+   increment  5533: first column with texel 1 is 3
+   a constant predicts 32, 16, 3; a fraction of a pixel predicts 33, 17, 3
+
+16. the constant, exactly
+   u turns over at start 15873  ->  K = 511
+   v turns over at start 15873  ->  K = 511
+
+17. does the constant depend on the gradient?
+   increment   turnover implies K
+          0      15873     1022
+        500      15873     1022
+       1000      15873     1022
+       5533      15873     1022
+       8192      15873     1022
+      12288      15873     1022
+      16384      15873     1022
+      24576      15873     1022
+      32768      15873     1022
+   K = 511 means the engine still adds it; K = 0 means it does not
+
+=== nothing to report === (0 failing)

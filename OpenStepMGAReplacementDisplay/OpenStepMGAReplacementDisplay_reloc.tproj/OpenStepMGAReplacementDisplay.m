@@ -773,6 +773,7 @@ static OSMGAHW3DBatch osmgaHW3DSnapshot;
 static unsigned long osmgaHW3DEncode(unsigned long *list,
                                      unsigned long listDwords,
                                      const OSMGAHW3DBatch *b,
+                                     const OSMGAHW3DTexReach *reach,
                                      unsigned long *outTail);
 
 #define MGA_DMA_GENERAL         0x00     /* PRIMADDRESS mode bits */
@@ -3436,6 +3437,7 @@ unmap:
     unsigned long epoch3, dstW3, dstH3, dstP3, avail3, settle3;
     int anyZI3 = 0, overlap3 = 0;
     unsigned long *list3, listDwords3, badTri3 = 0UL;
+    OSMGAHW3DTexReach reach3;
     int v3, rc3 = 0;
 
     /*
@@ -3634,7 +3636,8 @@ unmap:
     lim.clipX1 = dstW3 - 1UL;
     lim.clipY1 = dstH3 - 1UL;
 
-    v3 = osmgaHW3DValidate(&osmgaHW3DSnapshot, &lim, &badTri3);
+    v3 = osmgaHW3DValidateReach(&osmgaHW3DSnapshot, &lim, &badTri3,
+                               &reach3);
     osmgaHW3DLast[0] = (unsigned)v3;
     osmgaHW3DLast[1] = (unsigned)badTri3;
     osmgaHW3DLast[2] = 0U;
@@ -3721,7 +3724,7 @@ unmap:
      * anything is read, there is one reading and it cannot go stale.
      */
     total3 = osmgaHW3DEncode(list3, listDwords3, &osmgaHW3DSnapshot,
-                             &tail3);
+                             &reach3, &tail3);
     osmgaHW3DLast[2] = (unsigned)total3;
     if (total3 != 0UL &&
         osmgaStormWaitIdle(mmioBase) &&
@@ -6901,12 +6904,27 @@ osmgaHW3DLog2Ceil(unsigned long n)
  */
 static unsigned long
 osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
-                const OSMGAHW3DBatch *b, unsigned long *outTail)
+                const OSMGAHW3DBatch *b, const OSMGAHW3DTexReach *reach,
+                unsigned long *outTail)
 {
     unsigned long pos = 0UL, i;
     unsigned long tds0 = 0UL, tds1 = 0UL, clampBits = 0UL, perspBits = 0UL;
     int anyZI = 0, anyTex = 0;
     int ok = 1;
+    /*
+     * What to take off each coordinate.  The engine's addend depends on the
+     * band the coordinate is in, and taking off the smallest one the batch
+     * can meet is what keeps a boundary-aligned coordinate out of the texel
+     * below.  Without a reach -- or in perspective, where the value that
+     * picks the band has not been measured and the numerators can run far
+     * past the range that has -- this is the flat 496 it always was.
+     */
+    long biasU = OSMGA_HW3D_TEX_BIAS, biasV = OSMGA_HW3D_TEX_BIAS;
+
+    if (reach != 0 && (b->state.texFlags & OSMGA_HW3D_TEXF_PERSP) == 0UL) {
+        biasU = osmgaHW3DTexBiasFor(reach->uMax);
+        biasV = osmgaHW3DTexBiasFor(reach->vMax);
+    }
 
     for (i = 0UL; i < b->triCount; i++) {
         unsigned long d = b->tri[i].dwgctl & OSMGA_HW3D_DWG_CLIENT;
@@ -7090,9 +7108,9 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                   * back to it.  See osmgaHW3DTexBias above.
                   */
                  MGA_TMR0 + 24UL,
-                 (unsigned long)(b->state.tmr[6] - OSMGA_HW3D_TEX_BIAS),
+                 (unsigned long)(b->state.tmr[6] - biasU),
                  MGA_TMR0 + 28UL,
-                 (unsigned long)(b->state.tmr[7] - OSMGA_HW3D_TEX_BIAS),
+                 (unsigned long)(b->state.tmr[7] - biasV),
                  MGA_TMR8,
                  ((b->state.texFlags & OSMGA_HW3D_TEXF_PERSP) != 0UL)
                      ? (unsigned long)b->state.tmr[8] : (1UL << 16),
@@ -7285,6 +7303,7 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
     unsigned long diffLow = 0UL, firstA = 0UL, firstB = 0UL, firstAt = 0UL;
     unsigned long cGuard = 0UL, spins, status;
     unsigned long badTri = 0UL;
+    OSMGAHW3DTexReach reach;
     int v;
     IOReturn r;
 
@@ -7419,13 +7438,13 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
         t->dr[6] =  50UL << 15;
     }
 
-    v = osmgaHW3DValidate(batch, &lim, &badTri);
+    v = osmgaHW3DValidateReach(batch, &lim, &badTri, &reach);
     if (v != OSMGA_HW3D_OK) {
         IOLog("OpenStepMGA M1-2a: the good batch was refused (%d, tri %lu)\n",
               v, badTri);
         goto unmap;
     }
-    total = osmgaHW3DEncode(list, listDwords, batch, &tail);
+    total = osmgaHW3DEncode(list, listDwords, batch, &reach, &tail);
     if (total == 0UL) {
         IOLog("OpenStepMGA M1-2a: encoding failed\n");
         goto unmap;
@@ -7592,6 +7611,7 @@ osmgaM1cTri(OSMGAHW3DTri *t, unsigned long y, unsigned long h,
     unsigned long inside[6], outside = 0UL, firstBad = 0xFFFFFFFFUL;
     unsigned long row0[6];
     unsigned long badTri = 0UL;
+    OSMGAHW3DTexReach reach;
     int v;
     IOReturn r;
 
@@ -7677,14 +7697,14 @@ osmgaM1cTri(OSMGAHW3DTri *t, unsigned long y, unsigned long h,
         osmgaM1cTri(&batch->tri[0], y0, band,
                     left0, dxL, (long)band, right0, dxR, (long)band);
 
-        v = osmgaHW3DValidate(batch, &lim, &badTri);
+        v = osmgaHW3DValidateReach(batch, &lim, &badTri, &reach);
         if (v != OSMGA_HW3D_OK) {
             IOLog("OpenStepMGA M1-2c: band %lu refused (%d) -- the hostile "
                   "edge must PASS validation for this test to mean "
                   "anything\n", b, v);
             goto unmap;
         }
-        total = osmgaHW3DEncode(list, listDwords, batch, &tail);
+        total = osmgaHW3DEncode(list, listDwords, batch, &reach, &tail);
         if (total == 0UL) {
             IOLog("OpenStepMGA M1-2c: encoding failed\n");
             goto unmap;

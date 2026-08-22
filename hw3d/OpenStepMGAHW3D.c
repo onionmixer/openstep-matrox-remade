@@ -97,9 +97,37 @@ osmgaHW3DStep(const OSMGAHW3DTri *t, long *lx, long *rx,
 }
 
 
+/*
+ * The smallest addend a coordinate reaching this far can meet.
+ *
+ * Measured, in docs/M1_4D5_LADDER_ABOVE_2E20.md: the ladder that the header
+ * writes down for the bands below 2^20 keeps stepping above it, so the flat
+ * 496 stops being the smallest once a coordinate passes 2^20 and a
+ * boundary-aligned one is pushed into the texel below.  The edges are the
+ * measured ones -- exactly 2^20 still reads as the lower band, and the drop
+ * happens inside the 512 units above each power of two -- so `<=` is right
+ * here and is also the conservative side: naming a band too high only ever
+ * takes off LESS than the engine puts back, which is the safe direction.
+ */
+long
+osmgaHW3DTexBiasFor(long maxCoord)
+{
+    if (maxCoord <= (long)(1UL << 20)) return OSMGA_HW3D_TEX_BIAS;
+    if (maxCoord <= (long)(1UL << 21)) return 480L;
+    if (maxCoord <= (long)(1UL << 22)) return 448L;
+    return 384L;
+}
+
 int
 osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                   unsigned long *badTri)
+{
+    return osmgaHW3DValidateReach(b, lim, badTri, (OSMGAHW3DTexReach *)0);
+}
+
+int
+osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
+                       unsigned long *badTri, OSMGAHW3DTexReach *reach)
 {
     unsigned long i, rows, opcode, atype;
     int anyZI, anyTex;
@@ -138,6 +166,10 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
     unsigned long texMaxH = 0UL;
     int texDrawn = 0, texBad = 0;
 
+    if (reach != 0) {
+        reach->uMax = 0L;
+        reach->vMax = 0L;
+    }
     if (badTri != 0)
         *badTri = 0UL;
     if (b == 0 || lim == 0)
@@ -462,10 +494,36 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                  */
                 long ex = bx1 - bx0, ey = t->h - 1L;
                 long vy = texSpanY + ey;    /* v's row index runs on */
+
+                /*
+                 * The largest each coordinate reaches, for the encoder's
+                 * bias.  Both are linear in the two offsets, so the largest
+                 * over the box is at one of its corners; taking the box
+                 * rather than the exact span is the conservative direction,
+                 * since naming a band too high takes off less.
+                 */
                 long room = (long)OSMGA_HW3D_TEX_COORD_MAX;
                 long roomHi = room >> 16;
                 int persp = (b->state.texFlags
                              & OSMGA_HW3D_TEXF_PERSP) != 0UL;
+
+                if (reach != 0) {
+                    long dlo = (long)bx0 - lx0, dhi = (long)bx1 - lx0;
+                    long kc;
+
+                    for (kc = 0L; kc < 4L; kc++) {
+                        long dxc = (kc & 1L) ? dhi : dlo;
+                        long dyc = (kc & 2L) ? ey : 0L;
+                        long vrow = (kc & 2L) ? vy : (long)texSpanY;
+                        long uc = b->state.tmr[6] + b->state.tmr[0] * dxc
+                                  + b->state.tmr[1] * dyc;
+                        long vc = b->state.tmr[7] + b->state.tmr[2] * dxc
+                                  + b->state.tmr[3] * vrow;
+
+                        if (uc > reach->uMax) reach->uMax = uc;
+                        if (vc > reach->vMax) reach->vMax = vc;
+                    }
+                }
 
                 /*
                  * The denominator plane's own bounds, before it is evaluated
