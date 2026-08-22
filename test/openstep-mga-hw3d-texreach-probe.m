@@ -2754,6 +2754,118 @@ main(void)
                " rows gives 5\n");
     }
 
+    printf("\n45. how well does the divider divide, in units of s?\n");
+    {
+        /*
+         * "Does it still read texel eight" is too blunt to say anything about
+         * a divider: eight and a half texels sits 8192 units from either
+         * boundary, so an error of nearly six percent reads as a pass.
+         *
+         * Bisect instead.  For each denominator, find the smallest numerator
+         * whose texel is nine rather than eight, and the arithmetic says that
+         * is ceil(9 * q / 4).  The difference between the two is the error,
+         * in units of s, and one unit of s is 65536/q of coordinate -- so
+         * this sees a thousandth of a texel where the other saw half of one.
+         *
+         * The denominators are powers of two AND odd values.  A power of two
+         * may take an easier path through a normaliser, which is a guess
+         * nobody here can settle by arithmetic, so the measurement is made to
+         * settle it instead of the guess being believed.
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        static const long qs[10] = {
+            256L, 257L, 300L, 384L, 511L, 512L, 1024L, 4096L, 16385L, 65536L
+        };
+        int j;
+
+        printf("   %8s %10s %10s %8s %s\n",
+               "q", "measured", "arithmetic", "error", "in coordinate");
+        for (j = 0; j < 10; j++) {
+            long q = qs[j];
+            long want = (9L * q + 3L) / 4L;
+            /*
+             * A window of sixty-four either side was too narrow: three of
+             * the denominators pinned to its bottom, which is not a
+             * measurement but a wall.  Wide enough to hold any answer, and
+             * enough halvings to reach it.
+             */
+            long lo = 1L, hi = 2L * want, mid;
+            int it, blanked = 0;
+
+            for (it = 0; it < 21 && lo < hi; it++) {
+                unsigned long p;
+
+                mid = (lo + hi) / 2L;
+                blank();
+                (void)setup(64UL, 0UL, 8UL, 4UL, 0L, OSMGA_HW3D_TEXF_PERSP);
+                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                batch->state.tmr[3] = 0L;
+                batch->state.tmr[6] = mid;
+                batch->state.tmr[7] = 0L;
+                batch->state.tmr[4] = 0L; batch->state.tmr[5] = 0L;
+                batch->state.tmr[8] = q;
+                if (fire() != OSMGA_HW3D_OK) { blanked = 1; break; }
+                p = pixat(0UL, 0UL);
+                if (p == BLANK) { blanked = 1; break; }
+                if ((p & 0xFFUL) >= 9UL) hi = mid; else lo = mid + 1L;
+            }
+            if (blanked) {
+                printf("   %8ld %10s\n", q, "refused");
+                continue;
+            }
+            printf("   %8ld %10ld %10ld %8ld %ld\n",
+                   q, lo, want, lo - want, (lo - want) * (65536L / q));
+        }
+        printf("   an error of nought is the arithmetic exactly;"
+               " one unit of s is 65536/q of coordinate\n");
+        (void)texel;
+    }
+
+    printf("\n46. and a numerator larger than the affine path ever sent?\n");
+    {
+        /*
+         * Holding the coordinate fixed while raising the denominator raises
+         * the NUMERATOR with it: at q = Q_MAX the same eight and a half
+         * texels needs s = 17825792, which is past the 8388608 the affine
+         * path was ever allowed, and the ratio rule admits s up to 128 * q,
+         * a hundred and twenty-eight times further still.  Whether the
+         * engine's numerator behaves out there was never measured -- it could
+         * not be, because until now nothing could send it.
+         *
+         * This costs nothing: those denominators are already admitted.
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        static const long qs[4] = { 65536L, 262144L, 2097152L, 8388608L };
+        int j;
+
+        printf("   %10s %12s %8s %8s\n", "q", "s", "texel", "wanted");
+        for (j = 0; j < 4; j++) {
+            long q = qs[j];
+            long s = (long)(8.5 * (double)texel) / 65536L * q;
+            unsigned long got;
+
+            s = (17L * (long)texel / 2L) * (q / 65536L);
+            blank();
+            (void)setup(64UL, 0UL, 8UL, 4UL, 0L, OSMGA_HW3D_TEXF_PERSP);
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = s;
+            batch->state.tmr[7] = 0L;
+            batch->state.tmr[4] = 0L; batch->state.tmr[5] = 0L;
+            batch->state.tmr[8] = q;
+            if (fire() != OSMGA_HW3D_OK) {
+                printf("   %10ld %12ld %8s\n", q, s, "refused");
+                continue;
+            }
+            got = pixat(0UL, 0UL);
+            printf("   %10ld %12ld %8lu %8d%s\n", q, s,
+                   (got == BLANK) ? 999UL : (got & 0xFFUL), 8,
+                   (got == BLANK) ? "  (undrawn)" : "");
+        }
+        printf("   every one wants texel 8; the affine path never sent an s"
+               " past 8388608\n");
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;
