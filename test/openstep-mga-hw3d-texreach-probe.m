@@ -2223,7 +2223,11 @@ main(void)
 
         for (r = 0UL; r < DIM; r++)
             for (c = 0UL; c < DIM; c++)
-                tex[r * DIM + c] = 0xFF000000UL | ((c * 4UL) << 16);
+                /* the same value in all three channels, and the fragment's
+                 * three set alike below, so a per-channel difference in the
+                 * product shows up as the three disagreeing */
+                tex[r * DIM + c] = 0xFF000000UL | ((c * 4UL) << 16)
+                                 | ((c * 4UL) << 8) | (c * 4UL);
 
         blank();
         {
@@ -2240,6 +2244,8 @@ main(void)
             t->dr[0] = 0UL;              /* Cf.r at the top row */
             t->dr[1] = 0UL;              /* and no change across a row */
             t->dr[2] = 4UL << 15;        /* four a row going down */
+            t->dr[3] = 0UL; t->dr[4] = 0UL; t->dr[5] = 4UL << 15;
+            t->dr[6] = 0UL; t->dr[7] = 0UL; t->dr[8] = 4UL << 15;
             t->a0    = 255UL << 15;
         }
         (void)fire();
@@ -2295,6 +2301,20 @@ main(void)
                 if (shown == 0) printf("  none");
             }
             printf("\n");
+            {   /* and the three channels must agree with each other */
+                unsigned long split = 0UL;
+
+                for (r = 0UL; r < DIM; r++)
+                    for (c = 0UL; c < DIM; c++) {
+                        unsigned long p = pixat(r, c);
+                        unsigned long R = (p >> 16) & 0xFFUL;
+
+                        if (((p >> 8) & 0xFFUL) != R || (p & 0xFFUL) != R)
+                            split++;
+                    }
+                printf("   samples where the three channels disagree: %lu\n",
+                       split);
+            }
             printf("   of 4096 samples, wrong under each rule:\n");
             printf("   %6s %6s %6s %6s %6s\n",
                    "Mesa", "/255", ">>8", "+128", "approx");
@@ -2317,6 +2337,98 @@ main(void)
         for (r = 0UL; r < DIM; r++)
             for (c = 0UL; c < DIM; c++)
                 tex[r * DIM + c] = (r << 8) | c;
+    }
+
+    printf("\n37. which bit is which axis, if they are axes at all\n");
+    {
+        /*
+         * TEXCTL's CLAMPUV covers two bits and the guess is one per axis,
+         * but a guess is what it is: they could be a mode encoding, or one
+         * could be a border clamp.  Clearing them one at a time and putting
+         * ONE axis out of range at a time says which.
+         *
+         *      both set     u reads the edge texel, v reads the edge texel
+         *      one clear    exactly one axis wraps -- and which one names it
+         *      both clear   both wrap
+         *
+         * If clearing either single bit makes BOTH axes wrap, it is a mode
+         * and not an axis.  If an out-of-range sample comes back as a
+         * constant rather than a texel, it is a border and not a repeat.
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        long span = (long)OSMGA_HW3D_TEX_SPAN;
+        long inC = 16L * texel + texel / 2L;   /* centre of texel 16 */
+        long outC = span + 32L * texel + texel / 2L;  /* one span on, 32.5 */
+        static const struct { unsigned long f; const char *name; } st[4] = {
+            { 0UL,                          "both clamped" },
+            { OSMGA_HW3D_TEXF_REPEATU,      "REPEATU asked" },
+            { OSMGA_HW3D_TEXF_REPEATV,      "REPEATV asked" },
+            { OSMGA_HW3D_TEXF_REPEATU
+              | OSMGA_HW3D_TEXF_REPEATV,    "both asked" }
+        };
+        int j;
+
+        printf("   %-16s %-22s %s\n", "state", "u out of range", "v out");
+        for (j = 0; j < 4; j++) {
+            unsigned long gu, gv;
+            int k;
+
+            for (k = 0; k < 2; k++) {
+                blank();
+                (void)setup(1024UL, 0UL, 8UL, 4UL, 0L, st[j].f);
+                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                batch->state.tmr[3] = 0L;
+                batch->state.tmr[6] = k ? inC  : outC;
+                batch->state.tmr[7] = k ? outC : inC;
+                if (fire() != OSMGA_HW3D_OK) {
+                    if (k) gv = 0xFFFFUL; else gu = 0xFFFFUL;
+                    continue;
+                }
+                if (k) gv = pixat(0UL, 0UL) & 0xFFFFUL;
+                else   gu = pixat(0UL, 0UL) & 0xFFFFUL;
+            }
+            printf("   %-16s v %2lu u %2lu %-12s v %2lu u %2lu\n",
+                   st[j].name,
+                   (gu >> 8) & 0xFFUL, gu & 0xFFUL,
+                   ((gu & 0xFFUL) == 32UL) ? "(u wrapped)"
+                                           : "(u clamped)",
+                   (gv >> 8) & 0xFFUL, gv & 0xFFUL);
+        }
+        printf("   u out of range: texel 32 is a wrap, 63 is the edge;"
+               " v out of range: v 32 is a wrap, 63 the edge\n");
+    }
+
+    printf("\n38. is the wrap periodic all the way out?\n");
+    {
+        /*
+         * One wrap at 1.5 spans is not periodicity.  The validator admits a
+         * coordinate up to eight spans -- and refuses one that goes negative
+         * at a drawn pixel, so that half of the domain never reaches the
+         * engine at all -- and every one of those eight ought to give the
+         * same texel.  A wrap done by a single subtraction would agree near
+         * the first span and then stop.
+         */
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        long span = (long)OSMGA_HW3D_TEX_SPAN;
+        long n;
+
+        printf("   texel read at 32.5 texels plus n spans:");
+        for (n = 0L; n < 8L; n++) {
+            unsigned long got;
+
+            blank();
+            (void)setup(1024UL, 0UL, 8UL, 4UL, 0L,
+                        OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV);
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = n * span + 32L * texel + texel / 2L;
+            batch->state.tmr[7] = 16L * texel + texel / 2L;
+            if (fire() != OSMGA_HW3D_OK) { printf(" ref"); continue; }
+            got = pixat(0UL, 0UL) & 0xFFUL;
+            printf(" %lu", got);
+        }
+        printf("\n   all 32 is periodic; a value that drifts is a wrap done"
+               " by subtracting once\n");
     }
 
     printf("\n%s (%d failing)\n",

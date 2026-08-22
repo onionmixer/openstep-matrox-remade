@@ -550,6 +550,8 @@
 #define MGA_TEXCTL_NOPERSP      0x00200000UL
 #define MGA_TEXCTL_TAKEY        0x02000000UL
 #define MGA_TEXCTL_CLAMPUV      0x18000000UL
+#define MGA_TEXCTL_CLAMPU       0x08000000UL
+#define MGA_TEXCTL_CLAMPV       0x10000000UL
 #define MGA_TEXCTL_TW32         0x00000006UL
 #define MGA_TEXCTL2_G400_MAGIC  0x00008000UL
 #define MGA_TEXCTL2_CKSTRANSDIS 0x00000010UL
@@ -6859,6 +6861,12 @@ unmap:
 /* Ceiling log2, the same thing MGA_LOG2 and GetPowerOfTwo compute: the
  * log2 field says which power of two CONTAINS the texture, and the exact
  * size travels separately, so a non-power-of-two size is legal. */
+static int
+osmgaHW3DIsPow2(unsigned long n)
+{
+    return (n != 0UL) && ((n & (n - 1UL)) == 0UL);
+}
+
 static unsigned long
 osmgaHW3DLog2Ceil(unsigned long n)
 {
@@ -6887,7 +6895,7 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                 const OSMGAHW3DBatch *b, unsigned long *outTail)
 {
     unsigned long pos = 0UL, i;
-    unsigned long tds0 = 0UL, tds1 = 0UL;
+    unsigned long tds0 = 0UL, tds1 = 0UL, clampBits = 0UL;
     int anyZI = 0, anyTex = 0;
     int ok = 1;
 
@@ -6928,16 +6936,34 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
         unsigned long w = b->state.texW, h = b->state.texH;
         unsigned long lw = osmgaHW3DLog2Ceil(w), lh = osmgaHW3DLog2Ceil(h);
 
+        /*
+         * Clamping unless the client asked for repeat AND the texture can
+         * safely be wrapped: a power-of-two dimension, so the reduction is a
+         * mask, and a pitch equal to the width, since a masked index into a
+         * padded surface would address the wrong row.  See the flags in
+         * OpenStepMGAHW3D.h.
+         */
+        clampBits = MGA_TEXCTL_CLAMPU | MGA_TEXCTL_CLAMPV;
+        if (b->state.texPitch == b->state.texW) {
+            if ((b->state.texFlags & OSMGA_HW3D_TEXF_REPEATU) != 0UL &&
+                osmgaHW3DIsPow2(b->state.texW))
+                clampBits &= ~MGA_TEXCTL_CLAMPU;
+            if ((b->state.texFlags & OSMGA_HW3D_TEXF_REPEATV) != 0UL &&
+                osmgaHW3DIsPow2(b->state.texH))
+                clampBits &= ~MGA_TEXCTL_CLAMPV;
+        }
+
         ok = ok && osmgaDmaBlock(list, listDwords, &pos,
                  MGA_TEXORG,    b->state.texorg,
                  MGA_TEXWIDTH,  ((w - 1UL) << 18) |
                                 (((8UL - lw) & 63UL) << 9) | lw,
                  MGA_TEXHEIGHT, ((h - 1UL) << 18) |
                                 (((8UL - lh) & 63UL) << 9) | lh,
-                 MGA_TEXCTL,    MGA_TEXCTL_PITCHLIN |
+                 MGA_TEXCTL,    clampBits |
+                                MGA_TEXCTL_PITCHLIN |
                                 ((b->state.texPitch & 2047UL) << 9) |
                                 MGA_TEXCTL_NOPERSP | MGA_TEXCTL_TAKEY |
-                                MGA_TEXCTL_CLAMPUV | MGA_TEXCTL_TW32);
+                                MGA_TEXCTL_TW32);
         /*
          * One texture-environment word per lane; see the flags in
          * OpenStepMGAHW3D.h for why the diagnostic ones exist.

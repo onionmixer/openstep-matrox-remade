@@ -217,6 +217,29 @@
  * combiner, not four code paths.
  */
 #define OSMGA_HW3D_TEXF_MODULATE 0x10UL
+/*
+ * Wrapping, one axis at a time.
+ *
+ * The kernel has always programmed TEXCTL's two CLAMPUV bits on, and the
+ * coordinate bound the validator applies was justified on top of that: with
+ * clamping, any coordinate it admits addresses a texel inside the texture
+ * whatever it says.  Clearing a bit is repeat -- X.Org's mga driver selects it
+ * the same way, "if (!repeat) texctl |= MGA_CLAMPUV".
+ *
+ * WHICH bit is u and which is v is measured, not assumed; the names below are
+ * what the measurement says.  Two flags rather than one because GL lets the
+ * two axes differ.
+ *
+ * The safety that clamping used to provide has to come from somewhere else,
+ * and it comes from three things together: the validator still refuses a
+ * coordinate that goes NEGATIVE at any drawn pixel, so repeat only ever sees
+ * a coordinate between nought and eight texture spans; the dimension being
+ * wrapped must be a power of two, so the reduction is a mask; and the pitch
+ * must equal the width, since a masked index into a padded surface would
+ * land in the wrong row.  All three are required below, not assumed.
+ */
+#define OSMGA_HW3D_TEXF_REPEATU  0x20UL
+#define OSMGA_HW3D_TEXF_REPEATV  0x40UL
 
 /*
  * How far a texture coordinate may reach.
