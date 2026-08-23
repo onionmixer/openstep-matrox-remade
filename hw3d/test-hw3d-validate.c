@@ -237,10 +237,33 @@ main(void)
                                                 expect("the identity mapping", OSMGA_HW3D_OK);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                  b.state.tmr[0] = span * 8;     expect("magnified eight times, as measured", OSMGA_HW3D_OK);
+        /*
+         * A coordinate below nought is admitted now, as far as
+         * OSMGA_HW3D_TEX_NEG_ALLOW.  It is not a hardware quirk being
+         * tolerated: the edge walk's integer x sits a fraction of a pixel
+         * outside the true edge and puts the coordinate genuinely under, and
+         * the engine reads such a coordinate exactly as GL does -- measured
+         * at texture sizes 8, 64, 1024 and 2048, clamped and repeating,
+         * nearest and bilinear (docs/M1_4D3_ALLOWSIZE_PLAN.md).  Refusing it
+         * sent a whole triangle of a perspective quad to software.
+         *
+         * The endpoints are written as literals, not as the constant.  A test
+         * that says "whatever the constant is" drifts with the code and stops
+         * being a contract; these two say where the edge IS, and moving it
+         * has to be a deliberate edit in both places.
+         */
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
-                 b.state.tmr[6] = -1;           expect("a negative u start", OSMGA_HW3D_E_TEXCOORD);
+                 b.state.tmr[6] = -1;           expect("a u start just below nought", OSMGA_HW3D_OK);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
-                 b.state.tmr[7] = -1;           expect("a negative v start", OSMGA_HW3D_E_TEXCOORD);
+                 b.state.tmr[7] = -1;           expect("a v start just below nought", OSMGA_HW3D_OK);
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.state.tmr[6] = -4096L;       expect("a u start at the allowance", OSMGA_HW3D_OK);
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.state.tmr[7] = -4096L;       expect("a v start at the allowance", OSMGA_HW3D_OK);
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.state.tmr[6] = -4097L;       expect("a u start one past it", OSMGA_HW3D_E_TEXCOORD);
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.state.tmr[7] = -4097L;       expect("a v start one past it", OSMGA_HW3D_E_TEXCOORD);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                  b.state.tmr[0] = -span;        expect("a negative u increment", OSMGA_HW3D_E_TEXCOORD);
         /* The budget covers the start AND what the increments add across
@@ -258,13 +281,64 @@ main(void)
                  b.state.tmr[0] = full;         expect("an increment that overshoots across the clip", OSMGA_HW3D_E_TEXCOORD);
         /* The y span is the PRIMITIVE's height now, not the clip's, so a y
          * increment on a one-row triangle is never applied and must not be
-         * refused.  Two cases where there was one. */
+         * refused.  Two cases where there was one.
+         *
+         * tmr[1], not tmr[2].  u's y increment is ds/dy, which is tmr[1];
+         * these were written while the validator had tmr[1] and tmr[2] the
+         * other way round, and setting tmr[2] here asks about dt/dx, which a
+         * one-row triangle very much does apply -- across its columns.  That
+         * is a real property and it gets its own pair below rather than being
+         * the accidental subject of this one. */
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
-                 b.state.tmr[2] = full;
+                 b.state.tmr[1] = full;
                                                 expect("a y increment on a one-row triangle", OSMGA_HW3D_OK);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                  b.tri[0].h = 4; b.tri[0].ar0 = b.tri[0].ar6 = 4;
-                 b.state.tmr[2] = full;         expect("a y increment that overshoots four rows", OSMGA_HW3D_E_TEXCOORD);
+                 b.state.tmr[1] = full;         expect("a y increment that overshoots four rows", OSMGA_HW3D_E_TEXCOORD);
+        /*
+         * And the fact the pair above used to rest on by accident: an x
+         * increment IS applied on a one-row triangle, because the row has
+         * columns.  Without this, moving those two to tmr[1] would have left
+         * nothing testing that tmr[2] is dt/dx at all.
+         */
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.state.tmr[2] = full;
+                                                expect("an x increment on that same one-row triangle", OSMGA_HW3D_E_TEXCOORD);
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.tri[0].fxbndry = (1UL << 16) | 0UL;
+                 b.state.tmr[2] = full;
+                                                expect("and not when the row has one column", OSMGA_HW3D_OK);
+        /*
+         * The register map itself, in the one way the slope bound cannot
+         * mask.
+         *
+         * Transposing tmr[1] and tmr[2] in the BOUND is caught by the two
+         * cases above.  Transposing them in the coordinate EVALUATION is not:
+         * the bound refuses those shapes first, for the wrong reason, and the
+         * suite reads the right verdict.  I checked that by making the
+         * mutation -- every case passed.
+         *
+         * These two shapes are built so the bound passes and only the
+         * evaluation decides.  Each sets ONE gradient to exactly what its own
+         * axis allows, on a primitive whose other axis is much longer: a
+         * gradient applied to the wrong axis then lands far outside the range
+         * and the batch is refused, while the declared map accepts it with
+         * nothing to spare.  python: 2796202 times three is 8388606, two
+         * under the ceiling, and the same figure across sixty-three columns
+         * is 176160726, twenty-one times over it.
+         */
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.tri[0].h = 4; b.tri[0].ar0 = b.tri[0].ar6 = 4;
+                 b.tri[0].fxbndry = (64UL << 16) | 0UL;
+                 b.state.tmr[0] = 0; b.state.tmr[3] = 0;
+                 b.state.tmr[1] = full / 3L;
+                                                expect("ds/dy spends its budget on the height", OSMGA_HW3D_OK);
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.tri[0].h = 64; b.tri[0].ar0 = b.tri[0].ar6 = 64;
+                 b.tri[0].fxbndry = (4UL << 16) | 0UL;
+                 b.state.tmr[0] = 0; b.state.tmr[3] = 0;
+                 b.state.tmr[2] = full / 3L;
+                                                expect("dt/dx spends its budget on the width", OSMGA_HW3D_OK);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                  b.state.tmr[4] = -1; b.state.tmr[8] = -1;
                                                 expect("the H family is ignored, not refused", OSMGA_HW3D_OK);
@@ -449,14 +523,14 @@ main(void)
                 reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                          b.tri[0].h = 8; b.tri[0].ar0 = b.tri[0].ar6 = 8;
                          b.state.tmr[0] = 0;
-                         b.state.tmr[2] = (long)(OSMGA_HW3D_TEX_COORD_MAX / 8L);
+                         b.state.tmr[1] = (long)(OSMGA_HW3D_TEX_COORD_MAX / 8L);
                          b.triCount = 16;
                          for (n = 1UL; n < 16UL; n++) b.tri[n] = b.tri[0];
                                                 expect("a u row gradient sized to one primitive", OSMGA_HW3D_OK);
                 reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                          b.tri[0].h = 8; b.tri[0].ar0 = b.tri[0].ar6 = 8;
                          b.state.tmr[0] = 0;
-                         b.state.tmr[2] = (long)(OSMGA_HW3D_TEX_COORD_MAX / 4L);
+                         b.state.tmr[1] = (long)(OSMGA_HW3D_TEX_COORD_MAX / 4L);
                          b.triCount = 16;
                          for (n = 1UL; n < 16UL; n++) b.tri[n] = b.tri[0];
                                                 expect("a u row gradient one primitive cannot hold", OSMGA_HW3D_E_TEXCOORD);
@@ -505,7 +579,7 @@ main(void)
                 b.triCount = 2;
                 b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                 b.tri[1] = b.tri[0];
-                b.state.tmr[6] = -1;
+                b.state.tmr[6] = -4097L;    /* one past the allowance */
                 which = 0xDEADUL;
                 v = osmgaHW3DValidate(&b, &lim, &which);
                 if (v == OSMGA_HW3D_E_TEXCOORD && which == 0UL)
@@ -702,9 +776,18 @@ main(void)
      * The V coordinate's X increment is bounded by the same check as the U
      * coordinate's, and had never been given a value to reject.
      */
+    /*
+     * tmr[2], not tmr[1] -- dt/dx is the V coordinate's X increment; the old
+     * name is from the transposed era.  And -1 no longer refuses anything:
+     * the slope bound is symmetric and a coordinate a sliver below nought is
+     * admitted, so the value has to be one that genuinely leaves the range.
+     * This asserts an end-to-end rejection, not which of the two checks did
+     * it -- the slope bound and the coordinate range both catch this, and the
+     * validator does not report which.
+     */
     reset(); b.tri[0].dwgctl |= 0x0002UL;   /* textured */
- b.state.tmr[1] = -1L;
-                                                expect("a negative V increment in x", OSMGA_HW3D_E_TEXCOORD);
+ b.state.tmr[2] = -(long)OSMGA_HW3D_TEX_COORD_MAX;
+                                                expect("a V increment in x that leaves the range", OSMGA_HW3D_E_TEXCOORD);
 
 
     /*
@@ -795,9 +878,9 @@ main(void)
  b.state.tmr[0] = -(1L << 14);
                                                 expect("a texture running right to left", OSMGA_HW3D_OK);
     reset(); b.tri[0].dwgctl |= 0x0002UL;
- b.state.tmr[6] = (long)lim.clipX1 * (1L << 14) - 1L;
+ b.state.tmr[6] = (long)lim.clipX1 * (1L << 14) - 4097L;
  b.state.tmr[0] = -(1L << 14);
-                                                expect("one step short, so a corner goes below zero", OSMGA_HW3D_E_TEXCOORD);
+                                                expect("short enough that a corner leaves the allowance", OSMGA_HW3D_E_TEXCOORD);
     reset(); b.tri[0].dwgctl |= 0x0002UL;
  b.state.tmr[6] = (long)OSMGA_HW3D_TEX_COORD_MAX;
  b.state.tmr[0] = 1L;

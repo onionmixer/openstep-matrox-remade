@@ -55,11 +55,20 @@ osmgaHW3DRatioOK(long p, long q, long roomHi)
     if (q < OSMGA_HW3D_Q_MIN || q > OSMGA_HW3D_Q_MAX)
         return 0;
     /*
-     * Below nought by a sliver is admitted; see OSMGA_HW3D_TEX_NEG_ALLOW.
-     * The bound is written against q so that it is the same COORDINATE at
-     * every scale, and the division cannot overflow.
+     * Below nought by a sliver is admitted; the width is
+     * OSMGA_HW3D_TEX_NEG_ALLOW, and it is written HERE in terms of that
+     * constant rather than as the sixteen it works out to.  It used to be the
+     * bare sixteen, with the constant named only in this comment -- so the
+     * constant was documentation that nothing read, and changing it would
+     * have changed nothing at all.
+     *
+     * The bound is against q so that it is the same COORDINATE at every
+     * scale: p / q * 65536 >= -ALLOW is p >= -q * ALLOW / 65536, and the
+     * divisor below is 65536 / ALLOW.  Written as a division of q it cannot
+     * overflow, and the build refuses a width that does not divide 65536
+     * exactly, since then the two forms would part company.
      */
-    if (p < -(q / 16L))
+    if (p < -(q / (long)(OSMGA_HW3D_Q_ONE / OSMGA_HW3D_TEX_NEG_ALLOW)))
         return 0;
     return p <= roomHi * q;
 }

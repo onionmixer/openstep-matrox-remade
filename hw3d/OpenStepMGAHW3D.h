@@ -306,6 +306,7 @@
  * a coordinate of -SPAN/256 is a numerator of -q/16.
  */
 #define OSMGA_HW3D_TEX_NEG_ALLOW (OSMGA_HW3D_TEX_SPAN / 256UL)
+
 #define OSMGA_HW3D_Q_ONE         65536L         /* q = 1.0, 16.16 */
 /*
  * The smallest denominator, and it is an ACCURACY budget rather than a place
@@ -372,6 +373,18 @@
  */
 #define OSMGA_HW3D_TEX_SPAN     (1UL << 20)
 #define OSMGA_HW3D_TEX_COORD_MAX (8UL * OSMGA_HW3D_TEX_SPAN)
+
+/*
+ * Here rather than beside the allowance itself, because the allowance is
+ * written in terms of the span and the span is declared below it.
+ *
+ * The allowance has to divide the fixed point's one exactly, or the bound the
+ * validator writes as a division of q stops being the same coordinate at
+ * every scale.  A negative array size is the C89 way to fail the build.
+ */
+typedef int OSMGAHW3DNegAllowCheck[
+    (((unsigned long)OSMGA_HW3D_Q_ONE % OSMGA_HW3D_TEX_NEG_ALLOW) == 0UL)
+        ? 1 : -1];
 
 /*
  * What the engine adds to a texture coordinate before it picks a texel, and
