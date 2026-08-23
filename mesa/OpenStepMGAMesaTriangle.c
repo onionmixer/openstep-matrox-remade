@@ -606,6 +606,14 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
                     tmr[6], tmr[0], tmr[1],
                     uplane->at_a + uplane->dx * ox + uplane->dy * oy,
                     uplane->dx, uplane->dy);
+            /*
+             * v and the denominator too.  Without them the dump cannot be
+             * replayed to work out how far the batch's NUMERATORS reach, and
+             * that is what now decides which addend the encoder takes off.
+             */
+            fprintf(stderr,
+                    "#   int v %ld %ld %ld   q %ld %ld %ld\n",
+                    tmr[7], tmr[2], tmr[3], tmr[8], tmr[4], tmr[5]);
         }
     }
 
