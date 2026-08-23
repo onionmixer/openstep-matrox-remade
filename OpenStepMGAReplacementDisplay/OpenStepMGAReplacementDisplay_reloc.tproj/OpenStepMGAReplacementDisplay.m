@@ -6913,15 +6913,22 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
     int ok = 1;
     /*
      * What to take off each coordinate.  The engine's addend depends on the
-     * band the coordinate is in, and taking off the smallest one the batch
-     * can meet is what keeps a boundary-aligned coordinate out of the texel
-     * below.  Without a reach -- or in perspective, where the value that
-     * picks the band has not been measured and the numerators can run far
-     * past the range that has -- this is the flat 496 it always was.
+     * band its NUMERATOR is in, and taking off the smallest one the batch can
+     * meet is what keeps a boundary-aligned coordinate out of the texel
+     * below.  Without a reach this is the flat 496 it always was.
+     *
+     * Perspective is included now.  It was held back because the value that
+     * picks the band was unmeasured and the numerators looked as though they
+     * could run to 128q; both have been settled.  The band comes from the
+     * numerator, which is what the reach already holds, and the numerator
+     * cannot pass three times COORD_MAX because the anchor is bounded and
+     * each gradient is bounded against its own span -- so the ladder's top
+     * rung, 2^25, is the top of the reachable range and nothing is
+     * extrapolated.
      */
     long biasU = OSMGA_HW3D_TEX_BIAS, biasV = OSMGA_HW3D_TEX_BIAS;
 
-    if (reach != 0 && (b->state.texFlags & OSMGA_HW3D_TEXF_PERSP) == 0UL) {
+    if (reach != 0) {
         biasU = osmgaHW3DTexBiasFor(reach->uMax);
         biasV = osmgaHW3DTexBiasFor(reach->vMax);
     }

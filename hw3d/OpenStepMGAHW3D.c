@@ -124,7 +124,9 @@ osmgaHW3DTexBiasFor(long maxCoord)
     if (maxCoord <= (long)(1UL << 20)) return OSMGA_HW3D_TEX_BIAS;
     if (maxCoord <= (long)(1UL << 21)) return 480L;
     if (maxCoord <= (long)(1UL << 22)) return 448L;
-    return 384L;
+    if (maxCoord <= (long)(1UL << 23)) return 384L;
+    if (maxCoord <= (long)(1UL << 24)) return 256L;
+    return 0L;
 }
 
 int
@@ -635,14 +637,20 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                      * the box picks a band the primitive never enters and
                      * moves the phase of every pixel in it.
                      *
-                     * Perspective still takes the shortcut.  Its bias is left
-                     * at 496 either way, and the row walk checks the quotient
-                     * at per-row denominators where the box checks it at the
-                     * corners' -- so walking a primitive the box has already
-                     * passed could refuse it, which would be a change in what
-                     * the driver accepts rather than in what it encodes.
+                     * Perspective used to keep the shortcut, on the grounds
+                     * that the row walk checks the quotient at per-row
+                     * denominators where the box checks it at the corners',
+                     * so walking a primitive the box had passed might refuse
+                     * it.  That was reasoning and it was wrong.  p/q <= m is
+                     * p - m*q <= 0, and p - m*q is AFFINE in the two offsets,
+                     * so it is non-positive over the whole box exactly when
+                     * it is non-positive at the four corners -- and q stays
+                     * positive throughout for the same reason.  A ratio of
+                     * two affine functions has no strict interior extremum.
+                     * Two hundred thousand random boxes in python agree: not
+                     * one interior point beat every corner.
                      */
-                    if (boxOK && (reach == 0 || persp))
+                    if (boxOK && reach == 0)
                         goto texDone;
 
                     lx = (long)left; rx = (long)right;
@@ -685,17 +693,17 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                          * and could not have formed them.
                          */
                         /*
-                         * Affine only, and that is a contract rather than an
-                         * optimisation: a perspective batch that passes the
-                         * box jumps out with the reach still at nought, so
-                         * one that fails the box and walks would otherwise
-                         * come back with numerators in it and the two would
-                         * mean different things.  Nought always, for
-                         * perspective, and the encoder's own check that it is
-                         * affine is then a second lock rather than the only
-                         * one.
+                         * These are NUMERATORS.  In affine q is one, so the
+                         * numerator and the coordinate are the same number
+                         * and the distinction never came up; in perspective
+                         * they part company, and it is the numerator the
+                         * engine picks its band from -- measured, by holding
+                         * the coordinate at 2^19 and sweeping the denominator
+                         * so only the numerator's band moved, and again with
+                         * a matched numerator reached from two different
+                         * coordinates.  So the same reach serves both.
                          */
-                        if (reach != 0 && !persp) {
+                        if (reach != 0) {
                             if (ux  > reach->uMax) reach->uMax = ux;
                             if (ly  > reach->uMax) reach->uMax = ly;
                             if (vx2 > reach->vMax) reach->vMax = vx2;

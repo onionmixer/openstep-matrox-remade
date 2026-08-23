@@ -82,6 +82,7 @@ main(void)
 {
     unsigned long trial;
     unsigned long agreed = 0UL, checked = 0UL, accepted = 0UL, boundary = 0UL;
+    unsigned long perspOK = 0UL;
 
     lim.pitchBytes = 1024UL * 4UL;
     lim.clipX1 = 255UL; lim.clipY1 = 63UL;
@@ -115,6 +116,7 @@ main(void)
         b.state.texorg = lim.texStart;
         b.state.texW = 64UL; b.state.texH = 64UL; b.state.texPitch = 64UL;
         b.state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
+        b.state.texFlags = 0UL;
 
         h  = 1UL + rnd(48UL);
         x0 = rnd(180UL);
@@ -155,6 +157,23 @@ main(void)
         if (b.state.tmr[6] < 0L) b.state.tmr[6] = 0L;
         if (b.state.tmr[7] < 0L) b.state.tmr[7] = 0L;
 
+        /*
+         * Half of them in perspective.  Forcing the row walk there is new --
+         * the box shortcut used to end it -- and the reason for forcing it is
+         * that the reach holds NUMERATORS, which is what the engine picks its
+         * band from.  The box check is sound for perspective too (p/q <= m is
+         * the affine p - m*q <= 0), so no verdict should move; this is here to
+         * find the implementation disagreeing with that arithmetic, not to
+         * re-derive it.
+         */
+        if ((trial & 1UL) != 0UL) {
+            b.state.texFlags |= OSMGA_HW3D_TEXF_PERSP;
+            b.state.tmr[8] = (long)(OSMGA_HW3D_Q_ONE
+                                    + (long)rnd(1UL << 20));
+            b.state.tmr[4] = (long)rnd(4096UL) - 2048L;
+            b.state.tmr[5] = (long)rnd(4096UL) - 2048L;
+        }
+
         memcpy(&b.tri[1], &b.tri[0], sizeof b.tri[0]);   /* unused; keeps h */
 
         v1 = osmgaHW3DValidate(&b, &lim, &bad1);
@@ -172,6 +191,7 @@ main(void)
         if (v1 != OSMGA_HW3D_OK)
             continue;
         accepted++;
+        if ((b.state.texFlags & OSMGA_HW3D_TEXF_PERSP) != 0UL) perspOK++;
         oracle(t, &ou, &ov, &any);
         if (r.uMax != ou || r.vMax != ov) {
             if (failures < 5)
@@ -189,6 +209,7 @@ main(void)
            checked, agreed, accepted);
     printf("   %lu of the accepted reach past 2^20, so the bias really moves\n",
            boundary);
+    printf("   %lu of the accepted were perspective\n", perspOK);
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===",
            failures);

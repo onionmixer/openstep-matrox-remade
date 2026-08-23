@@ -3883,6 +3883,263 @@ main(void)
             (firstK == 16 && lastK == 127) ? 1U : 0U, 1U);
     }
 
+    printf("\n64. in perspective, what the coordinate actually comes out as\n");
+    {
+        /*
+         * The encoder leaves perspective on the flat 496 because nobody knows
+         * which value picks the engine's band there.  It matters: the
+         * validator admits numerators up to 128q, so at a large denominator
+         * they reach 2^30, seven bands past anything measured.
+         *
+         * A first attempt swept one denominator and found a net of -1, which
+         * is neither of the two answers I had predicted -- so the model was
+         * wrong, not the machine.  This sweeps the DENOMINATOR instead, at a
+         * fixed coordinate, which separates two questions at once: whether
+         * the offset is in numerator units (it then scales as 1/q) or in
+         * coordinate units (it does not), and which value's band it belongs
+         * to (the coordinate's is fixed here, the numerator's moves with q).
+         *
+         * The coordinate is held at 2^19, a multiple of the 512-unit texel,
+         * and the numerator is whatever produces it: 2^19 * q / 65536.  One
+         * coordinate unit is q/65536 numerator units, so that is the step.
+         */
+        static const long qs[5] = {
+            1L << 16, 1L << 17, 1L << 18, 1L << 19, 1L << 20
+        };
+        int qi;
+        unsigned long rr, cc;
+
+        for (rr = 0UL; rr < 2048UL; rr++)
+            for (cc = 0UL; cc < 8UL; cc++)
+                tex[rr * 8UL + cc] = rr;
+
+        printf("     %10s %12s %10s %10s\n",
+               "q", "numerator", "step", "net (coord)");
+        for (qi = 0; qi < 5; qi++) {
+            long q = qs[qi];
+            long unit = q / 65536L;
+            long pb, off, stepAt = 99999L;
+            unsigned long prev = 99999UL;
+
+            if (unit < 1L) unit = 1L;
+            pb = (1L << 19) / 65536L * q;      /* 2^19 * q / 65536, exactly */
+            for (off = -400L * unit; off <= 400L * unit; off += unit) {
+                unsigned long got;
+                unsigned v;
+
+                blank();
+                (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                            OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV
+                            | OSMGA_HW3D_TEXF_PERSP);
+                batch->state.texW = 8UL; batch->state.texH = 2048UL;
+                batch->state.texPitch = 8UL;
+                batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+                batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+                batch->state.tmr[4] = 0L; batch->state.tmr[5] = 0L;
+                batch->state.tmr[6] = 0L;
+                batch->state.tmr[7] = pb + off;
+                batch->state.tmr[8] = q;
+                v = fire();
+                got = (v != OSMGA_HW3D_OK) ? 99999UL
+                                           : (pixat(0UL, 0UL) & 0xFFFFUL);
+                if (prev != 99999UL && got != prev && stepAt == 99999L)
+                    stepAt = off;
+                if (q == (1L << 20) && off >= -32L && off <= 64L
+                    && (off % 16L) == 0L)
+                    printf("       off %+4ld  numerator %ld  verdict %u  texel %lu\n",
+                           off, pb + off, v, got);
+                prev = got;
+            }
+            if (stepAt == 99999L)
+                printf("     %10ld %12ld %10s %10s\n", q, pb, "none", "-");
+            else
+                printf("     %10ld %12ld %10ld %10ld\n",
+                       q, pb, stepAt, -stepAt / unit);
+        }
+        printf("     a net that is the same at every q is in COORDINATE units;\n"
+               "     one that halves as q doubles is in NUMERATOR units\n");
+
+        /*
+         * The sweep above moved q and the numerator's band together, so it
+         * cannot separate "the numerator picks the band" from "q does".  This
+         * one breaks that: q = 262144 with a coordinate of 2^18 gives a
+         * numerator of exactly 2^20, the same numerator the q = 131072 row
+         * had, while the coordinate's band is 2^18 instead of 2^19.
+         *
+         *   numerator's band 2^20 -> addend 496 -> the step is at nought
+         *   coordinate's band 2^18 -> addend 508 -> the step is at -12
+         */
+        {
+            long q2 = 262144L, pb2 = (1L << 18) / 65536L * 262144L;
+            long off2, stepAt2 = 99999L;
+            unsigned long prev2 = 99999UL;
+
+            for (off2 = -200L; off2 <= 200L; off2 += 4L) {
+                unsigned long got;
+                unsigned v;
+
+                blank();
+                (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                            OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV
+                            | OSMGA_HW3D_TEXF_PERSP);
+                batch->state.texW = 8UL; batch->state.texH = 2048UL;
+                batch->state.texPitch = 8UL;
+                batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+                batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+                batch->state.tmr[4] = 0L; batch->state.tmr[5] = 0L;
+                batch->state.tmr[6] = 0L;
+                batch->state.tmr[7] = pb2 + off2;
+                batch->state.tmr[8] = q2;
+                v = fire();
+                got = (v != OSMGA_HW3D_OK) ? 99999UL
+                                           : (pixat(0UL, 0UL) & 0xFFFFUL);
+                if (prev2 != 99999UL && got != prev2 && stepAt2 == 99999L)
+                    stepAt2 = off2;
+                prev2 = got;
+            }
+            printf("     matched numerator: q=%ld coordinate 2^18 numerator %ld"
+                   "  step %+ld\n", q2, pb2, stepAt2);
+            say("the numerator picks the band, not the coordinate",
+                (stepAt2 == 0L) ? 1U : 0U, 1U);
+        }
+    }
+
+    printf("\n65. how high a numerator goes, and what the addend does up there\n");
+    {
+        /*
+         * 64 showed the band comes from the NUMERATOR.  The ladder is
+         * measured to 2^23, so the question is how far a numerator can get.
+         * The ratio check would allow 128q -- 2^30 at the largest denominator
+         * -- but it never gets there: the anchor is held to COORD_MAX and
+         * each gradient to room over its own span, so
+         *
+         *      |p| <= |tmr[7]| + |tmr[2]|*ex + |tmr[3]|*vy <= 3 * COORD_MAX
+         *
+         * which is 2^24.58.  Two rungs, not seven.
+         *
+         * ONE shape, three numerators, so the shape cannot be the variable.
+         * The x gradient contributes 2^23 at column four and the anchor moves
+         * the rest.  The first target is a rung the affine work already
+         * pinned at 384 -- if this shape agrees there, the shape is sound and
+         * whatever the higher two say is the answer; if it does not, the
+         * large denominator or the gradient is what changed and the fit from
+         * 64 does not carry up here.
+         *
+         * At q = 2^23 a texel is 65536 numerator units and all three targets
+         * are multiples of it, so each sits on a boundary and the step names
+         * the net bias.
+         */
+        static const long ancs[9] = {
+            0L, 1L << 21, 1L << 22, 3L << 21, 1L << 23,
+            (1L << 23) - (1L << 16), (1L << 23) - 1L,
+            (1L << 22) + (1L << 21), 7L << 20
+        };
+        static const char *wnm[9] = {
+            "2^23", "+2^21", "+2^22", "+3*2^21", "+2^23 (=2^24)",
+            "2^24-65536", "2^24-1", "+1.5*2^22", "+7*2^20"
+        };
+        int wi;
+        unsigned long rr, cc;
+
+        for (rr = 0UL; rr < 2048UL; rr++)
+            for (cc = 0UL; cc < 8UL; cc++)
+                tex[rr * 8UL + cc] = rr;
+
+        for (wi = 0; wi < 9; wi++) {
+            long q = 1L << 23;
+            long gx = (1L << 23) / 4L;
+            long anc = ancs[wi];
+            long off, stepAt = 99999L;
+            unsigned long prev = 99999UL;
+            unsigned firstV = 0U;
+
+            for (off = -300L; off <= 300L; off += 1L) {
+                unsigned long got;
+                unsigned v;
+
+                blank();
+                (void)setup(64UL, 0UL, 5UL, 4UL, 0L,
+                            OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV
+                            | OSMGA_HW3D_TEXF_PERSP);
+                batch->state.texW = 8UL; batch->state.texH = 2048UL;
+                batch->state.texPitch = 8UL;
+                batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+                batch->state.tmr[2] = gx;  batch->state.tmr[3] = 0L;
+                batch->state.tmr[4] = 0L;  batch->state.tmr[5] = 0L;
+                batch->state.tmr[6] = 0L;
+                batch->state.tmr[7] = anc + off;
+                batch->state.tmr[8] = q;
+                v = fire();
+                if (off == -300L) firstV = v;
+                got = (v != OSMGA_HW3D_OK) ? 99999UL
+                                           : (pixat(0UL, 4UL) & 0xFFFFUL);
+                if (prev != 99999UL && got != prev && stepAt == 99999L)
+                    stepAt = off;
+                prev = got;
+            }
+            printf("     %-9s numerator %9ld  verdict %u  step %+6ld"
+                   "  addend %4ld\n",
+                   wnm[wi], anc + gx * 4L, firstV, stepAt,
+                   (stepAt == 99999L) ? -1L : (496L - stepAt));
+        }
+        printf("     everything strictly between 2^23 and 2^24 reads 256, which\n"
+               "     is the ladder carrying on.  The two that read ~495 are not\n"
+               "     measurements: their anchor is at COORD_MAX, so the sweep\n"
+               "     runs into the refusal rather than a texel boundary.\n");
+
+        /*
+         * Band 2^25, with the anchor kept well away from its ceiling by
+         * splitting the climb between the two gradients.  Each sits on its
+         * own bound, so together they carry 2^24 and the anchor only has to
+         * supply the rest.
+         */
+        {
+            static const long a2[2] = { 1L << 16, 1L << 22 };
+            int j;
+
+            for (j = 0; j < 2; j++) {
+                long q = 1L << 23;
+                long g = (1L << 23) / 4L;
+                long anc = a2[j];
+                long off, stepAt = 99999L;
+                unsigned long prev = 99999UL;
+                unsigned firstV = 0U;
+
+                for (off = -700L; off <= 700L; off += 2L) {
+                    unsigned long got;
+                    unsigned v;
+
+                    blank();
+                    (void)setup(64UL, 0UL, 5UL, 5UL, 0L,
+                                OSMGA_HW3D_TEXF_REPEATU
+                                | OSMGA_HW3D_TEXF_REPEATV
+                                | OSMGA_HW3D_TEXF_PERSP);
+                    batch->tri[0].ar0 = 5L; batch->tri[0].ar6 = 5L;
+                    batch->state.texW = 8UL; batch->state.texH = 2048UL;
+                    batch->state.texPitch = 8UL;
+                    batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+                    batch->state.tmr[2] = g;  batch->state.tmr[3] = g;
+                    batch->state.tmr[4] = 0L; batch->state.tmr[5] = 0L;
+                    batch->state.tmr[6] = 0L;
+                    batch->state.tmr[7] = anc + off;
+                    batch->state.tmr[8] = q;
+                    v = fire();
+                    if (off == -700L) firstV = v;
+                    got = (v != OSMGA_HW3D_OK) ? 99999UL
+                                               : (pixat(4UL, 4UL) & 0xFFFFUL);
+                    if (prev != 99999UL && got != prev && stepAt == 99999L)
+                        stepAt = off;
+                    prev = got;
+                }
+                printf("     band 2^25   numerator %9ld  verdict %u"
+                       "  step %+6ld  addend %4ld\n",
+                       anc + g * 4L + g * 4L, firstV, stepAt,
+                       (stepAt == 99999L) ? -1L : (496L - stepAt));
+            }
+            printf("     the ladder would want 0 there (g = 512)\n");
+        }
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;
