@@ -262,6 +262,57 @@ main(int argc, char **argv)
         }
         /* "tile" runs the quad's texture coordinates out to three, which
          * only means anything with repeat */
+        if (argc > 2 && strcmp(argv[2], "bandseam") == 0) {
+            /*
+             * Two quads side by side, sharing an edge, with continuous
+             * texture coordinates -- but each is its own submission, and
+             * their coordinate maxima fall either side of 2^20, so the kernel
+             * gives them different biases: 496 on the left, 480 on the right.
+             *
+             * That is the seam the bias rule can produce.  Whether it shows
+             * depends on where the samples sit inside a texel: the two
+             * residuals differ by sixteen units, and with four samples to a
+             * texel the nearest sample is a whole eighth of a texel from a
+             * boundary, so python says nothing should differ here.  The test
+             * exists to find out whether that is true rather than to assume
+             * it -- a difference at the join would mean the seam bites at
+             * ordinary tiling rates after all.
+             */
+            glClear(GL_COLOR_BUFFER_BIT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                            (argc > 3) ? GL_LINEAR : GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+                            (argc > 3) ? GL_LINEAR : GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+            glBegin(GL_TRIANGLES);
+              glTexCoord2f(0.0f, 0.0f); glVertex2d(40.0, 40.0);
+              glTexCoord2f(1.0f, 0.0f); glVertex2d(104.0, 40.0);
+              glTexCoord2f(1.0f, 1.0f); glVertex2d(104.0, 104.0);
+              glTexCoord2f(0.0f, 0.0f); glVertex2d(40.0, 40.0);
+              glTexCoord2f(1.0f, 1.0f); glVertex2d(104.0, 104.0);
+              glTexCoord2f(0.0f, 1.0f); glVertex2d(40.0, 104.0);
+            glEnd();
+            glBegin(GL_TRIANGLES);
+              glTexCoord2f(1.0f, 0.0f); glVertex2d(104.0, 40.0);
+              glTexCoord2f(2.0f, 0.0f); glVertex2d(168.0, 40.0);
+              glTexCoord2f(2.0f, 1.0f); glVertex2d(168.0, 104.0);
+              glTexCoord2f(1.0f, 0.0f); glVertex2d(104.0, 40.0);
+              glTexCoord2f(2.0f, 1.0f); glVertex2d(168.0, 104.0);
+              glTexCoord2f(1.0f, 1.0f); glVertex2d(104.0, 104.0);
+            glEnd();
+            glFinish();
+            fprintf(stderr,
+                    "# bandseam: drawn %lu software %lu unsupported %lu"
+                    " declined %lu\n",
+                    OSMGAMesaHookDrawn(), OSMGAMesaHookSoftware(),
+                    OSMGAMesaHookUnsupported(), OSMGAMesaHookDeclined());
+            for (y = 0; y < H; y++)
+                for (x = 0; x < W; x++)
+                    if (app[y * W + x] != CLEARC)
+                        printf("P %ld %ld %lu\n", x, y, app[y * W + x]);
+            return 0;
+        }
         if (argc > 2 && strcmp(argv[2], "tilebnd") == 0) {
             /*
              * Seven textures across fifty-six pixels is exactly two texels

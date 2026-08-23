@@ -3490,9 +3490,12 @@ main(void)
                    "   net bias %+ld\n",
                    19 + bi, vlo, vhi, hi, -hi);
         }
-        printf("   the ladder below 2^20 gives +15, +14, +12, +8, 0;\n"
-               "   a NEGATIVE net bias means the encoder takes off more than\n"
-               "   the engine puts back, and the coordinate lands low\n");
+        printf("   what is left after the encoder has taken its bias off.\n"
+               "   At or below 2^20 the bias is still the flat 496 and the\n"
+               "   ladder shows through as +15, +14, +12, +8, 0.  Above it the\n"
+               "   bias follows the batch's reach, so the residual is nought --\n"
+               "   it read -16, -48 and -112 before that, and a coordinate on a\n"
+               "   texel boundary landed in the texel below.\n");
     }
 
     printf("\n57. is the band a property of the pixel, or of how I measured it\n");
@@ -3591,8 +3594,10 @@ main(void)
             }
             if ((i % 4) == 3) printf("\n");
         }
-        printf("   wanted the same net bias across each row:"
-               " -16, -48, -112, 0\n");
+        printf("   the same residual across each row, whatever it is:\n"
+               "   the point is that the addend does not vary INSIDE a band,\n"
+               "   which is what the bias rule assumes when it picks one from\n"
+               "   the largest coordinate alone\n");
     }
 
     printf("\n59. the same coordinate reached other ways, and other columns\n");
@@ -3614,6 +3619,9 @@ main(void)
         int col;
         unsigned v;
 
+        unsigned long first = 99999UL;
+        int same = 1;
+
         printf("     columns 0..7, constant coordinate:");
         blank();
         (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
@@ -3626,9 +3634,15 @@ main(void)
         v = fire();
         if (v != OSMGA_HW3D_OK) printf("  refused");
         else
-            for (col = 0; col < 8; col++)
-                printf(" %4lu", pixat(0UL, (unsigned long)col) & 0xFFFFUL);
-        printf("\n");
+            for (col = 0; col < 8; col++) {
+                unsigned long g = pixat(0UL, (unsigned long)col) & 0xFFFFUL;
+
+                if (col == 0) first = g;
+                else if (g != first) same = 0;
+                printf(" %4lu", g);
+            }
+        printf("      %s\n", same ? "all the same" : "NOT all the same");
+        say("no column reads a different texel", same ? 1U : 0U, 1U);
 
         blank();
         (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
@@ -3641,8 +3655,17 @@ main(void)
         v = fire();
         got = (v != OSMGA_HW3D_OK) ? 99999UL : (pixat(0UL, 4UL) & 0xFFFFUL);
         printf("     descending to it from twice as high: %lu\n", got);
+        /*
+         * Against the constant-coordinate reading above rather than against a
+         * number.  It used to want 2046, which was the texel BELOW the one the
+         * addressing asks for -- the encoder was taking off more than the
+         * engine put back in that band, and the assertion had the defect
+         * written into it as an expected value.  What the section is for is
+         * that the band follows the pixel however the pixel got there, and
+         * that is a comparison of two readings.
+         */
         say("a negative gradient lands on the same texel",
-            (got == 2046UL) ? 1U : 0U, 1U);
+            (got != 99999UL && got == first) ? 1U : 0U, 1U);
     }
 
     printf("\n60. the band edges themselves, and whether the step is single\n");
@@ -3781,9 +3804,83 @@ main(void)
         else
             for (col = 0; col < 8; col++)
                 printf(" %4lu", pixat(0UL, (unsigned long)col) & 0xFFFFUL);
-        printf("      wanted 1022 throughout\n");
-        printf("     1023 anywhere is a positive residue and harmless;\n"
-               "     1021 is a NEGATIVE one and would sink the bias scheme\n");
+        printf("\n     every column must read the SAME texel; which texel it\n"
+               "     is depends on the residual the encoder leaves, and that\n"
+               "     is nought above 2^20 now that the bias follows the reach\n");
+    }
+
+    printf("\n63. the seam: the same coordinate under two different biases\n");
+    {
+        /*
+         * The bias belongs to the batch, and a textured batch is one
+         * primitive, so two primitives that share an edge can be given
+         * different biases -- one reaching far enough to be given 384, its
+         * neighbour staying low and keeping 496.  Their residuals then differ
+         * by up to 511 - 384 - (511 - 496) = 112 units, and along the edge
+         * they share, the same coordinate is read twice with two phases.
+         *
+         * Whether that is visible depends on where the coordinate sits.  A
+         * texel is 1024 units on the 1024-wide texture used here, so a
+         * coordinate more than 127 units below a boundary is below it under
+         * both residuals, and one at or above it is above under both.  In
+         * between -- 112 units wide -- the two disagree by a whole texel.
+         *
+         * Both batches put the SAME coordinate at the pixel that is read: the
+         * column read is the first, where the x offset is nought, so the
+         * start is the coordinate regardless of the gradient.  Only the reach
+         * differs, and with it the bias.
+         */
+        unsigned long rr, cc;
+        long k;
+        long lowDiff = 0L, hiDiff = 0L;
+        int firstK = -1, lastK = -1;
+
+        for (rr = 0UL; rr < 4UL; rr++)
+            for (cc = 0UL; cc < 1024UL; cc++)
+                tex[rr * 1024UL + cc] = cc;
+
+        printf("     k below a texel boundary at 40960, texel 1024 units\n");
+        printf("     %4s %8s %8s\n", "k", "near", "far");
+        for (k = 1L; k <= 160L; k++) {
+            long X = 40960L - k;
+            unsigned long got[2];
+            int j;
+
+            for (j = 0; j < 2; j++) {
+                unsigned v;
+
+                blank();
+                (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                            OSMGA_HW3D_TEXF_REPEATU
+                            | OSMGA_HW3D_TEXF_REPEATV);
+                batch->state.texW = 1024UL; batch->state.texH = 4UL;
+                batch->state.texPitch = 1024UL;
+                batch->state.tmr[0] = j ? (1L << 20) : 0L;
+                batch->state.tmr[1] = 0L;
+                batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+                batch->state.tmr[6] = X;  batch->state.tmr[7] = 0L;
+                v = fire();
+                got[j] = (v != OSMGA_HW3D_OK) ? 99999UL
+                                              : (pixat(0UL, 0UL) & 0xFFFFUL);
+            }
+            if (got[0] != got[1]) {
+                if (firstK < 0) firstK = (int)k;
+                lastK = (int)k;
+                if (k <= 8L || (k % 32L) == 0L)
+                    printf("     %4ld %8lu %8lu   <-- differ\n",
+                           k, got[0], got[1]);
+            } else if (k <= 8L || (k % 32L) == 0L)
+                printf("     %4ld %8lu %8lu\n", k, got[0], got[1]);
+            if (got[0] == 99999UL) lowDiff++;
+            if (got[1] == 99999UL) hiDiff++;
+        }
+        printf("     they disagree for k = %d .. %d  (%d values)\n",
+               firstK, lastK, (firstK < 0) ? 0 : lastK - firstK + 1);
+        printf("     python says 16 .. 127, which is 112 values\n");
+        if (lowDiff || hiDiff)
+            printf("     refusals: near %ld far %ld\n", lowDiff, hiDiff);
+        say("the seam is exactly as wide as the bias difference",
+            (firstK == 16 && lastK == 127) ? 1U : 0U, 1U);
     }
 
     printf("\n%s (%d failing)\n",
