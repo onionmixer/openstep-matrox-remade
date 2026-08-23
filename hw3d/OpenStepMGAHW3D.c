@@ -268,6 +268,23 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
             return OSMGA_HW3D_E_TEXSIZE;
         if (b->state.texFormat != OSMGA_HW3D_TEXFMT_TW32)
             return OSMGA_HW3D_E_TEXSIZE;
+        /*
+         * The starts, BEFORE anything is evaluated with them.
+         *
+         * They used to be held to the range after the primitive loop, on the
+         * grounds that they bound the arithmetic whether or not a pixel
+         * samples them.  That is true of what they bound and false of when:
+         * every coordinate the loop forms is the start plus two bounded
+         * products, so a start near the end of a long overflows inside the
+         * loop and is only rejected afterwards, by which time the value that
+         * was checked is the wrapped one.  A long is four bytes here, which
+         * the build asserts, so this is not hypothetical.
+         */
+        if (b->state.tmr[6] < -(long)OSMGA_HW3D_TEX_COORD_MAX ||
+            b->state.tmr[6] > (long)OSMGA_HW3D_TEX_COORD_MAX ||
+            b->state.tmr[7] < -(long)OSMGA_HW3D_TEX_COORD_MAX ||
+            b->state.tmr[7] > (long)OSMGA_HW3D_TEX_COORD_MAX)
+            return OSMGA_HW3D_E_TEXCOORD;
         /* Reach from the size the client gave, which is the size the
          * kernel will program: pitch texels of four bytes, h rows. */
         if (!osmgaHW3DReach(b->state.texorg, h, pitch * 4UL,
@@ -495,35 +512,10 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                 long ex = bx1 - bx0, ey = t->h - 1L;
                 long vy = texSpanY + ey;    /* v's row index runs on */
 
-                /*
-                 * The largest each coordinate reaches, for the encoder's
-                 * bias.  Both are linear in the two offsets, so the largest
-                 * over the box is at one of its corners; taking the box
-                 * rather than the exact span is the conservative direction,
-                 * since naming a band too high takes off less.
-                 */
                 long room = (long)OSMGA_HW3D_TEX_COORD_MAX;
                 long roomHi = room >> 16;
                 int persp = (b->state.texFlags
                              & OSMGA_HW3D_TEXF_PERSP) != 0UL;
-
-                if (reach != 0) {
-                    long dlo = (long)bx0 - lx0, dhi = (long)bx1 - lx0;
-                    long kc;
-
-                    for (kc = 0L; kc < 4L; kc++) {
-                        long dxc = (kc & 1L) ? dhi : dlo;
-                        long dyc = (kc & 2L) ? ey : 0L;
-                        long vrow = (kc & 2L) ? vy : (long)texSpanY;
-                        long uc = b->state.tmr[6] + b->state.tmr[0] * dxc
-                                  + b->state.tmr[1] * dyc;
-                        long vc = b->state.tmr[7] + b->state.tmr[2] * dxc
-                                  + b->state.tmr[3] * vrow;
-
-                        if (uc > reach->uMax) reach->uMax = uc;
-                        if (vc > reach->vMax) reach->vMax = vc;
-                    }
-                }
 
                 /*
                  * The denominator plane's own bounds, before it is evaluated
@@ -624,7 +616,24 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                             !osmgaHW3DRatioOK(vx2, qa, roomHi))
                             boxOK = 0;
                     }
-                    if (boxOK)
+                    /*
+                     * The shortcut stays for validation, but it cannot be
+                     * taken when the reach is wanted: the reach decides which
+                     * addend the encoder takes off, and the BOX is not the
+                     * primitive.  Measured -- the split triangle the texture
+                     * test draws has a box that carries v to 1052846 while
+                     * its pixels stop at 1039076, one side of 2^20 each, so
+                     * the box picks a band the primitive never enters and
+                     * moves the phase of every pixel in it.
+                     *
+                     * Perspective still takes the shortcut.  Its bias is left
+                     * at 496 either way, and the row walk checks the quotient
+                     * at per-row denominators where the box checks it at the
+                     * corners' -- so walking a primitive the box has already
+                     * passed could refuse it, which would be a change in what
+                     * the driver accepts rather than in what it encodes.
+                     */
+                    if (boxOK && (reach == 0 || persp))
                         goto texDone;
 
                     lx = (long)left; rx = (long)right;
@@ -658,6 +667,31 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                             !osmgaHW3DRatioOK(ly,  qb, roomHi) ||
                             !osmgaHW3DRatioOK(ry,  qb, roomHi))
                             texBad = 1;
+                        /*
+                         * And how far it reaches, from the same four values:
+                         * the coordinate is linear along a row, so a row's
+                         * extremes are its two ends.  The slopes have been
+                         * bounded above, so these products are inside a long;
+                         * the walk that builds the box runs before that bound
+                         * and could not have formed them.
+                         */
+                        /*
+                         * Affine only, and that is a contract rather than an
+                         * optimisation: a perspective batch that passes the
+                         * box jumps out with the reach still at nought, so
+                         * one that fails the box and walks would otherwise
+                         * come back with numerators in it and the two would
+                         * mean different things.  Nought always, for
+                         * perspective, and the encoder's own check that it is
+                         * affine is then a second lock rather than the only
+                         * one.
+                         */
+                        if (reach != 0 && !persp) {
+                            if (ux  > reach->uMax) reach->uMax = ux;
+                            if (ly  > reach->uMax) reach->uMax = ly;
+                            if (vx2 > reach->vMax) reach->vMax = vx2;
+                            if (ry  > reach->vMax) reach->vMax = ry;
+                        }
                     }
                 }
               texDone: ;
@@ -753,16 +787,6 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
             spanLo = texSpanLo;
             spanHi = texSpanHi;
         }
-        /*
-         * The starts bound the arithmetic above whether or not any pixel
-         * samples them, so they are held to the range here; everything else
-         * was decided per row, over the pixels that exist.
-         */
-        if (b->state.tmr[6] < -(long)OSMGA_HW3D_TEX_COORD_MAX ||
-            b->state.tmr[6] > (long)OSMGA_HW3D_TEX_COORD_MAX ||
-            b->state.tmr[7] < -(long)OSMGA_HW3D_TEX_COORD_MAX ||
-            b->state.tmr[7] > (long)OSMGA_HW3D_TEX_COORD_MAX)
-            texBad = 1;
         (void)spanLo; (void)spanHi; (void)spanUY; (void)spanY;
         if (texBad) {
             if (badTri != 0)

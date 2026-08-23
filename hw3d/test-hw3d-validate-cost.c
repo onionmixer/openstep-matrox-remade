@@ -32,6 +32,7 @@ main(int argc, char **argv)
     long reps = (argc > 1) ? atol(argv[1]) : 200L;
     long i, t0, t1;
     unsigned long badTri = 0;
+    OSMGAHW3DTexReach reach;
     int v = 0;
 
     memset(&lim, 0, sizeof lim);
@@ -82,7 +83,13 @@ main(int argc, char **argv)
         t->fxbndry = (1600UL << 16) | 0UL;
     }
 
-    v = osmgaHW3DValidate(&b, &lim, &badTri);
+    /*
+     * The path the driver takes, not the one the older tests take.  Asking
+     * for the reach stops the box shortcut ending the walk, so a batch that
+     * used to be measured after one walk is now measured after two -- which
+     * is exactly the cost worth knowing.
+     */
+    v = osmgaHW3DValidateReach(&b, &lim, &badTri, &reach);
     printf("one batch of %lu triangles, %ld rows each, an edge crossing 1600 "
            "columns\n", (unsigned long)OSMGA_HW3D_MAX_TRI, (long)b.tri[0].h);
     printf("   verdict %d (0 is accepted)\n", v);
@@ -91,7 +98,7 @@ main(int argc, char **argv)
     t0 = time((long *)0);
     for (i = 0; i < reps; i++) {
         badTri = 0;
-        (void)osmgaHW3DValidate(&b, &lim, &badTri);
+        (void)osmgaHW3DValidateReach(&b, &lim, &badTri, &reach);
     }
     t1 = time((long *)0);
     printf("   %ld validations in %ld seconds", reps, t1 - t0);
@@ -99,5 +106,54 @@ main(int argc, char **argv)
         printf("  -> %ld ms each\n", (t1 - t0) * 1000L / reps);
     else
         printf("  -> under %ld ms each\n", 1000L / reps + 1L);
+    /*
+     * And the shape the driver actually submits.  The batch above is a
+     * deliberate worst case -- two hundred primitives of twelve hundred rows
+     * -- but a textured batch carries ONE primitive, and Mesa's are the size
+     * of a quad on a 320 by 240 surface.  Timing only the worst case would
+     * report a cost nothing pays.
+     */
+    {
+        long t2, t3;
+        int j;
+        unsigned long reps2 = 400000UL;
+
+        memset(&b, 0, sizeof b);
+        b.magic = OSMGA_HW3D_MAGIC;
+        b.version = OSMGA_HW3D_VERSION;
+        b.triCount = 1UL;
+        b.state.dstorg = lim.colourStart;
+        b.state.dstPitch = lim.pitchBytes / 4UL;
+        b.state.dstWidth = lim.clipX1 + 1UL;
+        b.state.dstHeight = lim.clipY1 + 1UL;
+        b.state.zorg = lim.depthStart;
+        b.state.texorg = lim.texStart;
+        b.state.texW = 16UL; b.state.texH = 16UL; b.state.texPitch = 16UL;
+        b.state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
+        b.state.tmr[0] = 8192L; b.state.tmr[3] = 8192L;
+        b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+        b.tri[0].y = 0L;
+        b.tri[0].h = 128L;
+        b.tri[0].ar0 = 128L; b.tri[0].ar6 = 128L;
+        b.tri[0].fxbndry = (128UL << 16) | 0UL;
+        b.tri[0].dr[0] = 200UL << 15;
+
+        badTri = 0;
+        v = osmgaHW3DValidateReach(&b, &lim, &badTri, &reach);
+        printf("\none textured primitive, 128 rows of 128 columns:"
+               " verdict %d\n", v);
+        t2 = time((long *)0);
+        for (j = 0; j < (int)reps2; j++) {
+            badTri = 0;
+            (void)osmgaHW3DValidateReach(&b, &lim, &badTri, &reach);
+        }
+        t3 = time((long *)0);
+        printf("   %lu validations in %ld seconds", reps2, t3 - t2);
+        if (t3 > t2)
+            printf("  -> %ld us each\n",
+                   (long)((t3 - t2) * 1000000L / (long)reps2));
+        else
+            printf("  -> under %ld us each\n", (long)(1000000L / (long)reps2));
+    }
     return 0;
 }
