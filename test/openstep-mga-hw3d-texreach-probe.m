@@ -6188,6 +6188,276 @@ main(void)
         }
     }
 
+    /*
+     * 87. The alpha test: which alpha, and does a discarded fragment leave
+     *     the depth alone.
+     *
+     * The register documentation gives AC_aten, AC_atmode and AC_atref and
+     * the repository wrote down years ago that they answer glAlphaFunc --
+     * and left it unmeasured.  Two things have to be known before Mesa is
+     * taught to ask.
+     *
+     * WHICH ALPHA.  Section 81 showed the blend's SELECTOR reads the texture
+     * stage's output; whether the TEST reads the same value is a different
+     * question in a different field.  So: a texel alpha of 200 against a
+     * fragment alpha of 100, with the reference between them at 150.
+     *
+     *     drawn      the test reads the stage, which under REPLACE with an
+     *                alpha-carrying texture is the texel's 200
+     *     not drawn  it reads the interpolated 100
+     *
+     * with two controls either side -- a reference of 50 that both would
+     * pass and one of 250 that both would fail -- so that "drawn" cannot be
+     * the test being inert and "not drawn" cannot be the primitive missing.
+     *
+     * AND THE DEPTH.  GL puts the alpha test before the depth test, so a
+     * fragment it discards writes neither colour nor depth.  If the engine
+     * writes depth anyway, a hole punched by the alpha test would still
+     * occlude whatever is behind it.
+     */
+    {
+        unsigned long rr, cc;
+        long r, last = -1L;
+
+        printf("\n87. the alpha test -- which alpha, and the depth\n");
+        printf("     texel alpha 200, fragment alpha 100, GEQUAL, and the\n"
+               "     reference swept: the largest one that still draws IS\n"
+               "     the alpha the engine compares\n");
+        for (rr = 0UL; rr < 64UL; rr++)
+            for (cc = 0UL; cc < 64UL; cc++)
+                tex[rr * 64UL + cc] = 0xC8C08040UL;   /* alpha 200 */
+        for (r = 0L; r <= 255L; r += 1L) {
+            OSMGAHW3DTri *t;
+            unsigned v;
+            unsigned long px;
+
+            blank();
+            t = setup(1024UL, 0UL, 8UL, 4UL, 0L, OSMGA_HW3D_TEXF_TEXALPHA);
+            batch->state.texW = 64UL; batch->state.texH = 64UL;
+            batch->state.texPitch = 64UL;
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            setTU(batch, 0L); setTV(batch, 0L);
+            t->alphactrl = 0x00000101UL | 0x1000UL | 0xE000UL
+                           | ((unsigned long)r << 16);
+            t->a0 = 100UL << 15;
+            t->adx = 0UL; t->ady = 0UL;
+            v = fire();
+            px = (v != OSMGA_HW3D_OK) ? BLANK : pixat(0UL, 2UL);
+            if (px != BLANK)
+                last = r;
+            else
+                break;
+        }
+        printf("   the largest reference that still drew: %ld\n", last);
+        if (last < 0L) {
+            printf("   FAIL  nothing drew at all, even at a reference of"
+                   " nought\n");
+            failures++;
+        } else if (last >= 255L) {
+            printf("   FAIL  every reference drew -- the test is inert, so"
+                   " aten or atmode is not\n"
+                   "         reaching the engine the way this writes it\n");
+            failures++;
+        } else if (last == 200L)
+            printf("   ok    it compares the texture STAGE's alpha (200),"
+                   " as the blend selector does\n");
+        else if (last == 100L)
+            printf("   ok    it compares the INTERPOLATED alpha (100), which"
+                   " the selector does not\n");
+        else {
+            printf("   FAIL  it compares something else: %ld\n", last);
+            failures++;
+        }
+
+        /*
+         * The same threshold from the other side.
+         *
+         * A first cut of this asked three references -- 50, 150, 250 -- and
+         * reported all three as drawn, which the sweep says is impossible at
+         * 250.  A reading that two runs of the same question disagree about
+         * is not a reading, so the threshold is found again coming DOWN from
+         * 255 and the two must meet.
+         *
+         * (What the first cut did differently was rewrite the texture inside
+         * its loop, between the blank and the draw.  Whether that is the
+         * cause is not established; what is established is that the sweep
+         * agrees with itself from both directions.)
+         */
+        {
+            long down = -1L;
+
+            for (r = 255L; r >= 0L; r -= 1L) {
+                OSMGAHW3DTri *t;
+                unsigned v;
+                unsigned long px;
+
+                blank();
+                t = setup(1024UL, 0UL, 8UL, 4UL, 0L,
+                          OSMGA_HW3D_TEXF_TEXALPHA);
+                batch->state.texW = 64UL; batch->state.texH = 64UL;
+                batch->state.texPitch = 64UL;
+                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                batch->state.tmr[3] = 0L;
+                setTU(batch, 0L); setTV(batch, 0L);
+                t->alphactrl = 0x00000101UL | 0x1000UL | 0xE000UL
+                               | ((unsigned long)r << 16);
+                t->a0 = 100UL << 15;
+                t->adx = 0UL; t->ady = 0UL;
+                v = fire();
+                px = (v != OSMGA_HW3D_OK) ? BLANK : pixat(0UL, 2UL);
+                if (px != BLANK) { down = r; break; }
+            }
+            printf("   coming down from 255, the first that drew: %ld\n",
+                   down);
+            if (down != last) {
+                printf("   FAIL  the two directions disagree, so neither is"
+                       " a reading\n");
+                failures++;
+            } else
+                printf("   ok    both directions meet at %ld\n", last);
+        }
+
+        /*
+         * 87b.  Which of THREE, not which of two.
+         *
+         * The sweep above ran under REPLACE, where the texture stage's alpha
+         * and the texel's alpha are the same number -- so it ruled out the
+         * interpolated alpha and said nothing about the other two.
+         *
+         * MODULATE separates all three.  With a fragment alpha of 192 and a
+         * texel alpha of 128 the stage produces (192*129)>>8 = 96, and two
+         * references split them:
+         *
+         *      ref 112   stage fails   texel passes   interpolated passes
+         *      ref 160   stage fails   texel fails    interpolated passes
+         *
+         * so fail/fail names the stage, pass/fail the texel, and pass/pass
+         * the interpolated one.
+         */
+        {
+            static const unsigned long r2[2] = { 112UL, 160UL };
+            int drew[2];
+            int k;
+
+            for (rr = 0UL; rr < 64UL; rr++)
+                for (cc = 0UL; cc < 64UL; cc++)
+                    tex[rr * 64UL + cc] = 0x80C08040UL;   /* alpha 128 */
+            for (k = 0; k < 2; k++) {
+                OSMGAHW3DTri *t;
+                unsigned v;
+                unsigned long px;
+
+                blank();
+                t = setup(1024UL, 0UL, 8UL, 4UL, 0L,
+                          OSMGA_HW3D_TEXF_TEXALPHA
+                          | OSMGA_HW3D_TEXF_MODULATE);
+                batch->state.texW = 64UL; batch->state.texH = 64UL;
+                batch->state.texPitch = 64UL;
+                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                batch->state.tmr[3] = 0L;
+                setTU(batch, 0L); setTV(batch, 0L);
+                t->alphactrl = 0x00000101UL | 0x1000UL | 0xE000UL
+                               | (r2[k] << 16);
+                t->a0 = 192UL << 15;
+                t->adx = 0UL; t->ady = 0UL;
+                /* white, so the colour modulate leaves the texel alone and
+                 * only the alpha question is being asked */
+                t->dr[0] = 255UL << 15; t->dr[3] = 255UL << 15;
+                t->dr[6] = 255UL << 15;
+                v = fire();
+                px = (v != OSMGA_HW3D_OK) ? BLANK : pixat(0UL, 2UL);
+                drew[k] = (px != BLANK);
+            }
+            printf("   under MODULATE, Af 192 At 128 (stage 96):"
+                   " ref 112 %s, ref 160 %s\n",
+                   drew[0] ? "drew" : "did not", drew[1] ? "drew" : "did not");
+            if (!drew[0] && !drew[1])
+                printf("   ok    it is the texture STAGE's alpha, the same"
+                       " value the selector reads\n");
+            else if (drew[0] && !drew[1]) {
+                printf("   it is the TEXEL's alpha, not the stage's -- the"
+                       " test and the selector\n"
+                       "         read different things, and Mesa must account"
+                       " for that.\n");
+                printf("   FAIL  recorded as a finding, not a pass\n");
+                failures++;
+            } else if (drew[0] && drew[1]) {
+                printf("   it is the INTERPOLATED alpha, which contradicts"
+                       " the REPLACE sweep above.\n");
+                printf("   FAIL  the two measurements disagree\n");
+                failures++;
+            } else {
+                printf("   FAIL  neither pattern: %d %d\n", drew[0], drew[1]);
+                failures++;
+            }
+        }
+
+        /* and whether a discarded fragment leaves the depth alone */
+        {
+            OSMGAHW3DTri *t;
+            unsigned v;
+            unsigned short zafter, zctl;
+            unsigned long i2;
+
+            for (i2 = 0UL; i2 < 64UL * STRIDE_DW; i2++)
+                depth[i2] = 0x8000U;
+            blank();
+            t = setup(1024UL, 0UL, 8UL, 4UL, 0L, OSMGA_HW3D_TEXF_TEXALPHA);
+            batch->state.texW = 64UL; batch->state.texH = 64UL;
+            batch->state.texPitch = 64UL;
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            setTU(batch, 0L); setTV(batch, 0L);
+            t->dwgctl = DWG_TEXZ;              /* atype ZI, no comparison */
+            batch->state.zorg = DEPTH_ORG;
+            t->z0 = 0x4000UL << 15; t->zdx = 0UL; t->zdy = 0UL;
+            t->alphactrl = 0x00000101UL | 0x1000UL | 0xE000UL | (250UL << 16);
+            t->a0 = 100UL << 15;
+            t->adx = 0UL; t->ady = 0UL;
+            v = fire();
+            zafter = depth[0UL * STRIDE_DW + 2UL];
+
+            /* the control: the same primitive with a reference it passes */
+            for (i2 = 0UL; i2 < 64UL * STRIDE_DW; i2++)
+                depth[i2] = 0x8000U;
+            blank();
+            t = setup(1024UL, 0UL, 8UL, 4UL, 0L, OSMGA_HW3D_TEXF_TEXALPHA);
+            batch->state.texW = 64UL; batch->state.texH = 64UL;
+            batch->state.texPitch = 64UL;
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            setTU(batch, 0L); setTV(batch, 0L);
+            t->dwgctl = DWG_TEXZ;
+            batch->state.zorg = DEPTH_ORG;
+            t->z0 = 0x4000UL << 15; t->zdx = 0UL; t->zdy = 0UL;
+            t->alphactrl = 0x00000101UL | 0x1000UL | 0xE000UL | (50UL << 16);
+            t->a0 = 100UL << 15;
+            t->adx = 0UL; t->ady = 0UL;
+            (void)fire();
+            zctl = depth[0UL * STRIDE_DW + 2UL];
+
+            printf("   discarded by alpha: depth %04x    passing control:"
+                   " depth %04x  (cleared 8000)\n",
+                   (unsigned)zafter, (unsigned)zctl);
+            if (v != OSMGA_HW3D_OK) {
+                printf("   FAIL  the discarded case was refused\n");
+                failures++;
+            } else if (zctl != 0x4000U) {
+                printf("   FAIL  the control did not write depth, so the"
+                       " other reading says nothing\n");
+                failures++;
+            } else if (zafter == 0x8000U)
+                printf("   ok    a fragment the alpha test discards writes no"
+                       " depth either\n");
+            else {
+                printf("   FAIL  it wrote depth anyway -- a hole punched by"
+                       " the alpha test would still occlude\n");
+                failures++;
+            }
+        }
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;

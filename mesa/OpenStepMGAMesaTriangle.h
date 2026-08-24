@@ -130,6 +130,32 @@ typedef struct {
  * the alpha mode and 24-25 the selector this back end sets for textured
  * blending, and a mapping that wrote only the factors would clear both.
  */
+/*
+ * The alpha test, which lives in the same word as the blend.
+ *
+ * AC_aten is bit 12, AC_atmode bits 13-15 and AC_atref bits 16-23, and the
+ * modes are the same shape as the depth comparisons -- seven named and value
+ * one unnamed and therefore not offered.
+ *
+ * The engine compares the TEXTURE STAGE's alpha, which is the same value the
+ * blend selector reads: measured under REPLACE by sweeping the reference and
+ * finding the threshold at the texel's own alpha from both directions, then
+ * separated from the texel under MODULATE, where the stage's product and the
+ * texel part company (probe section 87).
+ *
+ * A fragment the test discards writes no depth either, which is the order GL
+ * asks for, and that was measured with a passing control beside it.
+ */
+#define OSMGA_MESA_ATEST_MASK   0x00FFF000UL   /* aten, atmode and atref */
+#define OSMGA_MESA_AT_ENABLE    0x00001000UL
+#define OSMGA_MESA_AT_E         0x00004000UL
+#define OSMGA_MESA_AT_NE        0x00006000UL
+#define OSMGA_MESA_AT_LT        0x00008000UL
+#define OSMGA_MESA_AT_LTE       0x0000A000UL
+#define OSMGA_MESA_AT_GT        0x0000C000UL
+#define OSMGA_MESA_AT_GTE       0x0000E000UL
+#define OSMGA_MESA_AT_REF_SHIFT 16
+
 #define OSMGA_MESA_BLEND_FACTOR_MASK 0x000000FFUL
 #define OSMGA_MESA_BF_ZERO       0UL
 #define OSMGA_MESA_BF_ONE        1UL

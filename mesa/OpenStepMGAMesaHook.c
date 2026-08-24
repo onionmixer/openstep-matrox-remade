@@ -408,6 +408,43 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         }
         blend = (blend & ~OSMGA_MESA_BLEND_FACTOR_MASK) | fs | (fd << 4);
     }
+    /*
+     * The alpha test, in the same word.
+     *
+     * Only bits 12-23 are touched, for the same reason the factors touch
+     * only 0-7: the alpha mode and the selector live above and the factors
+     * below, and a write that took the whole word would clear them.
+     *
+     * The reference is Mesa's OWN byte.  It has already turned the
+     * application's float into a GLubyte and its software path compares that
+     * same byte, so the two paths use an identical reference by construction
+     * and there is no quantisation to reproduce or to get wrong.
+     */
+    if (ctx->Color.AlphaEnabled) {
+        unsigned long at = OSMGA_MESA_AT_ENABLE
+                           | ((unsigned long)ctx->Color.AlphaRef
+                              << OSMGA_MESA_AT_REF_SHIFT);
+
+        switch (ctx->Color.AlphaFunc) {
+        case GL_EQUAL:    at |= OSMGA_MESA_AT_E;   break;
+        case GL_NOTEQUAL: at |= OSMGA_MESA_AT_NE;  break;
+        case GL_LESS:     at |= OSMGA_MESA_AT_LT;  break;
+        case GL_LEQUAL:   at |= OSMGA_MESA_AT_LTE; break;
+        case GL_GREATER:  at |= OSMGA_MESA_AT_GT;  break;
+        case GL_GEQUAL:   at |= OSMGA_MESA_AT_GTE; break;
+        default:
+            /*
+             * GL_ALWAYS.  The test is turned OFF rather than enabled with a
+             * mode that compares nothing: the two are named separately in the
+             * register documentation and have not been shown to be the same
+             * thing, and "off" is the one whose behaviour is not in question.
+             * GL_NEVER never gets here -- the chooser refuses it.
+             */
+            at = 0UL;
+            break;
+        }
+        blend = (blend & ~OSMGA_MESA_ATEST_MASK) | at;
+    }
     if (ctx->Color.BlendEnabled && texOn) {
         /*
          * "From the texture", for every textured state, because that is not
@@ -1051,8 +1088,26 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
             return NULL;
     }
 
+    /*
+     * The alpha test, when it is one the engine has.
+     *
+     * Seven of GL's eight, the same shape as the depth comparisons: value one
+     * of the mode field is unnamed, so GL_NEVER has no encoding and is
+     * refused rather than emulated by not drawing.
+     */
+    if ((ctx->RasterMask & (GLuint)ALPHATEST_BIT) != 0) {
+        switch (ctx->Color.AlphaFunc) {
+        case GL_LESS: case GL_LEQUAL: case GL_GREATER: case GL_GEQUAL:
+        case GL_EQUAL: case GL_NOTEQUAL: case GL_ALWAYS:
+            break;
+        default:
+            return NULL;
+        }
+    }
+
     if ((ctx->RasterMask &
-         ~(GLuint)(ALPHABUF_BIT | DEPTH_BIT | BLEND_BIT | TEXTURE_BIT)) != 0)
+         ~(GLuint)(ALPHABUF_BIT | DEPTH_BIT | BLEND_BIT | TEXTURE_BIT |
+                   ALPHATEST_BIT)) != 0)
         return NULL;
 
     return osmgaMesaTriangle;
