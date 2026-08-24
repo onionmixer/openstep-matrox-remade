@@ -32,8 +32,10 @@ extern int fork(void);
 extern int getpid(void);
 extern unsigned int sleep(unsigned int);
 extern int open(const char *, int, ...);
+extern char *mmap(char *, int, int, int, int, long);
 #include <unistd.h>
 #include <fcntl.h>
+#include <mach/mach.h>
 
 #define DEV "/dev/osmgavram"
 
@@ -58,6 +60,9 @@ usage(void)
     printf("   forkchild    open, fork, child exits at once, parent closes\n");
     printf("   forkboth     open, fork, neither closes, both exit\n");
     printf("   kill         open, then SIGKILL this process\n");
+    printf("   map          open, MAP the command window, exit without"
+           " unmapping\n");
+    printf("   mapunmap     open, map, unmap, close, exit\n");
     printf("\n   read /usr/adm/messages after each run; the driver counts\n"
            "   opens and closes and prints both every time.\n");
 }
@@ -135,6 +140,55 @@ main(int argc, char **argv)
         kill(getpid(), SIGKILL);
         printf("   STILL ALIVE -- the kill did not work\n");
         return 1;
+    }
+
+    if (strcmp(argv[1], "map") == 0 || strcmp(argv[1], "mapunmap") == 0) {
+        /*
+         * The one that matters.  Every real client MAPS this device, and the
+         * plain cases above do not -- and the regression, whose programs all
+         * map, produced fifteen opens and one close while four programs that
+         * only open and exit produced four of each.  A mapping holds a VM
+         * object reference on the device, and if that reference outlives the
+         * descriptor then close does not arrive when the client goes away.
+         *
+         * PROT_READ|PROT_WRITE because the handler refuses anything else.
+         * Nothing is read and nothing is written: the question is whether the
+         * mapping exists, not what is in it.
+         *
+         * 4.2BSD mmap has no MAP_FIXED and no "pick an address": it maps over
+         * a range the caller already owns, so the placeholder is allocated
+         * first, exactly as the Mesa client does it.
+         */
+        vm_address_t addr = 0;
+        int len = 24576;                /* the batch window, three pages */
+
+        fd = opendev(argv[1]);
+        if (fd < 0) return 1;
+        if (vm_allocate(task_self(), &addr, (vm_size_t)len, TRUE)
+                != KERN_SUCCESS) {
+            printf("   no room\n");
+            return 2;
+        }
+        if ((int)mmap((char *)addr, len, 3 /* RW */, 1 /* MAP_SHARED */,
+                      fd, 0x40000000L) == -1) {
+            printf("   mmap REFUSED -- this case says nothing\n");
+            close(fd);
+            return 2;
+        }
+        printf("   mapped %d bytes of the command window at %p\n", len,
+               (void *)addr);
+        fflush(stdout);
+        if (strcmp(argv[1], "mapunmap") == 0) {
+            (void)vm_deallocate(task_self(), addr, (vm_size_t)len);
+            close(fd);
+            printf("   unmapped and closed\n");
+            fflush(stdout);
+            sleep(1);
+            return 0;
+        }
+        printf("   exiting with the mapping still in place\n");
+        fflush(stdout);
+        return 0;
     }
 
     usage();
