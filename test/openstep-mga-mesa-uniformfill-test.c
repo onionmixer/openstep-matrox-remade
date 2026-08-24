@@ -235,6 +235,33 @@ main(void)
         (void)OSMesaMakeCurrent(ctx, app, GL_UNSIGNED_BYTE, W, H);
     }
 
+    /*
+     * 5. A rebind may not describe rows SHORTER than the picture.
+     *
+     * Everything that walks the caller's array -- the import on the way in,
+     * the mirror and the constant fill on the way out -- reads or writes
+     * bufWidth words from rows bufAppRow apart.  A row length below the width
+     * therefore runs off the end of every row and off the end of the array on
+     * the last one.  The fresh allocation had always refused it; the rebind
+     * had not, which made the fast path more permissive than the slow one.
+     *
+     * The array here is big enough that the overrun would not have faulted --
+     * which is exactly why this needs asserting rather than trusting a crash.
+     */
+    {
+        int ok;
+
+        OSMesaPixelStore(OSMESA_ROW_LENGTH, W / 2);
+        ok = OSMesaMakeCurrent(ctx, app, GL_UNSIGNED_BYTE, W, H) ? 1 : 0;
+        sprintf(msg, "MakeCurrent %s, and the surface is %s",
+                ok ? "succeeded (software)" : "failed",
+                (OSMGAMesaBufferOrigin() == 0UL) ? "given up" : "STILL HELD");
+        verdict("a rebind at half the width's row length is refused",
+                OSMGAMesaBufferOrigin() == 0UL, msg);
+        OSMesaPixelStore(OSMESA_ROW_LENGTH, 0);
+        (void)OSMesaMakeCurrent(ctx, app, GL_UNSIGNED_BYTE, W, H);
+    }
+
     printf("\n   %d failed\n", failures);
     OSMesaDestroyContext(ctx);
     free(app);

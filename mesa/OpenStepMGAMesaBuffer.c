@@ -643,6 +643,20 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
      */
     if (appRowLength <= 0)
         return 0;
+    /*
+     * And it has to be at least the picture, HERE, where both paths pass.
+     *
+     * The fresh allocation below refuses a row length shorter than the width
+     * -- "a row would run into the next" -- but the rebind above it did not,
+     * and a rebind is where a caller most easily changes it.  Everything that
+     * walks the caller's array reads or writes bufWidth words from rows
+     * bufAppRow apart, so a row length below the width walks off the end of
+     * every row and off the end of the array on the last one.  It was the
+     * fast path being more permissive than the slow one, which is the wrong
+     * way round for a check that keeps writes inside a buffer.
+     */
+    if ((unsigned long)appRowLength < (unsigned long)width)
+        return 0;
 
     /*
      * A width the engine cannot walk.
