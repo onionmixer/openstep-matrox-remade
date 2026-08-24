@@ -4982,6 +4982,79 @@ main(void)
             (bad == 0) ? 1U : 0U, 1U);
     }
 
+    printf("\n77. which alpha each selector puts into the blend\n");
+    {
+        /*
+         * 76 found the blend using an alpha of nothing because the constant
+         * this back end uses has AC_alphasel at "diffused" and no fragment
+         * alpha was written.  That is one of three, and GL needs all three:
+         *
+         *      RGB  + REPLACE    Av = Af        diffused
+         *      RGBA + REPLACE    Av = At        fromtex
+         *      any  + MODULATE   Av = Af * At   modulated
+         *
+         * So each is asked for directly, with a fragment alpha the texture
+         * does not carry and a source colour that is not neutral, at four
+         * texture alphas chosen so the three answers differ at every one --
+         * python says they do.  A selector that reads as another one is a
+         * wrong picture waiting for the chooser to be opened.
+         */
+        static const unsigned long ats[4] = { 1UL, 127UL, 128UL, 254UL };
+        static const unsigned long sel[3] = { 0x00000154UL,   /* fromtex   */
+                                              0x01000154UL,   /* diffused  */
+                                              0x02000154UL }; /* modulated */
+        static const char *sn[3] = { "fromtex", "diffused", "modulated" };
+        unsigned long rr, cc;
+        int j, k;
+
+        /* the destination the blend reads */
+        for (rr = 0UL; rr < 64UL; rr++)
+            for (cc = 0UL; cc < STRIDE_DW; cc++)
+                colour[rr * STRIDE_DW + cc] = 0x00204060UL;
+
+        printf("     texture colour c08040, fragment alpha 96,"
+               " destination 204060\n");
+        printf("     %-10s", "At");
+        for (j = 0; j < 4; j++) printf(" %14lu", ats[j]);
+        printf("\n");
+        for (k = 0; k < 3; k++) {
+            printf("     %-10s", sn[k]);
+            for (j = 0; j < 4; j++) {
+                OSMGAHW3DTri *t;
+                unsigned long got;
+                unsigned v;
+
+                for (rr = 0UL; rr < 64UL; rr++)
+                    for (cc = 0UL; cc < 64UL; cc++)
+                        tex[rr * 64UL + cc] = (ats[j] << 24) | 0x00C08040UL;
+                for (rr = 0UL; rr < 4UL; rr++)
+                    for (cc = 0UL; cc < 16UL; cc++)
+                        colour[rr * STRIDE_DW + cc] = 0x00204060UL;
+
+                t = setup(1024UL, 0UL, 8UL, 4UL, 0L,
+                          OSMGA_HW3D_TEXF_TEXALPHA);
+                batch->state.texW = 64UL; batch->state.texH = 64UL;
+                batch->state.texPitch = 64UL;
+                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                batch->state.tmr[3] = 0L;
+                batch->state.tmr[6] = 0L; batch->state.tmr[7] = 0L;
+                t->alphactrl = sel[k];
+                t->a0 = 96UL << 15;     /* the fragment's own alpha */
+                t->adx = 0UL; t->ady = 0UL;
+                v = fire();
+                got = (v != OSMGA_HW3D_OK) ? 0xFFFFFFFFUL
+                                           : colour[0UL * STRIDE_DW + 2UL];
+                printf(" %3lu %3lu %3lu  ", (got >> 16) & 0xFFUL,
+                       (got >> 8) & 0xFFUL, got & 0xFFUL);
+            }
+            printf("\n");
+        }
+        printf("     python wants, at At = 1 / 127 / 128 / 254:\n"
+               "       diffused   92 88 84   92 88 84   92 88 84   92 88 84\n"
+               "       fromtex    33 64 96  112 96 80  112 96 80  191 128 64\n"
+               "       modulated  32 64 96   62 76 90   62 76 90   92 88 84\n");
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;

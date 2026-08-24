@@ -97,6 +97,23 @@ typedef struct {
  */
 #define OSMGA_MESA_BLEND_OPAQUE  0x00000101UL
 #define OSMGA_MESA_BLEND_OVER    0x01000154UL
+/*
+ * Which alpha the blend consumes, in bits 24 and 25 -- AC_alphasel.  OVER
+ * above carries "diffused", the interpolated alpha, which is right while
+ * nothing is textured and wrong the moment something is: GL wants the
+ * texture's alpha under GL_REPLACE on an RGBA texture, and the product of
+ * the two under GL_MODULATE.
+ *
+ * All three were measured on the machine at four texture alphas with a
+ * fragment alpha the texture does not carry: twelve readings, every one
+ * matching what python says the engine's blend must give.  The repository
+ * had predicted the divergence before a texture was ever bound
+ * (docs/D3_5_ALPHA_BLEND_PLAN.md).
+ */
+#define OSMGA_MESA_ALPHASEL_MASK 0x03000000UL
+#define OSMGA_MESA_ALPHASEL_TEX  0x00000000UL
+#define OSMGA_MESA_ALPHASEL_DIFF 0x01000000UL
+#define OSMGA_MESA_ALPHASEL_MOD  0x02000000UL
 
 #define OSMGA_MESA_ZMODE_NONE  0UL
 #define OSMGA_MESA_ZMODE_LT    0x400UL

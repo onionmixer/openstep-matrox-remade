@@ -316,9 +316,37 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     /*
      * The engine performs one blend and the chooser accepts only that one, so
      * the state has already been agreed to by the time this runs.
+     *
+     * WHICH alpha it blends with is a separate field, and it has to follow
+     * the texture environment or the picture is wrong rather than refused:
+     *
+     *      no texture, or RGB with GL_REPLACE   Av = Af        diffused
+     *      RGBA with GL_REPLACE                 Av = At        fromtex
+     *      GL_MODULATE                          Av = Af * At   modulated
+     *
+     * The constant carries "diffused", which was right while nothing was
+     * textured.  Measured with a texture bound: eight texels whose alphas
+     * ran from nought to 224 all came back as the bare destination, because
+     * the interpolated alpha was nought and that is the one it was told to
+     * use.
      */
     blend = ctx->Color.BlendEnabled ? OSMGA_MESA_BLEND_OVER
                                     : OSMGA_MESA_BLEND_OPAQUE;
+    if (ctx->Color.BlendEnabled && texOn) {
+        const struct gl_texture_object *bo =
+            ctx->Texture.Unit[0].CurrentD[2];
+        const struct gl_texture_image *bi =
+            (bo != 0) ? bo->Image[bo->BaseLevel] : 0;
+        unsigned long asel;
+
+        if (ctx->Texture.Unit[0].EnvMode == GL_MODULATE)
+            asel = OSMGA_MESA_ALPHASEL_MOD;
+        else if (bi != 0 && bi->Format == GL_RGBA)
+            asel = OSMGA_MESA_ALPHASEL_TEX;
+        else
+            asel = OSMGA_MESA_ALPHASEL_DIFF;
+        blend = (blend & ~OSMGA_MESA_ALPHASEL_MASK) | asel;
+    }
 
     if (ctx->Light.ShadeModel == GL_FLAT) {
         prov.x = (long)VB->Win.data[pv][0];
