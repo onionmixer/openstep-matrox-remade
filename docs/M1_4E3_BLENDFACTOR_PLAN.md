@@ -150,3 +150,35 @@ GL 의 정의는 색에 `min(As, 1−Ad)` 이고 **알파에는 1** 이다 — �
 표에 `DST_COLOR ZERO` 를 `604010`, `SRC_ALPHA 1-SRC_A` 를 `A26030` 으로 적었다.
 python 은 `602008` 과 `A06030` 이라 한다 — 손으로 어림한 값을 적은 것이고,
 계산은 python 으로 한다는 규칙을 어긴 자리다.  고치고 나니 여섯이 전부 맞았다.
+
+## 11. GL 을 통해서도 맞는다
+
+```
+   ONE       ONE       engine e0ffc060  software e0ffc060  worst 0
+   SRC_ALPHA ONE                a0e08040           a0e08040        0
+   DST_COLOR ZERO               30602008           30602008        0
+   ZERO      SRC_COLOR          30602008           30602008        0
+   ONE       1-SRC_A            b0ffa050           b0ffa050        0
+   DST_ALPHA 1-DST_A            6c98582c           6c98582c        0
+   1-DST_C   ZERO               50606038           50606038        0
+   ZERO      1-SRC_C            30202018           30202018        0
+   SRC_ALPHA 1-SRC_A            70a06030           70a06030        0
+
+   ok  GL_SRC_ALPHA_SATURATE does not reach the engine
+   ok  nor does a separate alpha factor
+```
+
+**아홉 쌍, 네 채널, 차이 0.**
+
+codex 는 `DST_COLOR/ZERO` 와 `ZERO/SRC_COLOR` 가 Mesa 의 `>>8`(÷256) 경로로
+가므로 `/255` 엔진과 가장 갈릴 것이라 봤다.  **안 갈렸다** — 이 값들에서는 두
+나눗셈이 같은 답을 낸다.  그래도 그 지적은 옳았다: 그 쌍을 반드시 채점하라는
+것이었고, 그래서 표에 들어갔다.
+
+## 12. 회귀
+
+```
+   기준 장면 14      SCENES_MOVED=0
+   블렌드 네 장면    BLEND_SCENES_BAD=0
+   tbf tdf texdraw reach tv trh trs tbg   전부 0 failing
+```

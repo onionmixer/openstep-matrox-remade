@@ -371,6 +371,43 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
      */
     blend = ctx->Color.BlendEnabled ? OSMGA_MESA_BLEND_OVER
                                     : OSMGA_MESA_BLEND_OPAQUE;
+    if (ctx->Color.BlendEnabled) {
+        /*
+         * The factor pair the application asked for, in the engine's
+         * numbering -- and ONLY bits 0-7 are touched, because the alpha mode
+         * and the selector live above them and the selector is set below.
+         *
+         * The chooser has already refused anything not in these two lists,
+         * so a default here would be unreachable; it is written all the same,
+         * and it keeps the pair the back end has always used.
+         */
+        unsigned long fs = OSMGA_MESA_BF_SRC_A;
+        unsigned long fd = OSMGA_MESA_BF_OM_SRC_A;
+
+        switch (ctx->Color.BlendSrcRGB) {
+        case GL_ZERO:                 fs = OSMGA_MESA_BF_ZERO;       break;
+        case GL_ONE:                  fs = OSMGA_MESA_BF_ONE;        break;
+        case GL_DST_COLOR:            fs = OSMGA_MESA_BF_OTHER_C;    break;
+        case GL_ONE_MINUS_DST_COLOR:  fs = OSMGA_MESA_BF_OM_OTHER_C; break;
+        case GL_SRC_ALPHA:            fs = OSMGA_MESA_BF_SRC_A;      break;
+        case GL_ONE_MINUS_SRC_ALPHA:  fs = OSMGA_MESA_BF_OM_SRC_A;   break;
+        case GL_DST_ALPHA:            fs = OSMGA_MESA_BF_DST_A;      break;
+        case GL_ONE_MINUS_DST_ALPHA:  fs = OSMGA_MESA_BF_OM_DST_A;   break;
+        default:                                                     break;
+        }
+        switch (ctx->Color.BlendDstRGB) {
+        case GL_ZERO:                 fd = OSMGA_MESA_BF_ZERO;       break;
+        case GL_ONE:                  fd = OSMGA_MESA_BF_ONE;        break;
+        case GL_SRC_COLOR:            fd = OSMGA_MESA_BF_OTHER_C;    break;
+        case GL_ONE_MINUS_SRC_COLOR:  fd = OSMGA_MESA_BF_OM_OTHER_C; break;
+        case GL_SRC_ALPHA:            fd = OSMGA_MESA_BF_SRC_A;      break;
+        case GL_ONE_MINUS_SRC_ALPHA:  fd = OSMGA_MESA_BF_OM_SRC_A;   break;
+        case GL_DST_ALPHA:            fd = OSMGA_MESA_BF_DST_A;      break;
+        case GL_ONE_MINUS_DST_ALPHA:  fd = OSMGA_MESA_BF_OM_DST_A;   break;
+        default:                                                     break;
+        }
+        blend = (blend & ~OSMGA_MESA_BLEND_FACTOR_MASK) | fs | (fd << 4);
+    }
     if (ctx->Color.BlendEnabled && texOn) {
         /*
          * "From the texture", for every textured state, because that is not
@@ -899,8 +936,41 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
      * nearly right is a picture that is wrong.
      */
     if ((ctx->RasterMask & BLEND_BIT) != 0) {
-        if (ctx->Color.BlendSrcRGB != GL_SRC_ALPHA)           return NULL;
-        if (ctx->Color.BlendDstRGB != GL_ONE_MINUS_SRC_ALPHA) return NULL;
+        /*
+         * The factors the engine has, by name.
+         *
+         * Nine source values and eight destination ones, which are GL 1.1's
+         * two sets for those two roles.  A whitelist and not a mapping,
+         * because this Mesa accepts MORE than GL 1.1 does -- SRC_COLOR and
+         * its complement as SOURCE factors under the blend-square extension,
+         * and the whole constant-colour family, which is enabled by default.
+         * A mapping would have sent those somewhere.
+         *
+         * GL_SRC_ALPHA_SATURATE is refused, and not because GL forbids it:
+         * this Mesa allows it and implements the split GL asks for, min(As,
+         * 1 - Ad) for colour and exactly one for alpha.  The engine has ONE
+         * factor field for both, so whether it carries that split is a thing
+         * nobody has measured, and an unmeasured special case is not
+         * something to hand the engine.
+         */
+        switch (ctx->Color.BlendSrcRGB) {
+        case GL_ZERO: case GL_ONE:
+        case GL_DST_COLOR: case GL_ONE_MINUS_DST_COLOR:
+        case GL_SRC_ALPHA: case GL_ONE_MINUS_SRC_ALPHA:
+        case GL_DST_ALPHA: case GL_ONE_MINUS_DST_ALPHA:
+            break;
+        default:
+            return NULL;
+        }
+        switch (ctx->Color.BlendDstRGB) {
+        case GL_ZERO: case GL_ONE:
+        case GL_SRC_COLOR: case GL_ONE_MINUS_SRC_COLOR:
+        case GL_SRC_ALPHA: case GL_ONE_MINUS_SRC_ALPHA:
+        case GL_DST_ALPHA: case GL_ONE_MINUS_DST_ALPHA:
+            break;
+        default:
+            return NULL;
+        }
         /*
          * The alpha factors are stored separately and can be set separately,
          * so checking only the colour ones would let a state through whose
@@ -908,8 +978,17 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
          * own fast path checks the same two, which is where the omission
          * showed.
          */
-        if (ctx->Color.BlendSrcA != GL_SRC_ALPHA)             return NULL;
-        if (ctx->Color.BlendDstA != GL_ONE_MINUS_SRC_ALPHA)   return NULL;
+        /*
+         * One field for colour and alpha both, so the two pairs have to be
+         * the same pair.  glBlendFunc sets all four together and cannot
+         * break this; glBlendFuncSeparateEXT can, and this Mesa has it.
+         *
+         * It used to hold each of the four to one value, so the equality was
+         * true by accident.  Widening the first two without saying this would
+         * have let an alpha factor be silently replaced by a colour one.
+         */
+        if (ctx->Color.BlendSrcA != ctx->Color.BlendSrcRGB)   return NULL;
+        if (ctx->Color.BlendDstA != ctx->Color.BlendDstRGB)   return NULL;
         if (ctx->Color.BlendEquation != GL_FUNC_ADD_EXT)      return NULL;
         /*
          * And the destination alpha has to be where the engine puts it.  If

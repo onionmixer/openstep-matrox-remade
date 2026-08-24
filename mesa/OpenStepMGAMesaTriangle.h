@@ -112,6 +112,33 @@ typedef struct {
  */
 #define OSMGA_MESA_BLEND_OPAQUE  0x00000101UL
 #define OSMGA_MESA_BLEND_OVER    0x01000154UL
+
+/*
+ * The blend factors, as the engine numbers them.
+ *
+ * Nine for the source and eight for the destination, and they are GL 1.1's
+ * own two sets for those two roles -- the source may take DST_COLOR and the
+ * destination SRC_COLOR, never the other way round (mgareg_flags.h, AC_src_*
+ * and AC_dst_*).
+ *
+ * These are NOT derived from the GLenum values.  GL numbers SRC_ALPHA 0x302
+ * and DST_COLOR 0x306, in no relation to the field; the mapping is written
+ * out as two switches so that a transposed pair is a compile-time thing to
+ * look at rather than an arithmetic accident.
+ *
+ * Everything outside bits 0-7 is left alone by the mapping: bits 8-9 carry
+ * the alpha mode and 24-25 the selector this back end sets for textured
+ * blending, and a mapping that wrote only the factors would clear both.
+ */
+#define OSMGA_MESA_BLEND_FACTOR_MASK 0x000000FFUL
+#define OSMGA_MESA_BF_ZERO       0UL
+#define OSMGA_MESA_BF_ONE        1UL
+#define OSMGA_MESA_BF_OTHER_C    2UL   /* DST_COLOR for src, SRC_COLOR for dst */
+#define OSMGA_MESA_BF_OM_OTHER_C 3UL
+#define OSMGA_MESA_BF_SRC_A      4UL
+#define OSMGA_MESA_BF_OM_SRC_A   5UL
+#define OSMGA_MESA_BF_DST_A      6UL
+#define OSMGA_MESA_BF_OM_DST_A   7UL
 /*
  * Which alpha the blend consumes, in bits 24 and 25 -- AC_alphasel.  OVER
  * above carries "diffused", the interpolated alpha, which is right while
