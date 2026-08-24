@@ -199,6 +199,52 @@ pixat(unsigned long r, unsigned long c)
 }
 
 /*
+ * The same reading, but from a primitive whose REACH is high.
+ *
+ * v is still v7 on the first row -- that is the row that is read -- but the
+ * primitive climbs from there to the top of the 2^23 band, so the reach it
+ * reports is that top and the rung it is given is the small bias.  The reach
+ * is the maximum over the trapezoid's whole walk and the encoder subtracts
+ * one rung from its one anchor, so every row of it, the first included, is
+ * drawn with the bias its farthest row earned.
+ *
+ * Which is the seam: the same coordinate, seen through two biases.
+ */
+static unsigned long
+osmgaProbeReadVFar(long v7)
+{
+    unsigned v;
+    long climb;
+
+    colour[0] = BLANK;
+    (void)setup(64UL, 0UL, 8UL, 8UL, 0L,
+                OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV);
+    batch->state.texW = 8UL;
+    batch->state.texH = 2048UL;
+    batch->state.texPitch = 8UL;
+    /* eight rows carrying v from v7 up into the 2^23 band */
+    /*
+     * Eight rows, so the last one is seven climbs up, and the division
+     * rounds DOWN on purpose.
+     *
+     * Rounding up was tried, on the reasoning that the top should reach the
+     * band rather than stop short of it.  It reaches past instead, and 2^23
+     * is not the middle of the band -- it is COORD_MAX, the top of the whole
+     * range -- so every reading came back refused.  Rounding down lands at
+     * or just below it, which is still band 2^23, because the band is the
+     * smallest power of two the value does not exceed.
+     */
+    climb = ((1L << 23) - v7) / 7L;
+    batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+    batch->state.tmr[2] = 0L; batch->state.tmr[3] = climb;
+    setTU(batch, 0L); setTV(batch, v7);
+    v = fire();
+    if (v != OSMGA_HW3D_OK)
+        return 99999UL;
+    return pixat(0UL, 0UL) & 0xFFFFUL;
+}
+
+/*
  * One reading for section 56: which texel a constant v coordinate lands on,
  * on the 2048-tall texture under repeat.  Only the one pixel that is read is
  * cleared -- blanking the whole surface for each of these would dominate the
@@ -5576,6 +5622,262 @@ main(void)
             failures++;
         }
         (void)texelHits; (void)combHits; (void)other;
+    }
+
+    /*
+     * 82. The seam, on a texture tall enough for it to bite.
+     *
+     * The bias belongs to the trapezoid and is chosen from its own reach, so
+     * two neighbours can see the SAME coordinate through different biases: a
+     * primitive reaching only 2^20 takes 496, one reaching 2^23 takes 384,
+     * and a coordinate at or below 2^20 has an addend of 496 -- so its
+     * residual is nought in the first and 112 in the second, and the same
+     * number lands 112 units apart.
+     *
+     * The two residuals are NOT nought and 112.  The coordinate's own addend
+     * is the one its magnitude implies, and the boundary swept here sits at
+     * 262144, which is 2^18 exactly and takes 508 -- so the residuals are 12
+     * and 124.  Their DIFFERENCE is 112, which is what sets the window's
+     * width, and taking the residuals themselves for nought and 112 puts the
+     * window in the wrong place by twelve.  It was written that way first and
+     * the hardware said 13..124 where the arithmetic had said 1..112.
+     *
+     * That window is 0.17% of a texel on the 16-texel texture the earlier
+     * measurement used, which is why it found nothing there.  On this one --
+     * 2048 rows, a texel of 512 -- it is 21.9%, and with four samples to a
+     * texel the nearest sample sits 64 units from a boundary.  64 is less
+     * than 112, so python says it must show.
+     *
+     * Two things are asked.  How wide the window really is, by sweeping a
+     * coordinate below a texel boundary and finding where the two readings
+     * part; and whether an ordinary tiling rate lands in it.
+     */
+    {
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / 2048UL);   /* 512 */
+        long bnd = 512L * texel;          /* a texel boundary, well inside */
+        long k, first = -1L, last = -1L;
+        int crossed = 0, tot = 0;
+        /* which of the sixteen phases crossed, one mask per sample, so the
+         * PATTERN is checked and not only the total: a count can be right by
+         * accident and a pattern of twelve cannot */
+        unsigned phaseHits[4];
+
+        phaseHits[0] = phaseHits[1] = phaseHits[2] = phaseHits[3] = 0U;
+
+        printf("\n82. the seam at 2048 rows, where a texel is %ld units\n",
+               texel);
+
+        /* the window: sweep the coordinate down from a texel boundary */
+        for (k = 0L; k <= 200L; k++) {
+            unsigned long near = osmgaProbeReadV(bnd - k);
+            unsigned long far  = osmgaProbeReadVFar(bnd - k);
+
+            if (near == 99999UL || far == 99999UL) {
+                printf("   FAIL  a reading was refused at k = %ld\n", k);
+                failures++;
+                break;
+            }
+            if (near != far) {
+                if (first < 0L) first = k;
+                last = k;
+            }
+        }
+        if (first < 0L) {
+            printf("   FAIL  the two biases never parted, so either the"
+                   " residual model is wrong\n"
+                   "         or the far primitive did not get the far"
+                   " bias\n");
+            failures++;
+        } else {
+            printf("   they part from k = %ld to k = %ld, a window of %ld"
+                   " units\n", first, last, last - first + 1L);
+            printf("   python wants 13 to 124, a window of 112"
+                   " (%.1f%% of a texel)\n", 100.0 * 112.0 / (double)texel);
+            if (first == 13L && last == 124L)
+                printf("   ok    the window is where and as wide as"
+                       " predicted\n");
+            else {
+                printf("   FAIL  the window is not the predicted one\n");
+                failures++;
+            }
+        }
+
+        /*
+         * And now at a tiling rate: four samples to a texel, swept over the
+         * phases.  This is the question the earlier round left open -- the
+         * window existing is not the same as an ordinary picture landing in
+         * it, and at TD 16 it does not.
+         */
+        for (k = 0L; k < 16L; k++) {
+            long phase = k * (texel / 16L);
+            int j;
+
+            for (j = 0; j < 4; j++) {
+                long c = bnd - texel + phase + j * (texel / 4L);
+                unsigned long near = osmgaProbeReadV(c);
+                unsigned long far  = osmgaProbeReadVFar(c);
+
+                if (near == 99999UL || far == 99999UL) {
+                    /* a refusal is not a crossing, and counting it as one is
+                     * how the first run of this reported 58 of 64 */
+                    printf("   FAIL  a reading was refused at phase %ld"
+                           " sample %d\n", k, j);
+                    failures++;
+                    continue;
+                }
+                tot++;
+                if (near != far) {
+                    crossed++;
+                    phaseHits[j] |= 1U << (unsigned)k;
+                }
+            }
+        }
+        printf("   at four samples a texel: %d of %d positions read a"
+               " different row\n", crossed, tot);
+        /*
+         * The COUNT and the PHASES, because a count alone can be right by
+         * accident.  python names them: sample 3 of phases 1, 2 and 3;
+         * sample 2 of 5, 6 and 7; sample 1 of 9, 10 and 11; sample 0 of 13,
+         * 14 and 15 -- twelve positions, the four samples marching backwards
+         * through the phases as the window slides.
+         */
+        printf("   phases that crossed, per sample: %04x %04x %04x %04x\n",
+               phaseHits[0], phaseHits[1], phaseHits[2], phaseHits[3]);
+        printf("   python wants 12 of 64 at e000 0e00 00e0 000e -- the four"
+               " samples marching backwards through the phases\n");
+        if (crossed == 12 && tot == 64 &&
+            phaseHits[0] == 0xE000U && phaseHits[1] == 0x0E00U &&
+            phaseHits[2] == 0x00E0U && phaseHits[3] == 0x000EU)
+            printf("   ok    the seam bites at an ordinary tiling rate, as"
+                   " far as predicted\n");
+        else {
+            printf("   FAIL  %d crossed of %d\n", crossed, tot);
+            failures++;
+        }
+    }
+
+    /*
+     * 83. The u lane, across the bands, both sizes, and below nought.
+     *
+     * 62 asked this at ONE band and ONE width, which is where the earlier
+     * round left it: the v axis had been swept over several bands and over
+     * negative coordinates, and u had not.
+     *
+     * What makes u the interesting axis is that the two texture stages drive
+     * even and odd screen COLUMNS, so a residue with a lane component shows
+     * here and nowhere else -- v is constant along a row and cannot see it.
+     * The danger is a residue in the NEGATIVE direction: the whole bias
+     * scheme rests on the engine's addend never being smaller than the
+     * ladder says, because the encoder takes the ladder value off in advance.
+     *
+     * A coordinate is placed one texel below the top of each band, where the
+     * ladder step is smallest relative to the texel and a residue of a few
+     * units can flip the answer.  python says the residual is nought at
+     * every one of them, so every column must read the texel BELOW the
+     * boundary -- the last one, since the coordinate is a whole number of
+     * texels.  A column reading one higher is a positive residue; one
+     * reading lower is the dangerous direction and would mean the ladder is
+     * wrong for u.
+     *
+     * Then below nought, where the addend is a flat 511 whatever the
+     * magnitude and the bias is 496, so the residual is 15 -- positive, and
+     * far smaller than any texel here, so the texel read is still the one
+     * the coordinate names.
+     *
+     * Width 2048 is not tried: TEXCTL's pitch field is eleven bits and the
+     * validator holds the pitch to 2047, so a 2048-wide texture cannot be
+     * declared at all.  Height 2048 is what section 82 uses and it tests v.
+     */
+    {
+        static const unsigned long widths[2] = { 64UL, 1024UL };
+        static const int bands[4] = { 20, 21, 22, 23 };
+        unsigned long rr, cc;
+        int wi, bi, col, k;
+
+        printf("\n83. the u lane across the bands, both widths, and below"
+               " nought\n");
+        for (wi = 0; wi < 2; wi++) {
+            unsigned long W = widths[wi];
+            long texel = (long)(OSMGA_HW3D_TEX_SPAN / W);
+
+            for (rr = 0UL; rr < 4UL; rr++)
+                for (cc = 0UL; cc < W; cc++)
+                    tex[rr * W + cc] = cc;
+
+            for (bi = 0; bi < 4; bi++) {
+                long C = (1L << bands[bi]) - texel;
+                unsigned long want = W - 1UL;
+                unsigned long got[8];
+                unsigned v;
+                int bad = 0;
+
+                blank();
+                (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                            OSMGA_HW3D_TEXF_REPEATU
+                            | OSMGA_HW3D_TEXF_REPEATV);
+                batch->state.texW = W; batch->state.texH = 4UL;
+                batch->state.texPitch = W;
+                batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+                batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+                setTU(batch, C); setTV(batch, 0L);
+                v = fire();
+                printf("   width %4lu  band 2^%d  coord %8ld ->", W,
+                       bands[bi], C);
+                if (v != OSMGA_HW3D_OK) {
+                    printf("  refused %u\n", v);
+                    failures++;
+                    continue;
+                }
+                for (col = 0; col < 8; col++) {
+                    got[col] = pixat(0UL, (unsigned long)col) & 0xFFFFUL;
+                    printf(" %lu", got[col]);
+                    if (got[col] != want) bad++;
+                }
+                printf("   (all must be %lu)\n", want);
+                if (bad) {
+                    printf("   FAIL  %d of 8 columns read something else --"
+                           " the lanes do not agree\n", bad);
+                    failures++;
+                }
+            }
+
+            /* and below nought, where the addend is flat */
+            for (k = 1; k <= 4; k <<= 1) {
+                long C = -((long)k * texel);
+                unsigned long want = W - (unsigned long)k;
+                unsigned long got;
+                unsigned v;
+                int bad = 0;
+
+                blank();
+                (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                            OSMGA_HW3D_TEXF_REPEATU
+                            | OSMGA_HW3D_TEXF_REPEATV);
+                batch->state.texW = W; batch->state.texH = 4UL;
+                batch->state.texPitch = W;
+                batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+                batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+                setTU(batch, C); setTV(batch, 0L);
+                v = fire();
+                printf("   width %4lu  below nought %8ld ->", W, C);
+                if (v != OSMGA_HW3D_OK) {
+                    printf("  refused %u\n", v);
+                    failures++;
+                    continue;
+                }
+                for (col = 0; col < 8; col++) {
+                    got = pixat(0UL, (unsigned long)col) & 0xFFFFUL;
+                    printf(" %lu", got);
+                    if (got != want) bad++;
+                }
+                printf("   (all must be %lu)\n", want);
+                if (bad) {
+                    printf("   FAIL  %d of 8 columns disagree below nought\n",
+                           bad);
+                    failures++;
+                }
+            }
+        }
     }
 
     printf("\n%s (%d failing)\n",
