@@ -62,8 +62,29 @@ draw(int soft, unsigned long *drew)
 {
     unsigned long before = OSMGAMesaHookDrawn();
 
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    /*
+     * The clear has to happen with the scissor OFF, and this is the whole
+     * reason an earlier version of this test measured nothing.
+     *
+     * glClear obeys the scissor.  The back end hands Mesa the video memory
+     * surface itself and mirrors that surface -- all of it -- back to the
+     * application's buffer after every frame, in one direction only.  So a
+     * scissored clear leaves everything outside the box holding whatever the
+     * PREVIOUS run drew there, and the mirror faithfully delivers it.  The
+     * test then sees the old quad, counts it as unclipped, and blames the
+     * engine.  With an empty box it clears nothing at all and the old frame
+     * comes back whole, which is what made even the kernel's skip look
+     * broken.  It also explains why the very first run after a boot passed:
+     * there was nothing stale to inherit yet.
+     */
+    {
+        GLboolean wasOn = glIsEnabled(GL_SCISSOR_TEST);
+
+        if (wasOn) glDisable(GL_SCISSOR_TEST);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        if (wasOn) glEnable(GL_SCISSOR_TEST);
+    }
     if (soft) softOn();
     glColor3f(0.0f, 1.0f, 0.0f);
     glBegin(GL_TRIANGLES);
@@ -125,6 +146,14 @@ main(void)
         glEnable(GL_SCISSOR_TEST);
         glScissor(SX, SY, SW, SH);
         (void)draw(0, &dh);
+        {
+            long x, y, litc = 0;
+
+            for (y = 0; y < H; y++)
+                for (x = 0; x < W; x++) if (lit(x, y)) litc++;
+            printf("   [hardware pass drew %lu batches, %ld pixels lit;"
+                   " python says %d]\n", dh, litc, SW * SH);
+        }
         for (i = 0; i < 9; i++) {
             char name[80];
             int got = lit(pts[i].x, pts[i].y);
@@ -148,6 +177,14 @@ main(void)
 
             memcpy(hw, app, (unsigned)(W * H) * sizeof(unsigned long));
             (void)draw(1, &ds);
+            {
+                long litc = 0;
+
+                for (y = 0; y < H; y++)
+                    for (x = 0; x < W; x++) if (lit(x, y)) litc++;
+                printf("   [software pass drew %lu batches, %ld pixels lit]\n",
+                       ds, litc);
+            }
             for (y = 0; y < H; y++)
                 for (x = 0; x < W; x++)
                     if (hw[y * W + x] != app[y * W + x]) bad++;
