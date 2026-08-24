@@ -1488,8 +1488,27 @@ osmgaDevMmap(int dev, int offset, int prot)
          * unchecked commands reach the engine and make the whole
          * validate-then-encode split pointless.  The client writes a batch;
          * the list is ours.
+         *
+         * The question is asked of the WHOLE PAGE, not of the offset.  This
+         * refused rel >= OSMGA_HW3D_BATCH_BYTES, which is the right idea
+         * asked of the wrong thing: the kernel maps a whole page for every
+         * offset it accepts, and 28 KiB was three and a half of them, so the
+         * last accepted page ran 4 KiB past the batch and into the list.  It
+         * was not theoretical -- the client maps the whole batch window, so
+         * every accelerated process had it, and a test read the list back
+         * and watched it change as batches were submitted.
+         *
+         * Asked against RING_OFFSET rather than BATCH_BYTES: the same number
+         * today, but it is the ring this protects, and if the two ever part
+         * company again it is the ring that must decide.  The check at init
+         * refuses to offer the window at all unless RING_OFFSET is a whole
+         * number of pages, which is what makes the page-start test below
+         * equivalent to a page-end test.
          */
-        if (rel >= OSMGA_HW3D_BATCH_BYTES)
+        if (rel >= OSMGA_HW3D_RING_OFFSET)
+            return -1;
+        if (OSMGA_HW3D_RING_OFFSET < (unsigned long)PAGE_SIZE ||
+            rel > OSMGA_HW3D_RING_OFFSET - (unsigned long)PAGE_SIZE)
             return -1;
         if (osmgaMmapCmdBytes < (unsigned long)PAGE_SIZE ||
             rel > osmgaMmapCmdBytes - (unsigned long)PAGE_SIZE)
@@ -2251,9 +2270,55 @@ static IODisplayInfo osmgaModeTemplate = {
                     IOLog("OpenStepMGA M1-0: IOMallocLow failed, command "
                           "window not offered\n");
                 }
+                /*
+                 * The split has to be a whole number of pages, or the last
+                 * page a client may map reaches into the command list.  It
+                 * is a property of two constants and a runtime page size, so
+                 * it is checked rather than believed -- and PAGE_SIZE is not
+                 * a compile-time constant the shared header could test.
+                 */
+                if (ring != 0 &&
+                    ((OSMGA_HW3D_RING_OFFSET %
+                      (unsigned long)PAGE_SIZE) != 0UL ||
+                     OSMGA_HW3D_RING_OFFSET < OSMGA_HW3D_BATCH_BYTES ||
+                     OSMGA_HW3D_RING_OFFSET >= OSMGA_DMA_RING_BYTES)) {
+                    IOLog("OpenStepMGA M1-0: the batch/list split (%lu of "
+                          "%lu, page %lu) is not a whole number of pages -- "
+                          "a mapped page would reach the list; command "
+                          "window NOT offered\n",
+                          (unsigned long)OSMGA_HW3D_RING_OFFSET,
+                          (unsigned long)OSMGA_DMA_RING_BYTES,
+                          (unsigned long)PAGE_SIZE);
+                    IOFreeLow(ring, (int)OSMGA_DMA_RING_BYTES);
+                    ring = 0;
+                    ringPhys = 0UL;
+                }
+                /*
+                 * And nothing of the kernel's goes out with it.  IOMallocLow
+                 * hands back whatever was in the arena, and the client maps
+                 * more of the batch region than its batch occupies, so the
+                 * difference was kernel memory nobody had looked at.
+                 */
+                if (ring != 0) {
+                    unsigned long *z = (unsigned long *)ring;
+                    unsigned long zi;
+
+                    for (zi = 0UL; zi < OSMGA_DMA_RING_BYTES / 4UL; zi++)
+                        z[zi] = 0UL;
+                }
                 osmgaMmapCmdVirt     = ring;
                 osmgaMmapCmdPhysical = ringPhys;
-                osmgaMmapCmdBytes    = (ring != 0) ? OSMGA_DMA_RING_BYTES : 0UL;
+                /*
+                 * What a client may map, which is the batch -- NOT the whole
+                 * allocation.  It held the allocation, and the boot self-test
+                 * derived its "last mappable page" from it and had therefore
+                 * been asking for a page of the command list and calling the
+                 * refusal a failure at every boot since the split was made.
+                 * A test that always fails is a test nobody reads, and this
+                 * one was standing in front of a real hole.
+                 */
+                osmgaMmapCmdBytes    = (ring != 0) ? OSMGA_HW3D_RING_OFFSET
+                                                   : 0UL;
 
                 osmgaMmapWindowStart = start;
                 osmgaMmapWindowEnd   = end;
@@ -7481,6 +7546,60 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
         osmgaDevMmap(0, (int)cmdBase, PROT_READ) >= 0) {
         IOLog("OpenStepMGA M1-0: read-only protection was accepted\n");
         bad++;
+    }
+
+    /*
+     * And the property itself, asked of every page rather than of the two or
+     * three offsets somebody thought of.
+     *
+     * The cases above are a list, and a list is only as good as what was on
+     * somebody's mind when they wrote it.  What matters here is not any
+     * particular offset: it is that NO PAGE A CLIENT MAY MAP REACHES THE
+     * COMMAND LIST.  The kernel maps a whole page for every offset it
+     * accepts, so that is a statement about page ENDS, and it is checked by
+     * walking every page of the allocation and asking whether accepting it
+     * would have been right.
+     *
+     * This is the test that was missing.  The split used to be 28 KiB with
+     * an 8 KiB page -- three and a half pages -- and the fourth page ran
+     * into the list.  Every case in the list above passed except one, and
+     * that one was failing for an unrelated and stale reason, so the real
+     * hole sat behind a FAIL line that had become furniture.
+     */
+    {
+        unsigned long rel;
+        int pageBad = 0;
+
+        for (rel = 0UL; rel < OSMGA_DMA_RING_BYTES;
+             rel += (unsigned long)PAGE_SIZE) {
+            int got = osmgaDevMmap(0, (int)(cmdBase + rel), OSMGA_PROT_RW);
+            int accepted = (got >= 0);
+            /* Right iff the whole page lies below the list. */
+            int ought = (rel + (unsigned long)PAGE_SIZE <=
+                         OSMGA_HW3D_RING_OFFSET);
+
+            if (accepted != ought) {
+                IOLog("OpenStepMGA M1-0: page at +%lu (covers +%lu..+%lu) "
+                      "was %s and the list starts at +%lu\n",
+                      rel, rel, rel + (unsigned long)PAGE_SIZE - 1UL,
+                      accepted ? "ACCEPTED" : "refused",
+                      (unsigned long)OSMGA_HW3D_RING_OFFSET);
+                pageBad++;
+            }
+        }
+        if (pageBad != 0) {
+            IOLog("OpenStepMGA M1-0: %d page(s) decided wrongly -- a client "
+                  "can reach the command list\n", pageBad);
+            bad += pageBad;
+        }
+        else {
+            IOLog("OpenStepMGA M1-0: every page of the block decides by "
+                  "whether it REACHES the list, not by where it starts "
+                  "(%lu mappable of %lu)\n",
+                  (unsigned long)OSMGA_HW3D_RING_OFFSET /
+                      (unsigned long)PAGE_SIZE,
+                  OSMGA_DMA_RING_BYTES / (unsigned long)PAGE_SIZE);
+        }
     }
 
     IOLog("OpenStepMGA M1-0: vram %08lx..%08lx, cmd base %08lx bytes %lu "

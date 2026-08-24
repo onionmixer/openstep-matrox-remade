@@ -37,15 +37,45 @@
  * and far too small for a real drawing surface.  The layout changed, so the
  * version had to move -- the probe demands an exact match precisely so that
  * a library and a driver disagreeing about where the fields are cannot draw.
+ *
+ * 3: the split below moved, which moves sizeof(OSMGAHW3DBatch).  The batch
+ * had to shrink so that the region a client may map is a whole number of
+ * pages -- see the note on the split -- and the triangle count came down
+ * with it.  A library built against version 2 would lay its triangles out
+ * at the wrong offsets, so the version is what stops the pair from drawing
+ * at all rather than drawing wrongly.
  */
-#define OSMGA_HW3D_VERSION      8UL
+#define OSMGA_HW3D_VERSION      9UL
 
-/* The 64 KiB IOMallocLow block is split: the client writes the batch at the
- * start, the kernel builds the command list after it.  28 KiB and 36 KiB
- * balance the two -- both hold about 255 triangles (scratchpad/m1_size.py). */
-#define OSMGA_HW3D_BATCH_BYTES  (28UL * 1024UL)
+/*
+ * The 64 KiB IOMallocLow block is split: the client writes the batch at the
+ * start, the kernel builds the command list after it.
+ *
+ * 24 KiB and 40 KiB, and the first number is the one that is not free to
+ * move.  The kernel maps a WHOLE PAGE per mmap call, and PAGE_SIZE here is
+ * 8192, so if the batch did not end on a page boundary the last page a
+ * client may map would reach past it into the command list -- which it did:
+ * the split was 28 KiB, three and a half pages, and every accelerated
+ * process had 4 KiB of the list mapped read-write.  Measured on the machine,
+ * not deduced: a client read the list back and watched it change as batches
+ * were submitted.  So the batch is three whole pages and the mmap handler
+ * refuses anything that would reach the list.
+ *
+ * 64 KiB is a hard ceiling, not a choice: dma_buf_alloc refuses a larger
+ * request (see OSMGA_DMA_RING_BYTES in the driver), so the two halves have
+ * to be traded against each other rather than both made bigger.
+ *
+ * The triangle count follows from what is left.  sizeof(OSMGAHW3DBatch) is
+ * 108 + 132 * MAX_TRI and has to fit in the batch's three pages, while the
+ * list has to hold the worst case the encoder can produce for that many
+ * primitives; 180 satisfies both with room over on each side, and 185 is the
+ * most that would fit at all.  It costs the Mesa path nothing: that path
+ * submits one source triangle's one to four trapezoids per batch and has
+ * never come near either number.
+ */
+#define OSMGA_HW3D_BATCH_BYTES  (24UL * 1024UL)
 #define OSMGA_HW3D_RING_OFFSET  OSMGA_HW3D_BATCH_BYTES
-#define OSMGA_HW3D_MAX_TRI      200UL
+#define OSMGA_HW3D_MAX_TRI      180UL
 
 /*
  * Pixels of x travel an edge may accumulate over one triangle.  Chosen to
@@ -722,11 +752,28 @@ typedef int OSMGAHW3DWordCheck[(sizeof(unsigned long) == 4) ? 1 : -1];
  */
 #define OSMGA_HW3D_ENC_BLOCK_DW   5UL   /* index dword + four values */
 #define OSMGA_HW3D_ENC_STATE_BLK  8UL   /* before the loop; 6 today */
-#define OSMGA_HW3D_ENC_TRI_BLK    8UL   /* per primitive; 7 before the move */
+/*
+ * Nine, not eight.  Counted from the encoder rather than from memory: a
+ * primitive emits seven blocks unconditionally, one more when it is
+ * textured, and one to start it -- and the eight that stood here was short
+ * by exactly that textured one.  The bound it produced was therefore an
+ * UNDER-estimate, which is the one direction a bound must not be wrong in:
+ * it would have let the list be sized too small and the encoder would have
+ * refused whole batches at the far end.  It never did, because the list
+ * happened to be large enough anyway.
+ */
+#define OSMGA_HW3D_ENC_TRI_BLK    9UL   /* per primitive; 8 unconditional + tex */
 #define OSMGA_HW3D_ENC_TAIL_BLK   4UL   /* after it; 3 today */
 #define OSMGA_HW3D_ENC_DWORDS \
     (((OSMGA_HW3D_ENC_STATE_BLK + OSMGA_HW3D_ENC_TAIL_BLK) + \
       OSMGA_HW3D_MAX_TRI * OSMGA_HW3D_ENC_TRI_BLK) * OSMGA_HW3D_ENC_BLOCK_DW)
+/*
+ * 64 KiB is the whole block; what is left after the batch is the list.  The
+ * literal is here rather than shared with the driver's OSMGA_DMA_RING_BYTES
+ * because this header is compiled by clients that have no business knowing
+ * how the kernel allocates -- but the two must agree, and the driver checks
+ * at init that they do.
+ */
 typedef int OSMGAHW3DListCheck[
     ((OSMGA_HW3D_ENC_DWORDS * 4UL) <=
      (64UL * 1024UL - OSMGA_HW3D_RING_OFFSET)) ? 1 : -1];
