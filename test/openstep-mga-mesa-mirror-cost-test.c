@@ -205,6 +205,14 @@ main(void)
         printf("\n   where the frame goes, at 512x384\n");
         if (withClear > 0.0 && noClear > 0.0) {
             double clearMs = (withClear - noClear) * 1000.0;
+            /*
+             * What one walk of THIS surface costs, at the uncached video
+             * memory read rate measured in M1_4EB -- 5.36 MB/s.  A constant
+             * rather than a measurement so that the arithmetic below stays
+             * arithmetic; if the machine ever reads faster this is the one
+             * number to change.
+             */
+            double walkMs = 512.0 * 384.0 * 4.0 / 5.36e6 * 1000.0;
 
             printf("   clear + triangle + finish : %8.3f ms\n",
                    withClear * 1000.0);
@@ -220,17 +228,26 @@ main(void)
              * every bracket.  Calling that "the clear" sent the conclusion
              * underneath the wrong way round.
              */
-            printf("   so ASKING FOR THE CLEAR costs : %8.3f ms -- not the"
-                   " clearing, which is on the\n"
-                   "                                   engine, but the extra"
-                   " surface walk its own render\n"
-                   "                                   bracket causes\n",
-                   clearMs);
-            printf("   and drawing without it costs  : %8.3f ms, which is"
-                   " one walk plus one triangle\n", noClear * 1000.0);
-            printf("   a clear-and-draw frame therefore walks the surface"
-                   " TWICE, and neither walk\n   is the drawing: narrowing"
-                   " or dropping one of them is the whole of the win\n");
+            /*
+             * Say how many walks that IS, rather than asserting a number.
+             *
+             * This block twice carried a sentence about what the frame does
+             * -- "the clear is the larger half", then "the frame walks twice"
+             * -- and both went stale the moment the back end changed, while
+             * still reading as a measurement.  A walk has a known price here,
+             * so the count can be divided out of the time and printed, and
+             * then it cannot disagree with the numbers above it.
+             */
+            printf("   so ASKING FOR THE CLEAR costs : %8.3f ms  (%.2f"
+                   " surface walks)\n", clearMs, clearMs / walkMs);
+            printf("   and drawing without it costs  : %8.3f ms  (%.2f"
+                   " surface walks plus one triangle)\n",
+                   noClear * 1000.0, noClear * 1000.0 / walkMs);
+            printf("   a whole frame is %.2f walks of the %.3f ms one walk"
+                   " of this surface costs\n",
+                   withClear * 1000.0 / walkMs, walkMs);
+            printf("   -- the drawing is none of it; what a frame costs is"
+                   " delivering the surface\n");
         }
     }
 

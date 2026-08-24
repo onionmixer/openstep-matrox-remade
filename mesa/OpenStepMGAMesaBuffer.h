@@ -86,6 +86,13 @@ unsigned long OSMGAMesaBufferDepthOrigin(void);
  */
 void OSMGAMesaBufferMirror(void);
 
+/*
+ * Deliver a surface known to hold one value by writing that value, instead
+ * of reading the surface back.  Same bytes, and it does not touch video
+ * memory.  See the definition for why the word is not read from there.
+ */
+void OSMGAMesaBufferFill(unsigned long word);
+
 /* Something has been drawn; the next mirror has work to do. */
 void OSMGAMesaBufferSoiled(void);
 /* Read it back, and take it back -- for a bracket that turns out to have

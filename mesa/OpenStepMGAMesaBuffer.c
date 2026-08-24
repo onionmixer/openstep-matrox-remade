@@ -521,6 +521,48 @@ OSMGAMesaBufferMirror(void)
     }
 }
 
+/*
+ * Deliver a surface that is known to hold ONE VALUE, without reading it.
+ *
+ * A whole-surface clear leaves the surface holding a single word, so the
+ * caller's array can be brought up to date by writing that word rather than
+ * by walking video memory.  The bytes delivered are the same bytes; what is
+ * different is that they are not read back at 5.36 MB/s.  Measured on this
+ * machine: 0.585 ms rather than 146.722 ms at 512 by 384.
+ *
+ * Exactly the rows and columns the mirror writes -- bufWidth words at the
+ * caller's own row length -- so a caller whose array is wider than the
+ * picture keeps whatever it had in the padding, which is the mirror's
+ * contract and has to stay the contract.
+ *
+ * The word is NOT read from the surface.  A client's first read after a
+ * submission returns can hold what was there before the draw, and the
+ * offset it would have been read from -- the window's first word -- is the
+ * one the driver's own note says settles nothing (OpenStepMGAHW3D.h, and
+ * REMAINING_WORK 3-18).  The word comes from OSMesa's own packed clear
+ * pixel instead, which is the same word its software clear writes.
+ */
+void
+OSMGAMesaBufferFill(unsigned long word)
+{
+    unsigned long *dst;
+    unsigned long y, w;
+
+    if (bufMapped == 0 || bufApp == 0)
+        return;
+    bufDirty = 0;
+
+    dst = (unsigned long *)bufApp;
+    w = bufWidth;
+    for (y = 0UL; y < bufHeight; y++) {
+        unsigned long *d = dst + y * bufAppRow;
+        unsigned long x;
+
+        for (x = 0UL; x < w; x++)
+            d[x] = word;
+    }
+}
+
 void
 OpenStepMesaAccelReleaseBuffer(void *ctx)
 {

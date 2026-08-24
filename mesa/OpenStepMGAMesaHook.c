@@ -206,6 +206,28 @@ osmgaMesaSoftly(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
 static unsigned long osmgaHookMismatch;
 static unsigned long hookClears;
 /*
+ * The word OSMesa would write for the current clear colour, handed over by
+ * the port so that nothing here has to guess how a pixel is packed, and so
+ * that the surface never has to be READ to find out (see 3-18: a client's
+ * first read after a submission can be stale, and the word this would have
+ * been read from is the one offset that settles nothing).  Qualified by the
+ * context it belongs to, because there is one of these and there can be
+ * more than one context.
+ */
+static unsigned long hookClearPixel;
+static void *hookClearPixelCtx;
+/*
+ * A whole-surface clear the engine took, waiting for the render bracket that
+ * _mesa_Clear opens immediately afterwards.  One shot: the next soil takes
+ * it, so it can only ever apply to that bracket.
+ */
+static int hookPendingUniform;
+static unsigned long hookPendingWord;
+static void *hookPendingCtx;
+static unsigned long hookPendingDrawn;
+static unsigned long hookUniformFills;
+static unsigned long hookUniformArmed;
+/*
  * Why the last clear was not taken.  A clear that quietly declines is
  * indistinguishable from one that was never asked for, and the first
  * accelerated clear declined every time for a reason no amount of reading
@@ -1347,6 +1369,12 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
  */
 static const GLcontext *spanCtx;
 static int spanWrote, spanRead;
+/* Whether THIS bracket is the one a whole-surface clear armed, and what it
+ * would deliver.  Set by the soil that opens the bracket, spent by the
+ * mirror that closes it. */
+static int uniformBracket;
+static unsigned long uniformWord;
+static unsigned long uniformDrawn;
 
 static void (*prevWriteRGBASpan)(const GLcontext *, GLuint, GLint, GLint,
                                  CONST GLubyte [][4], const GLubyte []);
@@ -1496,6 +1524,17 @@ osmgaMesaSoil(GLcontext *ctx)
      */
     soilWasSet = OSMGAMesaBufferIsDirty();
     OSMGAMesaBufferSoiled();
+
+    /*
+     * And take the clear's mark if there is one.  One shot, taken here and
+     * nowhere else, so it can only ever describe the bracket _mesa_Clear
+     * opens immediately after Driver.Clear returns -- every other bracket
+     * finds it already spent.
+     */
+    uniformBracket = hookPendingUniform && hookPendingCtx == ctx->DriverCtx;
+    uniformWord = hookPendingWord;
+    uniformDrawn = hookPendingDrawn;
+    hookPendingUniform = 0;
 }
 
 static void
@@ -1518,6 +1557,24 @@ osmgaMesaMirror(GLcontext *ctx)
             OSMGAMesaBufferUnsoil();
         return;
     }
+    /*
+     * The bracket a whole-surface clear opened, and nothing in it drew.
+     *
+     * Two things have to be true, and neither alone is enough.  No span may
+     * have been written, because a span write is Mesa drawing into the
+     * surface and this file can see that; and no batch may have been
+     * submitted since the clear's own, because engine drawing writes no
+     * spans and this file cannot see that at all.  Either would mean the
+     * surface is no longer one value, and writing one value over the
+     * caller's array would quietly lose the drawing.
+     */
+    if (uniformBracket && !spanWrote && hookDrawn == uniformDrawn) {
+        uniformBracket = 0;
+        hookUniformFills++;
+        OSMGAMesaBufferFill(uniformWord);
+        return;
+    }
+    uniformBracket = 0;
     hookMirrors++;
     OSMGAMesaBufferMirror();
 }
@@ -1702,6 +1759,33 @@ osmgaMesaClearOnEngine(GLcontext *ctx, GLbitfield mask, GLboolean all,
     }
     hookClearWhy = 0;
     OSMGAMesaBufferSoiled();
+    /*
+     * The surface now holds one value, and _mesa_Clear is about to open a
+     * render bracket whose only other business is clearing buffers we did
+     * not take -- none of which is this surface.  So that bracket's copy can
+     * deliver the value instead of reading the surface back, which is two
+     * hundred and fifty times cheaper.
+     *
+     * Armed only when the clear covered the WHOLE surface: a scissored one
+     * leaves the rest of the surface holding whatever it held.
+     *
+     * Armed only when the word is this context's: there is one of these and
+     * there can be more than one context, and delivering another context's
+     * clear colour would be worse than reading the surface.
+     *
+     * The batch count is remembered so that a bracket which draws anything
+     * on the engine -- which writes no spans and so cannot be noticed any
+     * other way -- takes the ordinary copy.  That is the failure that would
+     * lose a frame silently, so it is closed twice: here, and by the span
+     * test at the other end.
+     */
+    if (all && hookClearPixelCtx == ctx->DriverCtx) {
+        hookPendingUniform = 1;
+        hookPendingWord = hookClearPixel;
+        hookPendingCtx = ctx->DriverCtx;
+        hookPendingDrawn = hookDrawn;
+        hookUniformArmed++;
+    }
     return (GLbitfield)(DD_FRONT_LEFT_BIT |
                         (wantDepth ? DD_DEPTH_BIT : 0));
 }
@@ -1831,6 +1915,23 @@ double OSMGAMesaHookLastWin(unsigned long v, unsigned long c)
     return (double)hookLastWin[v][c];
 }
 
+/*
+ * The port telling us what its software clear would write.
+ *
+ * Called from OSMesa's own ClearColor, which is where that word is computed,
+ * and once more when a surface is taken -- so the value is right even for a
+ * context that never calls glClearColor, whose clear colour is the default
+ * and whose packed word is nought.
+ */
+void
+OpenStepMesaAccelClearPixel(void *ctx, unsigned long word)
+{
+    hookClearPixel = word;
+    hookClearPixelCtx = ctx;
+}
+
+unsigned long OSMGAMesaHookUniformFills(void) { return hookUniformFills; }
+unsigned long OSMGAMesaHookUniformArmed(void) { return hookUniformArmed; }
 unsigned long OSMGAMesaHookDrawn(void)    { return hookDrawn; }
 unsigned long OSMGAMesaHookClears(void)   { return hookClears; }
 unsigned long OSMGAMesaHookMirrors(void)  { return hookMirrors; }

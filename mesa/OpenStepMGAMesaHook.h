@@ -51,6 +51,18 @@ unsigned long OSMGAMesaHookClears(void);
  * clean, which is the ordinary case for the glFinish that ends a frame.
  * Measured, a clear-and-draw frame asks three times and copies twice. */
 unsigned long OSMGAMesaHookMirrors(void);
+/* How many times a whole-surface clear armed the constant delivery, and how
+ * many times that delivery was actually used.  They differ when the bracket
+ * that followed a clear turned out to have drawn something -- which is the
+ * case the arming is guarded against, so a gap here is the guard working. */
+unsigned long OSMGAMesaHookUniformArmed(void);
+unsigned long OSMGAMesaHookUniformFills(void);
+/*
+ * What OSMesa's software clear would write for the current clear colour,
+ * handed over by the port rather than worked out here.  Called from OSMesa's
+ * ClearColor and once when a surface is taken.
+ */
+void OpenStepMesaAccelClearPixel(void *ctx, unsigned long word);
 int           OSMGAMesaHookClearWhy(void);
 unsigned long OSMGAMesaHookDeclined(void);
 /* Triangles handed to the software path because this back end could not

@@ -130,7 +130,13 @@ loop(int withTriangle, int softTri)
 /*
  * What the clear costs, engine against Mesa, over the SAME context: the same
  * twenty clears run twice, once taken and once forced into Mesa's hands, so
- * the difference is the clear and not the context, the mirror or the weather.
+ * the difference is the clear and not the context or the weather.
+ *
+ * It is no longer the clear alone.  The engine's clear now delivers its one
+ * value straight into the caller's array, so its bracket walks nothing; the
+ * software clear writes the surface with the processor and its bracket walks
+ * it back.  The difference is both of those, and the line that prints it
+ * says so.
  */
 static void
 timeClears(OSMesaContext c, int w, int h)
@@ -190,8 +196,19 @@ timeClears(OSMesaContext c, int w, int h)
     printf("   on the engine  : %8.3f ms  (%lu taken, %s)\n",
            eng * 1000.0, took, why(OSMGAMesaHookClearWhy()));
     printf("   left to Mesa   : %8.3f ms\n", soft * 1000.0);
-    printf("   the difference : %8.3f ms -- both paid the mirror, so this"
-           " is the clear\n", (soft - eng) * 1000.0);
+    /*
+     * These two no longer pay the same thing, and the line has to say so.
+     *
+     * The engine arm's clear delivers its one value to the caller's array
+     * without reading the surface back, so it pays no walk at all; the Mesa
+     * arm writes the surface with the processor and then its bracket walks
+     * it back.  The difference is therefore a clear AND a mirror, not a
+     * clear alone -- which is what it was when both walked.
+     */
+    printf("   the difference :  %8.3f ms -- the Mesa clear AND the walk"
+           " back its bracket pays;\n                     the engine clear"
+           " delivers its one value without reading the surface\n",
+           (soft - eng) * 1000.0);
     printf("      clear-only frames mirrored %lu times (engine) and %lu"
            " (Mesa), over 20 frames\n", engClearMir, softClearMir);
     printf("   surface is the engine's here: %s\n",
