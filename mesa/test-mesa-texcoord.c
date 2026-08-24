@@ -55,7 +55,8 @@ one(const char *name, double ax, double ay, double as, double at,
 
     n = OSMGAMesaBuildTriangleTex(&a, &b, &c, (const OSMGAMesaVertex *)0,
                                   OSMGA_MESA_ZMODE_NONE,
-                                  OSMGA_MESA_BLEND_OPAQUE, &tex, out, tmr);
+                                  OSMGA_MESA_BLEND_OPAQUE, &tex,
+                                  0.0 /* no polygon offset */, out, tmr);
     printf("# case %s tex %lu %lu n %d\n", name, tw, th, n);
     printf("# v %ld %ld %.9f %.9f\n", a.x, a.y, a.s, a.tc);
     printf("# v %ld %ld %.9f %.9f\n", b.x, b.y, b.s, b.tc);

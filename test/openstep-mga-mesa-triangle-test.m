@@ -143,7 +143,8 @@ main(void)
             p2.x = nothing[i].cx; p2.y = nothing[i].cy;
             got = OSMGAMesaBuildTriangle(&p0, &p1, &p2, &p0,
                                OSMGA_MESA_ZMODE_NONE,
-                                     OSMGA_MESA_BLEND_OPAQUE, scratch);
+                                     OSMGA_MESA_BLEND_OPAQUE,
+                                     0.0 /* no polygon offset */, scratch);
             printf("   %-22s -> %2d (wanted %2d)  %s\n",
                    nothing[i].what, got, nothing[i].want,
                    (got == nothing[i].want) ? "ok" : "FAIL");
@@ -169,7 +170,8 @@ main(void)
 
     n = OSMGAMesaBuildTriangle(&v0, &v1, &v2, &v0,
                                OSMGA_MESA_ZMODE_NONE,
-                               OSMGA_MESA_BLEND_OPAQUE, batch->tri);
+                               OSMGA_MESA_BLEND_OPAQUE,
+                               0.0 /* no polygon offset */, batch->tri);
     batch->triCount = (unsigned long)n;
     printf("   built %d trapezoid(s)\n", n);
     for (i = 0; i < n; i++)
@@ -224,7 +226,8 @@ main(void)
 
     n = OSMGAMesaBuildTriangle(&v0, &v1, &v2, (OSMGAMesaVertex *)0,
                                OSMGA_MESA_ZMODE_NONE,
-                               OSMGA_MESA_BLEND_OPAQUE, batch->tri);
+                               OSMGA_MESA_BLEND_OPAQUE,
+                               0.0 /* no polygon offset */, batch->tri);
     batch->triCount = (unsigned long)n;
     r = [master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
                 objectNumber:objNum count:0];

@@ -248,7 +248,8 @@ main(int argc, char **argv)
 
         n = (long)OSMGAMesaBuildTriangle(&a, &b, &c, &a,
                                          OSMGA_MESA_ZMODE_NONE,
-                                         OSMGA_MESA_BLEND_OPAQUE, tri);
+                                         OSMGA_MESA_BLEND_OPAQUE,
+                                         0.0 /* no polygon offset */, tri);
         if (n < 0) { unsupported++; continue; }
 
         /* what the builder would put on the screen, row by row */

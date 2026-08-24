@@ -101,7 +101,8 @@ main(void)
 
     n = OSMGAMesaBuildTriangle(&v0, &v1, &v2, (OSMGAMesaVertex *)0,
                                OSMGA_MESA_ZMODE_NONE,
-                               OSMGA_MESA_BLEND_OPAQUE, batch->tri);
+                               OSMGA_MESA_BLEND_OPAQUE,
+                               0.0 /* no polygon offset */, batch->tri);
     batch->triCount = (unsigned long)n;
 
     rc = OSMGAMesaProbeSubmit(&res);
@@ -314,7 +315,8 @@ main(void)
             n = OSMGAMesaBuildTriangle(&v0, &v1, &v2,
                                        (OSMGAMesaVertex *)0,
                                        OSMGA_MESA_ZMODE_NONE,
-                               OSMGA_MESA_BLEND_OPAQUE, batch->tri);
+                               OSMGA_MESA_BLEND_OPAQUE,
+                               0.0 /* no polygon offset */, batch->tri);
         }
     }
 

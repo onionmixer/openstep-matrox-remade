@@ -218,6 +218,7 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     OSMGAMesaVertex a, b, c, prov;
     OSMGAHW3DTri built[4];
     unsigned long zmode, blend;
+    double zoffset;
     unsigned long texOrg = 0UL, texW = 0UL, texH = 0UL, texPitch = 0UL;
     OSMGAMesaTex tex;
     long tmr[4][9];
@@ -481,6 +482,44 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         blend = (blend & ~OSMGA_MESA_ALPHASEL_MASK) | OSMGA_MESA_ALPHASEL_TEX;
     }
 
+    /*
+     * glPolygonOffset, in depth codes, computed HERE and not in the builder
+     * because it has to be Mesa's number and not a reconstruction of it --
+     * see the note on OSMGAMesaBuildTriangleTex.
+     *
+     * The expression is Mesa's own (vbrender.c, offset_polygon): the plane
+     * normal from the cross product of two edges, the larger of the two
+     * absolute depth slopes, times the factor, plus the units.  The window
+     * values come straight from VB, BEFORE this file snaps them to a 256th
+     * of a pixel, so the guard against a degenerate polygon is on the same
+     * numbers Mesa guards -- and it is Mesa's guard, c*c > 1e-16, below
+     * which Mesa leaves the offset at nought and so does this.
+     */
+    zoffset = 0.0;
+    if (ctx->Polygon.OffsetFill) {
+        double ex = (double)VB->Win.data[v1][0] - (double)VB->Win.data[v0][0];
+        double ey = (double)VB->Win.data[v1][1] - (double)VB->Win.data[v0][1];
+        double ez = (double)VB->Win.data[v1][2] - (double)VB->Win.data[v0][2];
+        double fx = (double)VB->Win.data[v2][0] - (double)VB->Win.data[v0][0];
+        double fy = (double)VB->Win.data[v2][1] - (double)VB->Win.data[v0][1];
+        double fz = (double)VB->Win.data[v2][2] - (double)VB->Win.data[v0][2];
+        double pa = ey * fz - ez * fy;
+        double pb = ez * fx - ex * fz;
+        double pc = ex * fy - ey * fx;
+
+        if (pc * pc > 1e-16) {
+            double ac = pa / pc;
+            double bc = pb / pc;
+            double m;
+
+            if (ac < 0.0) ac = -ac;
+            if (bc < 0.0) bc = -bc;
+            m = (ac > bc) ? ac : bc;
+            zoffset = m * (double)ctx->Polygon.OffsetFactor
+                      + (double)ctx->Polygon.OffsetUnits;
+        }
+    }
+
     if (ctx->Light.ShadeModel == GL_FLAT) {
         prov.x = (long)VB->Win.data[pv][0];
         prov.y = (long)VB->Win.data[pv][1];
@@ -498,12 +537,12 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         a.a = b.a = c.a = prov.a;
         n = OSMGAMesaBuildTriangleTex(&a, &b, &c, &prov, zmode, blend,
                                       texOn ? &tex : (const OSMGAMesaTex *)0,
-                                      built, tmr);
+                                      zoffset, built, tmr);
     } else {
         n = OSMGAMesaBuildTriangleTex(&a, &b, &c, (const OSMGAMesaVertex *)0,
                                       zmode, blend,
                                       texOn ? &tex : (const OSMGAMesaTex *)0,
-                                      built, tmr);
+                                      zoffset, built, tmr);
     }
     if (n == OSMGA_MESA_TRI_UNSUPPORTED) {
         /*
@@ -964,7 +1003,16 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
      * depths into a buffer the software path is offsetting -- which is
      * exactly the disagreement the shared buffer exists to prevent.
      */
-    if (ctx->Polygon.OffsetFill)      return NULL;
+    /*
+     * glPolygonOffset is taken.  The engine has no offset unit and needs
+     * none: the offset is a constant added to the depth plane, which this
+     * back end already solves, and Mesa's software does the same arithmetic
+     * rather than reaching for a hardware feature.
+     *
+     * Only GL_POLYGON_OFFSET_FILL is consulted.  The point and line variants
+     * exist in GL and this back end draws neither, and Mesa likewise sets its
+     * polygon offset from the fill flag alone.
+     */
 
     /*
      * The engine computes (a*src + (255-a)*dst)/255 and nothing else, which

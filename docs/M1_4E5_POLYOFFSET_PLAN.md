@@ -133,3 +133,57 @@ Mesa 는 `c*c > 1e-16` 일 때만 오프셋을 준다 — 모서리로 선 폴�
 포화시킨다 — **다른 그림**이다.  그러니 빌더가 오프셋 뒤의 평면이 프리미티브
 위에서 표현 가능한지 보고, 아니면 `UNSUPPORTED` 를 돌려 소프트웨어로 보낸다.
 포화를 하나 더 넣는 것은 추측이다.
+
+## 12. 진입점은 하나다
+
+병렬 진입점(`...Offset` 을 따로 두고 기존 것은 0 으로 전달)을 먼저 썼다가
+버렸다.  **시험이 흔들리는 것을 피하려고 고른 방법이었고, 그건 이유가 못
+된다** — 기본값이 있는 편의 함수는 나중 호출자가 오프셋을 **잊게** 만든다.
+
+`OSMGAMesaBuildTriangleTex` 와 `OSMGAMesaBuildTriangle` 이 둘 다
+`double zoffset` 을 받는다.  호출부 열한 곳이 전부 자기 값을 말하고, 시험들은
+`0.0 /* no polygon offset */` 이라고 적는다.  잊으면 **컴파일이 안 된다.**
+
+## 13. 됐다 — python 이 말한 그대로
+
+```
+1. the units term, on a flat polygon
+   units  -8.0  engine 32760  software 32760
+   units  +0.0  engine 32768  software 32768
+   units  +8.0  engine 32776  software 32776
+   the spread between -8 and +8 is 16 codes, python says 16
+   ok  a positive offset moves AWAY, as GL says
+
+2. the factor term, which must see the slope
+   flat   factor 0 -> 32768   factor 4 -> 32768   (moved 0)
+   sloped factor 0 -> 41052   factor 4 -> 41797   (moved 745, python says 745)
+
+3. the decal
+   ok  without an offset it does not show
+   ok  with a negative one it does
+```
+
+python 이 먼저 말한 것:
+
+```
+   flat quad at z = 0        window depth 32767.5 codes
+   slope 0 -> -0.5 over 88px  186.18 codes a pixel
+   factor 4                   744.72 codes -> 745
+```
+
+**세 숫자가 전부 맞았다.**  단위 환산이 틀렸다면 256 배로 어긋났을 것이고,
+기울기를 평탄화 뒤에 읽었다면 2 번이 0 으로 나왔을 것이다.
+
+### 13-1 대조군이 하는 일
+
+- 평평한 폴리곤이 `factor` 에 **안 움직이는** 것이 기울기를 상수와 가른다
+- 데칼의 오프셋 **없는** 경우가 "오프셋이 한 일"임을 세운다
+- 소프트웨어를 강제한 짝이 각 경우마다 붙어 있다
+
+## 14. 회귀
+
+```
+   기준 장면 14      SCENES_MOVED=0
+   블렌드 네 장면    BLEND_SCENES_BAD=0
+   tpo tat tbf tdf texdraw reach tr tc tv trh trs tbg   전부 0 failing
+```

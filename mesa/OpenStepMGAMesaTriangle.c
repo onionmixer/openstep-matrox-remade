@@ -766,6 +766,7 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
                        unsigned long zmode,
                        unsigned long blend,
                        const OSMGAMesaTex *tex,
+                       double zoffset,
                        OSMGAHW3DTri *out,
                        long tmrOut[][9])
 {
@@ -844,6 +845,46 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
         if (zplane.dx > 65535.0 || zplane.dx < -65535.0) {
             zplane.dx = 0.0;
             zplane.dy = 0.0;
+        }
+
+        /*
+         * The polygon offset, in codes, which is the unit this plane is
+         * already in -- see the note on this function.  The caller worked it
+         * out from Mesa's own unsnapped window coordinates, so nothing is
+         * reproduced here; it is added.
+         *
+         * After the sliver flattening on purpose.  The flattening decides
+         * what the plane's slopes ARE, and the offset shifts whatever plane
+         * that leaves; Mesa does the same, forming the offset from the raw
+         * polygon and adding it to the anchor of the plane it then
+         * rasterises.
+         */
+        if (zoffset != 0.0) {
+            double lo, hi, t;
+
+            zplane.at_a += zoffset;
+            /*
+             * And whether the shifted plane still fits.
+             *
+             * Out there the two paths part company: Mesa keeps a 32-bit
+             * depth and compares that, while the seed of every trapezoid
+             * below is saturated into [0, 65535].  Clamping would draw
+             * something neither path draws, so this refuses and the triangle
+             * goes to software, which is where the answer is.
+             *
+             * The plane is linear, so its extremes over the triangle are at
+             * the three vertices -- the same argument the texture coordinate
+             * check makes.
+             */
+            lo = hi = zplane.at_a;
+            t = zplane.at_a + zplane.dx * x1 + zplane.dy * y1;
+            if (t < lo) lo = t;
+            if (t > hi) hi = t;
+            t = zplane.at_a + zplane.dx * x2 + zplane.dy * y2;
+            if (t < lo) lo = t;
+            if (t > hi) hi = t;
+            if (lo < 0.0 || hi > 65535.0)
+                return OSMGA_MESA_TRI_UNSUPPORTED;
         }
     }
 
@@ -1204,9 +1245,10 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
                        const OSMGAMesaVertex *flat,
                        unsigned long zmode,
                        unsigned long blend,
+                       double zoffset,
                        OSMGAHW3DTri *out)
 {
     return OSMGAMesaBuildTriangleTex(a, b, c, flat, zmode, blend,
-                                     (const OSMGAMesaTex *)0, out,
+                                     (const OSMGAMesaTex *)0, zoffset, out,
                                      (long (*)[9])0);
 }

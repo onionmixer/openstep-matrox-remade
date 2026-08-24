@@ -240,6 +240,7 @@ int OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
                            const OSMGAMesaVertex *flat,
                            unsigned long zmode,
                            unsigned long blend,
+                           double zoffset,
                            OSMGAHW3DTri *out);
 
 /*
@@ -259,6 +260,35 @@ int OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
  *
  * tex == 0 is exactly OSMGAMesaBuildTriangle.
  */
+/*
+ * zoffset is glPolygonOffset's, in DEPTH CODES, and it is a parameter rather
+ * than something with a convenient default because a caller that forgets it
+ * must not compile.
+ *
+ * The number is the CALLER's because it has to be Mesa's.  Mesa forms it from
+ * the polygon's window-space plane -- max(|dz/dx|, |dz/dy|) * factor + units
+ * -- before anything is snapped to a fraction of a pixel and before any
+ * sliver flattening, and all three of those matter:
+ *
+ *   the units, because this builder divides the vertex depth by the same 256
+ *   it was multiplied by, so its plane is already in codes and converting
+ *   again would be 256 times wrong;
+ *
+ *   the flattening, because the builder zeroes both derivatives for a sliver
+ *   while Mesa's slope there is not zero but huge;
+ *
+ *   the degeneracy guard, because Mesa's is on unsnapped values and this
+ *   builder's area test is on snapped ones, so a near-degenerate triangle
+ *   could take an offset in one path and not in the other.
+ *
+ * Computing it from Mesa's own numbers makes the two exact by construction
+ * rather than by reproduction.  Nought means no offset.
+ *
+ * A plane the offset pushes outside the representable depth is refused --
+ * OSMGA_MESA_TRI_UNSUPPORTED -- and not clamped: out there Mesa keeps a
+ * 32-bit depth and compares that, while this builder saturates every
+ * trapezoid's seed, and the two draw different pictures.
+ */
 int OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
                               const OSMGAMesaVertex *b,
                               const OSMGAMesaVertex *c,
@@ -266,6 +296,7 @@ int OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
                               unsigned long zmode,
                               unsigned long blend,
                               const OSMGAMesaTex *tex,
+                              double zoffset,
                               OSMGAHW3DTri *out,
                               long tmrOut[][9]);
 

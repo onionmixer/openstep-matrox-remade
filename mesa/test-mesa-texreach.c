@@ -105,6 +105,7 @@ one(const char *name, double x0, double y0, double x1, double y1,
         n = OSMGAMesaBuildTriangleTex(&a, &b2, &c, (const OSMGAMesaVertex *)0,
                                       OSMGA_MESA_ZMODE_NONE,
                                       OSMGA_MESA_BLEND_OPAQUE, &tex,
+                                      0.0 /* no polygon offset */,
                                       out, tmr);
         if (n < 0) { printf("   triangle %d refused %d\n", k, n); continue; }
         for (i = 0; i < n; i++) {
@@ -189,6 +190,7 @@ main(void)
         n = OSMGAMesaBuildTriangleTex(&a, &b2, &c, (const OSMGAMesaVertex *)0,
                                       OSMGA_MESA_ZMODE_NONE,
                                       OSMGA_MESA_BLEND_OPAQUE, &tex,
+                                      0.0 /* no polygon offset */,
                                       out, tmr);
         for (i = 0; i < n; i++) {
             static OSMGAHW3DBatch batch;
