@@ -54,6 +54,11 @@ static unsigned long hookTexPersp, hookTexAbsent;
  * counts triangles and cannot see that.
  */
 static unsigned long hookBatches;
+/* Trapezoids, not batches.  A split triangle in one batch and a triangle
+ * that never split are both one batch, so the batch count alone stopped
+ * saying whether the split happened the moment both halves went out
+ * together. */
+static unsigned long hookTraps;
 static unsigned long hookHardState;
 static unsigned long hookSoftState;
 
@@ -339,10 +344,25 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
             (bo != 0) ? bo->Image[bo->BaseLevel] : 0;
         unsigned long asel;
 
-        if (ctx->Texture.Unit[0].EnvMode == GL_MODULATE)
-            asel = OSMGA_MESA_ALPHASEL_MOD;
-        else if (bi != 0 && bi->Format == GL_RGBA)
-            asel = OSMGA_MESA_ALPHASEL_TEX;
+        /*
+         * The FORMAT decides first, and the environment only within it.
+         *
+         * GL says an RGB texture has an alpha of one, so both GL_REPLACE and
+         * GL_MODULATE leave Av = Af there.  Ours does not have an alpha of
+         * one: the uploader writes NOUGHT into the fourth byte of an RGB
+         * texel deliberately, as a poison value, so that a path which reads
+         * an alpha it should not goes black instead of looking plausible --
+         * and it says in as many words that a mode able to reference texture
+         * alpha has to revisit it (OpenStepMGAMesaTexture.c, the note by the
+         * pack).  This is that mode.
+         *
+         * Choosing "modulated" for an RGB texture would therefore have given
+         * Af * 0 on every pixel: the whole primitive fully transparent, and
+         * plausible enough to blame on the blend.
+         */
+        if (bi != 0 && bi->Format == GL_RGBA)
+            asel = (ctx->Texture.Unit[0].EnvMode == GL_MODULATE)
+                   ? OSMGA_MESA_ALPHASEL_MOD : OSMGA_MESA_ALPHASEL_TEX;
         else
             asel = OSMGA_MESA_ALPHASEL_DIFF;
         blend = (blend & ~OSMGA_MESA_ALPHASEL_MASK) | asel;
@@ -486,6 +506,7 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     batch->state.zorg      = OSMGAMesaBufferDepthOrigin();
 
     hookBatches++;
+    hookTraps += (unsigned long)cnt;
     if (OSMGAMesaProbeSubmit(&res) != 0) {
         hookDeclined++;
         if (res.verdict < OSMGA_MESA_VERDICTS)
@@ -1052,6 +1073,7 @@ unsigned long OSMGAMesaHookSoftState(void) { return hookSoftState; }
 unsigned long OSMGAMesaHookTexPersp(void)  { return hookTexPersp; }
 unsigned long OSMGAMesaHookTexAbsent(void) { return hookTexAbsent; }
 unsigned long OSMGAMesaHookBatches(void)   { return hookBatches; }
+unsigned long OSMGAMesaHookTraps(void)     { return hookTraps; }
 unsigned long OSMGAMesaHookUnsupported(void) { return hookUnsupported; }
 unsigned long OSMGAMesaHookVerdictCount(unsigned long v)
 {

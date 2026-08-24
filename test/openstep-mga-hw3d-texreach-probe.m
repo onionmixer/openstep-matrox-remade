@@ -778,17 +778,21 @@ main(void)
                " 0 means it re-seeds with u\n");
     }
 
-    printf("\n9. the vertical span is the batch total, not the tallest\n");
+    printf("\n9. the vertical span is one primitive's rows, not the batch's\n");
     {
         /*
-         * v runs on across the textured primitives, so N of them reach N
-         * times as far.  With a y gradient of a sixty-fourth of the budget
-         * per row and eight rows each, eight primitives spend 8257536 of
-         * 8388608 and nine spend 9306112: the boundary is between them, and
-         * a check that looked at the tallest alone would accept all of them.
+         * v used to run on across the textured primitives, so N of them
+         * reached N times as far: with a y gradient of a sixty-fourth of the
+         * budget per row and eight rows each, eight spent 8257536 of 8388608
+         * and nine spent 9306112, and the boundary sat between them.
+         *
+         * The matrix is written ahead of each primitive now and the write
+         * re-seeds -- section 78 -- so each of them spends 8257536 whatever
+         * the batch holds, and nine of them are as acceptable as one.  A
+         * textured batch is no longer eight primitives long.
          */
         static const unsigned long counts[3] = { 1UL, 8UL, 9UL };
-        static const int wantOK[3] = { 1, 1, 0 };
+        static const int wantOK[3] = { 1, 1, 1 };
         int k;
 
         for (k = 0; k < 3; k++) {
@@ -808,7 +812,7 @@ main(void)
         }
     }
 
-    printf("\n9b. an empty primitive must not hide the accumulated height\n");
+    printf("\n9b. an empty textured primitive is refused whatever it hides\n");
     {
         /*
          * The empty-primitive fallback used to revert BOTH axes to the clip,

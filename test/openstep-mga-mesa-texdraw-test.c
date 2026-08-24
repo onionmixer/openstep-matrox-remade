@@ -125,7 +125,7 @@ main(int argc, char **argv)
 {
     OSMesaContext ctx;
     GLuint tex;
-    unsigned long d0, s0, p0, a0;
+    unsigned long d0, s0, p0, a0, t0;
     long drew;
 
     dumpMode = (argc > 1);
@@ -925,6 +925,7 @@ main(int argc, char **argv)
     glMatrixMode(GL_MODELVIEW); glLoadIdentity();
     glClear(GL_COLOR_BUFFER_BIT);
     d0 = OSMGAMesaHookBatches(); s0 = OSMGAMesaHookSoftware();
+    t0 = OSMGAMesaHookTraps();
     glBegin(GL_TRIANGLES);
       glTexCoord2f(0.0f, 0.0f); glVertex2d( 20.0,  30.0);
       glTexCoord2f(1.0f, 0.2f); glVertex2d(220.0,  70.0);
@@ -932,13 +933,22 @@ main(int argc, char **argv)
     glEnd();
     glFinish();
     /*
-     * A middle vertex means two trapezoids, and tmr[] is batch state, so this
-     * is where one batch each earns its keep.  Two submissions from ONE
-     * triangle is the thing to see; one would mean the split never happened
-     * and the case proves nothing.
+     * A middle vertex means two trapezoids, and they go out TOGETHER.
+     *
+     * This used to want two submissions, because the anchors were batch state
+     * and the halves could not share one.  They are the trapezoid's now, so
+     * one batch carries both -- which is the whole point: the second half is
+     * validated before the first is drawn, and a refusal draws neither.
+     *
+     * One batch alone would not say that.  A triangle that never split is
+     * also one batch, and this case would then be passing on the split not
+     * happening -- which is what its previous wording was written to avoid.
+     * So the trapezoids are counted as well: one batch AND two of them.
      */
-    say("a split triangle goes out as two batches",
-        OSMGAMesaHookBatches() - d0 == 2UL, 0);
+    say("a split triangle goes out as ONE batch",
+        OSMGAMesaHookBatches() - d0 == 1UL, 0);
+    say("carrying both its trapezoids",
+        OSMGAMesaHookTraps() - t0 == 2UL, 0);
     say("with nothing falling back", OSMGAMesaHookSoftware() - s0 == 0UL, 0);
     {
         long x, y, bad = 0, seen = 0;
