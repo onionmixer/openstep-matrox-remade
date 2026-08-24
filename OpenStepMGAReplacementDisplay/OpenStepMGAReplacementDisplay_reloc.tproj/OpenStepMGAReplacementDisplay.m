@@ -3741,8 +3741,56 @@ unmap:
     if (total3 != 0UL &&
         osmgaStormWaitIdle(mmioBase) &&
         osmgaStormWaitFifo(mmioBase, 13U)) {
-        osmgaStormInitState(mmioBase, dstP3, 0UL, dstW3 - 1UL, 0UL,
-                            (dstH3 - 1UL) * dstP3);
+        /*
+         * The clip, which is the destination window narrowed by whatever
+         * scissor the client asked for.
+         *
+         * The INTERSECTION, and that is the whole safety argument: it cannot
+         * be wider than the window, so a client can only ever reduce what it
+         * could already reach and containment does not rest on these four
+         * numbers being sensible.  The validator's row and column checks are
+         * unchanged and still measured against the whole window, so a narrow
+         * scissor makes the validation conservative and never relaxed.
+         *
+         * The box arrives half open, so an empty one is empty rather than
+         * malformed; an empty intersection skips the draw entirely, because
+         * a clip whose left edge is past its right is not a state the
+         * register documentation names.
+         */
+        {
+            unsigned long cx0 = 0UL, cx1 = dstW3 - 1UL;
+            unsigned long cy0 = 0UL, cy1 = dstH3 - 1UL;
+            int empty = 0;
+
+            if (osmgaHW3DSnapshot.state.scissorOn != 0UL) {
+                double lx = (double)osmgaHW3DSnapshot.state.scissorX;
+                double ly = (double)osmgaHW3DSnapshot.state.scissorY;
+                double hx = lx + (double)osmgaHW3DSnapshot.state.scissorW;
+                double hy = ly + (double)osmgaHW3DSnapshot.state.scissorH;
+
+                /* clamped in double, so a wild box cannot wrap on the way in */
+                if (lx < 0.0) lx = 0.0;
+                if (ly < 0.0) ly = 0.0;
+                if (hx > (double)dstW3) hx = (double)dstW3;
+                if (hy > (double)dstH3) hy = (double)dstH3;
+                if (hx <= lx || hy <= ly)
+                    empty = 1;
+                else {
+                    cx0 = (unsigned long)lx;
+                    cx1 = (unsigned long)hx - 1UL;
+                    cy0 = (unsigned long)ly;
+                    cy1 = (unsigned long)hy - 1UL;
+                }
+            }
+            if (empty) {
+                simple_lock(&stormLock);
+                stormBusy = NO;
+                simple_unlock(&stormLock);
+                return IO_R_SUCCESS;   /* nothing to draw, and nothing wrong */
+            }
+            osmgaStormInitState(mmioBase, dstP3, cx0, cx1,
+                                cy0 * dstP3, cy1 * dstP3);
+        }
         osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
         for (spins3 = 0UL; spins3 < OSMGA_S1_SPIN_LIMIT; spins3++) {
             status3 = osmgaR32(mmioBase, MGA_ENGSTATUS) &

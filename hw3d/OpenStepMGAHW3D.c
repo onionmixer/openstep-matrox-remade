@@ -385,6 +385,21 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
             b->state.texBiasReqV > OSMGA_HW3D_TEX_BANDS)
             return OSMGA_HW3D_E_TEXSIZE;
         /*
+         * The scissor box is NOT checked here, and that is deliberate.
+         *
+         * The submit path draws the intersection of it with the destination
+         * window, so no value in it can widen anything: a box of nonsense
+         * either narrows the clip or empties it, and an empty one skips the
+         * draw.  Checking it would be checking something containment does
+         * not rest on, and would turn a harmless client mistake into a
+         * refusal.
+         *
+         * The row and column checks below are unchanged and still measured
+         * against the whole window.  A narrow scissor therefore makes this
+         * validation conservative -- it admits only what could be drawn
+         * without one -- and never relaxed.
+         */
+        /*
          * The diagnostic minification selector, and what it costs.
          *
          * Only the four modes the generated register description names are

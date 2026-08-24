@@ -38,7 +38,7 @@
  * version had to move -- the probe demands an exact match precisely so that
  * a library and a driver disagreeing about where the fields are cannot draw.
  */
-#define OSMGA_HW3D_VERSION      6UL
+#define OSMGA_HW3D_VERSION      7UL
 
 /* The 64 KiB IOMallocLow block is split: the client writes the batch at the
  * start, the kernel builds the command list after it.  28 KiB and 36 KiB
@@ -582,6 +582,28 @@ typedef struct {
      */
     unsigned long texBiasReqU;
     unsigned long texBiasReqV;
+    /*
+     * A scissor box, HALF OPEN: x and y are its low corner and w and h its
+     * size, so a width of nought is an empty box and not a malformed one.
+     *
+     * Half open because glScissor is, and because the alternative wrote the
+     * plan into a contradiction: an inclusive box wants x0 <= x1, and
+     * glScissor(0,0,0,0) is a legal call that must draw nothing, which as an
+     * inclusive box is x1 = x0 - 1.
+     *
+     * scissorOn is nought for no scissor at all, which is what a client that
+     * has never heard of one leaves behind -- the same reason the bias
+     * request's inert value is nought.
+     *
+     * The kernel does NOT trust the box.  It draws the INTERSECTION of this
+     * and the destination window it already clips to, so a client can only
+     * ever narrow what it could already reach: containment does not rest on
+     * these four numbers being sensible, and the validator's row and column
+     * checks are unchanged and still measured against the whole window.
+     */
+    unsigned long scissorOn;
+    long scissorX, scissorY;
+    unsigned long scissorW, scissorH;
 } OSMGAHW3DState;
 
 typedef struct {

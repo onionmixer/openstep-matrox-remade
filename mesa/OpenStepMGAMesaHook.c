@@ -678,6 +678,32 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     batch->state.dstHeight = OSMGAMesaBufferHeight();
     batch->state.dstPitch  = OSMGAMesaBufferStride();
     batch->state.zorg      = OSMGAMesaBufferDepthOrigin();
+    /*
+     * The scissor, written every submission for the same reason the bias
+     * request is: the batch is a mapped buffer this library reuses field by
+     * field, so anything not written keeps what the last one left.
+     *
+     * GL's box has its low corner at the bottom left and so does this
+     * surface -- the chooser refuses a context that is not y-up -- so the
+     * box goes across without a flip.  The kernel intersects it with the
+     * window it already clips to, so nothing here has to be sane for the
+     * driver to stay safe.
+     */
+    if (ctx->Scissor.Enabled) {
+        batch->state.scissorOn = 1UL;
+        batch->state.scissorX = (long)ctx->Scissor.X;
+        batch->state.scissorY = (long)ctx->Scissor.Y;
+        batch->state.scissorW = (ctx->Scissor.Width > 0)
+                                ? (unsigned long)ctx->Scissor.Width : 0UL;
+        batch->state.scissorH = (ctx->Scissor.Height > 0)
+                                ? (unsigned long)ctx->Scissor.Height : 0UL;
+    } else {
+        batch->state.scissorOn = 0UL;
+        batch->state.scissorX = 0L;
+        batch->state.scissorY = 0L;
+        batch->state.scissorW = 0UL;
+        batch->state.scissorH = 0UL;
+    }
 
     hookBatches++;
     hookTraps += (unsigned long)cnt;
@@ -1158,9 +1184,15 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
         }
     }
 
+    /*
+     * The scissor is taken.  The engine has a destination clip and the submit
+     * path already programs it to the whole window before every batch, so a
+     * scissor is that clip narrowed -- and the kernel intersects rather than
+     * trusts, which is why nothing about the box has to be checked here.
+     */
     if ((ctx->RasterMask &
          ~(GLuint)(ALPHABUF_BIT | DEPTH_BIT | BLEND_BIT | TEXTURE_BIT |
-                   ALPHATEST_BIT)) != 0)
+                   ALPHATEST_BIT | SCISSOR_BIT)) != 0)
         return NULL;
 
     return osmgaMesaTriangle;
