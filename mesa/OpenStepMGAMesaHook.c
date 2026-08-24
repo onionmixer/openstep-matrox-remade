@@ -338,34 +338,39 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     blend = ctx->Color.BlendEnabled ? OSMGA_MESA_BLEND_OVER
                                     : OSMGA_MESA_BLEND_OPAQUE;
     if (ctx->Color.BlendEnabled && texOn) {
-        const struct gl_texture_object *bo =
-            ctx->Texture.Unit[0].CurrentD[2];
-        const struct gl_texture_image *bi =
-            (bo != 0) ? bo->Image[bo->BaseLevel] : 0;
-        unsigned long asel;
-
         /*
-         * The FORMAT decides first, and the environment only within it.
+         * "From the texture", for every textured state, because that is not
+         * the texel's alpha -- it is the texture STAGE's output, and the
+         * stage already computes what GL asks for.
          *
-         * GL says an RGB texture has an alpha of one, so both GL_REPLACE and
-         * GL_MODULATE leave Av = Af there.  Ours does not have an alpha of
-         * one: the uploader writes NOUGHT into the fourth byte of an RGB
-         * texel deliberately, as a poison value, so that a path which reads
-         * an alpha it should not goes black instead of looking plausible --
-         * and it says in as many words that a mode able to reference texture
-         * alpha has to revisit it (OpenStepMGAMesaTexture.c, the note by the
-         * pack).  This is that mode.
+         * Measured, probe section 81: with the combiner's own modulate on,
+         * fromtex returned the combiner's product to the level, three
+         * readings out of three, while "modulated" multiplied by the
+         * fragment's alpha a second time.  Section 77 could not tell those
+         * apart, because it ran with the combiner passing the texture's alpha
+         * straight through and the two answers were the same number.
          *
-         * Choosing "modulated" for an RGB texture would therefore have given
-         * Af * 0 on every pixel: the whole primitive fully transparent, and
-         * plausible enough to blame on the blend.
+         * The encoder sets that stage from GL's own table (TDUALSTAGE, by
+         * MGA_TDS_ALPHA_SEL): ARG2 -- the interpolated alpha -- when the
+         * texture has none, ARG1 when it has one and the mode is replace, and
+         * their product under modulate.  So:
+         *
+         *      RGB  + REPLACE    stage gives Af      GL wants Af
+         *      RGB  + MODULATE   stage gives Af      GL wants Af
+         *      RGBA + REPLACE    stage gives At      GL wants At
+         *      RGBA + MODULATE   stage gives Af*At   GL wants Af*At
+         *
+         * all four, with one selector and no format test here at all.
+         *
+         * The other two are wrong in ways worth naming.  "Modulated" would
+         * square the fragment's alpha under RGBA modulate.  "Diffused" would
+         * ignore the texture's alpha entirely, which is right for RGB and
+         * silently wrong for RGBA -- and an RGB texture's fourth byte is a
+         * deliberate nought (the note by the pack in
+         * OpenStepMGAMesaTexture.c), so a rule that read it would have made
+         * the whole primitive transparent rather than looking merely off.
          */
-        if (bi != 0 && bi->Format == GL_RGBA)
-            asel = (ctx->Texture.Unit[0].EnvMode == GL_MODULATE)
-                   ? OSMGA_MESA_ALPHASEL_MOD : OSMGA_MESA_ALPHASEL_TEX;
-        else
-            asel = OSMGA_MESA_ALPHASEL_DIFF;
-        blend = (blend & ~OSMGA_MESA_ALPHASEL_MASK) | asel;
+        blend = (blend & ~OSMGA_MESA_ALPHASEL_MASK) | OSMGA_MESA_ALPHASEL_TEX;
     }
 
     if (ctx->Light.ShadeModel == GL_FLAT) {

@@ -5428,6 +5428,156 @@ main(void)
         }
     }
 
+    /*
+     * 81. Does the blend's selector read the TEXEL's alpha, or the texture
+     *     combiner's output?
+     *
+     * 77 asked which of the three selectors each is, and could not ask this:
+     * it ran with the combiner passing the texture's alpha straight through,
+     * so "the texel" and "what the combiner produced" were the same number.
+     * Turn the combiner's own modulate on and they part company:
+     *
+     *     reads the texel      Av = Af * At
+     *     reads the combiner   Av = Af * (Af * At)
+     *
+     * It matters because it decides the whole selector rule.  If the
+     * selector reads the STAGE, then the stage already computes GL's alpha
+     * table -- the encoder sets it from that table -- and "fromtex" is right
+     * for every textured state with no format test at all.  If it read the
+     * texel, Mesa would have to pick per format and environment, and
+     * "modulated" would square the fragment's alpha under RGBA modulate.
+     *
+     * Both selectors are asked, because fromtex separates them too and by a
+     * wider margin.  python, over the engine's own product and blend:
+     *
+     *     At    modulated texel / combiner     fromtex texel / combiner
+     *     64     47 70 93   /  38 67 95         72 80 88 / 47 70 93
+     *     128    62 76 90   /  44 68 94        112 96 80 / 62 76 90
+     *     192    77 82 87   /  49 71 93        153 112 72 / 77 82 87
+     */
+    {
+        static const unsigned long ats[3] = { 64UL, 128UL, 192UL };
+        static const unsigned long sel[2] = { 0x02000154UL,   /* modulated */
+                                              0x00000154UL }; /* fromtex   */
+        static const char *sn[2] = { "modulated", "fromtex  " };
+        /* [selector][at][channel] */
+        static const unsigned long wantTexel[2][3][3] = {
+            { {  47UL,  70UL,  93UL }, {  62UL,  76UL,  90UL },
+              {  77UL,  82UL,  87UL } },
+            { {  72UL,  80UL,  88UL }, { 112UL,  96UL,  80UL },
+              { 153UL, 112UL,  72UL } }
+        };
+        static const unsigned long wantComb[2][3][3] = {
+            { {  38UL,  67UL,  95UL }, {  44UL,  68UL,  94UL },
+              {  49UL,  71UL,  93UL } },
+            { {  47UL,  70UL,  93UL }, {  62UL,  76UL,  90UL },
+              {  77UL,  82UL,  87UL } }
+        };
+        unsigned long rr, cc;
+        int j, k, texelHits = 0, combHits = 0, other = 0;
+        int fromtexComb = 0, modBelow = 0;
+        unsigned long modRead[3][3];
+
+        printf("\n81. does the blend's selector read the texel or the"
+               " combiner\n");
+        printf("     the combiner's own modulate is ON, which is what makes"
+               " the two differ\n");
+        for (k = 0; k < 2; k++) {
+            printf("     %-10s", sn[k]);
+            for (j = 0; j < 3; j++) {
+                OSMGAHW3DTri *t;
+                unsigned long got, r2, g2, b2;
+                unsigned v;
+
+                for (rr = 0UL; rr < 64UL; rr++)
+                    for (cc = 0UL; cc < 64UL; cc++)
+                        tex[rr * 64UL + cc] = (ats[j] << 24) | 0x00C08040UL;
+                for (rr = 0UL; rr < 4UL; rr++)
+                    for (cc = 0UL; cc < 16UL; cc++)
+                        colour[rr * STRIDE_DW + cc] = 0x00204060UL;
+
+                t = setup(1024UL, 0UL, 8UL, 4UL, 0L,
+                          OSMGA_HW3D_TEXF_TEXALPHA
+                          | OSMGA_HW3D_TEXF_MODULATE);
+                batch->state.texW = 64UL; batch->state.texH = 64UL;
+                batch->state.texPitch = 64UL;
+                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                batch->state.tmr[3] = 0L;
+                setTU(batch, 0L); setTV(batch, 0L);
+                t->alphactrl = sel[k];
+                t->a0 = 96UL << 15;
+                t->adx = 0UL; t->ady = 0UL;
+                /* white, so the combiner's COLOUR modulate leaves the
+                 * texture's colour alone and only the alpha question is
+                 * being asked */
+                t->dr[0] = 255UL << 15; t->dr[3] = 255UL << 15;
+                t->dr[6] = 255UL << 15;
+                v = fire();
+                got = (v != OSMGA_HW3D_OK) ? 0xFFFFFFFFUL
+                                           : pixat(0UL, 2UL);
+                r2 = (got >> 16) & 0xFFUL;
+                g2 = (got >> 8) & 0xFFUL;
+                b2 = got & 0xFFUL;
+                printf(" %3lu %3lu %3lu  ", r2, g2, b2);
+                if (r2 == wantTexel[k][j][0] && g2 == wantTexel[k][j][1] &&
+                    b2 == wantTexel[k][j][2])
+                    texelHits++;
+                else if (r2 == wantComb[k][j][0] &&
+                         g2 == wantComb[k][j][1] &&
+                         b2 == wantComb[k][j][2])
+                    combHits++;
+                else
+                    other++;
+                if (k == 0) {
+                    modRead[j][0] = r2; modRead[j][1] = g2; modRead[j][2] = b2;
+                } else {
+                    /* fromtex against the combiner's own product */
+                    if (r2 == wantComb[1][j][0] && g2 == wantComb[1][j][1] &&
+                        b2 == wantComb[1][j][2])
+                        fromtexComb++;
+                    /*
+                     * A smaller alpha means less of the source, and the
+                     * source's red is above the destination's -- so a smaller
+                     * alpha shows as a SMALLER red.  Comparing the channel
+                     * rather than an alpha keeps this free of any rounding
+                     * model.
+                     */
+                    if (modRead[j][0] < r2)
+                        modBelow++;
+                }
+            }
+            printf("\n");
+        }
+        printf("     texel wants   47 70 93 /  62 76 90 /  77 82 87"
+               "   then  72 80 88 / 112 96 80 / 153 112 72\n");
+        printf("     comb  wants   38 67 95 /  44 68 94 /  49 71 93"
+               "   then  47 70 93 /  62 76 90 /  77 82 87\n");
+        /*
+         * The answer is the COMBINER, and fromtex is what says so: three
+         * readings out of three land on the combiner's product to the level.
+         * Inverting the blend gives the alpha the engine actually used --
+         * 24, 48, 72 for texture alphas of 64, 128, 192 against a fragment
+         * alpha of 96, which is (Af * (At + 1)) >> 8 exactly.
+         *
+         * Only fromtex is asserted.  Modulated multiplies by the fragment's
+         * alpha a SECOND time, and its rounding at the small end is not
+         * modelled here to the level (17 where the doubled product says 18,
+         * and no exact inverse at all at the lowest) -- so what is asserted
+         * about it is the structural fact, that its alpha comes out strictly
+         * below fromtex's at every texture alpha.  That is what "multiplies
+         * again" means, and it does not rest on a rounding model.
+         */
+        if (fromtexComb == 3 && modBelow == 3)
+            printf("   ok    the selector reads the texture STAGE, so"
+                   " fromtex is GL's alpha\n");
+        else {
+            printf("   FAIL  fromtex matched the combiner %d/3, modulated"
+                   " came out below it %d/3\n", fromtexComb, modBelow);
+            failures++;
+        }
+        (void)texelHits; (void)combHits; (void)other;
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;
