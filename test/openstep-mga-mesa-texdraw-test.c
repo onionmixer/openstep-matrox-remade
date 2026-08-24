@@ -262,6 +262,94 @@ main(int argc, char **argv)
         }
         /* "tile" runs the quad's texture coordinates out to three, which
          * only means anything with repeat */
+        if (argc > 2 && strncmp(argv[2], "fmix", 4) == 0) {
+            /*
+             * The four (MinFilter, MagFilter) combinations, each drawn twice
+             * -- once magnified and once minified -- so all eight cells of
+             * the matrix are exercised.  The suffix picks the cell:
+             *
+             *    fmixNN fmixNL fmixLN fmixLL   magnified
+             *    fmixNNm …                     minified
+             *
+             * The gate used to require the two to be equal, so the mixed
+             * pair could not be drawn at all.  Now each drives its own field
+             * and the hardware chooses between them; what this checks is that
+             * the choice matches the software rasteriser in every cell.
+             */
+            int wantMin = (argv[2][4] == 'L') ? GL_LINEAR : GL_NEAREST;
+            int wantMag = (argv[2][5] == 'L') ? GL_LINEAR : GL_NEAREST;
+            int mini = (argv[2][6] == 'm');
+            double span = mini ? 32.0 : 64.0;
+            double reps = mini ? 4.0 : 1.0;
+
+            glClear(GL_COLOR_BUFFER_BIT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, wantMin);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, wantMag);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+            glBegin(GL_TRIANGLES);
+              glTexCoord2f(0.0f, 0.0f);
+              glVertex2d(40.0, 40.0);
+              glTexCoord2f((GLfloat)reps, 0.0f);
+              glVertex2d(40.0 + span, 40.0);
+              glTexCoord2f((GLfloat)reps, (GLfloat)reps);
+              glVertex2d(40.0 + span, 40.0 + span);
+              glTexCoord2f(0.0f, 0.0f);
+              glVertex2d(40.0, 40.0);
+              glTexCoord2f((GLfloat)reps, (GLfloat)reps);
+              glVertex2d(40.0 + span, 40.0 + span);
+              glTexCoord2f(0.0f, (GLfloat)reps);
+              glVertex2d(40.0, 40.0 + span);
+            glEnd();
+            glFinish();
+            fprintf(stderr,
+                    "# %s: drawn %lu software %lu unsupported %lu"
+                    " declined %lu\n", argv[2],
+                    OSMGAMesaHookDrawn(), OSMGAMesaHookSoftware(),
+                    OSMGAMesaHookUnsupported(), OSMGAMesaHookDeclined());
+            for (y = 0; y < H; y++)
+                for (x = 0; x < W; x++)
+                    if (app[y * W + x] != CLEARC)
+                        printf("P %ld %ld %lu\n", x, y, app[y * W + x]);
+            return 0;
+        }
+        if (argc > 2 && strcmp(argv[2], "maglin") == 0) {
+            /*
+             * The magnifying twin of minlin, and the control for its
+             * remaining difference.  One texture across sixty-four pixels is
+             * a quarter of a texel to the pixel, so the engine takes the
+             * MAGNIFICATION field where minlin takes the minification one --
+             * same filter, same texture, same comparison, different path.
+             *
+             * If the plus one in every channel shows up here too it is the
+             * rounding already on record; if it is only in minlin it belongs
+             * to the minification path and is a different thing.
+             */
+            glClear(GL_COLOR_BUFFER_BIT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+            glBegin(GL_TRIANGLES);
+              glTexCoord2f(0.0f, 0.0f); glVertex2d(40.0, 40.0);
+              glTexCoord2f(1.0f, 0.0f); glVertex2d(104.0, 40.0);
+              glTexCoord2f(1.0f, 1.0f); glVertex2d(104.0, 104.0);
+              glTexCoord2f(0.0f, 0.0f); glVertex2d(40.0, 40.0);
+              glTexCoord2f(1.0f, 1.0f); glVertex2d(104.0, 104.0);
+              glTexCoord2f(0.0f, 1.0f); glVertex2d(40.0, 104.0);
+            glEnd();
+            glFinish();
+            fprintf(stderr,
+                    "# maglin: drawn %lu software %lu unsupported %lu"
+                    " declined %lu\n",
+                    OSMGAMesaHookDrawn(), OSMGAMesaHookSoftware(),
+                    OSMGAMesaHookUnsupported(), OSMGAMesaHookDeclined());
+            for (y = 0; y < H; y++)
+                for (x = 0; x < W; x++)
+                    if (app[y * W + x] != CLEARC)
+                        printf("P %ld %ld %lu\n", x, y, app[y * W + x]);
+            return 0;
+        }
         if (argc > 2 && strcmp(argv[2], "minlin") == 0) {
             /*
              * A LINEAR texture that is MINIFIED: four textures across

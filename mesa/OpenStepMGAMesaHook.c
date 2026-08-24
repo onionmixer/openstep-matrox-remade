@@ -391,8 +391,9 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         batch->state.texPitch = texPitch;
         batch->state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
         /*
-         * The gate has already required MinFilter == MagFilter and that both
-         * are GL_NEAREST or GL_LINEAR, so one of them decides it.
+         * The gate has already held each filter to GL_NEAREST or GL_LINEAR,
+         * separately -- they no longer have to agree, so each drives its own
+         * field.
          */
         {
             const struct gl_texture_object *to =
@@ -400,9 +401,13 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
             const struct gl_texture_image *ti = to->Image[to->BaseLevel];
 
             batch->state.texFlags =
-                ((to->MagFilter == GL_LINEAR)
-                     ? (OSMGA_HW3D_TEXF_BILIN
-                        | OSMGA_HW3D_TEXF_BILINMIN) : 0UL)
+                /*
+                 * Each field from its own filter.  While the two had to be
+                 * equal it did not matter which one was read; now it does.
+                 */
+                ((to->MagFilter == GL_LINEAR) ? OSMGA_HW3D_TEXF_BILIN : 0UL)
+                | ((to->MinFilter == GL_LINEAR)
+                     ? OSMGA_HW3D_TEXF_BILINMIN : 0UL)
                 /*
                  * GL_REPLACE gives Av = At for a texture that has an alpha
                  * and Av = Af for one that has not, and Format is the STORED
@@ -563,16 +568,39 @@ osmgaMesaTexStateOK(GLcontext *ctx)
     if (t == 0)
         return 0;
     /*
-     * The engine has ONE filter switch and no notion of lambda, while GL
-     * chooses between MinFilter and MagFilter per fragment -- and a single
-     * triangle can be magnified in one place and minified in another, or in
-     * one axis and not the other.  Requiring the two to be equal is what
-     * makes that choice stop mattering.  The four mipmap filters fall out
-     * here too, since neither of the values below is one of them.
+     * The two filters no longer have to agree.
+     *
+     * This used to require it, on the grounds that the engine had ONE filter
+     * switch and no notion of lambda.  It has two -- TEXFILTER holds a
+     * minification field and a magnification field -- and it chooses between
+     * them itself.  Measured: with the two set differently, a single
+     * primitive whose rate crosses one texel per pixel inside it blends on
+     * the side above the crossing and point samples on the side below, and
+     * the column where it changes is the column python says the rate falls
+     * under one.  So the choice is made per fragment, not per primitive.  And
+     * it uses BOTH axes, as GL's lambda does: a primitive magnifying in u
+     * while minifying in v takes the minification filter, which is the case
+     * that would have exposed a one-axis selector.
+     *
+     * So each filter is checked on its own, and each drives its own field.
+     * Checking them separately is not optional now: with the equality gone,
+     * testing only MagFilter would let a mipmapped MinFilter through beside
+     * an ordinary MagFilter, and the four mipmap filters are still refused --
+     * where their levels live has not been measured.
      */
-    if (t->MinFilter != t->MagFilter)
+    if (t->MinFilter != GL_NEAREST && t->MinFilter != GL_LINEAR)
         return 0;
-    if (t->MagFilter == GL_NEAREST) {
+    if (t->MagFilter != GL_NEAREST && t->MagFilter != GL_LINEAR)
+        return 0;
+    /*
+     * The wrap rule asks whether EITHER filter is linear, not whether the
+     * magnification one is.  GL_CLAMP blends the border colour in under a
+     * linear filter and the engine's clamp holds the edge texel instead, so
+     * a linear MINIFICATION filter rules GL_CLAMP out just as a linear
+     * magnification one does -- and while the two had to be equal, asking
+     * about one of them answered for both.
+     */
+    if (t->MinFilter == GL_NEAREST && t->MagFilter == GL_NEAREST) {
         /*
          * With nearest sampling GL_CLAMP and GL_CLAMP_TO_EDGE name the same
          * texel for every coordinate in [0,1] -- Mesa's own two branches in
@@ -594,7 +622,7 @@ osmgaMesaTexStateOK(GLcontext *ctx)
          * cannot honour by clamping, and a silently clamped axis is a wrong
          * picture rather than a refusal.
          */
-    } else if (t->MagFilter == GL_LINEAR) {
+    } else {
         /*
          * Under a linear filter the two wraps part company: GL_CLAMP blends
          * the border colour into the outermost half texel (texture.c,
@@ -629,8 +657,6 @@ osmgaMesaTexStateOK(GLcontext *ctx)
         if ((t->WrapS != GL_CLAMP_TO_EDGE && t->WrapS != GL_REPEAT) ||
             (t->WrapT != GL_CLAMP_TO_EDGE && t->WrapT != GL_REPEAT))
             return 0;
-    } else {
-        return 0;
     }
     if (t->BaseLevel != 0)
         return 0;

@@ -4522,6 +4522,120 @@ main(void)
                "     where it is under, the engine chooses -- there is a lambda.\n");
     }
 
+    printf("\n71. is the choice made INSIDE a primitive\n");
+    {
+        /*
+         * 70 showed the two filter fields acting in complementary ranges, but
+         * every one of its seven rows was a SEPARATE draw at a constant rate.
+         * That is consistent with a choice made once per primitive as well as
+         * with one made per fragment, and the difference matters: only the
+         * latter is a lambda in GL's sense, and only the latter makes the
+         * mipmap modes worth chasing.
+         *
+         * So: ONE primitive whose rate crosses one within it.  The rate cannot
+         * vary along a row without perspective, so the denominator carries a
+         * gradient -- python says the rate runs from 2.2 texels per pixel at
+         * the left edge to 0.95 at the right, crossing one near column
+         * fourteen.
+         *
+         * MIN is bilinear and MAG is nearest.  If the choice is per fragment
+         * the left of the row blends and the right is sharp; if it is made
+         * once for the primitive the whole row is one or the other.
+         */
+        long q0 = 1L << 19, dq = 20000L, dp = 300000L;
+        int col;
+        unsigned long rr, cc;
+
+        for (rr = 0UL; rr < 64UL; rr++)
+            for (cc = 0UL; cc < 64UL; cc++)
+                tex[rr * 64UL + cc] = (cc & 1UL) ? 0x00FF0000UL : 0UL;
+
+        blank();
+        (void)setup(1024UL, 0UL, 16UL, 4UL, 0L,
+                    OSMGA_HW3D_TEXF_BILINMIN | OSMGA_HW3D_TEXF_PERSP
+                    | OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV);
+        batch->state.texW = 64UL; batch->state.texH = 64UL;
+        batch->state.texPitch = 64UL;
+        batch->state.tmr[0] = dp;  batch->state.tmr[1] = 0L;
+        batch->state.tmr[2] = 0L;  batch->state.tmr[3] = 0L;
+        batch->state.tmr[4] = dq;  batch->state.tmr[5] = 0L;
+        batch->state.tmr[6] = 0L;  batch->state.tmr[7] = 0L;
+        batch->state.tmr[8] = q0;
+        {
+            unsigned v = fire();
+
+            printf("     MIN bilinear, MAG nearest, verdict %u\n", v);
+            if (v == OSMGA_HW3D_OK) {
+                printf("     red by column: ");
+                for (col = 1; col < 16; col++)
+                    printf(" %3lu", pixat(0UL, (unsigned long)col) >> 16
+                                    & 0xFFUL);
+                /*
+                 * python, from the same registers: 2.205 2.048 1.908 1.782
+                 * 1.668 1.564 1.470 1.384 1.305 1.233 1.167 1.106 1.050
+                 * 0.997 0.949 -- the rate falls under one at the fourteenth.
+                 * The texture is nought and 255 alternating, so a reading of
+                 * either is a point sample and anything else is a blend.
+                 */
+                printf("     the rate falls under one at column fourteen;\n"
+                       "     a reading of 0 or 255 is a point sample and\n"
+                       "     anything between is a blend\n");
+            }
+        }
+    }
+
+    printf("\n72. does the selector look at both axes\n");
+    {
+        /*
+         * GL's lambda is the LARGER of the two axis rates, so a primitive that
+         * magnifies in u while minifying in v is minifying.  If the engine
+         * takes only one axis it will disagree exactly there -- and that is a
+         * case the widened gate would let through, so it has to be asked
+         * before the gate is widened rather than after.
+         *
+         * MIN is bilinear and MAG nearest, as in 70 and 71.  The texture
+         * alternates along BOTH axes here, so either axis blending shows.
+         */
+        static const long dus[3] = { 65536L,  4096L, 4096L };
+        static const long dvs[3] = {  4096L, 65536L, 4096L };
+        static const char *nm[3] = { "u fast, v slow", "u slow, v fast",
+                                     "both slow" };
+        static const char *want[3] = { "MIN", "MIN", "MAG" };
+        int j;
+        unsigned long rr, cc;
+
+        for (rr = 0UL; rr < 64UL; rr++)
+            for (cc = 0UL; cc < 64UL; cc++)
+                tex[rr * 64UL + cc] = ((rr ^ cc) & 1UL) ? 0x00FF0000UL : 0UL;
+
+        for (j = 0; j < 3; j++) {
+            unsigned long got;
+            unsigned v;
+
+            blank();
+            (void)setup(1024UL, 0UL, 16UL, 8UL, dus[j],
+                        OSMGA_HW3D_TEXF_BILINMIN
+                        | OSMGA_HW3D_TEXF_REPEATU
+                        | OSMGA_HW3D_TEXF_REPEATV);
+            batch->state.texW = 64UL; batch->state.texH = 64UL;
+            batch->state.texPitch = 64UL;
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = dvs[j];
+            batch->state.tmr[6] = dus[j] / 2L;
+            batch->state.tmr[7] = dvs[j] / 2L;
+            v = fire();
+            got = (v != OSMGA_HW3D_OK) ? 9999UL
+                                       : ((pixat(2UL, 4UL) >> 16) & 0xFFUL);
+            printf("   %-15s du %6ld dv %6ld  red %4lu  %s  GL wants %s\n",
+                   nm[j], dus[j], dvs[j], got,
+                   (got == 0UL || got == 255UL) ? "point" :
+                   (got == 9999UL) ? "ref  " : "blend", want[j]);
+        }
+        printf("     a blend means MIN was chosen, a point sample means MAG.\n"
+               "     If the middle row points where GL wants MIN, the engine\n"
+               "     is looking at one axis only.\n");
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;
