@@ -27,8 +27,14 @@
 # name longer than 18 characters with "Variable syntax." and nothing else.
 # Measured on the machine -- 18 works, 19 does not.
 #
-if (! $?MESA_STAGE_PARENT) setenv MESA_STAGE_PARENT /tmp
-if (! $?MGA_OUT_PARENT)      setenv MGA_OUT_PARENT /tmp
+#
+# The default is the local disk, not /tmp.  /tmp is emptied at boot, so a
+# staged tree there had to be rebuilt after every restart -- about a
+# quarter of an hour each time, for a tree that never changes.  Set the
+# variable to /tmp explicitly for a genuinely one-off build.
+#
+if (! $?MESA_STAGE_PARENT) setenv MESA_STAGE_PARENT /usr/local/mesastage
+if (! $?MGA_OUT_PARENT)      setenv MGA_OUT_PARENT /usr/local/mesastage
 #
 # switch rather than a comparison: csh expands an unquoted /* in an if into
 # every entry of the root directory, which is a syntax error and not a test.
