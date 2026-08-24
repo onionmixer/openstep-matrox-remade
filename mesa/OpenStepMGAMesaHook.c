@@ -323,17 +323,16 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
      * the state has already been agreed to by the time this runs.
      *
      * WHICH alpha it blends with is a separate field, and it has to follow
-     * the texture environment or the picture is wrong rather than refused:
-     *
-     *      no texture, or RGB with GL_REPLACE   Av = Af        diffused
-     *      RGBA with GL_REPLACE                 Av = At        fromtex
-     *      GL_MODULATE                          Av = Af * At   modulated
+     * the texture or the picture is wrong rather than refused.
      *
      * The constant carries "diffused", which was right while nothing was
      * textured.  Measured with a texture bound: eight texels whose alphas
      * ran from nought to 224 all came back as the bare destination, because
      * the interpolated alpha was nought and that is the one it was told to
      * use.
+     *
+     * What it must become is settled below, and it is NOT a table over the
+     * texture environment -- that was tried twice and was wrong twice.
      */
     blend = ctx->Color.BlendEnabled ? OSMGA_MESA_BLEND_OVER
                                     : OSMGA_MESA_BLEND_OPAQUE;

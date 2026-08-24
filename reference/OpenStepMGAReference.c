@@ -407,6 +407,19 @@ OSMGAReferenceBlendSrcAlpha32(unsigned long source, unsigned long destination)
     destination &= OSMGA_REFERENCE_U32_MASK;
     source_alpha = (source >> 24) & 0xffUL;
     destination_alpha = (destination >> 24) & 0xffUL;
+    /*
+     * NOT what glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA) gives.
+     *
+     * This is the usual source-over compositing alpha, As + Ad(1 - As).  GL
+     * applies the blend FACTORS to the alpha channel like any other, so the
+     * same call gives As*As + Ad*(1 - As) -- Mesa's own software path
+     * computes exactly that (Mesa-3.4.2/src/blend.c, "a = As * sA + Ad * dA"
+     * with sA = As/255).
+     *
+     * This routine is a reference for the compositing operation and nothing
+     * in the driver path uses it; it is here so that reaching for it as the
+     * oracle of a GL blend is a mistake somebody has already written down.
+     */
     output_alpha = source_alpha +
                    (destination_alpha * (255UL - source_alpha) + 127UL) / 255UL;
     red = blend_channel((source >> 16) & 0xffUL,
