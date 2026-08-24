@@ -101,6 +101,7 @@ main(void)
 
     n = OSMGAMesaBuildTriangle(&v0, &v1, &v2, (OSMGAMesaVertex *)0,
                                OSMGA_MESA_ZMODE_NONE,
+                               1 /* depth writes; ZMODE_NONE makes it moot */,
                                OSMGA_MESA_BLEND_OPAQUE,
                                0.0 /* no polygon offset */, batch->tri);
     batch->triCount = (unsigned long)n;
@@ -315,6 +316,7 @@ main(void)
             n = OSMGAMesaBuildTriangle(&v0, &v1, &v2,
                                        (OSMGAMesaVertex *)0,
                                        OSMGA_MESA_ZMODE_NONE,
+                               1 /* depth writes; ZMODE_NONE makes it moot */,
                                OSMGA_MESA_BLEND_OPAQUE,
                                0.0 /* no polygon offset */, batch->tri);
         }

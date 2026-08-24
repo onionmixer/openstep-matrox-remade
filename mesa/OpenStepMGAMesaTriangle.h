@@ -234,11 +234,30 @@ typedef struct {
  */
 #define OSMGA_MESA_TRI_UNSUPPORTED  (-1)
 
+
+/*
+ * depthWrite is glDepthMask, and it is a separate argument rather than a
+ * value folded into zmode because a caller that forgot it would be asking
+ * for depth writes it did not want, silently.
+ *
+ * The engine spells it in the access type, not in a write mask.  Matrox's
+ * own register decoder calls atype ZI "depth mode with gouraud" and atype I
+ * "Gouraud (with depth compare)" (xf86-video-mga-2.0.0/util/stormdwg.c:32
+ * and :35), and the probe asked the hardware directly: with atype I and
+ * ZLT against a depth buffer cleared to 0x8000, the band at 0x4000 drew all
+ * 1280 of its pixels, the band at 0xC000 drew none, and not one pixel of
+ * depth moved -- while the ZI control in the same run wrote every depth it
+ * was asked to.  So I compares and does not write.
+ *
+ * It is ignored when zmode is NONE: with no depth there is nothing to
+ * write, and the access type is I either way.
+ */
 int OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
                            const OSMGAMesaVertex *b,
                            const OSMGAMesaVertex *c,
                            const OSMGAMesaVertex *flat,
                            unsigned long zmode,
+                           int depthWrite,
                            unsigned long blend,
                            double zoffset,
                            OSMGAHW3DTri *out);
@@ -294,6 +313,7 @@ int OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
                               const OSMGAMesaVertex *c,
                               const OSMGAMesaVertex *flat,
                               unsigned long zmode,
+                              int depthWrite,
                               unsigned long blend,
                               const OSMGAMesaTex *tex,
                               double zoffset,

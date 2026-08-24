@@ -14,9 +14,14 @@
  * interpolated -- the two paths' depth codes are known to differ by as much
  * as two on a sloped primitive, and equality has no tolerance at all.
  *
- * Software is forced the way depth-agree does it: a scissor the size of the
- * surface, which the chooser refuses and which clips nothing, so the path
- * changes and the picture does not.
+ * Software is forced the way depth-agree does it, with
+ * OSMGAMesaHookForceSoftware.
+ *
+ * It used to be forced with a scissor the size of the surface -- refused by
+ * the chooser, clipping nothing, so the path changed and the picture did
+ * not.  That idiom is dead and must not come back: the scissor is accepted
+ * now, so a full-surface one changes neither the path nor the picture, and a
+ * test built on it would quietly compare the engine with itself.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,9 +82,11 @@ flatQuad(double z, float r, float g, float b)
  * pass, and this asks about the comparison.
  */
 static int
-probeWins(GLenum func, double zseed, double zprobe, int soft)
+probeWins(GLenum func, double zseed, double zprobe, int soft,
+          unsigned long *drew)
 {
     unsigned long px;
+    unsigned long before;
 
     glDepthFunc(GL_ALWAYS);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -89,8 +96,18 @@ probeWins(GLenum func, double zseed, double zprobe, int soft)
     flatQuad(zseed, 1.0f, 0.0f, 0.0f);
     glFinish();
     glDepthFunc(func);
+    /*
+     * Around the PROBE quad only, because that is the one whose comparison
+     * is under test.  Counting the whole function would also pass if the
+     * seed went to the engine and the probe quietly did not, and the answer
+     * this returns would then be the software rasteriser's while the report
+     * said it was the engine's.  The count is a required argument for the
+     * same reason: a caller cannot forget to ask which path answered.
+     */
+    before = OSMGAMesaHookDrawn();
     flatQuad(zprobe, 0.0f, 1.0f, 0.0f);
     glFinish();
+    *drew = OSMGAMesaHookDrawn() - before;
     if (soft) softOff();
     px = app[48 * W + 64];
     return (((px >> 8) & 0xFFUL) > 0x80UL);      /* green means it won */
@@ -157,12 +174,13 @@ main(void)
          * say.  The three z values are far enough apart that a code or two of
          * disagreement cannot turn nearer into farther.
          */
-        int hf = probeWins(cases[i].f, 0.0, -0.5, 0);   /* farther */
-        int hs = probeWins(cases[i].f, 0.0,  0.0, 0);   /* the same */
-        int hn = probeWins(cases[i].f, 0.0,  0.5, 0);   /* nearer   */
-        int sf = probeWins(cases[i].f, 0.0, -0.5, 1);
-        int ss = probeWins(cases[i].f, 0.0,  0.0, 1);
-        int sn = probeWins(cases[i].f, 0.0,  0.5, 1);
+        unsigned long dw[6];
+        int hf = probeWins(cases[i].f, 0.0, -0.5, 0, &dw[0]); /* farther */
+        int hs = probeWins(cases[i].f, 0.0,  0.0, 0, &dw[1]); /* the same */
+        int hn = probeWins(cases[i].f, 0.0,  0.5, 0, &dw[2]); /* nearer   */
+        int sf = probeWins(cases[i].f, 0.0, -0.5, 1, &dw[3]);
+        int ss = probeWins(cases[i].f, 0.0,  0.0, 1, &dw[4]);
+        int sn = probeWins(cases[i].f, 0.0,  0.5, 1, &dw[5]);
         char name[80];
 
         printf("   %s  engine far/same/near %d%d%d   software %d%d%d"
@@ -173,6 +191,15 @@ main(void)
                   hn == cases[i].wantNear);
         sprintf(name, "%s and software agrees", cases[i].n);
         say(name, hf == sf && hs == ss && hn == sn);
+        if (dw[0] == 0UL || dw[1] == 0UL || dw[2] == 0UL) {
+            printf("   FAIL  %s never reached the engine\n", cases[i].n);
+            failures++;
+        }
+        if (dw[3] != 0UL || dw[4] != 0UL || dw[5] != 0UL) {
+            printf("   FAIL  %s: the software pass was accelerated\n",
+                   cases[i].n);
+            failures++;
+        }
     }
 
     /*
@@ -190,14 +217,22 @@ main(void)
         say("GL_NEVER does not reach the engine",
             OSMGAMesaHookDrawn() == d0);
 
+        /*
+         * A masked depth write used to be refused here.  It is not any more:
+         * the engine spells "compare but do not write" in the access type,
+         * and the card was asked directly.  What that costs is here -- this
+         * assertion is now the opposite of what it was -- and what it means
+         * is in the test that owns it, which checks the comparison still
+         * happens and the buffer really does stay put.
+         */
         glDepthFunc(GL_LESS);
         glDepthMask(GL_FALSE);
         d0 = OSMGAMesaHookDrawn();
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         flatQuad(0.0, 1.0f, 1.0f, 1.0f);
         glFinish();
-        say("a masked depth write does not either",
-            OSMGAMesaHookDrawn() == d0);
+        say("a masked depth write now reaches the engine",
+            OSMGAMesaHookDrawn() != d0);
         glDepthMask(GL_TRUE);
     }
 

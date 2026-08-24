@@ -133,6 +133,7 @@ main(int argc, char **argv)
     memset(tmr, 0, sizeof tmr);
     n = OSMGAMesaBuildTriangleTex(&va, &vb, &vc, (const OSMGAMesaVertex *)0,
                                   OSMGA_MESA_ZMODE_NONE,
+                                  1 /* depth writes; ZMODE_NONE makes it moot */,
                                   OSMGA_MESA_BLEND_OPAQUE, &tx,
                                   0.0 /* no polygon offset */, out, tmr);
     printf("# tex %lu trapezoids %d\n", dim, n);

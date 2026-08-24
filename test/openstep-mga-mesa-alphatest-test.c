@@ -61,16 +61,28 @@ quad(double z, float r, float g, float b, float a)
 
 /* does a quad of this alpha survive the test? */
 static int
-survives(GLenum func, GLfloat ref, float alpha, int soft)
+survives(GLenum func, GLfloat ref, float alpha, int soft, unsigned long *drew)
 {
+    unsigned long before;
+
     glDisable(GL_DEPTH_TEST);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glEnable(GL_ALPHA_TEST);
     glAlphaFunc(func, ref);
     if (soft) softOn();
+    /*
+     * Batches, not pixels: a quad the alpha test discards entirely still
+     * reached the engine, and that is exactly what this has to distinguish
+     * from a quad the chooser sent to software.  Required rather than
+     * optional so no caller can forget to ask which path answered -- without
+     * it the whole table can be the software rasteriser agreeing with
+     * itself.
+     */
+    before = OSMGAMesaHookDrawn();
     quad(0.0, 0.0f, 1.0f, 0.0f, alpha);
     glFinish();
+    *drew = OSMGAMesaHookDrawn() - before;
     if (soft) softOff();
     glDisable(GL_ALPHA_TEST);
     return (((app[48 * W + 64] >> 8) & 0xFFUL) > 0x80UL);
@@ -114,12 +126,13 @@ main(void)
      */
     for (i = 0; i < 7; i++) {
         GLfloat ref = 128.0f / 255.0f;
-        int hl = survives(cases[i].f, ref, 127.0f / 255.0f, 0);
-        int he = survives(cases[i].f, ref, 128.0f / 255.0f, 0);
-        int hh = survives(cases[i].f, ref, 129.0f / 255.0f, 0);
-        int sl = survives(cases[i].f, ref, 127.0f / 255.0f, 1);
-        int se = survives(cases[i].f, ref, 128.0f / 255.0f, 1);
-        int sh = survives(cases[i].f, ref, 129.0f / 255.0f, 1);
+        unsigned long dw[6];
+        int hl = survives(cases[i].f, ref, 127.0f / 255.0f, 0, &dw[0]);
+        int he = survives(cases[i].f, ref, 128.0f / 255.0f, 0, &dw[1]);
+        int hh = survives(cases[i].f, ref, 129.0f / 255.0f, 0, &dw[2]);
+        int sl = survives(cases[i].f, ref, 127.0f / 255.0f, 1, &dw[3]);
+        int se = survives(cases[i].f, ref, 128.0f / 255.0f, 1, &dw[4]);
+        int sh = survives(cases[i].f, ref, 129.0f / 255.0f, 1, &dw[5]);
         char name[80];
 
         printf("   %s  engine below/equal/above %d%d%d   software %d%d%d"
@@ -130,6 +143,15 @@ main(void)
                   hh == cases[i].wantHi);
         sprintf(name, "%s and software agrees", cases[i].n);
         say(name, hl == sl && he == se && hh == sh);
+        if (dw[0] == 0UL || dw[1] == 0UL || dw[2] == 0UL) {
+            printf("   FAIL  %s never reached the engine\n", cases[i].n);
+            failures++;
+        }
+        if (dw[3] != 0UL || dw[4] != 0UL || dw[5] != 0UL) {
+            printf("   FAIL  %s: the software pass was accelerated\n",
+                   cases[i].n);
+            failures++;
+        }
     }
 
     /*

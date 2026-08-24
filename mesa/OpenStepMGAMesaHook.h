@@ -40,6 +40,11 @@ void OpenStepMesaAccelUpdateState(struct gl_context *ctx, int rowLength,
  * silently never fires looks exactly like one that works.
  */
 unsigned long OSMGAMesaHookDrawn(void);
+/* How many clears the engine took, and why the last one was declined --
+ * nought when it was taken.  The codes are read off the source; they exist
+ * so a clear that quietly does nothing can say which gate stopped it. */
+unsigned long OSMGAMesaHookClears(void);
+int           OSMGAMesaHookClearWhy(void);
 unsigned long OSMGAMesaHookDeclined(void);
 /* Triangles handed to the software path because this back end could not
  * draw them -- a refusal that cost nothing rather than a triangle. */

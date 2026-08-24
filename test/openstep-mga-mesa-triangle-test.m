@@ -143,6 +143,7 @@ main(void)
             p2.x = nothing[i].cx; p2.y = nothing[i].cy;
             got = OSMGAMesaBuildTriangle(&p0, &p1, &p2, &p0,
                                OSMGA_MESA_ZMODE_NONE,
+                                     1 /* depth writes; ZMODE_NONE makes it moot */,
                                      OSMGA_MESA_BLEND_OPAQUE,
                                      0.0 /* no polygon offset */, scratch);
             printf("   %-22s -> %2d (wanted %2d)  %s\n",
@@ -170,6 +171,7 @@ main(void)
 
     n = OSMGAMesaBuildTriangle(&v0, &v1, &v2, &v0,
                                OSMGA_MESA_ZMODE_NONE,
+                               1 /* depth writes; ZMODE_NONE makes it moot */,
                                OSMGA_MESA_BLEND_OPAQUE,
                                0.0 /* no polygon offset */, batch->tri);
     batch->triCount = (unsigned long)n;
@@ -226,6 +228,7 @@ main(void)
 
     n = OSMGAMesaBuildTriangle(&v0, &v1, &v2, (OSMGAMesaVertex *)0,
                                OSMGA_MESA_ZMODE_NONE,
+                               1 /* depth writes; ZMODE_NONE makes it moot */,
                                OSMGA_MESA_BLEND_OPAQUE,
                                0.0 /* no polygon offset */, batch->tri);
     batch->triCount = (unsigned long)n;

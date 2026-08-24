@@ -445,7 +445,8 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
                const OSMGAMesaEdge *le, const OSMGAMesaEdge *re,
                const OSMGAMesaVertex *flat,
                const OSMGAColourPlane *plane, const OSMGAMesaVertex *a,
-               unsigned long zmode, const OSMGAColourPlane *zplane,
+               unsigned long zmode, int depthWrite,
+               const OSMGAColourPlane *zplane,
                unsigned long blend, const OSMGAColourPlane *aplane,
                const OSMGAColourPlane *uplane, const OSMGAColourPlane *vplane,
                const OSMGAColourPlane *qplane, long *tmr)
@@ -468,8 +469,20 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
      * "always" -- so asking for GL_ALWAYS turned the depth off.
      */
     depthOn = (zmode != OSMGA_MESA_ZMODE_NONE);
+    /*
+     * The access type carries BOTH questions: ZI compares and writes, I
+     * compares and does not.  Measured on the card -- see the note on the
+     * declaration -- and not inferred from the register names alone.
+     *
+     * With no depth at all it is I with zmode nought, which is the engine's
+     * "always": a comparison that cannot fail, against an origin the kernel
+     * does not even hand over.  That is why depthWrite has nothing to say
+     * here, and why asking for GL_ALWAYS is not the same as asking for no
+     * depth -- the one still reads the buffer, and the other never does.
+     */
     t->dwgctl   = depthOn
-                  ? (OSMGA_TRI_DWGCTL_Z | (zmode & OSMGA_MESA_ZMODE_MASK))
+                  ? ((depthWrite ? OSMGA_TRI_DWGCTL_Z : OSMGA_TRI_DWGCTL) |
+                     (zmode & OSMGA_MESA_ZMODE_MASK))
                   : OSMGA_TRI_DWGCTL;
     /*
      * The textured opcode, when there is a texture.  Getting the coordinates
@@ -764,6 +777,7 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
                        const OSMGAMesaVertex *c,
                        const OSMGAMesaVertex *flat,
                        unsigned long zmode,
+                       int depthWrite,
                        unsigned long blend,
                        const OSMGAMesaTex *tex,
                        double zoffset,
@@ -1186,7 +1200,8 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
         skip = osmgaFirstDrawn(le, re, rT, rM - rT, sub);
         if (skip < rM - rT) {
             osmgaTrapezoid(&out[n], rT + skip, rM - rT - skip, sub, le, re,
-                           shade, plane, a, zmode, &zplane, blend, &aplane,
+                           shade, plane, a, zmode, depthWrite, &zplane,
+                           blend, &aplane,
                            (tex != 0) ? &uplane : (const OSMGAColourPlane *)0,
                            (tex != 0) ? &vplane : (const OSMGAColourPlane *)0,
                            (tex != 0) ? &qplane : (const OSMGAColourPlane *)0,
@@ -1207,7 +1222,8 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
         skip = osmgaFirstDrawn(le, re, rM, rL - rM, sub);
         if (skip < rL - rM) {
             osmgaTrapezoid(&out[n], rM + skip, rL - rM - skip, sub, le, re,
-                           shade, plane, a, zmode, &zplane, blend, &aplane,
+                           shade, plane, a, zmode, depthWrite, &zplane,
+                           blend, &aplane,
                            (tex != 0) ? &uplane : (const OSMGAColourPlane *)0,
                            (tex != 0) ? &vplane : (const OSMGAColourPlane *)0,
                            (tex != 0) ? &qplane : (const OSMGAColourPlane *)0,
@@ -1244,11 +1260,12 @@ OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
                        const OSMGAMesaVertex *c,
                        const OSMGAMesaVertex *flat,
                        unsigned long zmode,
+                       int depthWrite,
                        unsigned long blend,
                        double zoffset,
                        OSMGAHW3DTri *out)
 {
-    return OSMGAMesaBuildTriangleTex(a, b, c, flat, zmode, blend,
+    return OSMGAMesaBuildTriangleTex(a, b, c, flat, zmode, depthWrite, blend,
                                      (const OSMGAMesaTex *)0, zoffset, out,
                                      (long (*)[9])0);
 }

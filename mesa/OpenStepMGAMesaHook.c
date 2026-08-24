@@ -204,6 +204,118 @@ osmgaMesaSoftly(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     return 1;
 }
 static unsigned long osmgaHookMismatch;
+static unsigned long hookClears;
+/*
+ * Why the last clear was not taken.  A clear that quietly declines is
+ * indistinguishable from one that was never asked for, and the first
+ * accelerated clear declined every time for a reason no amount of reading
+ * found -- so it says.
+ */
+static int hookClearWhy;
+
+/*
+ * The texture state of a batch that has no texture.
+ *
+ * Every field, every time.  The batch is a mapped buffer this library
+ * reuses, so a field left alone keeps what the last submission put there --
+ * and a stale texture origin under a triangle that does not ask for one is
+ * how a batch draws somebody else's pixels.  Written in one place because
+ * two callers need it and a second copy would be a second thing to forget.
+ */
+static void
+osmgaMesaBatchUntextured(OSMGAHW3DBatch *batch)
+{
+    batch->state.texorg = 0UL;
+    batch->state.texW = batch->state.texH = batch->state.texPitch = 0UL;
+    batch->state.texFormat = 0UL;
+    batch->state.texFlags = 0UL;
+    memset(batch->state.tmr, 0, sizeof batch->state.tmr);
+    batch->state.texBiasReqU = OSMGA_HW3D_TEX_BIAS_NONE;
+    batch->state.texBiasReqV = OSMGA_HW3D_TEX_BIAS_NONE;
+}
+
+/*
+ * Everything a submission needs that is not the primitives themselves, and
+ * the submission.
+ *
+ * Both the triangle path and the accelerated clear come through here, which
+ * is the point: the destination, the depth origin and the scissor are asked
+ * of the one place that decides each, so the two cannot drift apart.  What
+ * is NOT here is the outcome -- a refused triangle goes to Mesa's
+ * rasteriser and a refused clear goes to Mesa's clear, and those are not the
+ * same thing -- so this returns the answer and lets the caller act on it.
+ *
+ * Nor are the counters: hookBatches and hookTraps are what the tests read to
+ * ask "did the engine draw this", and a clear counted among them would make
+ * a forced-software comparison report that the software pass was
+ * accelerated.  The callers count their own.
+ *
+ * Returns 0 when the batch was taken, non-zero when it was refused, with
+ * *out holding the driver's answer.
+ */
+static int
+osmgaMesaSubmitBatch(GLcontext *ctx, OSMGAHW3DBatch *batch,
+                     OSMGAHW3DSubmitBlock *out)
+{
+    OSMGAHW3DSubmitBlock res;
+
+    /* Where the surface is, asked of the one place that decides it -- not
+     * worked out again here, where it could disagree. */
+    batch->state.dstorg = OSMGAMesaBufferOrigin();
+    /*
+     * The destination is the drawing surface Mesa is working on, and saying
+     * so is what lets the kernel clip to it: before the batch declared this,
+     * the kernel clipped every submission to a fixed sixty-four by a hundred
+     * and twenty, which no real surface fits inside.
+     */
+    batch->state.dstWidth  = OSMGAMesaBufferWidth();
+    batch->state.dstHeight = OSMGAMesaBufferHeight();
+    batch->state.dstPitch  = OSMGAMesaBufferStride();
+    batch->state.zorg      = OSMGAMesaBufferDepthOrigin();
+    /*
+     * The scissor, written every submission for the same reason the bias
+     * request is: the batch is a mapped buffer this library reuses field by
+     * field, so anything not written keeps what the last one left.
+     *
+     * GL's box has its low corner at the bottom left and so does this
+     * surface -- the chooser refuses a context that is not y-up -- so the
+     * box goes across without a flip.  The kernel intersects it with the
+     * window it already clips to, so nothing here has to be sane for the
+     * driver to stay safe.
+     */
+    if (ctx->Scissor.Enabled) {
+        batch->state.scissorOn = 1UL;
+        batch->state.scissorX = (long)ctx->Scissor.X;
+        batch->state.scissorY = (long)ctx->Scissor.Y;
+        batch->state.scissorW = (ctx->Scissor.Width > 0)
+                                ? (unsigned long)ctx->Scissor.Width : 0UL;
+        batch->state.scissorH = (ctx->Scissor.Height > 0)
+                                ? (unsigned long)ctx->Scissor.Height : 0UL;
+    } else {
+        batch->state.scissorOn = 0UL;
+        batch->state.scissorX = 0L;
+        batch->state.scissorY = 0L;
+        batch->state.scissorW = 0UL;
+        batch->state.scissorH = 0UL;
+    }
+    if (OSMGAMesaProbeSubmit(&res) != 0) {
+        hookDeclined++;
+        if (res.verdict < OSMGA_MESA_VERDICTS)
+            hookVerdictCount[res.verdict]++;
+        hookLastRefusal.status   = res.status;
+        hookLastRefusal.verdict  = res.verdict;
+        hookLastRefusal.triangle = res.triangle;
+        hookLastRefusal.triCount = batch->triCount;
+        hookLastRefusal.dstWidth  = batch->state.dstWidth;
+        hookLastRefusal.dstHeight = batch->state.dstHeight;
+        if (res.triangle < batch->triCount)
+            hookLastRefusal.tri = batch->tri[res.triangle];
+
+        *out = res;
+        return 1;
+    }
+    return 0;
+}
 
 /*
  * One triangle, straight to the engine.
@@ -229,6 +341,24 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     int texOn, nwin;
     double zsnap;
     int n;
+
+    /*
+     * Asked to step aside.
+     *
+     * Checked HERE and not in the chooser, and that distinction is the whole
+     * of it: the chooser runs when Mesa decides its state has changed, and a
+     * flag inside this file is not state Mesa knows about -- so setting it
+     * there left the accelerated function installed and the switch did
+     * nothing at all.  The tests that used it went on comparing the
+     * hardware path with itself and passed.
+     *
+     * Measured, not reasoned: the scissor test asserts that its software
+     * pass did NOT reach the engine, and that assertion failed.
+     */
+    if (hookForcedSoftware) {
+        (void)osmgaMesaSoftly(ctx, v0, v1, v2, pv);
+        return;
+    }
 
     if (batch == 0) {
         /* The chooser established this; if it has gone away since, nothing
@@ -539,12 +669,13 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
          * the two things a caller can ask for.
          */
         a.a = b.a = c.a = prov.a;
-        n = OSMGAMesaBuildTriangleTex(&a, &b, &c, &prov, zmode, blend,
+        n = OSMGAMesaBuildTriangleTex(&a, &b, &c, &prov, zmode,
+                                      ctx->Depth.Mask == GL_TRUE, blend,
                                       texOn ? &tex : (const OSMGAMesaTex *)0,
                                       zoffset, built, tmr);
     } else {
         n = OSMGAMesaBuildTriangleTex(&a, &b, &c, (const OSMGAMesaVertex *)0,
-                                      zmode, blend,
+                                      zmode, ctx->Depth.Mask == GL_TRUE, blend,
                                       texOn ? &tex : (const OSMGAMesaTex *)0,
                                       zoffset, built, tmr);
     }
@@ -657,68 +788,11 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         batch->state.texBiasReqU = OSMGA_HW3D_TEX_BIAS_NONE;
         batch->state.texBiasReqV = OSMGA_HW3D_TEX_BIAS_NONE;
     } else {
-        batch->state.texorg = 0UL;
-        batch->state.texW = batch->state.texH = batch->state.texPitch = 0UL;
-        batch->state.texFormat = 0UL;
-        batch->state.texFlags = 0UL;
-        memset(batch->state.tmr, 0, sizeof batch->state.tmr);
-        batch->state.texBiasReqU = OSMGA_HW3D_TEX_BIAS_NONE;
-        batch->state.texBiasReqV = OSMGA_HW3D_TEX_BIAS_NONE;
+        osmgaMesaBatchUntextured(batch);
     }
-    /* Where the surface is, asked of the one place that decides it -- not
-     * worked out again here, where it could disagree. */
-    batch->state.dstorg = OSMGAMesaBufferOrigin();
-    /*
-     * The destination is the drawing surface Mesa is working on, and saying
-     * so is what lets the kernel clip to it: before the batch declared this,
-     * the kernel clipped every submission to a fixed sixty-four by a hundred
-     * and twenty, which no real surface fits inside.
-     */
-    batch->state.dstWidth  = OSMGAMesaBufferWidth();
-    batch->state.dstHeight = OSMGAMesaBufferHeight();
-    batch->state.dstPitch  = OSMGAMesaBufferStride();
-    batch->state.zorg      = OSMGAMesaBufferDepthOrigin();
-    /*
-     * The scissor, written every submission for the same reason the bias
-     * request is: the batch is a mapped buffer this library reuses field by
-     * field, so anything not written keeps what the last one left.
-     *
-     * GL's box has its low corner at the bottom left and so does this
-     * surface -- the chooser refuses a context that is not y-up -- so the
-     * box goes across without a flip.  The kernel intersects it with the
-     * window it already clips to, so nothing here has to be sane for the
-     * driver to stay safe.
-     */
-    if (ctx->Scissor.Enabled) {
-        batch->state.scissorOn = 1UL;
-        batch->state.scissorX = (long)ctx->Scissor.X;
-        batch->state.scissorY = (long)ctx->Scissor.Y;
-        batch->state.scissorW = (ctx->Scissor.Width > 0)
-                                ? (unsigned long)ctx->Scissor.Width : 0UL;
-        batch->state.scissorH = (ctx->Scissor.Height > 0)
-                                ? (unsigned long)ctx->Scissor.Height : 0UL;
-    } else {
-        batch->state.scissorOn = 0UL;
-        batch->state.scissorX = 0L;
-        batch->state.scissorY = 0L;
-        batch->state.scissorW = 0UL;
-        batch->state.scissorH = 0UL;
-    }
-
     hookBatches++;
     hookTraps += (unsigned long)cnt;
-    if (OSMGAMesaProbeSubmit(&res) != 0) {
-        hookDeclined++;
-        if (res.verdict < OSMGA_MESA_VERDICTS)
-            hookVerdictCount[res.verdict]++;
-        hookLastRefusal.status   = res.status;
-        hookLastRefusal.verdict  = res.verdict;
-        hookLastRefusal.triangle = res.triangle;
-        hookLastRefusal.triCount = batch->triCount;
-        hookLastRefusal.dstWidth  = batch->state.dstWidth;
-        hookLastRefusal.dstHeight = batch->state.dstHeight;
-        if (res.triangle < batch->triCount)
-            hookLastRefusal.tri = batch->tri[res.triangle];
+    if (osmgaMesaSubmitBatch(ctx, batch, &res) != 0) {
         /*
          * Whether this may be drawn again is not a matter of taste.
          *
@@ -945,7 +1019,6 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
     OSMGAMesaProbe probe;
 
     OSMGAMesaProbeRun(&probe);
-    if (hookForcedSoftware)           return NULL;
     if (probe.verdict != OSMGA_PROBE_HARDWARE) return NULL;
 
     /*
@@ -1062,12 +1135,27 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
          * and the whole constant-colour family, which is enabled by default.
          * A mapping would have sent those somewhere.
          *
-         * GL_SRC_ALPHA_SATURATE is refused, and not because GL forbids it:
-         * this Mesa allows it and implements the split GL asks for, min(As,
-         * 1 - Ad) for colour and exactly one for alpha.  The engine has ONE
-         * factor field for both, so whether it carries that split is a thing
-         * nobody has measured, and an unmeasured special case is not
-         * something to hand the engine.
+         * GL_SRC_ALPHA_SATURATE is refused, and it has now been MEASURED
+         * rather than left alone.
+         *
+         * GL asks for a split: min(As, 1 - Ad) on the colour channels and
+         * exactly one on alpha, which is what this Mesa implements
+         * (Mesa-3.4.2/src/blend.c:550 and :616).  The engine does have an
+         * encoding named for it -- AC_src_src_alpha_sat, source factor 8,
+         * and only ever a SOURCE factor, which is GL's own rule
+         * (mgareg_flags.h:50) -- and the validator already admits it.
+         *
+         * The card was asked (the tsa probe, five rows of As against Ad with
+         * the destination factor at ZERO).  Source factor 8 puts SOURCE
+         * ALPHA on the colour channels and exactly ONE on alpha.  It never
+         * takes the minimum: 255 - Ad does not enter, on any row, to the
+         * level.  Nor is it blind to the destination -- the same probe's
+         * factor 7 control reads Ad back correctly on every row, including
+         * Ad of 200.
+         *
+         * So the encoding is real and it is not this one.  What it actually
+         * is is the source half of glBlendFuncSeparate(SRC_ALPHA, ONE),
+         * which GL 1.1 cannot ask for and this contract does not offer.
          */
         switch (ctx->Color.BlendSrcRGB) {
         case GL_ZERO: case GL_ONE:
@@ -1131,14 +1219,17 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
             return NULL;
         }
         /*
-         * Testing without writing is not expressible by this contract.
+         * Testing without writing IS expressible, and the answer was in the
+         * access type all along.  ZI compares and writes; I compares and does
+         * not.  The probe asked the card: atype I with ZLT against a buffer
+         * cleared to 0x8000 drew the whole band at 0x4000, none of the band
+         * at 0xC000, and moved no depth at all, while the ZI control in the
+         * same run wrote every depth it was asked to.
          *
-         * The write is tied to the access type, and the plane write mask that
-         * might gate it -- PLNWT -- is set wide open on every submission and
-         * is not part of the batch.  Whether the hardware could do it is not
-         * settled here; what is settled is that this contract cannot ask.
+         * PLNWT, which looked like the place this would have to live, is set
+         * wide open on every submission and is not part of the batch.  It is
+         * not needed: the write is not masked, it is simply not made.
          */
-        if (ctx->Depth.Mask != GL_TRUE)             return NULL;
         if (ctx->Visual->DepthBits != 16)           return NULL;
         if (OSMGAMesaBufferDepthOrigin() == 0UL)    return NULL;
     }
@@ -1185,10 +1276,29 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
     }
 
     /*
-     * The scissor is taken.  The engine has a destination clip and the submit
-     * path already programs it to the whole window before every batch, so a
-     * scissor is that clip narrowed -- and the kernel intersects rather than
-     * trusts, which is why nothing about the box has to be checked here.
+     * The scissor is taken: it is the engine's destination clip narrowed.
+     *
+     * The submit path programs CXBNDRY, YTOP and YBOT before every batch
+     * anyway, to bound the offscreen surface, so a scissor is that same clip
+     * intersected with the client's box -- and the kernel intersects rather
+     * than trusts, which is why nothing about the box is checked here.  YTOP
+     * and YBOT go in as row times pitch with YDSTORG zero, which is what the
+     * DRM does for its own 3D dispatch (scratch/mga-drm/mga_state.c:67); the
+     * destination origin the list sets later is not part of that comparison.
+     *
+     * Measured, not assumed: a 32 by 24 box over a quad covering 4928 pixels
+     * leaves exactly the 768 python says it should, all nine points either
+     * side of the four edges land right, an empty box and a box off the
+     * surface draw nothing, and a box hanging off the corner keeps just the
+     * overlap -- every one of them agreeing with the software rasteriser to
+     * the pixel.  So the clipper does bite on TEXTURE_TRAP, and the note by
+     * the DMA block that leans on it for containment is entitled to.
+     *
+     * What that test first reported was the opposite, and the fault was its
+     * own: it cleared with the scissor still on, so everything outside the
+     * box kept the previous run's frame and the mirror handed it back.  The
+     * clear there is unscissored now, and the reason is written down beside
+     * it.
      */
     if ((ctx->RasterMask &
          ~(GLuint)(ALPHABUF_BIT | DEPTH_BIT | BLEND_BIT | TEXTURE_BIT |
@@ -1240,14 +1350,190 @@ osmgaMesaMirror(GLcontext *ctx)
 static GLbitfield (*osmgaMesaPrevClear)(GLcontext *, GLbitfield, GLboolean,
                                         GLint, GLint, GLint, GLint);
 
+/*
+ * Clearing on the engine, which is the larger half of a frame.
+ *
+ * Measured before it was built, because "the CPU clear is 53% of the frame"
+ * is not the same claim as "the engine would be faster".  At 512 by 384 the
+ * CPU clear is 161 ms and covering the whole surface through this same
+ * accelerated path -- two triangles, two batches, the synchronous submit and
+ * the completion wait all included -- is 0.9 ms.  A hundred and seventy-six
+ * times, and it takes the frame from 306 ms to about 146.  The other half is
+ * the mirror, and that is a separate piece of work.
+ *
+ * What this may take is narrow on purpose:
+ *
+ *   colour alone      -- no depth mode, so access type I: colour written and
+ *                        depth not touched
+ *   colour AND depth  -- zmode ALWAYS with the write on, so access type ZI
+ *                        with NOZCMP: both written, unconditionally, in ONE
+ *                        pass.  That NOZCMP writes depth is measured, not
+ *                        assumed
+ *   depth alone       -- NOT taken.  ZI writes colour as well and the only
+ *                        thing that could stop it is PLNWT, which the batch
+ *                        does not carry.  Mesa keeps it
+ *
+ * The mask is in DD_ bits, not GL_ ones: Mesa turns GL_COLOR_BUFFER_BIT into
+ * ctx->Color.DrawDestMask before it calls this (buffers.c, where ddMask is
+ * composed), and reading it as the GL bit would have been simply wrong.
+ * What is returned is what is left for Mesa, which is the callback's
+ * contract (dd.h).
+ *
+ * Returns the bits it did.
+ */
+static GLbitfield
+osmgaMesaClearOnEngine(GLcontext *ctx, GLbitfield mask, GLboolean all,
+                       GLint x, GLint y, GLint w, GLint h)
+{
+    OSMGAHW3DBatch *batch = OSMGAMesaProbeBatch();
+    OSMGAMesaVertex v[4];
+    /* Two builder calls, each allowed two trapezoids -- the same four the
+     * triangle path reserves, for the same reason. */
+    OSMGAHW3DTri built[4];
+    OSMGAHW3DSubmitBlock res;
+    unsigned long zmode = OSMGA_MESA_ZMODE_NONE;
+    int depthWrite = 0, wantDepth = 0;
+    int n0, n1, i;
+    double x0, y0, x1, y1;
+    unsigned long cr, cg, cb, ca, zcode;
+
+    /*
+     * A forced-software pass must be software all the way down.  Without
+     * this the triangles would go to Mesa and the CLEAR would still go to
+     * the engine, and every test that compares the two paths would be
+     * comparing a mixture with itself.
+     */
+    if (hookForcedSoftware)              { hookClearWhy = 1; return 0; }
+    if (batch == 0)                      { hookClearWhy = 2; return 0; }
+    if (OSMGAMesaBufferOrigin() == 0UL)  { hookClearWhy = 3; return 0; }
+    if ((OSMGAMesaBufferStride() % OSMGA_HW3D_PITCH_ALIGN) != 0UL)
+        { hookClearWhy = 4; return 0; }
+    if (!ctx->Visual->RGBAflag)          { hookClearWhy = 5; return 0; }
+
+    /*
+     * The engine has no colour write mask, so a masked clear is Mesa's: it
+     * reads the destination, merges the channels it may write and puts them
+     * back, which nothing here can express.  The bytes are each 0xff or
+     * nought, so all four are asked.
+     */
+    if (ctx->Color.ColorMask[0] != 0xff || ctx->Color.ColorMask[1] != 0xff ||
+        ctx->Color.ColorMask[2] != 0xff || ctx->Color.ColorMask[3] != 0xff)
+        { hookClearWhy = 6; return 0; }
+
+    /*
+     * Only the one colour destination this back end owns.  Anything else --
+     * a back buffer, both buffers at once -- is a surface we do not draw to,
+     * and taking the bit would leave it uncleared.
+     */
+    if (ctx->Color.DrawDestMask != (GLuint)DD_FRONT_LEFT_BIT)
+        { hookClearWhy = 7; return 0; }
+    if ((mask & (GLbitfield)DD_FRONT_LEFT_BIT) == 0)
+        { hookClearWhy = 8; return 0; }
+
+    /*
+     * Mesa clears its software alpha buffer alongside the colour one.  We
+     * cannot, so if there is one, the colour bit is not ours to take.
+     */
+    if (ctx->DrawBuffer->UseSoftwareAlphaBuffers)
+        { hookClearWhy = 9; return 0; }
+
+    if ((mask & (GLbitfield)DD_DEPTH_BIT) != 0 &&
+        ctx->Visual->DepthBits == 16 &&
+        OSMGAMesaBufferDepthOrigin() != 0UL) {
+        wantDepth = 1;
+        depthWrite = 1;
+        zmode = OSMGA_MESA_ZMODE_ALWAYS;
+    }
+
+    if (all) {
+        x0 = 0.0;
+        y0 = 0.0;
+        x1 = (double)OSMGAMesaBufferWidth();
+        y1 = (double)OSMGAMesaBufferHeight();
+    } else {
+        if (w <= 0 || h <= 0) { hookClearWhy = 10; return 0; }
+        x0 = (double)x;
+        y0 = (double)y;
+        x1 = (double)(x + w);
+        y1 = (double)(y + h);
+    }
+
+    /*
+     * Mesa's own quantisation, to the letter -- a truncating multiply by 255
+     * for colour and by DepthMax for depth.  Rounding differently here would
+     * make the accelerated clear a different colour from the software one at
+     * a handful of values, which is exactly the kind of difference that is
+     * found six months later.
+     */
+    cr = (unsigned long)(GLint)(ctx->Color.ClearColor[0] * 255.0F);
+    cg = (unsigned long)(GLint)(ctx->Color.ClearColor[1] * 255.0F);
+    cb = (unsigned long)(GLint)(ctx->Color.ClearColor[2] * 255.0F);
+    ca = (unsigned long)(GLint)(ctx->Color.ClearColor[3] * 255.0F);
+    zcode = (unsigned long)(GLushort)(ctx->Depth.Clear *
+                                      (GLfloat)ctx->Visual->DepthMax);
+
+    for (i = 0; i < 4; i++) {
+        memset(&v[i], 0, sizeof v[i]);
+        v[i].r = cr; v[i].g = cg; v[i].b = cb; v[i].a = ca;
+        v[i].z = zcode * (unsigned long)OSMGA_MESA_SUBONE;
+        v[i].qw = 1.0;
+        v[i].tq = 1.0;
+    }
+    v[0].x = osmgaFix(x0); v[0].y = osmgaFix(y0);
+    v[1].x = osmgaFix(x1); v[1].y = osmgaFix(y0);
+    v[2].x = osmgaFix(x1); v[2].y = osmgaFix(y1);
+    v[3].x = osmgaFix(x0); v[3].y = osmgaFix(y1);
+
+    n0 = OSMGAMesaBuildTriangle(&v[0], &v[1], &v[2], &v[0], zmode, depthWrite,
+                                OSMGA_MESA_BLEND_OPAQUE, 0.0, built);
+    if (n0 < 0) { hookClearWhy = 11; return 0; }
+    n1 = OSMGAMesaBuildTriangle(&v[0], &v[2], &v[3], &v[0], zmode, depthWrite,
+                                OSMGA_MESA_BLEND_OPAQUE, 0.0, built + n0);
+    if (n1 < 0) { hookClearWhy = 12; return 0; }
+    if (n0 + n1 == 0) { hookClearWhy = 13; return 0; }
+
+    batch->magic = OSMGA_HW3D_MAGIC;
+    batch->version = OSMGA_HW3D_VERSION;
+    batch->triCount = (unsigned long)(n0 + n1);
+    /*
+     * The trapezoids themselves, which is not a formality: the batch is a
+     * mapped buffer this library reuses, so declaring a count without
+     * writing the primitives leaves the last submission's in slot nought and
+     * NOTHING in slot one.  That is exactly what happened -- the driver
+     * refused with a drawing-control verdict on a triangle of all zeroes,
+     * and the clear silently fell back to Mesa every frame while the timing
+     * said nothing had changed.
+     */
+    for (i = 0; i < n0 + n1; i++)
+        batch->tri[i] = built[i];
+    osmgaMesaBatchUntextured(batch);
+    hookClears++;
+    if (osmgaMesaSubmitBatch(ctx, batch, &res) != 0) {
+        /*
+         * Refused, so Mesa clears it instead -- which is safe in a way a
+         * refused TRIANGLE is not.  A triangle that may already be half
+         * drawn must not be drawn again; a clear that may already be half
+         * done can be finished by writing the same colour over it, because
+         * the second pass does not depend on what the first left behind.
+         */
+        hookClearWhy = 14;
+        return 0;
+    }
+    hookClearWhy = 0;
+    OSMGAMesaBufferSoiled();
+    return (GLbitfield)(DD_FRONT_LEFT_BIT |
+                        (wantDepth ? DD_DEPTH_BIT : 0));
+}
+
 static GLbitfield
 osmgaMesaClear(GLcontext *ctx, GLbitfield mask, GLboolean all,
                GLint x, GLint y, GLint w, GLint h)
 {
-    GLbitfield left = mask;
+    GLbitfield left = mask & ~osmgaMesaClearOnEngine(ctx, mask, all,
+                                                     x, y, w, h);
 
-    if (osmgaMesaPrevClear != 0)
-        left = (*osmgaMesaPrevClear)(ctx, mask, all, x, y, w, h);
+    if (left != 0 && osmgaMesaPrevClear != 0)
+        left = (*osmgaMesaPrevClear)(ctx, left, all, x, y, w, h);
     OSMGAMesaBufferSoiled();
     return left;
 }
@@ -1365,6 +1651,8 @@ double OSMGAMesaHookLastWin(unsigned long v, unsigned long c)
 }
 
 unsigned long OSMGAMesaHookDrawn(void)    { return hookDrawn; }
+unsigned long OSMGAMesaHookClears(void)   { return hookClears; }
+int           OSMGAMesaHookClearWhy(void) { return hookClearWhy; }
 unsigned long OSMGAMesaHookDeclined(void) { return hookDeclined; }
 unsigned long OSMGAMesaHookSoftware(void) { return hookSoftware; }
 unsigned long OSMGAMesaHookHardState(void) { return hookHardState; }

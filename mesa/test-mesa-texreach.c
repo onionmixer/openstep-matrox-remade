@@ -104,6 +104,7 @@ one(const char *name, double x0, double y0, double x1, double y1,
         memset(tmr, 0, sizeof tmr);
         n = OSMGAMesaBuildTriangleTex(&a, &b2, &c, (const OSMGAMesaVertex *)0,
                                       OSMGA_MESA_ZMODE_NONE,
+                                      1 /* depth writes; ZMODE_NONE makes it moot */,
                                       OSMGA_MESA_BLEND_OPAQUE, &tex,
                                       0.0 /* no polygon offset */,
                                       out, tmr);
@@ -189,6 +190,7 @@ main(void)
         memset(tmr, 0, sizeof tmr);
         n = OSMGAMesaBuildTriangleTex(&a, &b2, &c, (const OSMGAMesaVertex *)0,
                                       OSMGA_MESA_ZMODE_NONE,
+                                      1 /* depth writes; ZMODE_NONE makes it moot */,
                                       OSMGA_MESA_BLEND_OPAQUE, &tex,
                                       0.0 /* no polygon offset */,
                                       out, tmr);

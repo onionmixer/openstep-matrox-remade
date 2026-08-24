@@ -248,6 +248,7 @@ main(int argc, char **argv)
 
         n = (long)OSMGAMesaBuildTriangle(&a, &b, &c, &a,
                                          OSMGA_MESA_ZMODE_NONE,
+                                         1 /* depth writes; ZMODE_NONE makes it moot */,
                                          OSMGA_MESA_BLEND_OPAQUE,
                                          0.0 /* no polygon offset */, tri);
         if (n < 0) { unsupported++; continue; }
