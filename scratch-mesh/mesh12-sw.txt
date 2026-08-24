@@ -1,6 +1,6 @@
 # mesh /ndrv/openstep-matrox-remade/scratch-mesh/mesh12.txt mode sw tri 288
-# counters drawn=0 software=0 declined=0
-# select hard 0 soft 1
+# counters drawn=0 software=288 declined=0
+# select hard 0 soft 0
 P 20 20 0 255 0
 P 21 20 255 0 0
 P 22 20 255 0 0

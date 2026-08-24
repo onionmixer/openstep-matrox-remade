@@ -15,11 +15,13 @@
 #include <string.h>
 #include <GL/osmesa.h>
 
-extern unsigned long OSMGAMesaHookDrawn(void);
-extern unsigned long OSMGAMesaHookDeclined(void);
-extern unsigned long OSMGAMesaHookSoftware(void);
-extern unsigned long OSMGAMesaHookHardState(void);
-extern unsigned long OSMGAMesaHookSoftState(void);
+/*
+ * The header rather than a handful of externs written out here.  The forcing
+ * function was being called with NO declaration in scope -- C89 makes that an
+ * implicit int, which happens to work for one int argument and would stop
+ * working silently the day the signature moved.
+ */
+#include "../mesa/OpenStepMGAMesaHook.h" 
 
 #define W  320
 #define H  240
@@ -107,21 +109,52 @@ main(int argc, char **argv)
     x0 = OSMGAMesaHookDeclined();
     h0 = OSMGAMesaHookHardState(); w0 = OSMGAMesaHookSoftState();
 
+    /*
+     * "sw" forces once, for the whole loop, and the flush at the end is
+     * therefore inside the forced region already.
+     */
+    if (strcmp(mode, "sw") == 0) softOn();
+
     for (t = 0; t < nt; t++) {
-        if (strcmp(mode, "sw") == 0) softOn();
         /* alternate the path triangle by triangle: every shared edge in the
          * mesh is then a hardware/software boundary, which is the hardest
          * arrangement this can be asked for */
-        else if (strcmp(mode, "mix") == 0) { if (t & 1) softOn(); else softOff(); }
+        if (strcmp(mode, "mix") == 0) { if (t & 1) softOn(); else softOff(); }
         glColor4ub(pal[tc[t] % NCOL][0], pal[tc[t] % NCOL][1],
                    pal[tc[t] % NCOL][2], 255);
         glBegin(GL_TRIANGLES);
           for (k = 0; k < 3; k++)
               glVertex2d(vx[tv[t][k]], vy[tv[t][k]]);
         glEnd();
+        /*
+         * And rasterise it NOW, while this triangle's choice is still the one
+         * in force.
+         *
+         * glEnd does not draw anything.  Mesa marks the primitive in an
+         * immediate buffer (vbfill.c, gl_End) and rasterises when that buffer
+         * nearly fills (gl_Begin: "IM->Count > VB_MAX-4") or when something
+         * flushes it -- so the path that draws a triangle is the one selected
+         * at FLUSH time, not here.
+         *
+         * Without this the loop toggled a flag that decided nothing.  It
+         * showed, and the numbers were the proof: "sw" came out drawn=57
+         * software=71 on a 128-triangle mesh rather than 0 and 128, and "mix"
+         * produced the IDENTICAL counters -- the same tail flush deciding
+         * both, after softOff().  The mixed frame this mode is for had never
+         * been built.
+         *
+         * glFlush rather than glFinish because a flush is the ordering
+         * boundary this needs; on this back end they cost the same, since
+         * both are hooked to the mirror -- and so is RenderFinish, so a batch
+         * boundary was always going to mirror.  That is what makes this
+         * expensive and why the mesh runs are their own script rather than
+         * part of the quick regression.
+         */
+        if (strcmp(mode, "mix") == 0)
+            glFlush();
     }
-    softOff();
     glFinish();
+    softOff();
 
     printf("# mesh %s mode %s tri %d\n", path, mode, nt);
     printf("# counters drawn=%lu software=%lu declined=%lu\n",
