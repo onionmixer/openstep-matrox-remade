@@ -770,10 +770,22 @@ static unsigned osmgaHW3DLast[4];   /* verdict, bad triangle, dwords, spins */
  */
 static OSMGAHW3DBatch osmgaHW3DSnapshot;
 
+/*
+ * One ladder rung per trapezoid, per axis.
+ *
+ * Beside the snapshot rather than on a stack, because the encode that reads
+ * these runs well after the validation that fills them, and because four
+ * hundred bytes is not something to put on a kernel stack.  Filled from the
+ * SNAPSHOT, so a client that rewrites its batch after validation cannot move
+ * the bias the encoder is about to apply -- the same reason the snapshot
+ * exists at all.
+ */
+static OSMGAHW3DTexBand osmgaHW3DBands[OSMGA_HW3D_MAX_TRI];
+
 static unsigned long osmgaHW3DEncode(unsigned long *list,
                                      unsigned long listDwords,
                                      const OSMGAHW3DBatch *b,
-                                     const OSMGAHW3DTexReach *reach,
+                                     const OSMGAHW3DTexBand *bands,
                                      unsigned long *outTail);
 
 #define MGA_DMA_GENERAL         0x00     /* PRIMADDRESS mode bits */
@@ -3637,7 +3649,7 @@ unmap:
     lim.clipY1 = dstH3 - 1UL;
 
     v3 = osmgaHW3DValidateReach(&osmgaHW3DSnapshot, &lim, &badTri3,
-                               &reach3);
+                               &reach3, osmgaHW3DBands);
     osmgaHW3DLast[0] = (unsigned)v3;
     osmgaHW3DLast[1] = (unsigned)badTri3;
     osmgaHW3DLast[2] = 0U;
@@ -3724,7 +3736,7 @@ unmap:
      * anything is read, there is one reading and it cannot go stale.
      */
     total3 = osmgaHW3DEncode(list3, listDwords3, &osmgaHW3DSnapshot,
-                             &reach3, &tail3);
+                             osmgaHW3DBands, &tail3);
     osmgaHW3DLast[2] = (unsigned)total3;
     if (total3 != 0UL &&
         osmgaStormWaitIdle(mmioBase) &&
@@ -6904,7 +6916,7 @@ osmgaHW3DLog2Ceil(unsigned long n)
  */
 static unsigned long
 osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
-                const OSMGAHW3DBatch *b, const OSMGAHW3DTexReach *reach,
+                const OSMGAHW3DBatch *b, const OSMGAHW3DTexBand *bands,
                 unsigned long *outTail)
 {
     unsigned long pos = 0UL, i;
@@ -6926,12 +6938,6 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
      * rung, 2^25, is the top of the reachable range and nothing is
      * extrapolated.
      */
-    long biasU = OSMGA_HW3D_TEX_BIAS, biasV = OSMGA_HW3D_TEX_BIAS;
-
-    if (reach != 0) {
-        biasU = osmgaHW3DTexBiasFor(reach->uMax);
-        biasV = osmgaHW3DTexBiasFor(reach->vMax);
-    }
 
     for (i = 0UL; i < b->triCount; i++) {
         unsigned long d = b->tri[i].dwgctl & OSMGA_HW3D_DWG_CLIENT;
@@ -7190,8 +7196,12 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
          */
         if ((dwg & 0xFUL) == OSMGA_HW3D_OPCODE_TEX)
             ok = ok && osmgaDmaBlock(list, listDwords, &pos,
-                     MGA_TMR0 + 24UL, (unsigned long)(t->tu0 - biasU),
-                     MGA_TMR0 + 28UL, (unsigned long)(t->tv0 - biasV),
+                     MGA_TMR0 + 24UL,
+                     (unsigned long)(t->tu0 - osmgaHW3DTexBiasOfBand(
+                         (bands != 0) ? bands[i].u : 0U)),
+                     MGA_TMR0 + 28UL,
+                     (unsigned long)(t->tv0 - osmgaHW3DTexBiasOfBand(
+                         (bands != 0) ? bands[i].v : 0U)),
                      MGA_TMR8,
                      ((b->state.texFlags & OSMGA_HW3D_TEXF_PERSP) != 0UL)
                          ? (unsigned long)t->tq0 : (1UL << 16),
@@ -7480,13 +7490,15 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
         t->dr[6] =  50UL << 15;
     }
 
-    v = osmgaHW3DValidateReach(batch, &lim, &badTri, &reach);
+    v = osmgaHW3DValidateReach(batch, &lim, &badTri, &reach,
+                               osmgaHW3DBands);
     if (v != OSMGA_HW3D_OK) {
         IOLog("OpenStepMGA M1-2a: the good batch was refused (%d, tri %lu)\n",
               v, badTri);
         goto unmap;
     }
-    total = osmgaHW3DEncode(list, listDwords, batch, &reach, &tail);
+    total = osmgaHW3DEncode(list, listDwords, batch, osmgaHW3DBands,
+                            &tail);
     if (total == 0UL) {
         IOLog("OpenStepMGA M1-2a: encoding failed\n");
         goto unmap;
@@ -7739,14 +7751,16 @@ osmgaM1cTri(OSMGAHW3DTri *t, unsigned long y, unsigned long h,
         osmgaM1cTri(&batch->tri[0], y0, band,
                     left0, dxL, (long)band, right0, dxR, (long)band);
 
-        v = osmgaHW3DValidateReach(batch, &lim, &badTri, &reach);
+        v = osmgaHW3DValidateReach(batch, &lim, &badTri, &reach,
+                               osmgaHW3DBands);
         if (v != OSMGA_HW3D_OK) {
             IOLog("OpenStepMGA M1-2c: band %lu refused (%d) -- the hostile "
                   "edge must PASS validation for this test to mean "
                   "anything\n", b, v);
             goto unmap;
         }
-        total = osmgaHW3DEncode(list, listDwords, batch, &reach, &tail);
+        total = osmgaHW3DEncode(list, listDwords, batch, osmgaHW3DBands,
+                            &tail);
         if (total == 0UL) {
             IOLog("OpenStepMGA M1-2c: encoding failed\n");
             goto unmap;

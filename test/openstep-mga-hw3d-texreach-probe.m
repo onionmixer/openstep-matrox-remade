@@ -5353,17 +5353,17 @@ main(void)
      *                        residual 14 / 62      column 8 either way
      *     near 8*T - 20      residual 14 / 62      column 7 alone, 8 batched
      *
-     * so the two halves ask different questions:
+     * THAT WAS THE OLD ANSWER, and it is what this section measured: the
+     * near trapezoid read column 7 alone and column 8 batched.  The bias is
+     * the TRAPEZOID's now -- the validator hands the encoder one ladder rung
+     * per trapezoid per axis and the encoder subtracts each anchor's own --
+     * so the far one cannot reach the near one at all.
      *
-     *   a  boundary-aligned, the case the bias rule exists for.  Asserted,
-     *      and asserted as the VALUE -- the first cut compared two readings
-     *      of a texture section 77 had filled with one colour, so it
-     *      compared two equal meaningless numbers.
-     *   b  twenty units below, inside the residual.  Expected to move up by
-     *      one texel; reported, and the only assertion is that it never
-     *      moves DOWN.  This is also the control that proves (a) really did
-     *      cross the bias threshold rather than passing because nothing
-     *      changed at all.
+     * Both halves must therefore read the SAME column alone and batched, and
+     * the twenty-below half must still read column 7, which is where it lands
+     * on its own bias.  That second requirement is what keeps this from
+     * passing on a bias that has simply become smaller everywhere: 7 is the
+     * tight answer, 8 is the loose one, and only the tight one is accepted.
      */
     {
         long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
@@ -5410,24 +5410,17 @@ main(void)
             if (v1 != OSMGA_HW3D_OK || v2 != OSMGA_HW3D_OK) {
                 printf("   FAIL  one of the two was refused\n");
                 failures++;
-            } else if (!k) {
-                if ((alone & 0xFFUL) != 8UL || (batched & 0xFFUL) != 8UL) {
-                    printf("   FAIL  a boundary-aligned coordinate did not"
-                           " read texel 8\n");
-                    failures++;
-                } else
-                    printf("   ok    boundary aligned reads texel 8 either"
-                           " way\n");
-            } else if ((batched & 0xFFUL) < (alone & 0xFFUL)) {
-                printf("   FAIL  batching moved the near trapezoid DOWN a"
-                       " texel\n");
+            } else if ((alone & 0xFFUL) != (batched & 0xFFUL)) {
+                printf("   FAIL  batching moved the near trapezoid: %lu -> %lu"
+                       "\n", alone & 0xFFUL, batched & 0xFFUL);
                 failures++;
-            } else if ((batched & 0xFFUL) == (alone & 0xFFUL))
-                printf("   ok    and the worst case did not move at all\n");
-            else
-                printf("   ok    the worst case moved up %lu texel, the"
-                       " residual doing what it does\n",
-                       (batched & 0xFFUL) - (alone & 0xFFUL));
+            } else if ((alone & 0xFFUL) != (k ? 7UL : 8UL)) {
+                printf("   FAIL  it reads texel %lu, and its own bias puts it"
+                       " at %lu\n", alone & 0xFFUL, k ? 7UL : 8UL);
+                failures++;
+            } else
+                printf("   ok    texel %lu either way, which is its own"
+                       " bias\n", alone & 0xFFUL);
         }
     }
 

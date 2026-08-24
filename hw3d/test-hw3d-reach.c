@@ -237,11 +237,32 @@ main(void)
             b.state.tmr[5] = (long)rnd(4096UL) - 2048L;
         }
 
-        memcpy(&b.tri[1], &b.tri[0], sizeof b.tri[0]);   /* unused; keeps h */
+        /*
+         * A SECOND trapezoid, on two trials in five.
+         *
+         * This used to be a copy that nothing looked at.  It has to be a real
+         * one now, and it has to sit somewhere else with anchors of its own,
+         * because the whole question the row index raises only appears with
+         * more than one primitive in a batch: while the model accumulated,
+         * the second primitive's rows were evaluated at an index the engine
+         * never uses, and with a negative gradient that hid a coordinate past
+         * the limit.  With one trapezoid per batch that could not happen and
+         * this file could not have caught it.
+         */
+        memcpy(&b.tri[1], &b.tri[0], sizeof b.tri[0]);
+        if ((trial % 5UL) < 2UL) {
+            unsigned long h2 = 1UL + rnd(48UL);
+
+            b.triCount = 2UL;
+            b.tri[1].y = (long)rnd(lim.clipY1 + 1UL - h2);
+            b.tri[1].h = (long)h2;
+            b.tri[1].tu0 = b.tri[0].tu0 + (long)rnd(8192UL) - 4096L;
+            b.tri[1].tv0 = b.tri[0].tv0 + (long)rnd(8192UL) - 4096L;
+        }
 
         v1 = osmgaHW3DValidate(&b, &lim, &bad1);
         memset(&r, 0xEE, sizeof r);            /* poisoned, so a miss shows */
-        v2 = osmgaHW3DValidateReach(&b, &lim, &bad2, &r);
+        v2 = osmgaHW3DValidateReach(&b, &lim, &bad2, &r, (OSMGAHW3DTexBand *)0);
         checked++;
         if (v1 != v2 || bad1 != bad2) {
             if (failures < 5)
@@ -257,6 +278,22 @@ main(void)
         if ((b.state.texFlags & OSMGA_HW3D_TEXF_PERSP) != 0UL) perspOK++;
         oracle(t, &ou, &ov, &any);
         signedOracle(t, &osig, &vsig);
+        if (b.triCount > 1UL) {
+            long ou1, ov1, os1, vs1;
+            int any1;
+
+            oracle(&b.tri[1], &ou1, &ov1, &any1);
+            signedOracle(&b.tri[1], &os1, &vs1);
+            if (any1) {
+                if (!any) { ou = ou1; ov = ov1; any = 1; }
+                else {
+                    if (ou1 > ou) ou = ou1;
+                    if (ov1 > ov) ov = ov1;
+                }
+            }
+            if (os1 > osig) osig = os1;
+            if (vs1 > vsig) vsig = vs1;
+        }
         ou2 = ou; ov2 = ov;
         if (r.uMax != ou || r.vMax != ov) {
             if (failures < 5)

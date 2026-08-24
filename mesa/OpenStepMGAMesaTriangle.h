@@ -156,13 +156,17 @@ int OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
 /*
  * The same, with a texture.
  *
- * tmrOut receives ONE SET OF TMR VALUES PER TRAPEZOID, not one per triangle.
- * The engine re-seeds the horizontal coordinate at every primitive, at that
+ * tmrOut receives the GRADIENTS, which every trapezoid of the triangle
+ * shares, and slot eight is the answer to "was this a perspective solve"
+ * rather than a value.  The ANCHORS go straight into out[]: they are the
+ * trapezoid's, because the engine re-seeds at every primitive from that
  * primitive's own first-row left edge -- measured -- so the two halves of a
- * split triangle need different starts.  The batch protocol has only one
- * tmr[] for the whole batch, so the caller has to put each trapezoid in a
- * batch of its own until that changes; the builder's job is to say what each
- * one needs.
+ * split triangle need different starts.
+ *
+ * The batch used to hold the anchors, which meant a trapezoid per batch and
+ * a refused second half arriving after the first was drawn.  It does not any
+ * more, so a whole triangle goes out at once and a refusal draws none of
+ * it.
  *
  * tex == 0 is exactly OSMGAMesaBuildTriangle.
  */

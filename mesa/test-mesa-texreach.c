@@ -126,7 +126,8 @@ one(const char *name, double x0, double y0, double x1, double y1,
             batch.state.tmr[2] = tmr[i][2]; batch.state.tmr[3] = tmr[i][3];
             batch.tri[0] = out[i];
 
-            v = osmgaHW3DValidateReach(&batch, &lim, &badTri, &reach);
+            v = osmgaHW3DValidateReach(&batch, &lim, &badTri, &reach,
+                                (OSMGAHW3DTexBand *)0);
             trueReach(&batch, &out[i], &tu, &tv);
             printf("   tri %d.%d  v=%d   reach u %9ld  oracle u %9ld"
                    "   bias %3ld vs %3ld %s\n",
@@ -204,7 +205,8 @@ main(void)
             batch.state.tmr[0] = tmr[i][0]; batch.state.tmr[1] = tmr[i][1];
             batch.state.tmr[2] = tmr[i][2]; batch.state.tmr[3] = tmr[i][3];
             batch.tri[0] = out[i];
-            v = osmgaHW3DValidateReach(&batch, &lim, &badTri, &reach);
+            v = osmgaHW3DValidateReach(&batch, &lim, &badTri, &reach,
+                                (OSMGAHW3DTexBand *)0);
             trueReach(&batch, &out[i], &tu, &tv);
             printf("   part %d  v=%d  reach u %9ld oracle u %9ld  bias %3ld/%3ld %s\n",
                    i, v, reach.uMax, tu, osmgaHW3DTexBiasFor(reach.uMax),

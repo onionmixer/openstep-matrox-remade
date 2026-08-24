@@ -479,13 +479,27 @@ main(void)
             }
 
             /*
-             * v runs on across the batch; u does not.
+             * Every primitive stands on its OWN rows, in v as in u.
              *
-             * Measured: three textured primitives of eight rows each, one
-             * start of three texels, began at v = 3, 11 and 19 while u began
-             * at 5 every time.  So the vertical span to check is the total
-             * height of the textured primitives, not the tallest one, and
-             * taking the maximum was an under-check by the batch's length.
+             * v used to run on across the batch -- three textured primitives
+             * of eight rows each, from a start of three texels, began at
+             * v = 3, 11 and 19 while u began at 5 every time -- and the
+             * vertical span to check was the batch's total.
+             *
+             * That was the hardware while the matrix was written once before
+             * all the primitives.  The anchors are the trapezoid's now and
+             * the matrix is written ahead of each one, and that write
+             * RE-SEEDS: probe section 78 gives three primitives anchors that
+             * DIFFER and reads back exactly what each was given, and 78b
+             * shows the denominator re-seeds with them.  Equal anchors, which
+             * is what the older sections used, could not have told that from
+             * "the first anchor is latched and the rest ignored".
+             *
+             * So the batch's total is no longer a bound on anything, and
+             * these cases, which were written to prove that it was, now prove
+             * the opposite.  What replaced the total is not "the tallest"
+             * either -- it is each primitive's own height, checked against
+             * that primitive's own gradient.
              */
             {   long ident = (long)(OSMGA_HW3D_TEX_SPAN / 64UL);
                 unsigned long n;
@@ -497,15 +511,17 @@ main(void)
                          b.state.tmr[0] = ident;
                          b.state.tmr[3] = (long)(OSMGA_HW3D_TEX_COORD_MAX / 64L);
                                                 expect("one 8-row textured primitive", OSMGA_HW3D_OK);
-                /* sixteen of them run the accumulator sixteen times as far */
+                /* sixteen of them, which the accumulating model refused and
+                  * which each stand on their own eight rows */
                 reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                          b.tri[0].h = 8; b.tri[0].ar0 = b.tri[0].ar6 = 8;
                          b.state.tmr[0] = ident;
                          b.state.tmr[3] = (long)(OSMGA_HW3D_TEX_COORD_MAX / 64L);
                          b.triCount = 16;
                          for (n = 1UL; n < 16UL; n++) b.tri[n] = b.tri[0];
-                                                expect("sixteen of them, which the total catches", OSMGA_HW3D_E_TEXCOORD);
-                /* the threshold itself: eight fit, nine do not */
+                                                expect("sixteen of them, each on its own rows", OSMGA_HW3D_OK);
+                /* the threshold the total used to impose: eight fit, nine
+                  * did not.  There is no threshold now. */
                 reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                          b.tri[0].h = 8; b.tri[0].ar0 = b.tri[0].ar6 = 8;
                          b.state.tmr[0] = ident;
@@ -519,12 +535,14 @@ main(void)
                          b.state.tmr[3] = (long)(OSMGA_HW3D_TEX_COORD_MAX / 64L);
                          b.triCount = 9;
                          for (n = 1UL; n < 9UL; n++) b.tri[n] = b.tri[0];
-                                                expect("nine, one past the threshold", OSMGA_HW3D_E_TEXCOORD);
+                                                expect("nine, which the total used to refuse", OSMGA_HW3D_OK);
                 /*
-                 * Heights that differ, chosen so that the two candidate rules
+                 * Heights that differ, chosen so the three candidate rules
                  * disagree: two rows and sixty-four spend 8519680 of the
-                 * budget as a sum and 8257536 as the tallest alone.  A case
-                 * where both rules agree would have proved nothing.
+                 * budget as a sum, 8257536 as the tallest alone, and the same
+                 * 8257536 per primitive -- the sum is over the limit and the
+                 * other two are not.  A case where the rules agreed would
+                 * have proved nothing.
                  */
                 reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                          b.tri[0].h = 2; b.tri[0].ar0 = b.tri[0].ar6 = 2;
@@ -533,13 +551,13 @@ main(void)
                          b.triCount = 2;
                          b.tri[1] = b.tri[0];
                          b.tri[1].h = 64; b.tri[1].ar0 = b.tri[1].ar6 = 64;
-                                                expect("two primitives of 2 and 64 rows", OSMGA_HW3D_E_TEXCOORD);
+                                                expect("two primitives of 2 and 64 rows", OSMGA_HW3D_OK);
                 /*
-                 * An empty textured primitive used to throw the accumulated
-                 * height away, because the empty case fell back to the clip
-                 * for BOTH axes -- eighty-four times short at the cap.  It is
-                 * refused outright now, so the total cannot be hidden that
-                 * way at all.
+                 * An empty textured primitive is refused outright.  That was
+                 * settled when it could hide the accumulated height; the
+                 * height no longer accumulates, and the refusal stays because
+                 * an empty primitive is still executed and what it does to
+                 * the engine was never measured.
                  */
                 reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                          b.tri[0].h = 8; b.tri[0].ar0 = b.tri[0].ar6 = 8;
@@ -552,12 +570,12 @@ main(void)
             }
 
             /*
-             * u's row index re-seeds at every primitive and v's does not, so
-             * the two get different vertical spans.  Measured: with one texel
-             * per row in u, two primitives both began at the same texel.
-             * Sixteen primitives of eight rows run v over 127 rows but u over
-             * only 7, so a u gradient that fits one primitive must not be
-             * refused for the batch's total.
+             * The two axes now get the SAME vertical span -- the primitive's
+             * own height -- so this pair no longer separates u from v.  What
+             * it still does is hold the row gradient to one primitive's
+             * height, which is the bound that replaced the total, and the v
+             * pair below is its mirror: without one of them a fix that got
+             * only one axis right would pass.
              */
             {   unsigned long n;
 
@@ -575,6 +593,21 @@ main(void)
                          b.triCount = 16;
                          for (n = 1UL; n < 16UL; n++) b.tri[n] = b.tri[0];
                                                 expect("a u row gradient one primitive cannot hold", OSMGA_HW3D_E_TEXCOORD);
+
+                reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                         b.tri[0].h = 8; b.tri[0].ar0 = b.tri[0].ar6 = 8;
+                         b.state.tmr[0] = 0;
+                         b.state.tmr[3] = (long)(OSMGA_HW3D_TEX_COORD_MAX / 8L);
+                         b.triCount = 16;
+                         for (n = 1UL; n < 16UL; n++) b.tri[n] = b.tri[0];
+                                                expect("a v row gradient sized to one primitive", OSMGA_HW3D_OK);
+                reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                         b.tri[0].h = 8; b.tri[0].ar0 = b.tri[0].ar6 = 8;
+                         b.state.tmr[0] = 0;
+                         b.state.tmr[3] = (long)(OSMGA_HW3D_TEX_COORD_MAX / 4L);
+                         b.triCount = 16;
+                         for (n = 1UL; n < 16UL; n++) b.tri[n] = b.tri[0];
+                                                expect("a v row gradient one primitive cannot hold", OSMGA_HW3D_E_TEXCOORD);
             }
 
             /*

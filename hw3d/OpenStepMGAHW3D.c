@@ -124,24 +124,49 @@ osmgaHW3DStep(const OSMGAHW3DTri *t, long *lx, long *rx,
 long
 osmgaHW3DTexBiasFor(long maxCoord)
 {
-    if (maxCoord <= (long)(1UL << 20)) return OSMGA_HW3D_TEX_BIAS;
-    if (maxCoord <= (long)(1UL << 21)) return 480L;
-    if (maxCoord <= (long)(1UL << 22)) return 448L;
-    if (maxCoord <= (long)(1UL << 23)) return 384L;
-    if (maxCoord <= (long)(1UL << 24)) return 256L;
-    return 0L;
+    return osmgaHW3DTexBiasOfBand(osmgaHW3DTexBandFor(maxCoord));
+}
+
+/* The same ladder, as the rung and as what the rung is worth. */
+static const long osmgaHW3DBiasLadder[OSMGA_HW3D_TEX_BANDS] = {
+    OSMGA_HW3D_TEX_BIAS, 480L, 448L, 384L, 256L, 0L
+};
+
+unsigned char
+osmgaHW3DTexBandFor(long maxCoord)
+{
+    if (maxCoord <= (long)(1UL << 20)) return 0U;
+    if (maxCoord <= (long)(1UL << 21)) return 1U;
+    if (maxCoord <= (long)(1UL << 22)) return 2U;
+    if (maxCoord <= (long)(1UL << 23)) return 3U;
+    if (maxCoord <= (long)(1UL << 24)) return 4U;
+    return 5U;
+}
+
+long
+osmgaHW3DTexBiasOfBand(unsigned char band)
+{
+    /* A rung outside the ladder takes the smallest bias, which is the one
+     * that cannot make a residual negative whatever the addend turns out to
+     * be.  A caller handing over a rung it was not given is a bug, and this
+     * is what it costs rather than what it corrupts. */
+    if (band >= (unsigned char)OSMGA_HW3D_TEX_BANDS)
+        return 0L;
+    return osmgaHW3DBiasLadder[band];
 }
 
 int
 osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                   unsigned long *badTri)
 {
-    return osmgaHW3DValidateReach(b, lim, badTri, (OSMGAHW3DTexReach *)0);
+    return osmgaHW3DValidateReach(b, lim, badTri, (OSMGAHW3DTexReach *)0,
+                                  (OSMGAHW3DTexBand *)0);
 }
 
 int
 osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
-                       unsigned long *badTri, OSMGAHW3DTexReach *reach)
+                       unsigned long *badTri, OSMGAHW3DTexReach *reach,
+                       OSMGAHW3DTexBand *bands)
 {
     unsigned long i, rows, opcode, atype;
     int anyZI, anyTex;
@@ -160,17 +185,23 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
      *   u  is re-seeded at every primitive, at its own first row's left edge.
      *      Three primitives at three different columns all began at the same
      *      texel.
-     *   v  is NOT re-seeded.  It runs on across the TEXTURED primitives of
-     *      the batch: heights of five, eleven and three, with a flat
-     *      primitive interposed, gave first rows of 3, 8 and 19 from a start
-     *      of 3 -- the running sum of the textured heights, and the flat one
-     *      did not move it.  An EMPTY textured primitive does move it: five
-     *      drawn rows then six empty ones put the next primitive at 14.
+     *   v  is re-seeded too, and so is q.  Both were measured NOT to be,
+     *      while the matrix was written once before all the primitives:
+     *      heights of five, eleven and three, with a flat primitive
+     *      interposed, gave first rows of 3, 8 and 19 from a start of 3.
+     *      With the matrix written ahead of each primitive, three of them
+     *      given anchors that DIFFER read back exactly what each was given
+     *      (probe section 78), and a pair with the same numerators and q of
+     *      one then two read the quotient and then half of it (78b).
      *
-     *   u's ROW index re-seeds as well: with a gradient of one texel per row
-     *      in u and nothing in x, two primitives both began at the same
-     *      texel.  So u's vertical reach is one primitive's height and v's is
-     *      the batch's total, and they are checked with different spans.
+     *      Anchors that AGREE cannot show this: they read the same value
+     *      whether each primitive re-seeds from its own or the first one is
+     *      latched and the rest of the writes ignored.  The older sections
+     *      set them equal, so they are the weaker corollary and 78 is the
+     *      proof.
+     *
+     *   So both axes' vertical reach is one primitive's height, and they are
+     *      checked with the same span.
      *
      * A batch USED to write TMR6 and TMR7 once, before its primitives, and
      * the accumulator was seen to start afresh every submission -- read in
@@ -178,23 +209,30 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
      * longer does: the anchors are the trapezoid's now, so the matrix is
      * written again before each one.
      *
-     * WHETHER THAT RE-SEEDS v IS NOT MEASURED.  What was measured is that a
-     * submission starts afresh, and a submission carries an idle wait and a
-     * DMA setup as well as the matrix write, so the cause was never isolated.
-     * The accumulating model is kept because its error has a known direction:
-     * if the write does re-seed, this bounds a LARGER row index than the
-     * hardware uses, which refuses more than it must and takes a smaller
-     * addend off -- both safe.  Dropping it when the truth is accumulation is
-     * the under-check.  Probe section 78 settles it.
+     * AND THE WRITE RE-SEEDS -- probe sections 78 and 78b.  The accumulating
+     * model was kept for one cycle on the argument that its error had a known
+     * direction: bounding a LARGER row index than the hardware uses refuses
+     * more than it must and takes a smaller addend off.  That argument holds
+     * only for a POSITIVE gradient.  With a negative dv/dy a larger row index
+     * means a SMALLER coordinate, so the model evaluated a row the engine
+     * never uses and skipped the one it does; test-hw3d-reseed.c is the batch
+     * that was accepted with its own coordinate a hundred past the limit.
      */
-    unsigned long texSpanLo = 0UL, texSpanHi = 0UL, texSpanY = 0UL;
-    unsigned long texMaxH = 0UL;
+    unsigned long texSpanLo = 0UL, texSpanHi = 0UL;
     int texDrawn = 0, texBad = 0;
     unsigned long texBadTri = 0UL;   /* which trapezoid set it */
 
     if (reach != 0) {
         reach->uMax = 0L;
         reach->vMax = 0L;
+    }
+    if (bands != 0) {
+        unsigned long z;
+
+        for (z = 0UL; z < OSMGA_HW3D_MAX_TRI; z++) {
+            bands[z].u = 0U;
+            bands[z].v = 0U;
+        }
     }
     if (badTri != 0)
         *badTri = 0UL;
@@ -545,7 +583,30 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                  * this back end offers comes near it.
                  */
                 long ex = bx1 - bx0, ey = t->h - 1L;
-                long vy = texSpanY + ey;    /* v's row index runs on */
+                /*
+                 * v's row index is this primitive's own, the same as u's.
+                 *
+                 * It used to be the batch's running total, because that is
+                 * what the hardware did while the matrix was written once per
+                 * batch.  The matrix is written per primitive now and the
+                 * write RE-SEEDS -- measured, with three primitives given
+                 * anchors that differ (probe section 78) and again for the
+                 * denominator (78b).
+                 *
+                 * Keeping the accumulating form was not the conservative
+                 * choice it looked like.  That argument holds only for a
+                 * POSITIVE dv/dy: with a negative one a larger row index
+                 * means a SMALLER coordinate, so the model skipped the row
+                 * the engine actually uses.  A batch with one row ahead of
+                 * it, an anchor a hundred below the limit, dv/dx +200 and
+                 * dv/dy -300 was accepted with a reach inside the range while
+                 * the engine's own coordinate landed a hundred past it.
+                 */
+                long vy = ey;
+                /* this trapezoid's own reach, which is what its anchor is
+                 * biased with; the label at the end of this block reads them,
+                 * so they cannot live in the walk's own scope */
+                long triU = 0L, triV = 0L;
 
                 long room = (long)OSMGA_HW3D_TEX_COORD_MAX;
                 long roomHi = room >> 16;
@@ -598,11 +659,11 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                      * The first version of this used dstWidth and dstHeight,
                      * and that is not a bound: dx is measured from the
                      * primitive's own left edge, which a clipped primitive
-                     * can sit far to the left of, and the row index is
-                     * texSpanY + row, which accumulates across every earlier
-                     * textured primitive in the batch and so passes dstHeight
-                     * as soon as there are a few of them.  The check would
-                     * have admitted a slope whose evaluation leaves a long.
+                     * can sit far to the left of, and the row index used to
+                     * accumulate across every earlier textured primitive in
+                     * the batch and so passed dstHeight as soon as there were
+                     * a few of them.  The check would have admitted a slope
+                     * whose evaluation leaves a long.
                      *
                      * Half the budget to each axis, each as a division so the
                      * check cannot overflow in doing its job.
@@ -618,7 +679,12 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                     if (dxlo < 0L) dxlo = -dxlo;
                     if (dxhi < 0L) dxhi = -dxhi;
                     mdx = (dxlo > dxhi) ? dxlo : dxhi;
-                    mrow = (long)texSpanY + t->h;
+                    mrow = ey;          /* this primitive's rows, not the
+                                         * batch's -- see the note by vy.
+                                         * The greatest index the walk below
+                                         * evaluates is h - 1, and bounding
+                                         * against h would be one row wider
+                                         * than the claim this makes. */
                     if (mdx < 1L) mdx = 1L;
                     if (mrow < 1L) mrow = 1L;
                     /*
@@ -676,17 +742,14 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                         ux  = t->tu0 + b->state.tmr[0] * dx
                               + b->state.tmr[1] * dy;
                         vx2 = t->tv0 + b->state.tmr[2] * dx
-                              + b->state.tmr[3] * (texSpanY + dy);
+                              + b->state.tmr[3] * dy;
                         /*
-                         * The denominator's row index is the accumulated
-                         * count of textured rows in the batch, exactly as v's
-                         * is -- measured, by leaving a gap between two
-                         * primitives and finding that the far one reads what
-                         * the near one's rows left behind rather than what
-                         * its own screen position would give.
+                         * The denominator's row index is this primitive's
+                         * own, as v's is.  It accumulated once, when the
+                         * matrix was written per batch; probe section 78b
+                         * shows the per-primitive write re-seeds q too.
                          */
-                        qa = osmgaHW3DQAt(b, t, persp, dx,
-                                          (long)texSpanY + dy);
+                        qa = osmgaHW3DQAt(b, t, persp, dx, dy);
                         if (!osmgaHW3DRatioOK(ux, qa, roomHi) ||
                             !osmgaHW3DRatioOK(vx2, qa, roomHi))
                             boxOK = 0;
@@ -714,7 +777,7 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                      * Two hundred thousand random boxes in python agree: not
                      * one interior point beat every corner.
                      */
-                    if (boxOK && reach == 0)
+                    if (boxOK && reach == 0 && bands == 0)
                         goto texDone;
 
                     lx = (long)left; rx = (long)right;
@@ -729,20 +792,13 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                         ux  = t->tu0 + b->state.tmr[0] * (lx - lx0)
                               + b->state.tmr[1] * row;
                         vx2 = t->tv0 + b->state.tmr[2] * (lx - lx0)
-                              + b->state.tmr[3] * (texSpanY + row);
+                              + b->state.tmr[3] * row;
                         ly = ux + b->state.tmr[0] * (rx - 1L - lx);
                         ry = vx2 + b->state.tmr[2] * (rx - 1L - lx);
-                        /*
-                         * The accumulated row index here too.  This walk had
-                         * the primitive's own row, which is the reading the
-                         * measurement rules out -- and unlike the box above
-                         * it checked only that one, so it was checking a
-                         * denominator the engine does not use.
-                         */
-                        qa = osmgaHW3DQAt(b, t, persp, lx - lx0,
-                                          (long)texSpanY + row);
-                        qb = osmgaHW3DQAt(b, t, persp, rx - 1L - lx0,
-                                          (long)texSpanY + row);
+                        /* This primitive's own row here too, the same index
+                          * the numerators above use. */
+                        qa = osmgaHW3DQAt(b, t, persp, lx - lx0, row);
+                        qb = osmgaHW3DQAt(b, t, persp, rx - 1L - lx0, row);
                         if (!osmgaHW3DRatioOK(ux,  qa, roomHi) ||
                             !osmgaHW3DRatioOK(vx2, qa, roomHi) ||
                             !osmgaHW3DRatioOK(ly,  qb, roomHi) ||
@@ -767,7 +823,7 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                          * a matched numerator reached from two different
                          * coordinates.  So the same reach serves both.
                          */
-                        if (reach != 0) {
+                        if (reach != 0 || bands != 0) {
                             /*
                              * The MAGNITUDE, not the signed maximum.  The
                              * engine picks its band from how large the
@@ -791,42 +847,46 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                             long av  = (vx2 < 0L) ? -vx2 : vx2;
                             long ar  = (ry  < 0L) ? -ry  : ry;
 
-                            if (au > reach->uMax) reach->uMax = au;
-                            if (al > reach->uMax) reach->uMax = al;
-                            if (av > reach->vMax) reach->vMax = av;
-                            if (ar > reach->vMax) reach->vMax = ar;
+                            if (al > au) au = al;
+                            if (ar > av) av = ar;
+                            if (reach != 0) {
+                                if (au > reach->uMax) reach->uMax = au;
+                                if (av > reach->vMax) reach->vMax = av;
+                            }
+                            /*
+                             * And this trapezoid's own, which is what the
+                             * encoder biases its anchor with.  Kept as the
+                             * running maximum in the same two variables the
+                             * batch uses, so the two cannot drift apart.
+                             */
+                            if (au > triU) triU = au;
+                            if (av > triV) triV = av;
                         }
                     }
                 }
-              texDone: ;
+              texDone:
+                    /*
+                     * The rung this trapezoid sits on.
+                     *
+                     * Written even when the box shortcut answered, because
+                     * asking for the bands forces the walk above -- so triU
+                     * and triV are the walked maxima whenever bands is not
+                     * nought.  A trapezoid that reaches nowhere keeps rung
+                     * nought, which is a bias of 496 and what an anchor of
+                     * nought wants.
+                     */
+                    if (bands != 0) {
+                        bands[i].u = osmgaHW3DTexBandFor(triU);
+                        bands[i].v = osmgaHW3DTexBandFor(triV);
+                    }
+                    ;
             }
 
             if (opcode == OSMGA_HW3D_OPCODE_TEX) {
                 /*
-                 * v does not restart at a primitive; it runs on.
-                 *
-                 * Measured: three textured primitives with one start of three
-                 * texels and eight rows each began at v = 3, 11 and 19, and a
-                 * flat primitive in front of a textured one left it at 3.  So
-                 * the vertical coordinate is an accumulator over the rows of
-                 * the TEXTURED primitives in the batch, and the span to check
-                 * is their total height, not the tallest of them.  Taking the
-                 * maximum was an under-check by a factor of the batch's
-                 * length -- two hundred, at the cap.
-                 *
-                 * Counted for an empty primitive too: it is still executed,
-                 * and whether the accumulator steps for a row that draws
-                 * nothing is not measured.  Counting it is the conservative
-                 * of the two answers.
-                 */
-                texSpanY += (unsigned long)t->h;
-                if ((unsigned long)t->h > texMaxH)
-                    texMaxH = (unsigned long)t->h;
-                /*
                  * A textured primitive that draws nothing anywhere is
-                 * refused.  It is still encoded and still executed -- it
-                 * steps the vertical accumulator like any other, which is
-                 * measured -- so the texture unit is running for it, and
+                 * refused.  It is still encoded and still executed, so
+                 * the texture unit is running for it, and
                  * where it fetches cannot be observed, because a fetch that
                  * writes no pixel leaves no trace.  The old answer was to
                  * widen the horizontal check to the whole clip, which
@@ -858,40 +918,21 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
     }
 
     /*
-     * The texture coordinate, now that the reach is known.
+     * The deferred texture verdict.
      *
-     * Batch-global state.  Horizontally the widest primitive decides, because
-     * u restarts at each one; vertically the TOTAL decides, because v does
-     * not.  A verdict about batch-global state belongs to no triangle, which
-     * is why badTri goes back to zero before it is reported.
+     * The vertical spans that used to be worked out here went with the
+     * accumulating model: u and v wanted different ones, because u re-seeded
+     * at every primitive and v did not.  Both re-seed now, so there is one
+     * span and it is the primitive's own, which the loop above already used.
      */
     if (anyTex) {
         unsigned long spanLo = 0UL, spanHi = lim->clipX1;
-        unsigned long spanY = lim->clipY1;   /* v: the batch's total */
-        unsigned long spanUY = lim->clipY1;  /* u: one primitive's height */
 
-        /*
-         * Vertically the total always, because that is what was measured and
-         * an empty primitive steps the accumulator like any other.  The
-         * fallback below is horizontal only.
-         */
-        /*
-         * u and v want different vertical spans, and both were measured.
-         *
-         * u re-seeds at every primitive -- with a gradient of one texel per
-         * row in u, two primitives both began at the same texel -- so its
-         * row index only ever runs the height of one primitive.  v does not
-         * re-seed, so its row index runs the batch's total.
-         */
-        if (texMaxH > 0UL)
-            spanUY = texMaxH - 1UL;
-        if (texSpanY > 0UL)
-            spanY = texSpanY - 1UL;     /* the accumulator's last step */
         if (texDrawn) {
             spanLo = texSpanLo;
             spanHi = texSpanHi;
         }
-        (void)spanLo; (void)spanHi; (void)spanUY; (void)spanY;
+        (void)spanLo; (void)spanHi;
         if (texBad) {
             if (badTri != 0)
                 *badTri = texBadTri;

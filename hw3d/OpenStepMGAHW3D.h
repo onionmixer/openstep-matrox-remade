@@ -273,11 +273,14 @@
  * is a convex combination of its corner values and cannot dip below them,
  * and s/q is likewise a convex combination of the corner values of s/q.
  *
- * The row the denominator is evaluated at is the accumulated count of
- * TEXTURED rows in the batch, the same index v uses -- measured, by leaving a
- * gap between two primitives and finding that the far one reads what the
- * near one's rows left behind rather than what its own screen position would
- * give.  So it is an accumulator and not a plane in screen coordinates.
+ * The row the denominator is evaluated at is the primitive's own, the same
+ * index v uses.  It was an accumulator across the batch while the matrix was
+ * written once before all the primitives -- measured, by leaving a gap
+ * between two and finding the far one reading what the near one's rows left
+ * behind.  The matrix is written ahead of each primitive now and the write
+ * re-seeds q as well as the numerators: probe section 78b gives two
+ * primitives the same numerators and q of one then two, and reads the
+ * quotient and then half of it.
  *
  * Q_MIN and Q_MAX are NOT the safety argument.  What keeps the address inside
  * the texture is the addressing -- clamped it saturates, repeating it is
@@ -839,12 +842,48 @@ typedef struct {
 long osmgaHW3DTexBiasFor(long maxCoord);
 
 /*
+ * The reach of ONE trapezoid, as the rung of the ladder its bias sits on.
+ *
+ * The batch-wide reach above decides one bias for every anchor the encoder
+ * writes, and that was right while the anchors were the batch's.  They are
+ * the trapezoid's now, and a batch holding a near trapezoid beside a far one
+ * takes the far one's bias for both -- which leaves the near one's residual
+ * larger than it was alone and can move it up a texel.  Measured: a
+ * coordinate twenty units below a texel boundary reads column 7 submitted
+ * alone and column 8 submitted beside a trapezoid two bands further out
+ * (probe section 80).
+ *
+ * A rung rather than the reach itself, because there are six of them and the
+ * encoder wants no more than that: two bytes a trapezoid, four hundred at the
+ * cap, against sixteen hundred for the reaches.  osmgaHW3DTexBiasOfBand turns
+ * one back into what the encoder subtracts.
+ */
+typedef struct {
+    unsigned char u;
+    unsigned char v;
+} OSMGAHW3DTexBand;
+
+#define OSMGA_HW3D_TEX_BANDS 6      /* 496, 480, 448, 384, 256, 0 */
+
+long osmgaHW3DTexBiasOfBand(unsigned char band);
+unsigned char osmgaHW3DTexBandFor(long maxCoord);
+
+/*
  * The validator, with the reach handed back.  osmgaHW3DValidate is this with
  * nowhere to put it -- the tests and the self-checks do not need it and are
  * left alone.
  */
+/*
+ * bands, when it is not nought, is an array of OSMGA_HW3D_MAX_TRI that
+ * receives each trapezoid's own rung.  It belongs to the caller and must
+ * outlive the encode that reads it; the kernel keeps one beside the batch
+ * snapshot rather than on its stack.  Entries for untextured or undrawn
+ * primitives are left at the widest rung, which is what a bias of 496 means
+ * and what an anchor of nought wants.
+ */
 int osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
-                           unsigned long *badTri, OSMGAHW3DTexReach *reach);
+                           unsigned long *badTri, OSMGAHW3DTexReach *reach,
+                           OSMGAHW3DTexBand *bands);
 
 int osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                       unsigned long *badTri);

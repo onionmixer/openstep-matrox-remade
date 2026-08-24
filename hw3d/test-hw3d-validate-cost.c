@@ -89,7 +89,8 @@ main(int argc, char **argv)
      * used to be measured after one walk is now measured after two -- which
      * is exactly the cost worth knowing.
      */
-    v = osmgaHW3DValidateReach(&b, &lim, &badTri, &reach);
+    v = osmgaHW3DValidateReach(&b, &lim, &badTri, &reach,
+                                (OSMGAHW3DTexBand *)0);
     printf("one batch of %lu triangles, %ld rows each, an edge crossing 1600 "
            "columns\n", (unsigned long)OSMGA_HW3D_MAX_TRI, (long)b.tri[0].h);
     printf("   verdict %d (0 is accepted)\n", v);
@@ -98,7 +99,8 @@ main(int argc, char **argv)
     t0 = time((long *)0);
     for (i = 0; i < reps; i++) {
         badTri = 0;
-        (void)osmgaHW3DValidateReach(&b, &lim, &badTri, &reach);
+        (void)osmgaHW3DValidateReach(&b, &lim, &badTri, &reach,
+                                (OSMGAHW3DTexBand *)0);
     }
     t1 = time((long *)0);
     printf("   %ld validations in %ld seconds", reps, t1 - t0);
@@ -139,13 +141,15 @@ main(int argc, char **argv)
         b.tri[0].dr[0] = 200UL << 15;
 
         badTri = 0;
-        v = osmgaHW3DValidateReach(&b, &lim, &badTri, &reach);
+        v = osmgaHW3DValidateReach(&b, &lim, &badTri, &reach,
+                                (OSMGAHW3DTexBand *)0);
         printf("\none textured primitive, 128 rows of 128 columns:"
                " verdict %d\n", v);
         t2 = time((long *)0);
         for (j = 0; j < (int)reps2; j++) {
             badTri = 0;
-            (void)osmgaHW3DValidateReach(&b, &lim, &badTri, &reach);
+            (void)osmgaHW3DValidateReach(&b, &lim, &badTri, &reach,
+                                (OSMGAHW3DTexBand *)0);
         }
         t3 = time((long *)0);
         printf("   %lu validations in %ld seconds", reps2, t3 - t2);

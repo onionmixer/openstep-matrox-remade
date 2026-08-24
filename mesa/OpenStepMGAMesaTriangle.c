@@ -1110,37 +1110,20 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
         }
     }
     /*
-     * The second trapezoid's vertical anchors, if the accumulator does not
-     * re-seed.
+     * There is no compensation here, and there was very nearly one.
      *
-     * u re-seeds at every primitive and needs nothing.  v and q were measured
-     * to run on across the textured primitives of a batch -- which never
-     * mattered while each trapezoid was its own batch, and matters now.  If
-     * the engine keeps counting, the second trapezoid's row index starts at
-     * the first one's height rather than at nought, so its anchor has to have
-     * that much taken off in advance.
+     * v and q were measured to run on across the textured primitives of a
+     * batch, which never mattered while each trapezoid was its own batch and
+     * would have mattered now: the second trapezoid's row index would have
+     * started at the first one's height, and its anchor would have needed
+     * that much taken off in advance.  This carried a switch to do it.
      *
-     * WHETHER THE MATRIX WRITE RE-SEEDS IS NOT MEASURED -- see the note in
-     * the validator.  Default is that it does, which is no compensation at
-     * all; the switch buys the other hypothesis without another kernel.
+     * The matrix write re-seeds, so it does not.  Probe section 78 gives
+     * three primitives anchors that differ and each reads its own; 78b shows
+     * the denominator does the same.  A switch that could subtract the first
+     * half's height from the second half's anchor is now just a way to
+     * mis-draw a real split triangle on purpose, so it is gone.
      */
-    if (n == 2 && tex != 0) {
-        static int reseedKnown = 0, reseed = 1;
-
-        if (!reseedKnown) {
-            const char *e = getenv("OSMGA_TMR_RESEED");
-
-            reseed = (e == 0 || *e != '0');
-            reseedKnown = 1;
-        }
-        if (!reseed) {
-            long s0 = out[0].h;
-
-            out[1].tv0 -= tmrOut[1][3] * s0;
-            if (tmrOut[1][8] != 0L)
-                out[1].tq0 -= tmrOut[1][5] * s0;
-        }
-    }
     return n;
 }
 
