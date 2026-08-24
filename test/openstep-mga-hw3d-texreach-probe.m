@@ -4728,35 +4728,36 @@ main(void)
                "     a level the engine found for itself.\n");
     }
 
-    printf("\n74. is the mipmap bit inert -- whole-image comparison\n");
+    printf("\n74. is the mipmap bit inert -- all four modes, both regimes\n");
     {
         /*
          * 73 read ONE pixel per setting and found every mode reading the base
          * level.  That is consistent with two very different things: the
-         * modes work and the hardware chose level nought, or bit three of the
-         * field -- the one that separates mm1s from nrst and mm4s from bilin
-         * -- does nothing at all on this path.
+         * modes work and the hardware chose level nought, or the bit that
+         * separates them from the plain filters does nothing at all here.
          *
-         * The values say which to expect.  nrst is 0x0 and mm1s is 0x8; bilin
-         * is 0x2 and mm4s is 0xa.  Each pair differs in bit three alone.  So
-         * if the pair renders IDENTICALLY over a whole image, that bit is
-         * inert here, and no amount of sweeping the other fields will make a
-         * mip level appear.  If it differs anywhere, the bit does something
-         * and is worth chasing.
+         * The encodings say what to ask.  Each mipmap mode differs from a
+         * plain filter in bit three alone:
          *
-         * Whole rows, not one pixel, and at a strong minification where a
-         * mipmapped read would differ most.
+         *      nrst  0x0  <->  mm1s 0x8          bilin 0x2  <->  mm4s 0xa
+         *      (0x1)      <->  mm2s 0x9          (0x4)      <->  mm8s 0xc
+         *
+         * The first two pairs are the ones with named partners; for mm2s and
+         * mm8s the partner value is unnamed, so they are compared against the
+         * plain filter they RESEMBLED in 73 -- nearest and bilinear -- which
+         * is the claim being tested anyway.
+         *
+         * Whole rows, four rates, and both regimes: affine, and again with a
+         * constant denominator so NOPERSPECTIVE is off.  A gate that only
+         * applies to the perspective path is unlikely, and unlikely is not
+         * measured.
          */
-        static const unsigned long fl[4] = {
-            0UL,
-            OSMGA_HW3D_TEXF_MINMODE_MM1S << OSMGA_HW3D_TEXF_MINMODE_SHIFT,
-            OSMGA_HW3D_TEXF_BILIN | OSMGA_HW3D_TEXF_BILINMIN,
-            OSMGA_HW3D_TEXF_MINMODE_MM4S << OSMGA_HW3D_TEXF_MINMODE_SHIFT
-        };
-        static const char *fn[4] = { "nrst 0x0", "mm1s 0x8",
-                                     "bilin 0x2", "mm4s 0xa" };
-        static unsigned long shot[4][64];
-        int k, j;
+        static const unsigned long mm[4] = { 0x8UL, 0x9UL, 0xAUL, 0xCUL };
+        static const char *mn[4] = { "mm1s", "mm2s", "mm4s", "mm8s" };
+        static const int plainIsBilin[4] = { 0, 0, 1, 1 };
+        static const long rate[4] = { 32768L, 65536L, 131072L, 262144L };
+        static unsigned long shot[2][64];
+        int k, j, persp;
         unsigned long col, i;
 
         for (i = 0UL; i < 16UL * 1024UL; i++) {
@@ -4765,39 +4766,55 @@ main(void)
             tex[i] = (r << 16) | (g << 8) | (((r * r) + (g * g)) & 0xFFUL);
         }
 
-        for (k = 0; k < 4; k++) {
-            unsigned v;
+        for (persp = 0; persp < 2; persp++) {
+            printf("     %s\n", persp ? "with a denominator (perspective)"
+                                      : "affine");
+            for (k = 0; k < 4; k++) {
+                printf("       %-5s vs %-8s", mn[k],
+                       plainIsBilin[k] ? "bilinear" : "nearest");
+                for (j = 0; j < 4; j++) {
+                    unsigned long same = 0UL;
+                    int side;
 
-            blank();
-            (void)setup(1024UL, 0UL, 64UL, 4UL, 65536L,
-                        fl[k] | OSMGA_HW3D_TEXF_REPEATU
-                              | OSMGA_HW3D_TEXF_REPEATV);
-            batch->state.texW = 64UL; batch->state.texH = 64UL;
-            batch->state.texPitch = 64UL;
-            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
-            batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = 32768L; batch->state.tmr[7] = 0L;
-            v = fire();
-            for (col = 0UL; col < 64UL; col++)
-                shot[k][col] = (v == OSMGA_HW3D_OK)
-                             ? pixat(0UL, col) : 0xFFFFFFFFUL;
-        }
-        for (k = 0; k < 4; k += 2) {
-            unsigned long same = 0UL;
+                    for (side = 0; side < 2; side++) {
+                        unsigned long fl;
+                        unsigned v;
 
-            for (col = 0UL; col < 64UL; col++)
-                if (shot[k][col] == shot[k + 1][col]) same++;
-            printf("   %-10s vs %-10s  identical on %lu of 64 columns\n",
-                   fn[k], fn[k + 1], same);
+                        if (side == 0)
+                            fl = plainIsBilin[k]
+                               ? (OSMGA_HW3D_TEXF_BILIN
+                                  | OSMGA_HW3D_TEXF_BILINMIN) : 0UL;
+                        else
+                            fl = mm[k] << OSMGA_HW3D_TEXF_MINMODE_SHIFT;
+                        if (persp) fl |= OSMGA_HW3D_TEXF_PERSP;
+
+                        blank();
+                        (void)setup(1024UL, 0UL, 64UL, 4UL, rate[j],
+                                    fl | OSMGA_HW3D_TEXF_REPEATU
+                                       | OSMGA_HW3D_TEXF_REPEATV);
+                        batch->state.texW = 64UL; batch->state.texH = 64UL;
+                        batch->state.texPitch = 64UL;
+                        batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                        batch->state.tmr[3] = 0L;
+                        batch->state.tmr[4] = 0L; batch->state.tmr[5] = 0L;
+                        batch->state.tmr[6] = rate[j] / 2L;
+                        batch->state.tmr[7] = 0L;
+                        batch->state.tmr[8] = 1L << 16;
+                        v = fire();
+                        for (col = 0UL; col < 64UL; col++)
+                            shot[side][col] = (v == OSMGA_HW3D_OK)
+                                            ? pixat(0UL, col)
+                                            : 0xFFFFFFFFUL;
+                    }
+                    for (col = 0UL; col < 64UL; col++)
+                        if (shot[0][col] == shot[1][col]) same++;
+                    printf(" %2lu/64", same);
+                }
+                printf("\n");
+            }
         }
-        printf("     they differ only in bit three of the minification field.\n"
-               "     Sixty-four of sixty-four means that bit does nothing here.\n");
-        for (j = 0; j < 4; j++) {
-            printf("     %-10s first eight:", fn[j]);
-            for (col = 0UL; col < 8UL; col++)
-                printf(" %8lx", shot[j][col]);
-            printf("\n");
-        }
+        printf("       rates 2, 4, 8, 16 texels per pixel.  64/64 everywhere\n"
+               "       means the mipmap bit changes nothing this path can see.\n");
     }
 
     printf("\n75. does any rfw wake the mipmap bit\n");
