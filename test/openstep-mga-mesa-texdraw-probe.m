@@ -132,7 +132,8 @@ main(int argc, char **argv)
     tx.w = dim; tx.h = dim;
     memset(tmr, 0, sizeof tmr);
     n = OSMGAMesaBuildTriangleTex(&va, &vb, &vc, (const OSMGAMesaVertex *)0,
-                                  0UL, OSMGA_MESA_BLEND_OPAQUE, &tx, out, tmr);
+                                  OSMGA_MESA_ZMODE_NONE,
+                                  OSMGA_MESA_BLEND_OPAQUE, &tx, out, tmr);
     printf("# tex %lu trapezoids %d\n", dim, n);
     printf("# v %ld %ld %.9f %.9f\n", va.x, va.y, va.s, va.tc);
     printf("# v %ld %ld %.9f %.9f\n", vb.x, vb.y, vb.s, vb.tc);

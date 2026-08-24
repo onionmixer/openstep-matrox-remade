@@ -453,6 +453,7 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
     long left, lmag, ldy, lerr, lsgn;
     long right, rmag, rdy, rerr, rsgn;
     int sdxl, sdxr;
+    int depthOn;
 
     osmgaEdgeRegs(le, y, sub, &left,  &lmag, &ldy, &lerr, &lsgn);
     osmgaEdgeRegs(re, y, sub, &right, &rmag, &rdy, &rerr, &rsgn);
@@ -460,8 +461,16 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
     sdxr = (rsgn < 0L) ? 1 : 0;
 
     memset(t, 0, sizeof *t);
-    t->dwgctl   = (zmode != 0UL) ? (OSMGA_TRI_DWGCTL_Z | zmode)
-                                : OSMGA_TRI_DWGCTL;
+    /*
+     * Whether there is depth at all is asked ONCE, here, and not inferred
+     * from the comparison's value anywhere below.  They were the same
+     * question while NONE was nought, and nought is also the engine's
+     * "always" -- so asking for GL_ALWAYS turned the depth off.
+     */
+    depthOn = (zmode != OSMGA_MESA_ZMODE_NONE);
+    t->dwgctl   = depthOn
+                  ? (OSMGA_TRI_DWGCTL_Z | (zmode & OSMGA_MESA_ZMODE_MASK))
+                  : OSMGA_TRI_DWGCTL;
     /*
      * The textured opcode, when there is a texture.  Getting the coordinates
      * right and leaving the opcode alone would have been arithmetic nobody
@@ -644,7 +653,7 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
         }
     }
 
-    if (zmode != 0UL && zplane != 0) {
+    if (depthOn && zplane != 0) {
         /*
          * Depth is a plane like any other, at the same fifteen-bit scale --
          * measured, along with colour and alpha.  Its values run to 65535
@@ -808,7 +817,7 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
     zplane.at_a = 0.0;
     aplane.dx = aplane.dy = 0.0;
     aplane.at_a = 255.0;
-    if (zmode != 0UL) {
+    if (zmode != OSMGA_MESA_ZMODE_NONE) {
         double x1 = (double)(b->x - a->x) / (double)OSMGA_MESA_SUBONE;
         double y1 = (double)(b->y - a->y) / (double)OSMGA_MESA_SUBONE;
         double x2 = (double)(c->x - a->x) / (double)OSMGA_MESA_SUBONE;

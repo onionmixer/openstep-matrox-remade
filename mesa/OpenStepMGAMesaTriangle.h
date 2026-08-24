@@ -130,9 +130,30 @@ typedef struct {
 #define OSMGA_MESA_ALPHASEL_DIFF 0x01000000UL
 #define OSMGA_MESA_ALPHASEL_MOD  0x02000000UL
 
-#define OSMGA_MESA_ZMODE_NONE  0UL
-#define OSMGA_MESA_ZMODE_LT    0x400UL
-#define OSMGA_MESA_ZMODE_GTE   0x700UL
+/*
+ * The depth comparison, or NONE for no depth at all.
+ *
+ * The engine's field is DWGCTL bits 8-10 and the register documentation names
+ * seven of its eight values (mgareg_flags.h, DC_zmode_*); value 1 has no name
+ * and is not offered.  NOZCMP is "always" and NOT "the depth stage is off" --
+ * measured, probe section 85: cleared to 8000, drawn at 4000, read back 4000,
+ * with a ZLT control beside it reading the same.
+ *
+ * NONE is 0xFFFFFFFF because it must NOT be a register value.  It used to be
+ * nought, which is also NOZCMP, so "is there depth" and "which comparison"
+ * were the same question and GL_ALWAYS could not be asked for at all -- the
+ * builder read it as no depth, dropped the access type down to I, and lost
+ * the write as well as the test.
+ */
+#define OSMGA_MESA_ZMODE_NONE     0xFFFFFFFFUL
+#define OSMGA_MESA_ZMODE_MASK     0x700UL
+#define OSMGA_MESA_ZMODE_ALWAYS   0x000UL   /* nozcmp */
+#define OSMGA_MESA_ZMODE_E        0x200UL   /* ze     */
+#define OSMGA_MESA_ZMODE_NE       0x300UL   /* zne    */
+#define OSMGA_MESA_ZMODE_LT       0x400UL   /* zlt    */
+#define OSMGA_MESA_ZMODE_LTE      0x500UL   /* zlte   */
+#define OSMGA_MESA_ZMODE_GT       0x600UL   /* zgt    */
+#define OSMGA_MESA_ZMODE_GTE      0x700UL   /* zgte   */
 
 /*
  * Fills up to two trapezoids and returns how many were written -- 0 for a

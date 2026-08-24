@@ -332,8 +332,26 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
      * only ever gets here as one of the comparisons the engine has, because
      * the chooser refuses the others rather than approximating them.
      */
-    zmode = (ctx->Depth.Test && ctx->Visual->DepthBits > 0)
-            ? OSMGA_MESA_ZMODE_LT : OSMGA_MESA_ZMODE_NONE;
+    /*
+     * The comparison the chooser agreed to, not one of them.
+     *
+     * Seven of GL's eight have an encoding the register documentation names;
+     * GL_NEVER has none and the chooser refuses it.  This used to send every
+     * enabled depth state to LT, which was right only because the chooser
+     * refused everything but GL_LESS.
+     */
+    if (!(ctx->Depth.Test && ctx->Visual->DepthBits > 0))
+        zmode = OSMGA_MESA_ZMODE_NONE;
+    else switch (ctx->Depth.Func) {
+    case GL_ALWAYS:   zmode = OSMGA_MESA_ZMODE_ALWAYS; break;
+    case GL_EQUAL:    zmode = OSMGA_MESA_ZMODE_E;      break;
+    case GL_NOTEQUAL: zmode = OSMGA_MESA_ZMODE_NE;     break;
+    case GL_LESS:     zmode = OSMGA_MESA_ZMODE_LT;     break;
+    case GL_LEQUAL:   zmode = OSMGA_MESA_ZMODE_LTE;    break;
+    case GL_GREATER:  zmode = OSMGA_MESA_ZMODE_GT;     break;
+    case GL_GEQUAL:   zmode = OSMGA_MESA_ZMODE_GTE;    break;
+    default:          zmode = OSMGA_MESA_ZMODE_NONE;   break;
+    }
 
     /*
      * The engine performs one blend and the chooser accepts only that one, so
@@ -903,7 +921,28 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
     }
 
     if ((ctx->RasterMask & DEPTH_BIT) != 0) {
-        if (ctx->Depth.Func != GL_LESS)             return NULL;
+        /*
+         * Seven comparisons, and GL_NEVER is not one of them: the engine's
+         * field has eight values and the documentation names seven, with
+         * value 1 unnamed and therefore not offered.  Nothing here writes
+         * nothing, so GL_NEVER would have to be emulated by not drawing, and
+         * refusing is what this back end does with what it cannot express.
+         */
+        switch (ctx->Depth.Func) {
+        case GL_LESS: case GL_LEQUAL: case GL_GREATER: case GL_GEQUAL:
+        case GL_EQUAL: case GL_NOTEQUAL: case GL_ALWAYS:
+            break;
+        default:
+            return NULL;
+        }
+        /*
+         * Testing without writing is not expressible by this contract.
+         *
+         * The write is tied to the access type, and the plane write mask that
+         * might gate it -- PLNWT -- is set wide open on every submission and
+         * is not part of the batch.  Whether the hardware could do it is not
+         * settled here; what is settled is that this contract cannot ask.
+         */
         if (ctx->Depth.Mask != GL_TRUE)             return NULL;
         if (ctx->Visual->DepthBits != 16)           return NULL;
         if (OSMGAMesaBufferDepthOrigin() == 0UL)    return NULL;
