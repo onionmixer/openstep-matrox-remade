@@ -61,10 +61,10 @@ trueReach(const OSMGAHW3DBatch *b, const OSMGAHW3DTri *t, long *uOut, long *vOut
             while (racc < 0L) { rx += rsgn; racc += t->ar6; }
         }
         if (lx >= rx) continue;
-        u0 = b->state.tmr[6] + b->state.tmr[0] * (lx - lx0)
+        u0 = t->tu0 + b->state.tmr[0] * (lx - lx0)
              + b->state.tmr[1] * row;
         u1 = u0 + b->state.tmr[0] * (rx - 1L - lx);
-        v0 = b->state.tmr[7] + b->state.tmr[2] * (lx - lx0)
+        v0 = t->tv0 + b->state.tmr[2] * (lx - lx0)
              + b->state.tmr[3] * row;
         v1 = v0 + b->state.tmr[2] * (rx - 1L - lx);
         if (u0 > *uOut) *uOut = u0;
@@ -124,7 +124,6 @@ one(const char *name, double x0, double y0, double x1, double y1,
                                  | OSMGA_HW3D_TEXF_REPEATV;
             batch.state.tmr[0] = tmr[i][0]; batch.state.tmr[1] = tmr[i][1];
             batch.state.tmr[2] = tmr[i][2]; batch.state.tmr[3] = tmr[i][3];
-            batch.state.tmr[6] = tmr[i][6]; batch.state.tmr[7] = tmr[i][7];
             batch.tri[0] = out[i];
 
             v = osmgaHW3DValidateReach(&batch, &lim, &badTri, &reach);
@@ -204,7 +203,6 @@ main(void)
             batch.state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
             batch.state.tmr[0] = tmr[i][0]; batch.state.tmr[1] = tmr[i][1];
             batch.state.tmr[2] = tmr[i][2]; batch.state.tmr[3] = tmr[i][3];
-            batch.state.tmr[6] = tmr[i][6]; batch.state.tmr[7] = tmr[i][7];
             batch.tri[0] = out[i];
             v = osmgaHW3DValidateReach(&batch, &lim, &badTri, &reach);
             trueReach(&batch, &out[i], &tu, &tv);

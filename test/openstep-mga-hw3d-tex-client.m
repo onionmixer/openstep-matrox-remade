@@ -20,6 +20,19 @@
 #import <driverkit/IODevice.h>
 #import "OpenStepMGAHW3D.h"
 
+/*
+ * The texture anchors moved from the batch to the trapezoid, and these
+ * sections were written when they were the batch's.  Writing every entry is
+ * what the old assignment meant: "this coordinate, for whatever this draws".
+ */
+static void setTU(OSMGAHW3DBatch *bp, long v)
+{ unsigned long i_; for (i_ = 0UL; i_ < OSMGA_HW3D_MAX_TRI; i_++) bp->tri[i_].tu0 = v; }
+static void setTV(OSMGAHW3DBatch *bp, long v)
+{ unsigned long i_; for (i_ = 0UL; i_ < OSMGA_HW3D_MAX_TRI; i_++) bp->tri[i_].tv0 = v; }
+static void setTQ(OSMGAHW3DBatch *bp, long v)
+{ unsigned long i_; for (i_ = 0UL; i_ < OSMGA_HW3D_MAX_TRI; i_++) bp->tri[i_].tq0 = v; }
+
+
 extern int open(const char *, int, ...);
 extern int close(int);
 extern caddr_t mmap(caddr_t, int, int, int, int, long);
@@ -116,7 +129,7 @@ texState(OSMGAHW3DBatch *b)
     b->state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
     b->state.tmr[0] = step;             /* one texel per pixel in x */
     b->state.tmr[3] = step;             /* and in y */
-    b->state.tmr[8] = 1UL << 16;        /* H, which takes no decal */
+    setTQ(b, 1UL << 16);        /* H, which takes no decal */
 }
 
 /*
@@ -460,7 +473,7 @@ main(int argc, char **argv)
             for (col = 0UL; col < DIM; col++)
                 colour[row * STRIDE_DW + col] = SENTINEL;
 
-        batch->state.tmr[6] = (long)((DIM - 1UL) * step);
+        setTU(batch, (long)((DIM - 1UL) * step));
         batch->state.tmr[0] = -(long)step;
         r = [master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
                     objectNumber:objNum count:0];

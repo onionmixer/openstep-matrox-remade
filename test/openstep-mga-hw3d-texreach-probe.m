@@ -32,6 +32,19 @@
 #include <mach/mach.h>
 #include "OpenStepMGAHW3D.h"
 
+/*
+ * The texture anchors moved from the batch to the trapezoid, and these
+ * sections were written when they were the batch's.  Writing every entry is
+ * what the old assignment meant: "this coordinate, for whatever this draws".
+ */
+static void setTU(OSMGAHW3DBatch *bp, long v)
+{ unsigned long i_; for (i_ = 0UL; i_ < OSMGA_HW3D_MAX_TRI; i_++) bp->tri[i_].tu0 = v; }
+static void setTV(OSMGAHW3DBatch *bp, long v)
+{ unsigned long i_; for (i_ = 0UL; i_ < OSMGA_HW3D_MAX_TRI; i_++) bp->tri[i_].tv0 = v; }
+static void setTQ(OSMGAHW3DBatch *bp, long v)
+{ unsigned long i_; for (i_ = 0UL; i_ < OSMGA_HW3D_MAX_TRI; i_++) bp->tri[i_].tq0 = v; }
+
+
 extern caddr_t mmap(caddr_t, int, int, int, int, long);
 extern int open(const char *, int, ...);
 
@@ -133,10 +146,10 @@ setup(unsigned long dstW, unsigned long x0, unsigned long w, unsigned long h,
     batch->state.texFlags = flags;
     batch->state.tmr[0] = grad;
     batch->state.tmr[3] = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
-    batch->state.tmr[8] = 1L << 16;
 
     t = &batch->tri[0];
     memset(t, 0, sizeof *t);
+    t->tq0 = 1L << 16;   /* after the clear, or it is wiped */
     t->dwgctl = DWG_TEX;
     t->alphactrl = 0x00000101UL;
     t->y = 0L;
@@ -201,7 +214,7 @@ osmgaProbeReadV(long v7)
     batch->state.texPitch = 8UL;
     batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
     batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
-    batch->state.tmr[6] = 0L; batch->state.tmr[7] = v7;
+    setTU(batch, 0L); setTV(batch, v7);
     v = fire();
     if (v != OSMGA_HW3D_OK)
         return 99999UL;
@@ -336,7 +349,7 @@ main(void)
          * PAST the allowance is refused, which is what 51 checks, and that a
          * value inside it is admitted, which is this.
          */
-        batch->state.tmr[6] = -1L;
+        setTU(batch, -1L);
         say("a start one unit below nought is admitted", fire(),
             OSMGA_HW3D_OK);
         (void)t;
@@ -405,7 +418,7 @@ main(void)
         t->sgn = 0x2L;                  /* left edge decreasing */
         /* start at texel 32, so a coordinate that runs backwards from the
          * origin is visible instead of being hidden at zero */
-        batch->state.tmr[6] = (long)(32UL * (OSMGA_HW3D_TEX_SPAN / DIM));
+        setTU(batch, (long)(32UL * (OSMGA_HW3D_TEX_SPAN / DIM)));
         say("a left edge opening leftward", fire(), OSMGA_HW3D_OK);
 
         uAt9  = colour[31UL * STRIDE_DW +  9UL];
@@ -464,7 +477,7 @@ main(void)
             t->ar2 = -32L;
             t->ar1 = -1L;
             t->sgn = 0x2L;                  /* left edge decreasing */
-            batch->state.tmr[6] = starts[k];
+            setTU(batch, starts[k]);
             ver = fire();
             say(label[k], ver, wantOK[k] ? OSMGA_HW3D_OK
                                          : OSMGA_HW3D_E_TEXCOORD);
@@ -517,7 +530,7 @@ main(void)
             t = setup(1024UL, 0UL, 8UL, 8UL,
                       (long)(OSMGA_HW3D_TEX_SPAN / DIM), 0UL);
             t->y = (long)y0;
-            batch->state.tmr[7] = (long)(32UL * (OSMGA_HW3D_TEX_SPAN / DIM));
+            setTV(batch, (long)(32UL * (OSMGA_HW3D_TEX_SPAN / DIM)));
             (void)fire();
             got = colour[y0 * STRIDE_DW + 0UL];
             printf("         first row at y=%2lu -> (v,u) = (%lu,%lu)\n",
@@ -534,7 +547,7 @@ main(void)
     blank();
     {
         (void)setup(1024UL, 0UL, 32UL, 32UL, -(long)step, 0UL);
-        batch->state.tmr[6] = (long)(step * 31UL);   /* start high so every
+        setTU(batch, (long)(step * 31UL));   /* start high so every
                                                       * drawn pixel stays
                                                       * non-negative */
         say("a negative u gradient with a start that covers it", fire(),
@@ -558,8 +571,8 @@ main(void)
 
         blank();
         t = setup(1024UL, 0UL, 11UL, 8UL, texel, 0UL);
-        batch->state.tmr[6] = 5L * texel;
-        batch->state.tmr[7] = 3L * texel;
+        setTU(batch, 5L * texel);
+        setTV(batch, 3L * texel);
         batch->triCount = 2UL;
         batch->tri[1] = batch->tri[0];
         batch->tri[1].y = 20L;
@@ -587,8 +600,8 @@ main(void)
 
         blank();
         t = setup(1024UL, 0UL, 11UL, 8UL, texel, 0UL);
-        batch->state.tmr[6] = 5L * texel;
-        batch->state.tmr[7] = 3L * texel;
+        setTU(batch, 5L * texel);
+        setTV(batch, 3L * texel);
         batch->triCount = 3UL;
         batch->tri[1] = batch->tri[0];
         batch->tri[1].y = 20L;
@@ -617,8 +630,8 @@ main(void)
 
         blank();
         t = setup(1024UL, 0UL, 11UL, 8UL, texel, 0UL);
-        batch->state.tmr[6] = 5L * texel;
-        batch->state.tmr[7] = 3L * texel;
+        setTU(batch, 5L * texel);
+        setTV(batch, 3L * texel);
         batch->triCount = 2UL;
         batch->tri[1] = batch->tri[0];
         batch->tri[1].y = 20L;
@@ -646,8 +659,8 @@ main(void)
 
         blank();
         t = setup(1024UL, 0UL, 11UL, 5UL, texel, 0UL);
-        batch->state.tmr[6] = 5L * texel;
-        batch->state.tmr[7] = 3L * texel;
+        setTU(batch, 5L * texel);
+        setTV(batch, 3L * texel);
         batch->triCount = 4UL;
         batch->tri[1] = batch->tri[0];
         batch->tri[1].y = 8L;  batch->tri[1].h = 11L;
@@ -690,8 +703,8 @@ main(void)
          * check fall back to the clip and a 1024-wide clip would refuse the
          * batch for a reason that has nothing to do with the question */
         t = setup(64UL, 0UL, 11UL, 5UL, texel, 0UL);
-        batch->state.tmr[6] = 5L * texel;
-        batch->state.tmr[7] = 3L * texel;
+        setTU(batch, 5L * texel);
+        setTV(batch, 3L * texel);
         batch->triCount = 3UL;
         batch->tri[1] = batch->tri[0];          /* textured but EMPTY */
         batch->tri[1].y = 8L;  batch->tri[1].h = 6L;
@@ -727,8 +740,8 @@ main(void)
 
         blank();
         t = setup(64UL, 0UL, 11UL, 8UL, 0L, 0UL);   /* no x gradient */
-        batch->state.tmr[6] = 0L;
-        batch->state.tmr[7] = 0L;
+        setTU(batch, 0L);
+        setTV(batch, 0L);
         batch->state.tmr[2] = texel;                /* one texel per ROW, in u */
         batch->state.tmr[3] = 0L;
         batch->triCount = 2UL;
@@ -828,8 +841,8 @@ main(void)
 
         blank();
         t = setup(64UL, 0UL, 11UL, 3UL, texel, 0UL);
-        batch->state.tmr[6] = 5L * texel;
-        batch->state.tmr[7] = 3L * texel;
+        setTU(batch, 5L * texel);
+        setTV(batch, 3L * texel);
         batch->state.zorg = 5UL * 1024UL * 1024UL;
         batch->triCount = 3UL;
         batch->tri[1] = batch->tri[0];
@@ -889,8 +902,8 @@ main(void)
 
             blank();
             t = setup(64UL, 0UL, 11UL, 8UL, texel, 0UL);
-            batch->state.tmr[6] = 5L * texel;
-            batch->state.tmr[7] = 3L * texel;
+            setTU(batch, 5L * texel);
+            setTV(batch, 3L * texel);
             batch->triCount = 3UL;
             for (n = 1UL; n < 3UL; n++) {
                 batch->tri[n] = batch->tri[0];
@@ -945,8 +958,8 @@ main(void)
         blank();
         t = setup(64UL, 0UL, 16UL, 8UL, 2L * texel, 0UL);
         batch->state.tmr[3] = 0L;
-        batch->state.tmr[6] = 0L;
-        batch->state.tmr[7] = 0L;
+        setTU(batch, 0L);
+        setTV(batch, 0L);
         say("two texels per pixel from a zero start", fire(), OSMGA_HW3D_OK);
         a  = colour[0UL * STRIDE_DW + 0UL] & 0xFFUL;
         b4 = colour[0UL * STRIDE_DW + 1UL] & 0xFFUL;
@@ -959,8 +972,8 @@ main(void)
         blank();
         t = setup(64UL, 0UL, 16UL, 8UL, texel, 0UL);
         batch->state.tmr[3] = 0L;
-        batch->state.tmr[6] = texel / 2L;
-        batch->state.tmr[7] = 0L;
+        setTU(batch, texel / 2L);
+        setTV(batch, 0L);
         say("one texel per pixel from a half-texel start", fire(),
             OSMGA_HW3D_OK);
         a  = colour[0UL * STRIDE_DW + 0UL] & 0xFFUL;
@@ -998,8 +1011,8 @@ main(void)
         batch->state.tmr[1] = 3L * texel;
         batch->state.tmr[2] = 5L * texel;
         batch->state.tmr[3] = 0L;
-        batch->state.tmr[6] = 0L;
-        batch->state.tmr[7] = 0L;
+        setTU(batch, 0L);
+        setTV(batch, 0L);
         say("u per row, v per column, on a rectangle", fire(), OSMGA_HW3D_OK);
         printf("         TMR1 = 3 texels, TMR2 = 5 texels\n");
         printf("         column 0, rows 0..5  u =");
@@ -1032,8 +1045,8 @@ main(void)
         batch->state.tmr[1] = 0L;
         batch->state.tmr[2] = 0L;
         batch->state.tmr[3] = 0L;
-        batch->state.tmr[6] = 0L;
-        batch->state.tmr[7] = 0L;
+        setTU(batch, 0L);
+        setTV(batch, 0L);
         say("a left edge stepping right, u per column", fire(), OSMGA_HW3D_OK);
         printf("         each row's FIRST pixel, rows 0..5  u =");
         for (k = 0UL; k < 6UL; k++)
@@ -1075,8 +1088,8 @@ main(void)
             batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
             batch->state.tmr[idx[j]] = -texel;      /* one texel DOWN */
             /* enough to cover sixteen columns or eight rows going down */
-            batch->state.tmr[6] = 40L * texel;
-            batch->state.tmr[7] = 40L * texel;
+            setTU(batch, 40L * texel);
+            setTV(batch, 40L * texel);
             ver = fire();
             if (isCol) {
                 a  = colour[0UL * STRIDE_DW + 0UL];
@@ -1118,7 +1131,7 @@ main(void)
             t = setup(64UL, 0UL, 40UL, 4UL, incs[j], 0UL);
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = 0L; batch->state.tmr[7] = 0L;
+            setTU(batch, 0L); setTV(batch, 0L);
             (void)fire();
             for (k = 0UL; k < 40UL; k++)
                 if ((colour[0UL * STRIDE_DW + k] & 0xFFUL) != 0UL) {
@@ -1151,8 +1164,8 @@ main(void)
             t = setup(64UL, 0UL, 8UL, 4UL, 0L, 0UL);
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = mid;
-            batch->state.tmr[7] = mid;
+            setTU(batch, mid);
+            setTV(batch, mid);
             (void)fire();
             p = colour[0UL * STRIDE_DW + 0UL];
             if ((p & 0xFFUL) != 0UL) hi = mid; else lo = mid + 1L;
@@ -1168,8 +1181,8 @@ main(void)
             t = setup(64UL, 0UL, 8UL, 4UL, 0L, 0UL);
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = mid;
-            batch->state.tmr[7] = mid;
+            setTU(batch, mid);
+            setTV(batch, mid);
             (void)fire();
             p = colour[0UL * STRIDE_DW + 0UL];
             if ((p >> 8) != 0UL) hi = mid; else lo = mid + 1L;
@@ -1213,8 +1226,8 @@ main(void)
                 t = setup(64UL, 0UL, 8UL, 4UL, mags[j], 0UL);
                 batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
                 batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] = mid;
-                batch->state.tmr[7] = 0L;
+                setTU(batch, mid);
+                setTV(batch, 0L);
                 (void)fire();
                 if ((colour[0UL * STRIDE_DW + 0UL] & 0xFFUL) != 0UL) hi = mid;
                 else lo = mid + 1L;
@@ -1253,8 +1266,8 @@ main(void)
             (void)setup(64UL, 0UL, 40UL, 4UL, inc, 0UL);
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = texel - 511L;
-            batch->state.tmr[7] = 0L;
+            setTU(batch, texel - 511L);
+            setTV(batch, 0L);
             (void)fire();
             firstShort = -1;
             printf("   increment %6ld  u:", inc);
@@ -1318,8 +1331,8 @@ main(void)
                 (void)setup(64UL, 0UL, 8UL, 4UL, 0L, 0UL);
                 batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
                 batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] = mid;
-                batch->state.tmr[7] = 0L;
+                setTU(batch, mid);
+                setTV(batch, 0L);
                 (void)fire();
                 p = colour[0UL * STRIDE_DW + 0UL] & 0xFFUL;
                 if ((long)p >= k) hi = mid; else lo = mid + 1L;
@@ -1367,8 +1380,8 @@ main(void)
         (void)setup(64UL, 0UL, 8UL, 4UL, texel, 0UL);
         batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
         batch->state.tmr[3] = 0L;
-        batch->state.tmr[6] = 5L * texel - 511L;
-        batch->state.tmr[7] = 0L;
+        setTU(batch, 5L * texel - 511L);
+        setTV(batch, 0L);
         (void)fire();
         printf("   u:");
         for (k = 0UL; k < 5UL; k++) {
@@ -1425,8 +1438,8 @@ main(void)
             batch->state.tmr[3] = 0L;
             /* the kernel takes OSMGA_HW3D_TEX_BIAS off on the way out,
              * and this section is about the ENGINE, so put it back */
-            batch->state.tmr[6] = begins[j] + OSMGA_HW3D_TEX_BIAS;
-            batch->state.tmr[7] = 0L;
+            setTU(batch, begins[j] + OSMGA_HW3D_TEX_BIAS);
+            setTV(batch, 0L);
             (void)fire();
             printf("   increment %2ld  u:", incs[j]);
             for (c = 0UL; c < 32UL; c++) {
@@ -1486,8 +1499,8 @@ main(void)
                 (void)setup(64UL, 0UL, 32UL, 4UL, incs[j], 0UL);
                 batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
                 batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] = begin + OSMGA_HW3D_TEX_BIAS;
-                batch->state.tmr[7] = 0L;
+                setTU(batch, begin + OSMGA_HW3D_TEX_BIAS);
+                setTV(batch, 0L);
                 (void)fire();
                 for (c = 0UL; c < 32UL; c++) {
                     unsigned long got = pixat(0UL, c);
@@ -1519,8 +1532,8 @@ main(void)
                 (void)setup(64UL, 0UL, 32UL, 4UL, incs[jj], 0UL);
                 batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
                 batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] = begin + OSMGA_HW3D_TEX_BIAS;
-                batch->state.tmr[7] = 0L;
+                setTU(batch, begin + OSMGA_HW3D_TEX_BIAS);
+                setTV(batch, 0L);
                 (void)fire();
                 printf("   inc %2ld start %ld  ", incs[jj], begin);
                 for (c = 0UL; c < 32UL; c++)
@@ -1571,8 +1584,8 @@ main(void)
                 (void)setup(1024UL, 0UL, 600UL, 4UL, 1L, 0UL);
                 batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
                 batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] = probe;
-                batch->state.tmr[7] = 0L;
+                setTU(batch, probe);
+                setTV(batch, 0L);
                 (void)fire();
                 for (c = 0UL; c < 600UL; c++) {
                     unsigned long got = pixat(0UL, c);
@@ -1624,8 +1637,8 @@ main(void)
             (void)setup(1024UL, 0UL, 12UL, 4UL, step32, 0UL);
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = texel - bias;
-            batch->state.tmr[7] = 0L;
+            setTU(batch, texel - bias);
+            setTV(batch, 0L);
             (void)fire();
             printf("   %-28s u:", what[mode]);
             for (c = 0UL; c < 12UL; c++) {
@@ -1668,8 +1681,8 @@ main(void)
             (void)setup(1024UL, 0UL, 33UL, 4UL, 1L, 0UL);
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = bnd - 32L;
-            batch->state.tmr[7] = 0L;
+            setTU(batch, bnd - 32L);
+            setTV(batch, 0L);
             (void)fire();
             printf("   texel %2ld, offsets -32..0:", ks[j]);
             for (c = 0UL; c < 33UL; c++)
@@ -1715,8 +1728,8 @@ main(void)
             batch->state.tmr[3] = 0L;
             /* start on a texel boundary, four texels in, on an EVEN texel so
              * the ramp runs from 0 towards 255 */
-            batch->state.tmr[6] = 4L * texel;
-            batch->state.tmr[7] = 0L;
+            setTU(batch, 4L * texel);
+            setTV(batch, 0L);
             (void)fire();
             printf("   %-8s u:", mode ? "bilinear" : "nearest");
             for (c = 0UL; c < 64UL; c += 2UL)
@@ -1758,8 +1771,8 @@ main(void)
                     OSMGA_HW3D_TEXF_BILIN);
         batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
         batch->state.tmr[3] = 0L;
-        batch->state.tmr[6] = 0L;                 /* the outer half texel */
-        batch->state.tmr[7] = 0L;
+        setTU(batch, 0L);                 /* the outer half texel */
+        setTV(batch, 0L);
         (void)fire();
         printf("   low  edge, u 0 .. half a texel: ");
         for (c = 0UL; c < 32UL; c += 4UL)
@@ -1771,8 +1784,8 @@ main(void)
                     OSMGA_HW3D_TEXF_BILIN);
         batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
         batch->state.tmr[3] = 0L;
-        batch->state.tmr[6] = (long)(DIM - 1UL) * texel + texel / 2L;
-        batch->state.tmr[7] = 0L;
+        setTU(batch, (long)(DIM - 1UL) * texel + texel / 2L);
+        setTV(batch, 0L);
         (void)fire();
         printf("   high edge, last half texel:     ");
         for (c = 0UL; c < 32UL; c += 4UL)
@@ -1820,8 +1833,8 @@ main(void)
         batch->state.tmr[1] = 0L;
         batch->state.tmr[2] = texel / 32L;    /* dt/dx: v walks with u */
         batch->state.tmr[3] = 0L;
-        batch->state.tmr[6] = 4L * texel + texel / 2L;
-        batch->state.tmr[7] = 4L * texel + texel / 2L;
+        setTU(batch, 4L * texel + texel / 2L);
+        setTV(batch, 4L * texel + texel / 2L);
         (void)fire();
         printf("   %4s %6s %6s %6s\n", "col", "R a(1-b)", "G (1-a)b", "B ab");
         for (c = 0UL; c <= 32UL; c += 4UL) {
@@ -1886,8 +1899,8 @@ main(void)
             (void)setup(1024UL, 0UL, 8UL, 4UL, 0L, OSMGA_HW3D_TEXF_BILIN);
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = uu[j];
-            batch->state.tmr[7] = vv[j];
+            setTU(batch, uu[j]);
+            setTV(batch, vv[j]);
             v = fire();
             if (v != OSMGA_HW3D_OK) {
                 printf("   %-16s refused (%u) -- software draws it\n",
@@ -1937,8 +1950,8 @@ main(void)
 
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = 4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM);
-            batch->state.tmr[7] = 4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+            setTU(batch, 4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM));
+            setTV(batch, 4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM));
             t->a0 = 0x55UL << 15;
         }
         (void)fire();
@@ -1978,8 +1991,8 @@ main(void)
 
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = 4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM);
-            batch->state.tmr[7] = 4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+            setTU(batch, 4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM));
+            setTV(batch, 4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM));
             t->a0  = 0x20UL << 15;
             t->adx = 4UL << 15;
             t->ady = 0UL;
@@ -2054,10 +2067,8 @@ main(void)
 
                 batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
                 batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] =
-                    4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM);
-                batch->state.tmr[7] =
-                    4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+                setTU(batch, 4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM));
+                setTV(batch, 4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM));
                 t->a0  = 0x20UL << 15;
                 t->adx = 4UL << 15;
                 t->ady = 0UL;
@@ -2115,10 +2126,8 @@ main(void)
 
                 batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
                 batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] =
-                    4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM);
-                batch->state.tmr[7] =
-                    4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+                setTU(batch, 4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM));
+                setTV(batch, 4L * (long)(OSMGA_HW3D_TEX_SPAN / DIM));
                 t->a0  = 0x20UL << 15;
                 t->adx = 0UL;
                 t->ady = 0UL;
@@ -2169,8 +2178,8 @@ main(void)
             (void)setup(1024UL, (unsigned long)x0, 32UL, 4UL, 1L, 0UL);
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = begin + OSMGA_HW3D_TEX_BIAS;
-            batch->state.tmr[7] = 0L;
+            setTU(batch, begin + OSMGA_HW3D_TEX_BIAS);
+            setTV(batch, 0L);
             (void)fire();
             printf("   left edge %ld  ", x0);
             for (c = 0UL; c < 32UL; c++) {
@@ -2226,8 +2235,8 @@ main(void)
 
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = 0L;
-            batch->state.tmr[7] = 0L;
+            setTU(batch, 0L);
+            setTV(batch, 0L);
             t->dr[0] = 128UL << 15;      /* Cf.r */
             t->dr[3] = 200UL << 15;      /* Cf.g */
             t->dr[6] = 100UL << 15;      /* Cf.b */
@@ -2300,8 +2309,8 @@ main(void)
 
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = 0L;
-            batch->state.tmr[7] = 0L;
+            setTU(batch, 0L);
+            setTV(batch, 0L);
             t->ar0 = 64L; t->ar6 = 64L; t->h = 64L;
             t->dr[0] = 0UL;              /* Cf.r at the top row */
             t->dr[1] = 0UL;              /* and no change across a row */
@@ -2440,8 +2449,8 @@ main(void)
                 (void)setup(1024UL, 0UL, 8UL, 4UL, 0L, st[j].f);
                 batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
                 batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] = k ? inC  : outC;
-                batch->state.tmr[7] = k ? outC : inC;
+                setTU(batch, k ? inC : outC);
+                setTV(batch, k ? outC : inC);
                 if (fire() != OSMGA_HW3D_OK) {
                     if (k) gv = 0xFFFFUL; else gu = 0xFFFFUL;
                     continue;
@@ -2485,8 +2494,8 @@ main(void)
                         OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV);
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = n * span + 32L * texel + texel / 2L;
-            batch->state.tmr[7] = 16L * texel + texel / 2L;
+            setTU(batch, n * span + 32L * texel + texel / 2L);
+            setTV(batch, 16L * texel + texel / 2L);
             if (fire() != OSMGA_HW3D_OK) { printf(" ref"); continue; }
             got = pixat(0UL, 0UL) & 0xFFUL;
             printf(" %lu", got);
@@ -2545,8 +2554,8 @@ main(void)
                         | OSMGA_HW3D_TEXF_REPEATV);
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = uu[j];
-            batch->state.tmr[7] = vv[j];
+            setTU(batch, uu[j]);
+            setTV(batch, vv[j]);
             v = fire();
             if (v != OSMGA_HW3D_OK) {
                 printf("   %-24s refused (%u)\n", what[j], v);
@@ -2601,8 +2610,8 @@ main(void)
                         | OSMGA_HW3D_TEXF_REPEATV);
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = starts[j];
-            batch->state.tmr[7] = 16L * texel + texel / 2L;
+            setTU(batch, starts[j]);
+            setTV(batch, 16L * texel + texel / 2L);
             if (fire() != OSMGA_HW3D_OK) {
                 printf("   %s refused\n", name[j]);
                 continue;
@@ -2658,8 +2667,8 @@ main(void)
                 batch->state.tmr[3] = 0L;
                 /* a quarter of a texel short of a whole number of spans, so
                  * clamping names the last texel and repeating the last too */
-                batch->state.tmr[6] = us[j] * span - span / (long)DIM / 4L;
-                batch->state.tmr[7] = us[j] * span - span / (long)DIM / 4L;
+                setTU(batch, us[j] * span - span / (long)DIM / 4L);
+                setTV(batch, us[j] * span - span / (long)DIM / 4L);
                 v = fire();
                 if (v != OSMGA_HW3D_OK) { printf("  %ld spans refused", us[j]); continue; }
                 got = pixat(0UL, 0UL) & 0xFFFFUL;
@@ -2692,11 +2701,11 @@ main(void)
         (void)setup(1024UL, 0UL, 64UL, 4UL, 0L, OSMGA_HW3D_TEXF_PERSP);
         batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
         batch->state.tmr[3] = 0L;
-        batch->state.tmr[6] = 8L * texel;      /* s = texel 8, flat */
-        batch->state.tmr[7] = 0L;
+        setTU(batch, 8L * texel);      /* s = texel 8, flat */
+        setTV(batch, 0L);
         batch->state.tmr[4] = 1024L;           /* dq/dx = 1/64 */
         batch->state.tmr[5] = 0L;
-        batch->state.tmr[8] = OSMGA_HW3D_Q_ONE;
+        setTQ(batch, OSMGA_HW3D_Q_ONE);
         printf("   verdict %u   u:", fire());
         for (c = 0UL; c < 64UL; c += 8UL)
             printf(" %lu", pixat(0UL, c) & 0xFFUL);
@@ -2736,8 +2745,8 @@ main(void)
         batch->state.texPitch = DIM;
         batch->state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
         batch->state.texFlags = OSMGA_HW3D_TEXF_PERSP;
-        batch->state.tmr[6] = 8L * texel;
-        batch->state.tmr[8] = OSMGA_HW3D_Q_ONE;
+        setTU(batch, 8L * texel);
+        setTQ(batch, OSMGA_HW3D_Q_ONE);
         batch->state.tmr[5] = 4096L;            /* dq/dy = 1/16 */
         {
             int k;
@@ -2789,8 +2798,8 @@ main(void)
         batch->state.texPitch = DIM;
         batch->state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
         batch->state.texFlags = OSMGA_HW3D_TEXF_PERSP;
-        batch->state.tmr[6] = 8L * texel;
-        batch->state.tmr[8] = OSMGA_HW3D_Q_ONE;
+        setTU(batch, 8L * texel);
+        setTQ(batch, OSMGA_HW3D_Q_ONE);
         batch->state.tmr[5] = 4096L;            /* dq/dy = 1/16 */
         {
             static const long ys[2] = { 0L, 20L };
@@ -2868,10 +2877,10 @@ main(void)
                 (void)setup(64UL, 0UL, 8UL, 4UL, 0L, OSMGA_HW3D_TEXF_PERSP);
                 batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
                 batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] = mid;
-                batch->state.tmr[7] = 0L;
+                setTU(batch, mid);
+                setTV(batch, 0L);
                 batch->state.tmr[4] = 0L; batch->state.tmr[5] = 0L;
-                batch->state.tmr[8] = q;
+                setTQ(batch, q);
                 if (fire() != OSMGA_HW3D_OK) { blanked = 1; break; }
                 p = pixat(0UL, 0UL);
                 if (p == BLANK) { blanked = 1; break; }
@@ -2938,10 +2947,10 @@ main(void)
             (void)setup(64UL, 0UL, 8UL, 4UL, 0L, OSMGA_HW3D_TEXF_PERSP);
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = s;
-            batch->state.tmr[7] = 0L;
+            setTU(batch, s);
+            setTV(batch, 0L);
             batch->state.tmr[4] = 0L; batch->state.tmr[5] = 0L;
-            batch->state.tmr[8] = q;
+            setTQ(batch, q);
             if (fire() != OSMGA_HW3D_OK) {
                 printf("   %10ld %12ld %8s\n", q, s, "refused");
                 continue;
@@ -2999,10 +3008,10 @@ main(void)
                                 OSMGA_HW3D_TEXF_PERSP);
                     batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
                     batch->state.tmr[3] = 0L;
-                    batch->state.tmr[6] = mid;
-                    batch->state.tmr[7] = 0L;
+                    setTU(batch, mid);
+                    setTV(batch, 0L);
                     batch->state.tmr[4] = 0L; batch->state.tmr[5] = 0L;
-                    batch->state.tmr[8] = q;
+                    setTQ(batch, q);
                     if (fire() != OSMGA_HW3D_OK) { bad = 1; break; }
                     p = pixat(0UL, 0UL);
                     if (p == BLANK) { bad = 1; break; }
@@ -3062,11 +3071,11 @@ main(void)
             (void)setup(1024UL, 0UL, 64UL, 4UL, 0L, OSMGA_HW3D_TEXF_PERSP);
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = ss[j];
-            batch->state.tmr[7] = 0L;
+            setTU(batch, ss[j]);
+            setTV(batch, 0L);
             batch->state.tmr[4] = 192L;          /* dq/dx */
             batch->state.tmr[5] = 0L;
-            batch->state.tmr[8] = q0;
+            setTQ(batch, q0);
             printf("   s=%ld v=%u:", ss[j], fire());
             for (c = 0UL; c < 64UL; c++)
                 printf(" %lu", pixat(0UL, c) & 0xFFUL);
@@ -3110,8 +3119,8 @@ main(void)
                 batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
                 batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
                 batch->state.tmr[j] = v;
-                batch->state.tmr[6] = 0L;
-                batch->state.tmr[7] = 0L;
+                setTU(batch, 0L);
+                setTV(batch, 0L);
                 t->ar0 = tall ? 32L : 8L;
                 t->ar6 = t->ar0;
             }
@@ -3145,8 +3154,8 @@ main(void)
                     batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
                     batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
                     batch->state.tmr[k ? 3 : 1] = slope;
-                    batch->state.tmr[6] = k ? 0L : room2 / 2L;
-                    batch->state.tmr[7] = k ? room2 / 2L : 0L;
+                    setTU(batch, k ? 0L : room2 / 2L);
+                    setTV(batch, k ? room2 / 2L : 0L);
                     t->ar0 = 32L; t->ar6 = 32L;
                 }
                 got = fire();
@@ -3170,8 +3179,8 @@ main(void)
 
                     batch->state.tmr[0] = 0L; batch->state.tmr[1] = slope;
                     batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
-                    batch->state.tmr[6] = 0L;
-                    batch->state.tmr[7] = 0L;
+                    setTU(batch, 0L);
+                    setTV(batch, 0L);
                     t->ar0 = 32L; t->ar6 = 32L;
                 }
                 got = fire();
@@ -3222,8 +3231,8 @@ main(void)
                                  | OSMGA_HW3D_TEXF_REPEATV) : 0UL);
                 batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
                 batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] = ps[j];
-                batch->state.tmr[7] = 0L;
+                setTU(batch, ps[j]);
+                setTV(batch, 0L);
                 v = fire();
                 if (v != OSMGA_HW3D_OK) { printf("  ref"); continue; }
                 got = pixat(0UL, 0UL);
@@ -3238,8 +3247,8 @@ main(void)
             (void)setup(64UL, 0UL, 8UL, 4UL, 0L, 0UL);
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = -1048577L;
-            batch->state.tmr[7] = 0L;
+            setTU(batch, -1048577L);
+            setTV(batch, 0L);
             v = fire();
             say("one unit past the allowance is still refused",
                 (v == OSMGA_HW3D_OK) ? 0U : 1U, 1U);
@@ -3298,8 +3307,8 @@ main(void)
                     batch->state.texPitch = cw[ci];
                     batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
                     batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
-                    batch->state.tmr[6] = cax[ci] ? 0L : ps[j];
-                    batch->state.tmr[7] = cax[ci] ? ps[j] : 0L;
+                    setTU(batch, cax[ci] ? 0L : ps[j]);
+                    setTV(batch, cax[ci] ? ps[j] : 0L);
                     v = fire();
                     if (v != OSMGA_HW3D_OK) { printf("   ref"); continue; }
                     got = pixat(0UL, 0UL);
@@ -3362,8 +3371,8 @@ main(void)
             batch->state.texPitch = 8UL;
             batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
             batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = 0L;
-            batch->state.tmr[7] = q;
+            setTU(batch, 0L);
+            setTV(batch, q);
             v = fire();
             if (v != OSMGA_HW3D_OK) { printf(" ref"); continue; }
             got = pixat(0UL, 0UL);
@@ -3401,8 +3410,8 @@ main(void)
                 batch->state.texPitch = 8UL;
                 batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
                 batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] = 0L;
-                batch->state.tmr[7] = -512L * k - 16L + j;
+                setTU(batch, 0L);
+                setTV(batch, -512L * k - 16L + j);
                 v = fire();
                 got[j] = (v != OSMGA_HW3D_OK) ? 9999UL
                                               : (pixat(0UL, 0UL) & 0xFFFFUL);
@@ -3452,8 +3461,8 @@ main(void)
             batch->state.texPitch = 8UL;
             batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
             batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = 0L;
-            batch->state.tmr[7] = q;
+            setTU(batch, 0L);
+            setTV(batch, q);
             v = fire();
             if (v != OSMGA_HW3D_OK) { printf(" ref"); continue; }
             got = pixat(0UL, 0UL);
@@ -3549,7 +3558,7 @@ main(void)
         batch->state.texPitch = 8UL;
         batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
         batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
-        batch->state.tmr[6] = 0L; batch->state.tmr[7] = C;
+        setTU(batch, 0L); setTV(batch, C);
         v = fire();
         flat = (v != OSMGA_HW3D_OK) ? 99999UL : (pixat(0UL, 4UL) & 0xFFFFUL);
 
@@ -3560,7 +3569,7 @@ main(void)
         batch->state.texPitch = 8UL;
         batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
         batch->state.tmr[2] = g;  batch->state.tmr[3] = 0L;
-        batch->state.tmr[6] = 0L; batch->state.tmr[7] = 0L;
+        setTU(batch, 0L); setTV(batch, 0L);
         v = fire();
         climbed = (v != OSMGA_HW3D_OK) ? 99999UL : (pixat(0UL, 4UL) & 0xFFFFUL);
 
@@ -3653,7 +3662,7 @@ main(void)
         batch->state.texPitch = 8UL;
         batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
         batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
-        batch->state.tmr[6] = 0L; batch->state.tmr[7] = C;
+        setTU(batch, 0L); setTV(batch, C);
         v = fire();
         if (v != OSMGA_HW3D_OK) printf("  refused");
         else
@@ -3674,7 +3683,7 @@ main(void)
         batch->state.texPitch = 8UL;
         batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
         batch->state.tmr[2] = -(C / 4L); batch->state.tmr[3] = 0L;
-        batch->state.tmr[6] = 0L; batch->state.tmr[7] = 2L * C;
+        setTU(batch, 0L); setTV(batch, 2L * C);
         v = fire();
         got = (v != OSMGA_HW3D_OK) ? 99999UL : (pixat(0UL, 4UL) & 0xFFFFUL);
         printf("     descending to it from twice as high: %lu\n", got);
@@ -3820,7 +3829,7 @@ main(void)
         batch->state.texPitch = 1024UL;
         batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
         batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
-        batch->state.tmr[6] = C;  batch->state.tmr[7] = 0L;
+        setTU(batch, C);  setTV(batch, 0L);
         v = fire();
         printf("     columns 0..7:");
         if (v != OSMGA_HW3D_OK) printf("  refused %u", v);
@@ -3881,7 +3890,7 @@ main(void)
                 batch->state.tmr[0] = j ? (1L << 20) : 0L;
                 batch->state.tmr[1] = 0L;
                 batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] = X;  batch->state.tmr[7] = 0L;
+                setTU(batch, X);  setTV(batch, 0L);
                 v = fire();
                 got[j] = (v != OSMGA_HW3D_OK) ? 99999UL
                                               : (pixat(0UL, 0UL) & 0xFFFFUL);
@@ -3959,9 +3968,9 @@ main(void)
                 batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
                 batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
                 batch->state.tmr[4] = 0L; batch->state.tmr[5] = 0L;
-                batch->state.tmr[6] = 0L;
-                batch->state.tmr[7] = pb + off;
-                batch->state.tmr[8] = q;
+                setTU(batch, 0L);
+                setTV(batch, pb + off);
+                setTQ(batch, q);
                 v = fire();
                 got = (v != OSMGA_HW3D_OK) ? 99999UL
                                            : (pixat(0UL, 0UL) & 0xFFFFUL);
@@ -4010,9 +4019,9 @@ main(void)
                 batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
                 batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
                 batch->state.tmr[4] = 0L; batch->state.tmr[5] = 0L;
-                batch->state.tmr[6] = 0L;
-                batch->state.tmr[7] = pb2 + off2;
-                batch->state.tmr[8] = q2;
+                setTU(batch, 0L);
+                setTV(batch, pb2 + off2);
+                setTQ(batch, q2);
                 v = fire();
                 got = (v != OSMGA_HW3D_OK) ? 99999UL
                                            : (pixat(0UL, 0UL) & 0xFFFFUL);
@@ -4089,9 +4098,9 @@ main(void)
                 batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
                 batch->state.tmr[2] = gx;  batch->state.tmr[3] = 0L;
                 batch->state.tmr[4] = 0L;  batch->state.tmr[5] = 0L;
-                batch->state.tmr[6] = 0L;
-                batch->state.tmr[7] = anc + off;
-                batch->state.tmr[8] = q;
+                setTU(batch, 0L);
+                setTV(batch, anc + off);
+                setTQ(batch, q);
                 v = fire();
                 if (off == -300L) firstV = v;
                 got = (v != OSMGA_HW3D_OK) ? 99999UL
@@ -4143,9 +4152,9 @@ main(void)
                     batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
                     batch->state.tmr[2] = g;  batch->state.tmr[3] = g;
                     batch->state.tmr[4] = 0L; batch->state.tmr[5] = 0L;
-                    batch->state.tmr[6] = 0L;
-                    batch->state.tmr[7] = anc + off;
-                    batch->state.tmr[8] = q;
+                    setTU(batch, 0L);
+                    setTV(batch, anc + off);
+                    setTQ(batch, q);
                     v = fire();
                     if (off == -700L) firstV = v;
                     got = (v != OSMGA_HW3D_OK) ? 99999UL
@@ -4225,8 +4234,8 @@ main(void)
                 batch->state.texPitch = 8UL;
                 batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
                 batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] = 0L;
-                batch->state.tmr[7] = base + off;
+                setTU(batch, 0L);
+                setTV(batch, base + off);
                 v = fire();
                 if (off == -40L) firstV = v;
                 got = (v != OSMGA_HW3D_OK) ? 99999UL
@@ -4303,8 +4312,8 @@ main(void)
                     batch->state.texPitch = cw[ci];
                     batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
                     batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
-                    batch->state.tmr[6] = cax[ci] ? 0L : ps[j];
-                    batch->state.tmr[7] = cax[ci] ? ps[j] : 0L;
+                    setTU(batch, cax[ci] ? 0L : ps[j]);
+                    setTV(batch, cax[ci] ? ps[j] : 0L);
                     v = fire();
                     if (v != OSMGA_HW3D_OK) { printf("   ref"); bad = 1; continue; }
                     got = pixat(0UL, 0UL) & 0xFFFFUL;
@@ -4380,9 +4389,9 @@ main(void)
                 batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
                 batch->state.tmr[2] = gxs[bi]; batch->state.tmr[3] = gys[bi];
                 batch->state.tmr[4] = 0L; batch->state.tmr[5] = 0L;
-                batch->state.tmr[6] = 0L;
-                batch->state.tmr[7] = ancs[bi] + off;
-                batch->state.tmr[8] = q;
+                setTU(batch, 0L);
+                setTV(batch, ancs[bi] + off);
+                setTQ(batch, q);
                 v = fire();
                 if (off == -600L) firstV = v;
                 got = (v != OSMGA_HW3D_OK) ? 99999UL
@@ -4441,8 +4450,8 @@ main(void)
             batch->state.texPitch = 8UL;
             batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
             batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = 0L;
-            batch->state.tmr[7] = base + off;
+            setTU(batch, 0L);
+            setTV(batch, base + off);
             v = fire();
             if (v != OSMGA_HW3D_OK) { printf(" ref"); continue; }
             got = pixat(0UL, 0UL);
@@ -4504,8 +4513,8 @@ main(void)
                 batch->state.texPitch = 64UL;
                 batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
                 batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] = rates[j] / 2L;   /* half a step in */
-                batch->state.tmr[7] = 0L;
+                setTU(batch, rates[j] / 2L);   /* half a step in */
+                setTV(batch, 0L);
                 v = fire();
                 if (v != OSMGA_HW3D_OK) { printf("  ref"); continue; }
                 got = pixat(0UL, 8UL);
@@ -4559,8 +4568,8 @@ main(void)
         batch->state.tmr[0] = dp;  batch->state.tmr[1] = 0L;
         batch->state.tmr[2] = 0L;  batch->state.tmr[3] = 0L;
         batch->state.tmr[4] = dq;  batch->state.tmr[5] = 0L;
-        batch->state.tmr[6] = 0L;  batch->state.tmr[7] = 0L;
-        batch->state.tmr[8] = q0;
+        setTU(batch, 0L);  setTV(batch, 0L);
+        setTQ(batch, q0);
         {
             unsigned v = fire();
 
@@ -4621,8 +4630,8 @@ main(void)
             batch->state.texPitch = 64UL;
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = dvs[j];
-            batch->state.tmr[6] = dus[j] / 2L;
-            batch->state.tmr[7] = dvs[j] / 2L;
+            setTU(batch, dus[j] / 2L);
+            setTV(batch, dvs[j] / 2L);
             v = fire();
             got = (v != OSMGA_HW3D_OK) ? 9999UL
                                        : ((pixat(2UL, 4UL) >> 16) & 0xFFUL);
@@ -4708,8 +4717,8 @@ main(void)
                 batch->state.texPitch = 64UL;
                 batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
                 batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] = rate[j] / 2L;
-                batch->state.tmr[7] = 0L;
+                setTU(batch, rate[j] / 2L);
+                setTV(batch, 0L);
                 v = fire();
                 if (v != OSMGA_HW3D_OK) { printf("   ref%-6u", v); continue; }
                 got = pixat(0UL, 4UL);
@@ -4797,9 +4806,9 @@ main(void)
                         batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
                         batch->state.tmr[3] = 0L;
                         batch->state.tmr[4] = 0L; batch->state.tmr[5] = 0L;
-                        batch->state.tmr[6] = rate[j] / 2L;
-                        batch->state.tmr[7] = 0L;
-                        batch->state.tmr[8] = 1L << 16;
+                        setTU(batch, rate[j] / 2L);
+                        setTV(batch, 0L);
+                        setTQ(batch, 1L << 16);
                         v = fire();
                         for (col = 0UL; col < 64UL; col++)
                             shot[side][col] = (v == OSMGA_HW3D_OK)
@@ -4868,7 +4877,7 @@ main(void)
                 batch->state.texPitch = d;
                 batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
                 batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] = 32768L; batch->state.tmr[7] = 0L;
+                setTU(batch, 32768L); setTV(batch, 0L);
                 v = fire();
                 if (v != OSMGA_HW3D_OK) refused = 1;
                 for (col = 0UL; col < 16UL; col++)
@@ -4943,8 +4952,8 @@ main(void)
             batch->state.texPitch = 64UL;
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = (long)(OSMGA_HW3D_TEX_SPAN / 128UL);
-            batch->state.tmr[7] = 0L;
+            setTU(batch, (long)(OSMGA_HW3D_TEX_SPAN / 128UL));
+            setTV(batch, 0L);
             /*
              * alphasel = fromtex.  The constant the builder uses,
              * 0x01000154, has alphasel = diffused in bits 24-25 -- the
@@ -5037,7 +5046,7 @@ main(void)
                 batch->state.texPitch = 64UL;
                 batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
                 batch->state.tmr[3] = 0L;
-                batch->state.tmr[6] = 0L; batch->state.tmr[7] = 0L;
+                setTU(batch, 0L); setTV(batch, 0L);
                 t->alphactrl = sel[k];
                 t->a0 = 96UL << 15;     /* the fragment's own alpha */
                 t->adx = 0UL; t->ady = 0UL;
@@ -5053,6 +5062,185 @@ main(void)
                "       diffused   92 88 84   92 88 84   92 88 84   92 88 84\n"
                "       fromtex    33 64 96  112 96 80  112 96 80  191 128 64\n"
                "       modulated  32 64 96   62 76 90   62 76 90   92 88 84\n");
+    }
+
+    /*
+     * 78. Does writing the matrix between two primitives re-seed v?
+     *
+     * The one fact the whole atomic-triangle change turns on, and neither the
+     * plan nor the review had measured it.  What WAS measured is that v runs
+     * on across the textured primitives of a batch and that each SUBMISSION
+     * starts afresh -- and a submission carries an idle wait and a DMA setup
+     * as well as the matrix write, so the cause was never isolated.
+     *
+     * Now the encoder writes TMR6/7/8 before every primitive, so one batch
+     * with two primitives answers it.  Both are given the SAME v anchor and
+     * no v gradient in x; the second one sits below the first.
+     *
+     *    re-seeds        both rows read the same texel row
+     *    runs on         the second reads its anchor plus the first's height
+     *
+     * A v gradient per row of one texel makes the two answers differ by
+     * exactly the first primitive's height in texels, which is legible.
+     */
+    {
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        OSMGAHW3DTri *t;
+        unsigned long a, b2;
+        unsigned v;
+
+        printf("\n78. is v re-seeded when the matrix is written per primitive\n");
+        blank();
+        t = setup(64UL, 0UL, 8UL, 4UL, 0L, 0UL);
+        batch->state.tmr[0] = 0L;      /* no u across the row */
+        batch->state.tmr[1] = 0L;
+        batch->state.tmr[2] = 0L;      /* no v across the row either */
+        batch->state.tmr[3] = texel;   /* one texel of v per row */
+        t->tu0 = 2L * texel;           /* a column that is easy to see */
+        t->tv0 = 3L * texel;
+        batch->triCount = 2UL;
+        batch->tri[1] = batch->tri[0];
+        batch->tri[1].y = 8L;          /* four rows of gap below the first */
+        batch->tri[1].tu0 = 2L * texel;
+        batch->tri[1].tv0 = 3L * texel;   /* the SAME anchor as the first */
+        v = fire();
+        a  = pixat(0UL, 2UL);
+        b2 = pixat(8UL, 2UL);
+        printf("   verdict %u   first row %06lx   second primitive %06lx\n",
+               v, a & 0xFFFFFFUL, b2 & 0xFFFFFFUL);
+        printf("   texel row is the high byte: re-seeded -> 03 03,"
+               "  runs on -> 03 07\n");
+        if (v != OSMGA_HW3D_OK) {
+            printf("   FAIL  the two-primitive batch was refused\n");
+            failures++;
+        } else if (((a >> 8) & 0xFFUL) != 3UL) {
+            printf("   FAIL  the first primitive did not read texel row 3\n");
+            failures++;
+        } else if (((b2 >> 8) & 0xFFUL) == 3UL)
+            printf("   RE-SEEDS: the matrix write reloads v.\n"
+                   "             Leave OSMGA_TMR_RESEED unset.\n");
+        else if (((b2 >> 8) & 0xFFUL) == 7UL)
+            printf("   RUNS ON: the accumulator ignores the write.\n"
+                   "            Mesa needs OSMGA_TMR_RESEED=0.\n");
+        else {
+            printf("   FAIL  neither answer: texel row %lu\n",
+                   (b2 >> 8) & 0xFFUL);
+            failures++;
+        }
+    }
+
+    /*
+     * 79. A refused second trapezoid draws nothing at all.
+     *
+     * This is what opens texture-plus-blending, so it is not enough to see
+     * the batch refused and the surface blank: a first trapezoid that could
+     * never have drawn would give exactly that.  The positive control goes
+     * first -- the same first trapezoid, submitted alone, has to change the
+     * pixel.  Only then does the failing pair mean anything.
+     *
+     * The depth region is checked too, because a batch that wrote depth and
+     * not colour would still be a partial draw.
+     */
+    {
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        OSMGAHW3DTri *t;
+        unsigned long alone, paired;
+        unsigned v1, v2;
+
+        printf("\n79. a refused second trapezoid leaves the first undrawn\n");
+
+        blank();
+        t = setup(64UL, 0UL, 8UL, 4UL, texel, 0UL);
+        t->tu0 = 2L * texel;
+        t->tv0 = 3L * texel;
+        v1 = fire();
+        alone = colour[0UL * STRIDE_DW + 2UL];
+        say("the positive control draws", v1, OSMGA_HW3D_OK);
+        if (alone == BLANK) {
+            printf("   FAIL  the control left the pixel blank, so the test"
+                   " below is vacuous\n");
+            failures++;
+        }
+
+        blank();
+        t = setup(64UL, 0UL, 8UL, 4UL, texel, 0UL);
+        t->tu0 = 2L * texel;
+        t->tv0 = 3L * texel;
+        batch->triCount = 2UL;
+        batch->tri[1] = batch->tri[0];
+        batch->tri[1].y = 8L;
+        /* one past the allowance, which the anchor check refuses */
+        batch->tri[1].tu0 = -(long)OSMGA_HW3D_TEX_COORD_MAX - 1L;
+        v2 = fire();
+        paired = colour[0UL * STRIDE_DW + 2UL];
+        if (v2 == OSMGA_HW3D_OK) {
+            printf("   FAIL  the bad second trapezoid was accepted\n");
+            failures++;
+        } else
+            printf("   ok    the pair is refused                          "
+                   "     verdict %u\n", v2);
+        if (paired != BLANK) {
+            printf("   FAIL  the first trapezoid drew anyway: %06lx\n",
+                   paired & 0xFFFFFFUL);
+            failures++;
+        } else
+            printf("   ok    and the first trapezoid drew nothing\n");
+    }
+
+    /*
+     * 80. The threshold: batching must not move the first trapezoid.
+     *
+     * The bias comes from the batch's reach, so putting two trapezoids in one
+     * batch can lower it for BOTH when only the second crosses a ladder edge.
+     * "Their reaches are nearly equal" is not an argument at a discontinuity:
+     * one unit past 2^20 takes the addend from 496 to 480.
+     *
+     * So: a first trapezoid that stays at or below 2^20, submitted alone and
+     * then again beside a second that goes above it.  The first one's pixel
+     * has to read the same texel either way.
+     */
+    {
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        long low = (long)(1UL << 20) - texel / 2L;
+        OSMGAHW3DTri *t;
+        unsigned long alone, batched;
+        unsigned v1, v2;
+
+        printf("\n80. batching a far trapezoid beside a near one\n");
+
+        blank();
+        t = setup(64UL, 0UL, 8UL, 4UL, 0L,
+                  OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV);
+        batch->state.tmr[0] = 0L; batch->state.tmr[3] = 0L;
+        t->tu0 = low;
+        t->tv0 = 0L;
+        v1 = fire();
+        alone = pixat(0UL, 2UL);
+
+        blank();
+        t = setup(64UL, 0UL, 8UL, 4UL, 0L,
+                  OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV);
+        batch->state.tmr[0] = 0L; batch->state.tmr[3] = 0L;
+        t->tu0 = low;
+        t->tv0 = 0L;
+        batch->triCount = 2UL;
+        batch->tri[1] = batch->tri[0];
+        batch->tri[1].y = 8L;
+        batch->tri[1].tu0 = (long)(1UL << 21) + texel;   /* the band above */
+        v2 = fire();
+        batched = pixat(0UL, 2UL);
+
+        printf("   alone verdict %u -> %06lx   batched verdict %u -> %06lx\n",
+               v1, alone & 0xFFFFFFUL, v2, batched & 0xFFFFFFUL);
+        if (v1 != OSMGA_HW3D_OK || v2 != OSMGA_HW3D_OK) {
+            printf("   FAIL  one of the two was refused\n");
+            failures++;
+        } else if (alone != batched) {
+            printf("   FAIL  batching moved the near trapezoid's texel\n");
+            failures++;
+        } else
+            printf("   ok    the near trapezoid reads the same texel"
+                   " either way\n");
     }
 
     printf("\n%s (%d failing)\n",

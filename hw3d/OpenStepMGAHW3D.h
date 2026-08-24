@@ -38,7 +38,7 @@
  * version had to move -- the probe demands an exact match precisely so that
  * a library and a driver disagreeing about where the fields are cannot draw.
  */
-#define OSMGA_HW3D_VERSION      4UL
+#define OSMGA_HW3D_VERSION      5UL
 
 /* The 64 KiB IOMallocLow block is split: the client writes the batch at the
  * start, the kernel builds the command list after it.  28 KiB and 36 KiB
@@ -539,17 +539,20 @@ typedef struct {
      * increment, while mga_storm.c's own comment calls it "sy inc".  The
      * machine settles it in favour of mga_storm.c.
      *
-     * tmr[0..3] are the increments, tmr[6] and tmr[7] the starts.  All six
-     * are bounded, and MAY BE NEGATIVE: what is required is that the
-     * coordinate stays inside the measured range at every pixel, which for a
-     * plane means at each of the four corners.  They were required
-     * non-negative once, which turned away roughly half of all real texture
-     * mapping -- a triangle whose texture runs the other way across the
-     * screen has a negative gradient and is in no way exotic.
+     * tmr[0..3] are the numerators' increments and tmr[4], tmr[5] the
+     * denominator's, which are read only when the batch says perspective and
+     * are nought otherwise.  All of them are bounded, and MAY BE NEGATIVE:
+     * what is required is that the coordinate stays inside the measured range
+     * at every pixel, which for a plane means at each of the four corners.
+     * They were required non-negative once, which turned away roughly half of
+     * all real texture mapping -- a triangle whose texture runs the other way
+     * across the screen has a negative gradient and is in no way exotic.
      *
-     * tmr[4], tmr[5] and tmr[8] are the H family and are IGNORED -- the
-     * kernel writes them, see the note above. */
-    long tmr[9];
+     * The STARTS are not here.  They belong to the trapezoid, not the batch,
+     * and live in OSMGAHW3DTri as tu0, tv0 and tq0; the array shrank from
+     * nine so that anything still reaching for the old index fails the build
+     * rather than reading a gradient as an anchor. */
+    long tmr[6];
 } OSMGAHW3DState;
 
 typedef struct {
@@ -571,6 +574,21 @@ typedef struct {
     unsigned long dr[12];
     unsigned long z0, zdx, zdy;
     unsigned long a0, adx, ady;
+    /*
+     * The texture anchors, which are this trapezoid's and not the batch's.
+     *
+     * The gradients stay in the state because they are the triangle's planes
+     * and every trapezoid cut from it shares them; only the value AT the
+     * anchor moves, because the anchor is the trapezoid's own first row and
+     * that row's left edge.  Holding them here is what lets both trapezoids
+     * of a split triangle go out in one batch, so that a refusal of the
+     * second one draws neither.
+     *
+     * Ignored unless the primitive is textured.  tq0 is ignored again unless
+     * the batch says perspective, and then it is the denominator's anchor and
+     * is held to [Q_MIN, Q_MAX] rather than to the coordinate range.
+     */
+    long tu0, tv0, tq0;
 } OSMGAHW3DTri;
 
 typedef struct {
@@ -615,6 +633,28 @@ typedef struct {
 typedef int OSMGAHW3DFitsCheck[
     (sizeof(OSMGAHW3DBatch) <= OSMGA_HW3D_BATCH_BYTES) ? 1 : -1];
 typedef int OSMGAHW3DWordCheck[(sizeof(unsigned long) == 4) ? 1 : -1];
+
+/*
+ * And the OTHER half of the ring, which the batch's own size says nothing
+ * about.  The encoder writes fixed-size blocks: a few for the state, a run
+ * per primitive, and a short tail.  A batch that fits in its half can still
+ * encode into more command list than there is, and the failure would be a
+ * refused submission at the worst moment rather than a build error.
+ *
+ * The per-primitive count rose by one when the anchors moved here -- the
+ * matrix is now written inside the loop.  Counted from the encoder, with
+ * room to spare rather than exactly.
+ */
+#define OSMGA_HW3D_ENC_BLOCK_DW   5UL   /* index dword + four values */
+#define OSMGA_HW3D_ENC_STATE_BLK  8UL   /* before the loop; 6 today */
+#define OSMGA_HW3D_ENC_TRI_BLK    8UL   /* per primitive; 7 before the move */
+#define OSMGA_HW3D_ENC_TAIL_BLK   4UL   /* after it; 3 today */
+#define OSMGA_HW3D_ENC_DWORDS \
+    (((OSMGA_HW3D_ENC_STATE_BLK + OSMGA_HW3D_ENC_TAIL_BLK) + \
+      OSMGA_HW3D_MAX_TRI * OSMGA_HW3D_ENC_TRI_BLK) * OSMGA_HW3D_ENC_BLOCK_DW)
+typedef int OSMGAHW3DListCheck[
+    ((OSMGA_HW3D_ENC_DWORDS * 4UL) <=
+     (64UL * 1024UL - OSMGA_HW3D_RING_OFFSET)) ? 1 : -1];
 
 /*
  * M1-3a: the capability parameter the Mesa backend probes.

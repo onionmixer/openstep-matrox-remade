@@ -22,6 +22,19 @@
 #include "OpenStepMGAHW3D.h"
 #include "OpenStepMGAMesaTriangle.h"
 
+/*
+ * The texture anchors moved from the batch to the trapezoid, and these
+ * sections were written when they were the batch's.  Writing every entry is
+ * what the old assignment meant: "this coordinate, for whatever this draws".
+ */
+static void setTU(OSMGAHW3DBatch *bp, long v)
+{ unsigned long i_; for (i_ = 0UL; i_ < OSMGA_HW3D_MAX_TRI; i_++) bp->tri[i_].tu0 = v; }
+static void setTV(OSMGAHW3DBatch *bp, long v)
+{ unsigned long i_; for (i_ = 0UL; i_ < OSMGA_HW3D_MAX_TRI; i_++) bp->tri[i_].tv0 = v; }
+static void setTQ(OSMGAHW3DBatch *bp, long v)
+{ unsigned long i_; for (i_ = 0UL; i_ < OSMGA_HW3D_MAX_TRI; i_++) bp->tri[i_].tq0 = v; }
+
+
 extern caddr_t mmap(caddr_t, int, int, int, int, long);
 extern int open(const char *, int, ...);
 
@@ -142,8 +155,10 @@ main(int argc, char **argv)
         batch->state.tmr[1] = tmr[i][1];
         batch->state.tmr[2] = tmr[i][2];
         batch->state.tmr[3] = tmr[i][3];
-        batch->state.tmr[6] = tmr[i][6];
-        batch->state.tmr[7] = tmr[i][7];
+        /* The trapezoid carries its own anchors now, so it goes in before
+         * anything overrides them rather than after. */
+        batch->tri[0] = out[i];
+        batch->tri[0].tq0 = 1L << 16;
         /*
          * One increment at a time, with both starts at zero, so that a term
          * that misbehaves shows up alone instead of inside a sum.
@@ -153,8 +168,8 @@ main(int argc, char **argv)
             batch->state.tmr[2] = (only == 2) ? tmr[i][2] : 0L;
             batch->state.tmr[1] = (only == 3) ? tmr[i][1] : 0L;
             batch->state.tmr[3] = (only == 4) ? tmr[i][3] : 0L;
-            batch->state.tmr[6] = 0L;
-            batch->state.tmr[7] = 0L;
+            batch->tri[0].tu0 = 0L;
+            batch->tri[0].tv0 = 0L;
             /* the row term is negative for u here; give it a positive one so
              * the coordinate stays non-negative */
             if (only == 2) batch->state.tmr[2] = -tmr[i][2];
@@ -165,10 +180,8 @@ main(int argc, char **argv)
              * enough to cover the whole width instead.
              */
             if (only == 3)
-                batch->state.tmr[7] = -tmr[i][1] * (long)DSTW;
+                batch->tri[0].tv0 = -tmr[i][1] * (long)DSTW;
         }
-        batch->state.tmr[8] = 1L << 16;
-        batch->tri[0] = out[i];
         (void)[master setIntValues:&one forParameter:SUBMIT_PARAM
                       objectNumber:objNum count:1];
         (void)[master getIntValues:st forParameter:STATUS_PARAM

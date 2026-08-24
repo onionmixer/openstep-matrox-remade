@@ -386,32 +386,34 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         return;                 /* no area; nothing to draw and no error */
 
     /*
-     * One batch, or one batch each.
+     * One batch.  Textured or not.
      *
-     * tmr[] is batch state and the engine re-seeds the horizontal coordinate
-     * at every primitive's own first-row left edge, so the two trapezoids of
-     * a split textured triangle cannot share a start -- they go out
-     * separately.  Untextured work is unaffected and still goes in one.
+     * A split textured triangle used to go out as two, because the anchors
+     * were batch state and the engine re-seeds the horizontal coordinate at
+     * every primitive's own first-row left edge -- so the two halves could
+     * not share one.  If the second batch was refused the first was already
+     * drawn and the software redraw put the whole triangle down again, which
+     * wrote those pixels twice.
      *
-     * If the second batch is refused the first is already drawn, and the
-     * software redraw below puts the whole triangle down again.  That is only
-     * harmless because blending is refused for textured state: without it,
-     * writing the same pixel twice writes the same value, and with the depth
-     * test on GL_LESS the second write fails its own comparison.
+     * That was harmless only because texturing and blending were never on
+     * together: without blending the second write writes the same value.  The
+     * depth test was also offered as an argument and is not one -- depth is
+     * optional, and a textured triangle drawn without it has no such
+     * protection at all.
+     *
+     * The anchors are per trapezoid now, so both halves go in one batch, the
+     * whole triangle is validated before any of it is drawn, and a refusal
+     * draws nothing.  That is what lets blending join texturing.
      */
     {
-    int nb = texOn ? n : 1;
-    int bi;
-
-    for (bi = 0; bi < nb; bi++) {
-    int cnt = texOn ? 1 : n;
+    int cnt = n;
     int j;
 
     batch->magic = OSMGA_HW3D_MAGIC;
     batch->version = OSMGA_HW3D_VERSION;
     batch->triCount = (unsigned long)cnt;
     for (j = 0; j < cnt; j++)
-        batch->tri[j] = built[texOn ? bi : j];
+        batch->tri[j] = built[j];
     if (texOn) {
         batch->state.texorg = texOrg;
         batch->state.texW = texW;
@@ -449,22 +451,19 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
                    ? OSMGA_HW3D_TEXF_MODULATE : 0UL)
                 | ((to->WrapS == GL_REPEAT) ? OSMGA_HW3D_TEXF_REPEATU : 0UL)
                 | ((to->WrapT == GL_REPEAT) ? OSMGA_HW3D_TEXF_REPEATV : 0UL)
-                | ((tmr[bi][8] != 0L) ? OSMGA_HW3D_TEXF_PERSP : 0UL);
+                | ((tmr[0][8] != 0L) ? OSMGA_HW3D_TEXF_PERSP : 0UL);
         }
-        batch->state.tmr[0] = tmr[bi][0];
-        batch->state.tmr[1] = tmr[bi][1];
-        batch->state.tmr[2] = tmr[bi][2];
-        batch->state.tmr[3] = tmr[bi][3];
         /*
-         * The builder leaves tmr[8] at nought when it solved an affine
-         * triangle and puts the denominator's start there when it solved a
-         * perspective one, so that is what says which this is.
+         * Gradients only.  The anchors are the trapezoid's and the builder
+         * has already put them there; slot eight is the builder's answer to
+         * "was this a perspective solve", not a value.
          */
-        batch->state.tmr[4] = tmr[bi][4];
-        batch->state.tmr[5] = tmr[bi][5];
-        batch->state.tmr[6] = tmr[bi][6];
-        batch->state.tmr[7] = tmr[bi][7];
-        batch->state.tmr[8] = (tmr[bi][8] != 0L) ? tmr[bi][8] : (1L << 16);
+        batch->state.tmr[0] = tmr[0][0];
+        batch->state.tmr[1] = tmr[0][1];
+        batch->state.tmr[2] = tmr[0][2];
+        batch->state.tmr[3] = tmr[0][3];
+        batch->state.tmr[4] = tmr[0][4];
+        batch->state.tmr[5] = tmr[0][5];
     } else {
         batch->state.texorg = 0UL;
         batch->state.texW = batch->state.texH = batch->state.texPitch = 0UL;
@@ -528,7 +527,6 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         if (++hookRefusedRun >= OSMGA_MESA_REFUSAL_LIMIT)
             OSMGAMesaProbeRevoke("the driver kept refusing batches");
         return;
-    }
     }
     }
     hookRefusedRun = 0;
@@ -852,11 +850,19 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
     }
 
     /*
-     * Texturing, when the state is one that can be reproduced.  Blending is
-     * refused alongside it: with blending off the alpha question does not
-     * arise at all, and a trapezoid drawn twice -- which is what a partly
-     * submitted split triangle plus a software redraw amounts to -- writes
-     * the same pixel twice instead of adding to it.
+     * Texturing, when the state is one that can be reproduced.
+     *
+     * Blending is still refused alongside it, and the reason has changed.  It
+     * used to be structural: a split textured triangle went out as two
+     * batches, so a refused second half left the first drawn and the software
+     * redraw wrote those pixels a second time -- harmless only because
+     * without blending the second write writes the same value.
+     *
+     * The anchors are per trapezoid now and the whole triangle goes in one
+     * batch, so a refusal draws nothing.  What is left before this opens is
+     * evidence, not structure: probe section 79 has to show that a refused
+     * second trapezoid left the first one's pixels AND its depth untouched,
+     * with a positive control proving the first trapezoid could have drawn.
      */
     if ((ctx->RasterMask & (GLuint)TEXTURE_BIT) != 0) {
         if ((ctx->RasterMask & (GLuint)BLEND_BIT) != 0)

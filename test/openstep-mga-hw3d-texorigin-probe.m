@@ -30,6 +30,19 @@
 #include <mach/mach.h>
 #include "OpenStepMGAHW3D.h"
 
+/*
+ * The texture anchors moved from the batch to the trapezoid, and these
+ * sections were written when they were the batch's.  Writing every entry is
+ * what the old assignment meant: "this coordinate, for whatever this draws".
+ */
+static void setTU(OSMGAHW3DBatch *bp, long v)
+{ unsigned long i_; for (i_ = 0UL; i_ < OSMGA_HW3D_MAX_TRI; i_++) bp->tri[i_].tu0 = v; }
+static void setTV(OSMGAHW3DBatch *bp, long v)
+{ unsigned long i_; for (i_ = 0UL; i_ < OSMGA_HW3D_MAX_TRI; i_++) bp->tri[i_].tv0 = v; }
+static void setTQ(OSMGAHW3DBatch *bp, long v)
+{ unsigned long i_; for (i_ = 0UL; i_ < OSMGA_HW3D_MAX_TRI; i_++) bp->tri[i_].tq0 = v; }
+
+
 extern caddr_t mmap(caddr_t, int, int, int, int, long);
 extern int open(const char *, int, ...);
 
@@ -125,10 +138,10 @@ main(void)
         batch->state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
         batch->state.tmr[0] = (long)step;
         batch->state.tmr[3] = (long)step;
-        batch->state.tmr[8] = 1L << 16;
 
         t = &batch->tri[0];
         memset(t, 0, sizeof *t);
+        t->tq0 = 1L << 16;   /* after the clear, or it is wiped */
         t->dwgctl = DWG_TEX;
         t->alphactrl = 0x00000101UL;
         t->y = 0L;

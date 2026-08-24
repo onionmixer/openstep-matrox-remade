@@ -7129,19 +7129,6 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                  MGA_TMR0 + 20UL,
                  ((b->state.texFlags & OSMGA_HW3D_TEXF_PERSP) != 0UL)
                      ? (unsigned long)b->state.tmr[5] : 0UL);
-        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
-                 /*
-                  * The start the caller meant, less what the engine will add
-                  * back to it.  See osmgaHW3DTexBias above.
-                  */
-                 MGA_TMR0 + 24UL,
-                 (unsigned long)(b->state.tmr[6] - biasU),
-                 MGA_TMR0 + 28UL,
-                 (unsigned long)(b->state.tmr[7] - biasV),
-                 MGA_TMR8,
-                 ((b->state.texFlags & OSMGA_HW3D_TEXF_PERSP) != 0UL)
-                     ? (unsigned long)b->state.tmr[8] : (1UL << 16),
-                 MGA_DMAPAD,      0UL);
     }
 
     for (i = 0UL; ok && i < b->triCount; i++) {
@@ -7185,6 +7172,34 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
         ok = ok && osmgaDmaBlock(list, listDwords, &pos,
                                  MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
                                  MGA_FXBNDRY, t->fxbndry,
+                                 MGA_DMAPAD, 0UL);
+
+        /*
+         * This trapezoid's own texture anchors, and they must land BEFORE its
+         * execute -- which is why FXBNDRY no longer shares a block with
+         * YDSTLEN and the trap moved down a block.
+         *
+         * The anchors are the trapezoid's because a triangle cut in two gives
+         * its halves different first rows, and the engine re-seeds u at each
+         * primitive's own first-row left edge.  Holding them in the batch
+         * meant one submission per half, and a refused second half left the
+         * first already drawn.
+         *
+         * Less what the engine will add back, per axis.  See
+         * osmgaHW3DTexBias above.
+         */
+        if ((dwg & 0xFUL) == OSMGA_HW3D_OPCODE_TEX)
+            ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                     MGA_TMR0 + 24UL, (unsigned long)(t->tu0 - biasU),
+                     MGA_TMR0 + 28UL, (unsigned long)(t->tv0 - biasV),
+                     MGA_TMR8,
+                     ((b->state.texFlags & OSMGA_HW3D_TEXF_PERSP) != 0UL)
+                         ? (unsigned long)t->tq0 : (1UL << 16),
+                     MGA_DMAPAD, 0UL);
+
+        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                                 MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                                 MGA_DMAPAD, 0UL,
                                  MGA_YDSTLEN + MGA_EXEC,
                                  (((unsigned long)t->y) << 16) |
                                  ((unsigned long)t->h));

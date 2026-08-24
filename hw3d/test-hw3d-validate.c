@@ -22,6 +22,18 @@ static OSMGAHW3DLimits lim;
 static OSMGAHW3DBatch b;
 static int failures;
 
+/*
+ * The anchors are the trapezoid's now, and these cases were written when they
+ * were the batch's.  Setting every entry is what the old assignment meant:
+ * "this coordinate, for whatever this case draws".
+ */
+static void setU(long v)
+{ unsigned long i; for (i = 0UL; i < OSMGA_HW3D_MAX_TRI; i++) b.tri[i].tu0 = v; }
+static void setV(long v)
+{ unsigned long i; for (i = 0UL; i < OSMGA_HW3D_MAX_TRI; i++) b.tri[i].tv0 = v; }
+static void setQ(long v)
+{ unsigned long i; for (i = 0UL; i < OSMGA_HW3D_MAX_TRI; i++) b.tri[i].tq0 = v; }
+
 static void
 reset(void)
 {
@@ -38,9 +50,11 @@ reset(void)
     b.state.zorg = lim.depthStart;
     b.state.texorg = lim.texStart;
     b.state.texW = 64; b.state.texH = 64; b.state.texPitch = 64;
+    setQ(OSMGA_HW3D_Q_ONE);
     b.state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
     b.state.tmr[0] = 0x4000; b.state.tmr[3] = 0x4000;   /* identity, 64 wide */
     b.state.texW = 64; b.state.texH = 64; b.state.texPitch = 64;
+    setQ(OSMGA_HW3D_Q_ONE);
     b.state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
     b.state.tmr[0] = 0x4000; b.state.tmr[3] = 0x4000;   /* identity, 64 wide */
     b.tri[0].dwgctl = 0x0004UL | 0x0070UL;  /* TRAP | atype I, masked form */
@@ -255,17 +269,17 @@ main(void)
          * places that had to change.
          */
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
-                 b.state.tmr[6] = -1;           expect("a u start just below nought", OSMGA_HW3D_OK);
+                 setU(-1);           expect("a u start just below nought", OSMGA_HW3D_OK);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
-                 b.state.tmr[7] = -1;           expect("a v start just below nought", OSMGA_HW3D_OK);
+                 setV(-1);           expect("a v start just below nought", OSMGA_HW3D_OK);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
-                 b.state.tmr[6] = -1048576L;    expect("a u start at the allowance", OSMGA_HW3D_OK);
+                 setU(-1048576L);    expect("a u start at the allowance", OSMGA_HW3D_OK);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
-                 b.state.tmr[7] = -1048576L;    expect("a v start at the allowance", OSMGA_HW3D_OK);
+                 setV(-1048576L);    expect("a v start at the allowance", OSMGA_HW3D_OK);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
-                 b.state.tmr[6] = -1048577L;    expect("a u start one past it", OSMGA_HW3D_E_TEXCOORD);
+                 setU(-1048577L);    expect("a u start one past it", OSMGA_HW3D_E_TEXCOORD);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
-                 b.state.tmr[7] = -1048577L;    expect("a v start one past it", OSMGA_HW3D_E_TEXCOORD);
+                 setV(-1048577L);    expect("a v start one past it", OSMGA_HW3D_E_TEXCOORD);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                  b.state.tmr[0] = -span * 2L;   expect("a negative u increment that leaves the allowance", OSMGA_HW3D_E_TEXCOORD);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
@@ -274,13 +288,13 @@ main(void)
          * the clip, so a start at the whole budget only fits when the
          * increments are zero. */
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
-                 b.state.tmr[0] = 0; b.state.tmr[6] = full;
+                 b.state.tmr[0] = 0; setU(full);
                                                 expect("a start at the whole budget, no increment", OSMGA_HW3D_OK);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
-                 b.state.tmr[0] = 0; b.state.tmr[6] = full + 1;
+                 b.state.tmr[0] = 0; setU(full + 1);
                                                 expect("a start one past it", OSMGA_HW3D_E_TEXCOORD);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
-                 b.state.tmr[6] = full;         expect("that start with the identity increment no longer fits", OSMGA_HW3D_E_TEXCOORD);
+                 setU(full);         expect("that start with the identity increment no longer fits", OSMGA_HW3D_E_TEXCOORD);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                  b.state.tmr[0] = full;         expect("an increment that overshoots across the clip", OSMGA_HW3D_E_TEXCOORD);
         /* The y span is the PRIMITIVE's height now, not the clip's, so a y
@@ -344,9 +358,9 @@ main(void)
                  b.state.tmr[2] = full / 3L;
                                                 expect("dt/dx spends its budget on the width", OSMGA_HW3D_OK);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
-                 b.state.tmr[4] = -1; b.state.tmr[8] = -1;
+                 b.state.tmr[4] = -1; setQ(-1);
                                                 expect("the H family is ignored, not refused", OSMGA_HW3D_OK);
-        reset(); b.state.tmr[6] = -1;           expect("a bad coordinate, but nothing is textured", OSMGA_HW3D_OK);
+        reset(); setU(-1);           expect("a bad coordinate, but nothing is textured", OSMGA_HW3D_OK);
 
         /*
          * The reach is the primitive's own, not the surface's.
@@ -443,7 +457,7 @@ main(void)
                          b.tri[0].ar0 = 32; b.tri[0].ar2 = -32; b.tri[0].ar1 = -1;
                          b.tri[0].sgn = 0x2;
                          b.state.tmr[0] = ident;
-                         b.state.tmr[6] = ident * 31L;   /* enough to cover the
+                         setU(ident * 31L);   /* enough to cover the
                                                           * whole excursion */
                                                 expect("the same edge with a start that covers it", OSMGA_HW3D_OK);
                 reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
@@ -452,7 +466,7 @@ main(void)
                          b.tri[0].ar0 = 32; b.tri[0].ar2 = -32; b.tri[0].ar1 = -1;
                          b.tri[0].sgn = 0x2;
                          b.state.tmr[0] = ident;
-                         b.state.tmr[6] = ident * 31L - allow;
+                         setU(ident * 31L - allow);
                                                 expect("a start that leaves it exactly at the allowance", OSMGA_HW3D_OK);
                 reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                          b.tri[0].fxbndry = (48UL << 16) | 40UL;
@@ -460,7 +474,7 @@ main(void)
                          b.tri[0].ar0 = 32; b.tri[0].ar2 = -32; b.tri[0].ar1 = -1;
                          b.tri[0].sgn = 0x2;
                          b.state.tmr[0] = ident;
-                         b.state.tmr[6] = ident * 31L - allow - 1L;
+                         setU(ident * 31L - allow - 1L);
                                                 expect("one unit past it", OSMGA_HW3D_E_TEXCOORD);
             }
 
@@ -590,7 +604,7 @@ main(void)
                 b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                 b.tri[1] = b.tri[0];
                 b.tri[1].y = -1;                    /* malformed triangle 1 */
-                b.state.tmr[6] = -1;                /* and a bad coordinate */
+                setU(-1);                /* and a bad coordinate */
                 v = osmgaHW3DValidate(&b, &lim, &which);
                 if (v == OSMGA_HW3D_E_TRIROW && which == 1UL)
                     printf("  ok    %-46s %d/%lu\n",
@@ -606,7 +620,7 @@ main(void)
                 b.triCount = 2;
                 b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                 b.tri[1] = b.tri[0];
-                b.state.tmr[6] = -1048577L; /* one past the allowance */
+                setU(-1048577L); /* one past the allowance */
                 which = 0xDEADUL;
                 v = osmgaHW3DValidate(&b, &lim, &which);
                 if (v == OSMGA_HW3D_E_TEXCOORD && which == 0UL)
@@ -901,15 +915,15 @@ main(void)
      * pixel, and the plane's extremes are its four corners.
      */
     reset(); b.tri[0].dwgctl |= 0x0002UL;    /* textured */
- b.state.tmr[6] = (long)lim.clipX1 * (1L << 14);
+ setU((long)lim.clipX1 * (1L << 14));
  b.state.tmr[0] = -(1L << 14);
                                                 expect("a texture running right to left", OSMGA_HW3D_OK);
     reset(); b.tri[0].dwgctl |= 0x0002UL;
- b.state.tmr[6] = (long)lim.clipX1 * (1L << 14) - 1048577L;
+ setU((long)lim.clipX1 * (1L << 14) - 1048577L);
  b.state.tmr[0] = -(1L << 14);
                                                 expect("short enough that a corner leaves the allowance", OSMGA_HW3D_E_TEXCOORD);
     reset(); b.tri[0].dwgctl |= 0x0002UL;
- b.state.tmr[6] = (long)OSMGA_HW3D_TEX_COORD_MAX;
+ setU((long)OSMGA_HW3D_TEX_COORD_MAX);
  b.state.tmr[0] = 1L;
                                                 expect("starting at the top and still rising", OSMGA_HW3D_E_TEXCOORD);
 

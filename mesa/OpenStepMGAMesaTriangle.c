@@ -571,8 +571,14 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
         tmr[1] = osmgaRound(uplane->dy);
         tmr[2] = osmgaRound(vplane->dx);
         tmr[3] = osmgaRound(vplane->dy);
-        tmr[6] = osmgaRound(uplane->at_a + uplane->dx * ox + uplane->dy * oy);
-        tmr[7] = osmgaRound(vplane->at_a + vplane->dx * ox + vplane->dy * oy);
+        /*
+         * The anchors go on the TRAPEZOID, not in the shared matrix.  Both
+         * halves of a split triangle carry the same gradients and their own
+         * first row, so this is the only part that differs -- and holding it
+         * here is what lets them go out in one batch.
+         */
+        t->tu0 = osmgaRound(uplane->at_a + uplane->dx * ox + uplane->dy * oy);
+        t->tv0 = osmgaRound(vplane->at_a + vplane->dx * ox + vplane->dy * oy);
         /*
          * The denominator at the same anchor, in the same fixed point the
          * engine reads it in.  Nought here is what tells the caller this was
@@ -581,10 +587,20 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
         if (qplane != 0 && qplane->at_a != 0.0) {
             tmr[4] = osmgaRound(qplane->dx);
             tmr[5] = osmgaRound(qplane->dy);
-            tmr[8] = osmgaRound(qplane->at_a + qplane->dx * ox
+            t->tq0 = osmgaRound(qplane->at_a + qplane->dx * ox
                                 + qplane->dy * oy);
+            /*
+             * Slot eight is now the ANSWER, not a value: whether this was a
+             * perspective solve.  It used to be the anchor, and the caller
+             * read "anchor is not nought" as "perspective" -- which is a
+             * rounded number standing in for a decision, and a q that rounded
+             * to nought would have turned one trapezoid of a triangle affine
+             * while its other half stayed projective.
+             */
+            tmr[8] = 1L;
         } else {
             tmr[4] = tmr[5] = tmr[8] = 0L;
+            t->tq0 = OSMGA_HW3D_Q_ONE;
         }
         if (tmr[8] != 0L && getenv("OSMGA_TMR_DUMP") != 0) {
             /*
@@ -603,7 +619,7 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
                     (unsigned long)t->sgn);
             fprintf(stderr,
                     "#   int u %ld %ld %ld   real u %.4f %.4f %.4f\n",
-                    tmr[6], tmr[0], tmr[1],
+                    t->tu0, tmr[0], tmr[1],
                     uplane->at_a + uplane->dx * ox + uplane->dy * oy,
                     uplane->dx, uplane->dy);
             /*
@@ -613,7 +629,7 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
              */
             fprintf(stderr,
                     "#   int v %ld %ld %ld   q %ld %ld %ld\n",
-                    tmr[7], tmr[2], tmr[3], tmr[8], tmr[4], tmr[5]);
+                    t->tv0, tmr[2], tmr[3], t->tq0, tmr[4], tmr[5]);
         }
     }
 
@@ -1091,6 +1107,38 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
                            (tex != 0) ? &qplane : (const OSMGAColourPlane *)0,
                            (tex != 0 && tmrOut != 0) ? tmrOut[n] : (long *)0);
             n++;
+        }
+    }
+    /*
+     * The second trapezoid's vertical anchors, if the accumulator does not
+     * re-seed.
+     *
+     * u re-seeds at every primitive and needs nothing.  v and q were measured
+     * to run on across the textured primitives of a batch -- which never
+     * mattered while each trapezoid was its own batch, and matters now.  If
+     * the engine keeps counting, the second trapezoid's row index starts at
+     * the first one's height rather than at nought, so its anchor has to have
+     * that much taken off in advance.
+     *
+     * WHETHER THE MATRIX WRITE RE-SEEDS IS NOT MEASURED -- see the note in
+     * the validator.  Default is that it does, which is no compensation at
+     * all; the switch buys the other hypothesis without another kernel.
+     */
+    if (n == 2 && tex != 0) {
+        static int reseedKnown = 0, reseed = 1;
+
+        if (!reseedKnown) {
+            const char *e = getenv("OSMGA_TMR_RESEED");
+
+            reseed = (e == 0 || *e != '0');
+            reseedKnown = 1;
+        }
+        if (!reseed) {
+            long s0 = out[0].h;
+
+            out[1].tv0 -= tmrOut[1][3] * s0;
+            if (tmrOut[1][8] != 0L)
+                out[1].tq0 -= tmrOut[1][5] * s0;
         }
     }
     return n;

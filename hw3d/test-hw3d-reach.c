@@ -61,10 +61,10 @@ oracle(const OSMGAHW3DTri *t, long *uOut, long *vOut, int *any)
         }
         if (lx >= rx)
             continue;
-        ua = b.state.tmr[6] + b.state.tmr[0] * (lx - lx0)
+        ua = t->tu0 + b.state.tmr[0] * (lx - lx0)
              + b.state.tmr[1] * row;
         ub = ua + b.state.tmr[0] * (rx - 1L - lx);
-        va = b.state.tmr[7] + b.state.tmr[2] * (lx - lx0)
+        va = t->tv0 + b.state.tmr[2] * (lx - lx0)
              + b.state.tmr[3] * row;
         vb = va + b.state.tmr[2] * (rx - 1L - lx);
         if (ua < 0L) ua = -ua;
@@ -103,10 +103,10 @@ signedOracle(const OSMGAHW3DTri *t, long *uOut, long *vOut)
         }
         if (lx >= rx)
             continue;
-        ua = b.state.tmr[6] + b.state.tmr[0] * (lx - lx0)
+        ua = t->tu0 + b.state.tmr[0] * (lx - lx0)
              + b.state.tmr[1] * row;
         ub = ua + b.state.tmr[0] * (rx - 1L - lx);
-        va = b.state.tmr[7] + b.state.tmr[2] * (lx - lx0)
+        va = t->tv0 + b.state.tmr[2] * (lx - lx0)
              + b.state.tmr[3] * row;
         vb = va + b.state.tmr[2] * (rx - 1L - lx);
         if (ua > *uOut) *uOut = ua;
@@ -191,8 +191,8 @@ main(void)
          * never goes near one would pass on a reach that is merely close.
          */
         band = (long)(1UL << (19U + (unsigned)rnd(4UL)));
-        b.state.tmr[6] = band - (long)rnd(4096UL) + (long)rnd(2048UL);
-        b.state.tmr[7] = band - (long)rnd(4096UL) + (long)rnd(2048UL);
+        b.tri[0].tu0 = band - (long)rnd(4096UL) + (long)rnd(2048UL);
+        b.tri[0].tv0 = band - (long)rnd(4096UL) + (long)rnd(2048UL);
         /*
          * A third of them are pushed below nought instead of being clamped to
          * it.  The clamp was hiding the whole question this file now has to
@@ -202,8 +202,8 @@ main(void)
          * non-negative such a batch could not occur.
          */
         if ((trial % 3UL) == 0UL) {
-            b.state.tmr[6] = -(long)rnd(4096UL);
-            b.state.tmr[7] = -(long)rnd(4096UL);
+            b.tri[0].tu0 = -(long)rnd(4096UL);
+            b.tri[0].tv0 = -(long)rnd(4096UL);
             /*
              * And with no gradient for half of those, so the numerators stay
              * negative at every pixel.  With a gradient they climb back above
@@ -216,8 +216,8 @@ main(void)
                 b.state.tmr[2] = 0L; b.state.tmr[3] = 0L;
             }
         } else {
-            if (b.state.tmr[6] < 0L) b.state.tmr[6] = 0L;
-            if (b.state.tmr[7] < 0L) b.state.tmr[7] = 0L;
+            if (b.tri[0].tu0 < 0L) b.tri[0].tu0 = 0L;
+            if (b.tri[0].tv0 < 0L) b.tri[0].tv0 = 0L;
         }
 
         /*
@@ -231,8 +231,8 @@ main(void)
          */
         if ((trial & 1UL) != 0UL) {
             b.state.texFlags |= OSMGA_HW3D_TEXF_PERSP;
-            b.state.tmr[8] = (long)(OSMGA_HW3D_Q_ONE
-                                    + (long)rnd(1UL << 20));
+            b.tri[0].tq0 = (long)(OSMGA_HW3D_Q_ONE
+                                  + (long)rnd(1UL << 20));
             b.state.tmr[4] = (long)rnd(4096UL) - 2048L;
             b.state.tmr[5] = (long)rnd(4096UL) - 2048L;
         }

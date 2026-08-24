@@ -98,7 +98,6 @@ one(const char *name, double ax, double ay, double as, double at,
             batch.state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
             batch.state.tmr[0] = tmr[i][0]; batch.state.tmr[1] = tmr[i][1];
             batch.state.tmr[2] = tmr[i][2]; batch.state.tmr[3] = tmr[i][3];
-            batch.state.tmr[6] = tmr[i][6]; batch.state.tmr[7] = tmr[i][7];
             batch.tri[0] = out[i];
             badTri = 0UL;
             v = osmgaHW3DValidate(&batch, &lim, &badTri);

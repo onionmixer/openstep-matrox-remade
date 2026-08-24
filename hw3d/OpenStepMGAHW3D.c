@@ -76,11 +76,13 @@ osmgaHW3DRatioOK(long p, long q, long roomHi)
 
 /* the denominator plane at an offset from the primitive's anchor */
 static long
-osmgaHW3DQAt(const OSMGAHW3DBatch *b, int persp, long dx, long dy)
+osmgaHW3DQAt(const OSMGAHW3DBatch *b, const OSMGAHW3DTri *t,
+             int persp, long dx, long dy)
 {
     if (!persp)
         return OSMGA_HW3D_Q_ONE;
-    return b->state.tmr[8] + b->state.tmr[4] * dx + b->state.tmr[5] * dy;
+    /* The anchor is the trapezoid's; the slopes are the triangle's. */
+    return t->tq0 + b->state.tmr[4] * dx + b->state.tmr[5] * dy;
 }
 
 
@@ -170,13 +172,25 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
      *      texel.  So u's vertical reach is one primitive's height and v's is
      *      the batch's total, and they are checked with different spans.
      *
-     * Each batch writes TMR6 and TMR7 once, before its primitives, so the
-     * accumulator starts afresh every submission -- read in the encoder and
-     * then measured, twice through the same batch.
+     * A batch USED to write TMR6 and TMR7 once, before its primitives, and
+     * the accumulator was seen to start afresh every submission -- read in
+     * the encoder and then measured, twice through the same batch.  It no
+     * longer does: the anchors are the trapezoid's now, so the matrix is
+     * written again before each one.
+     *
+     * WHETHER THAT RE-SEEDS v IS NOT MEASURED.  What was measured is that a
+     * submission starts afresh, and a submission carries an idle wait and a
+     * DMA setup as well as the matrix write, so the cause was never isolated.
+     * The accumulating model is kept because its error has a known direction:
+     * if the write does re-seed, this bounds a LARGER row index than the
+     * hardware uses, which refuses more than it must and takes a smaller
+     * addend off -- both safe.  Dropping it when the truth is accumulation is
+     * the under-check.  Probe section 78 settles it.
      */
     unsigned long texSpanLo = 0UL, texSpanHi = 0UL, texSpanY = 0UL;
     unsigned long texMaxH = 0UL;
     int texDrawn = 0, texBad = 0;
+    unsigned long texBadTri = 0UL;   /* which trapezoid set it */
 
     if (reach != 0) {
         reach->uMax = 0L;
@@ -280,23 +294,6 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
             return OSMGA_HW3D_E_TEXSIZE;
         if (b->state.texFormat != OSMGA_HW3D_TEXFMT_TW32)
             return OSMGA_HW3D_E_TEXSIZE;
-        /*
-         * The starts, BEFORE anything is evaluated with them.
-         *
-         * They used to be held to the range after the primitive loop, on the
-         * grounds that they bound the arithmetic whether or not a pixel
-         * samples them.  That is true of what they bound and false of when:
-         * every coordinate the loop forms is the start plus two bounded
-         * products, so a start near the end of a long overflows inside the
-         * loop and is only rejected afterwards, by which time the value that
-         * was checked is the wrapped one.  A long is four bytes here, which
-         * the build asserts, so this is not hypothetical.
-         */
-        if (b->state.tmr[6] < -(long)OSMGA_HW3D_TEX_COORD_MAX ||
-            b->state.tmr[6] > (long)OSMGA_HW3D_TEX_COORD_MAX ||
-            b->state.tmr[7] < -(long)OSMGA_HW3D_TEX_COORD_MAX ||
-            b->state.tmr[7] > (long)OSMGA_HW3D_TEX_COORD_MAX)
-            return OSMGA_HW3D_E_TEXCOORD;
         /*
          * The diagnostic minification selector, and what it costs.
          *
@@ -556,6 +553,36 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                              & OSMGA_HW3D_TEXF_PERSP) != 0UL;
 
                 /*
+                 * The anchors, BEFORE anything is evaluated with them.
+                 *
+                 * They used to be held to the range after the primitive loop,
+                 * on the grounds that they bound the arithmetic whether or not
+                 * a pixel samples them.  That is true of what they bound and
+                 * false of when: every coordinate below is the anchor plus two
+                 * bounded products, so an anchor near the end of a long
+                 * overflows inside the walk and would only be rejected
+                 * afterwards, by which time the value that was checked is the
+                 * wrapped one.  A long is four bytes here, which the build
+                 * asserts, so this is not hypothetical.
+                 *
+                 * Now that the anchors are the trapezoid's, the check comes
+                 * with them: it is the first thing this block does, ahead of
+                 * the gradient bounds and far ahead of the walk.  The
+                 * denominator's anchor is NOT checked here -- it is held to
+                 * [Q_MIN, Q_MAX] below, which is a different range, and
+                 * folding the two would admit a q the divider has never been
+                 * looked at over.
+                 */
+                if (t->tu0 < -(long)OSMGA_HW3D_TEX_COORD_MAX ||
+                    t->tu0 > (long)OSMGA_HW3D_TEX_COORD_MAX ||
+                    t->tv0 < -(long)OSMGA_HW3D_TEX_COORD_MAX ||
+                    t->tv0 > (long)OSMGA_HW3D_TEX_COORD_MAX) {
+                    if (badTri != 0)
+                        *badTri = i;
+                    return OSMGA_HW3D_E_TEXCOORD;
+                }
+
+                /*
                  * The denominator plane's own bounds, before it is evaluated
                  * anywhere: the anchor inside the range the divider has been
                  * looked at over, and the two slopes small enough that
@@ -594,11 +621,21 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                     mrow = (long)texSpanY + t->h;
                     if (mdx < 1L) mdx = 1L;
                     if (mrow < 1L) mrow = 1L;
-                    if (b->state.tmr[8] < OSMGA_HW3D_Q_MIN ||
-                        b->state.tmr[8] > OSMGA_HW3D_Q_MAX ||
+                    /*
+                     * Refused here and not deferred.  Setting the flag and
+                     * carrying on fell through to the walk, which calls the q
+                     * evaluator with the very slopes this just found too
+                     * large -- the check would have been made and then the
+                     * overflow taken anyway.
+                     */
+                    if (t->tq0 < OSMGA_HW3D_Q_MIN ||
+                        t->tq0 > OSMGA_HW3D_Q_MAX ||
                         a4 > budget / mdx ||
-                        a5 > budget / mrow)
-                        texBad = 1;
+                        a5 > budget / mrow) {
+                        if (badTri != 0)
+                            *badTri = i;
+                        return OSMGA_HW3D_E_TEXCOORD;
+                    }
                 }
 
                 /*
@@ -618,7 +655,7 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                                  b->state.tmr[1] < -(room / ey))) ||
                     (vy > 0L && (b->state.tmr[3] > room / vy ||
                                  b->state.tmr[3] < -(room / vy))))
-                    texBad = 1;
+                    { texBad = 1; texBadTri = i; }
                 else {
                     long ux, vx2, ly, ry, qa, qb;
                     int boxOK = 1;
@@ -636,9 +673,9 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                         long dx = (k & 1L) ? (bx1 - lx0) : (bx0 - lx0);
                         long dy = (k & 2L) ? ey : 0L;
 
-                        ux  = b->state.tmr[6] + b->state.tmr[0] * dx
+                        ux  = t->tu0 + b->state.tmr[0] * dx
                               + b->state.tmr[1] * dy;
-                        vx2 = b->state.tmr[7] + b->state.tmr[2] * dx
+                        vx2 = t->tv0 + b->state.tmr[2] * dx
                               + b->state.tmr[3] * (texSpanY + dy);
                         /*
                          * The denominator's row index is the accumulated
@@ -648,7 +685,7 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                          * the near one's rows left behind rather than what
                          * its own screen position would give.
                          */
-                        qa = osmgaHW3DQAt(b, persp, dx,
+                        qa = osmgaHW3DQAt(b, t, persp, dx,
                                           (long)texSpanY + dy);
                         if (!osmgaHW3DRatioOK(ux, qa, roomHi) ||
                             !osmgaHW3DRatioOK(vx2, qa, roomHi))
@@ -689,9 +726,9 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                                                 lsgn, rsgn, lim->clipX1);
                         if (lx >= rx)
                             continue;           /* no pixel on this row */
-                        ux  = b->state.tmr[6] + b->state.tmr[0] * (lx - lx0)
+                        ux  = t->tu0 + b->state.tmr[0] * (lx - lx0)
                               + b->state.tmr[1] * row;
-                        vx2 = b->state.tmr[7] + b->state.tmr[2] * (lx - lx0)
+                        vx2 = t->tv0 + b->state.tmr[2] * (lx - lx0)
                               + b->state.tmr[3] * (texSpanY + row);
                         ly = ux + b->state.tmr[0] * (rx - 1L - lx);
                         ry = vx2 + b->state.tmr[2] * (rx - 1L - lx);
@@ -702,15 +739,15 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                          * it checked only that one, so it was checking a
                          * denominator the engine does not use.
                          */
-                        qa = osmgaHW3DQAt(b, persp, lx - lx0,
+                        qa = osmgaHW3DQAt(b, t, persp, lx - lx0,
                                           (long)texSpanY + row);
-                        qb = osmgaHW3DQAt(b, persp, rx - 1L - lx0,
+                        qb = osmgaHW3DQAt(b, t, persp, rx - 1L - lx0,
                                           (long)texSpanY + row);
                         if (!osmgaHW3DRatioOK(ux,  qa, roomHi) ||
                             !osmgaHW3DRatioOK(vx2, qa, roomHi) ||
                             !osmgaHW3DRatioOK(ly,  qb, roomHi) ||
                             !osmgaHW3DRatioOK(ry,  qb, roomHi))
-                            texBad = 1;
+                            { texBad = 1; texBadTri = i; }
                         /*
                          * And how far it reaches, from the same four values:
                          * the coordinate is linear along a row, so a row's
@@ -857,7 +894,7 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
         (void)spanLo; (void)spanHi; (void)spanUY; (void)spanY;
         if (texBad) {
             if (badTri != 0)
-                *badTri = 0UL;
+                *badTri = texBadTri;
             return OSMGA_HW3D_E_TEXCOORD;
         }
     }
