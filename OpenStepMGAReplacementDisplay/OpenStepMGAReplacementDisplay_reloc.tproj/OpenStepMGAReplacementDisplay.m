@@ -1376,27 +1376,90 @@ osmgaDevNotSupported(void)
 }
 
 static int
+/*
+ * M1-4EF -- how many clients there are, and whether the kernel tells us when
+ * one goes away.  COUNTING ONLY; nothing is refused that was not refused
+ * before.
+ *
+ * There is no per-client state anywhere in this device: open takes a device
+ * number and two flags, close ignores everything, and the submit ioctl gets
+ * (dev, cmd, data, flag).  None of them is told who is asking.  So two
+ * accelerated processes share one batch buffer and one video-memory surface
+ * with nothing arbitrating between them -- each writes its triangles where
+ * the other writes its own, and either may submit while the other is halfway
+ * through filling it.  Neither is told.
+ *
+ * The obvious answer is to let only one client in at a time.  That answer
+ * rests on close being called when a client goes away, ESPECIALLY when it is
+ * killed rather than exiting, and NOTHING IN THIS TREE ESTABLISHES THAT --
+ * the disassembly in S4A_VRAM_MMAP_PLAN covers mmap and the VM object, not
+ * the close path.  An exclusive open that is never released would cost more
+ * than the problem it fixes: today a crashed client costs nothing, and then
+ * it would cost acceleration until the machine was rebooted.
+ *
+ * So this boot counts instead of deciding.  After it, one client run
+ * normally, one killed, and one that forks answer the question, and the
+ * exclusion is written against a measured fact rather than a hopeful one.
+ *
+ * What it will NOT settle, recorded here so the answer is not mistaken for a
+ * bigger one: an exclusive fd is not an exclusive mapping.  This tree already
+ * records that closing does not remove a mapping already made
+ * (S4A_VRAM_MMAP_PLAN 7-2), so a client that closed and kept its pointer
+ * would still be there.  Ours does not do that, and a killed client's address
+ * space goes with it -- but the gap is real and it is not closed by counting
+ * or by excluding.
+ */
+static unsigned long osmgaDevOpens;
+static unsigned long osmgaDevCloses;
+
+static int
 osmgaDevOpen(int dev, int flag, int devtype)
 {
     (void)flag;
     (void)devtype;
-    /* open() is an ordinary syscall context; a log here is safe and tells us
-     * whether our cdevsw slot is actually the one being reached. */
-    IOLog("OpenStepMGA S4a: open dev=%04x minor=%d registered=%d\n",
-          dev & 0xFFFF, OSMGA_DEV_MINOR(dev), osmgaMmapRegistered);
-    if (OSMGA_DEV_MINOR(dev) != 0)
+    /*
+     * A refused open still says so.  The log used to come first precisely
+     * because it tells us whether our cdevsw slot is the one being reached,
+     * and moving it after the guards would have thrown that away for exactly
+     * the case where it matters -- but a refused open has no close to match
+     * it, so it must not be counted.
+     */
+    if (OSMGA_DEV_MINOR(dev) != 0 || !osmgaMmapRegistered) {
+        IOLog("OpenStepMGA S4a: open REFUSED dev=%04x minor=%d "
+              "registered=%d\n",
+              dev & 0xFFFF, OSMGA_DEV_MINOR(dev), osmgaMmapRegistered);
         return ENXIO;
-    if (!osmgaMmapRegistered)
-        return ENXIO;
+    }
+    osmgaDevOpens++;
+    /* open() is an ordinary syscall context; a log here is safe. */
+    IOLog("OpenStepMGA S4a: open dev=%04x minor=%d registered=%d "
+          "(opens=%lu closes=%lu outstanding=%lu)\n",
+          dev & 0xFFFF, OSMGA_DEV_MINOR(dev), osmgaMmapRegistered,
+          osmgaDevOpens, osmgaDevCloses, osmgaDevOpens - osmgaDevCloses);
     return 0;
 }
 
 static int
 osmgaDevClose(int dev, int flag, int devtype)
 {
-    (void)dev;
     (void)flag;
     (void)devtype;
+    /*
+     * It said nothing and returned nought, so nobody knew whether it was ever
+     * called.  See the note above osmgaDevOpen: whether a client going away
+     * reaches here is the fact an exclusive open would have to rest on, and
+     * it has never been observed on this kernel.
+     *
+     * Counted even for a minor we would have refused to open, because a close
+     * for something never opened is itself worth seeing.
+     */
+    osmgaDevCloses++;
+    IOLog("OpenStepMGA S4a: close dev=%04x minor=%d "
+          "(opens=%lu closes=%lu outstanding=%lu)\n",
+          dev & 0xFFFF, OSMGA_DEV_MINOR(dev),
+          osmgaDevOpens, osmgaDevCloses,
+          (osmgaDevOpens >= osmgaDevCloses)
+              ? osmgaDevOpens - osmgaDevCloses : 0UL);
     return 0;
 }
 
