@@ -88,6 +88,10 @@ void OSMGAMesaBufferMirror(void);
 
 /* Something has been drawn; the next mirror has work to do. */
 void OSMGAMesaBufferSoiled(void);
+/* Read it back, and take it back -- for a bracket that turns out to have
+ * been a pure read.  See the definitions. */
+int  OSMGAMesaBufferIsDirty(void);
+void OSMGAMesaBufferUnsoil(void);
 
 /*
  * Give the surface back.  Named the way the Mesa port calls it -- that tree

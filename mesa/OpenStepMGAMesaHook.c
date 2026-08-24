@@ -1321,16 +1321,180 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
  * something to rely on.
  */
 /*
+ * ---- Did this render bracket WRITE anything, or only read? ----
+ *
+ * glReadPixels is bracketed by RenderStart and RenderFinish just as drawing
+ * is (readpix.c), and this back end mirrors the whole surface at
+ * RenderFinish.  So a pure read cost a full copy -- 147 ms at 512 by 384 --
+ * and worse: if the caller handed its own OSMesa array as the destination of
+ * the read, the mirror then wrote the surface over the top of what had just
+ * been read into it, in the surface's packing rather than the one asked for.
+ *
+ * A dirty RECTANGLE cannot be had here -- OSMesa installs direct writers for
+ * lines and for depth-tested triangles that touch the pixels without going
+ * through any callback -- but a BOOLEAN can, and a boolean is all this needs.
+ * Those direct writers live only on the primitive path, and a primitive
+ * bracket never issues a read span.  So "a read happened and no write did"
+ * cannot be true of a bracket that drew, which is the only bracket whose
+ * writes are invisible.  Anything unrecognised mirrors, as before.
+ *
+ * The wrapping is done HERE, from RenderStart, and not from the state update
+ * where everything else is hooked: osmesa_update_state calls the back end's
+ * hook BEFORE it installs these callbacks, so a wrapper put on there is
+ * overwritten immediately.  RenderStart is used by every path that touches
+ * the buffers -- accum, bitmap, clear, copypix, drawpix, readpix, teximage --
+ * so it is early enough for all of them.
+ */
+static const GLcontext *spanCtx;
+static int spanWrote, spanRead;
+
+static void (*prevWriteRGBASpan)(const GLcontext *, GLuint, GLint, GLint,
+                                 CONST GLubyte [][4], const GLubyte []);
+static void (*prevWriteRGBSpan)(const GLcontext *, GLuint, GLint, GLint,
+                                CONST GLubyte [][3], const GLubyte []);
+static void (*prevWriteMonoRGBASpan)(const GLcontext *, GLuint, GLint, GLint,
+                                     const GLubyte []);
+static void (*prevWriteRGBAPixels)(const GLcontext *, GLuint, const GLint [],
+                                   const GLint [], CONST GLubyte [][4],
+                                   const GLubyte []);
+static void (*prevWriteMonoRGBAPixels)(const GLcontext *, GLuint,
+                                       const GLint [], const GLint [],
+                                       const GLubyte []);
+static void (*prevReadRGBASpan)(const GLcontext *, GLuint, GLint, GLint,
+                                GLubyte [][4]);
+static void (*prevReadRGBAPixels)(const GLcontext *, GLuint, const GLint [],
+                                  const GLint [], GLubyte [][4],
+                                  const GLubyte []);
+
+static void
+osmgaWriteRGBASpan(const GLcontext *ctx, GLuint n, GLint x, GLint y,
+                   CONST GLubyte rgba[][4], const GLubyte mask[])
+{
+    spanWrote = 1;
+    if (prevWriteRGBASpan) (*prevWriteRGBASpan)(ctx, n, x, y, rgba, mask);
+}
+
+static void
+osmgaWriteRGBSpan(const GLcontext *ctx, GLuint n, GLint x, GLint y,
+                  CONST GLubyte rgb[][3], const GLubyte mask[])
+{
+    spanWrote = 1;
+    if (prevWriteRGBSpan) (*prevWriteRGBSpan)(ctx, n, x, y, rgb, mask);
+}
+
+static void
+osmgaWriteMonoRGBASpan(const GLcontext *ctx, GLuint n, GLint x, GLint y,
+                       const GLubyte mask[])
+{
+    spanWrote = 1;
+    if (prevWriteMonoRGBASpan) (*prevWriteMonoRGBASpan)(ctx, n, x, y, mask);
+}
+
+static void
+osmgaWriteRGBAPixels(const GLcontext *ctx, GLuint n, const GLint x[],
+                     const GLint y[], CONST GLubyte rgba[][4],
+                     const GLubyte mask[])
+{
+    spanWrote = 1;
+    if (prevWriteRGBAPixels) (*prevWriteRGBAPixels)(ctx, n, x, y, rgba, mask);
+}
+
+static void
+osmgaWriteMonoRGBAPixels(const GLcontext *ctx, GLuint n, const GLint x[],
+                         const GLint y[], const GLubyte mask[])
+{
+    spanWrote = 1;
+    if (prevWriteMonoRGBAPixels)
+        (*prevWriteMonoRGBAPixels)(ctx, n, x, y, mask);
+}
+
+static void
+osmgaReadRGBASpan(const GLcontext *ctx, GLuint n, GLint x, GLint y,
+                  GLubyte rgba[][4])
+{
+    spanRead = 1;
+    if (prevReadRGBASpan) (*prevReadRGBASpan)(ctx, n, x, y, rgba);
+}
+
+static void
+osmgaReadRGBAPixels(const GLcontext *ctx, GLuint n, const GLint x[],
+                    const GLint y[], GLubyte rgba[][4], const GLubyte mask[])
+{
+    spanRead = 1;
+    if (prevReadRGBAPixels) (*prevReadRGBAPixels)(ctx, n, x, y, rgba, mask);
+}
+
+/*
+ * Idempotent, and it saves only what is not already ours.
+ *
+ * RenderStart runs again and again while the driver reinstalls its callbacks
+ * only on a state update, so saving blindly the second time would save this
+ * file's own wrapper and call it forever.  Each one is asked separately
+ * because they are reinstalled as a group but need not be.
+ */
+#define OSMGA_WRAP(field, mine, saved)                                  \
+    do {                                                                \
+        if (ctx->Driver.field != (mine)) {                              \
+            (saved) = ctx->Driver.field;                                \
+            ctx->Driver.field = (mine);                                 \
+        }                                                               \
+    } while (0)
+
+static void
+osmgaMesaWrapSpans(GLcontext *ctx)
+{
+    /*
+     * A different context brings its own callbacks, and the saved pointers
+     * here belong to whichever one they were taken from.  Forgetting them is
+     * the safe direction: the worst it costs is one bracket that mirrors.
+     */
+    if (spanCtx != ctx) {
+        spanCtx = ctx;
+        prevWriteRGBASpan = 0;      prevWriteRGBSpan = 0;
+        prevWriteMonoRGBASpan = 0;  prevWriteRGBAPixels = 0;
+        prevWriteMonoRGBAPixels = 0;
+        prevReadRGBASpan = 0;       prevReadRGBAPixels = 0;
+    }
+    OSMGA_WRAP(WriteRGBASpan,       osmgaWriteRGBASpan,       prevWriteRGBASpan);
+    OSMGA_WRAP(WriteRGBSpan,        osmgaWriteRGBSpan,        prevWriteRGBSpan);
+    OSMGA_WRAP(WriteMonoRGBASpan,   osmgaWriteMonoRGBASpan,   prevWriteMonoRGBASpan);
+    OSMGA_WRAP(WriteRGBAPixels,     osmgaWriteRGBAPixels,     prevWriteRGBAPixels);
+    OSMGA_WRAP(WriteMonoRGBAPixels, osmgaWriteMonoRGBAPixels, prevWriteMonoRGBAPixels);
+    OSMGA_WRAP(ReadRGBASpan,        osmgaReadRGBASpan,        prevReadRGBASpan);
+    OSMGA_WRAP(ReadRGBAPixels,      osmgaReadRGBAPixels,      prevReadRGBAPixels);
+}
+
+/*
  * Anything at all is about to be drawn -- by this back end or by the
  * software rasteriser, which writes into the same surface and has no way to
  * announce it.  Marking here rather than only where we draw is what keeps a
  * frame made entirely of refused primitives from being mirrored away as
  * "nothing happened".
  */
+static int soilWasSet;
+/* How many brackets actually copied.  Without it a test cannot tell "the
+ * read did not mirror" from "the mirror was cheap today". */
+static unsigned long hookMirrors;
+
 static void
 osmgaMesaSoil(GLcontext *ctx)
 {
-    (void)ctx;
+    /*
+     * The wrapping goes on here because this is the first thing that runs in
+     * a bracket and the only place this back end owns that early -- see the
+     * note above.
+     */
+    osmgaMesaWrapSpans(ctx);
+    spanWrote = 0;
+    spanRead = 0;
+
+    /*
+     * And the mark stays, unconditional, exactly as it was.  A bracket that
+     * turns out to have written nothing gives it back at the other end; a
+     * bracket whose writes this file cannot see keeps it.  Deciding here
+     * instead would mean deciding before anything has happened.
+     */
+    soilWasSet = OSMGAMesaBufferIsDirty();
     OSMGAMesaBufferSoiled();
 }
 
@@ -1338,6 +1502,23 @@ static void
 osmgaMesaMirror(GLcontext *ctx)
 {
     (void)ctx;
+    /*
+     * A bracket that read and did not write is a bracket that changed
+     * nothing, so there is nothing to put back -- and putting it back is
+     * worse than nothing when the caller handed its own OSMesa array as the
+     * destination of the read: the copy would write the surface over the top
+     * of what was just read into it, in the surface's own packing rather
+     * than the one the caller asked for.
+     *
+     * The mark goes back to what it was on the way in.  Leaving it set would
+     * only buy a copy at the next flush of a surface nobody had changed.
+     */
+    if (spanRead && !spanWrote) {
+        if (!soilWasSet)
+            OSMGAMesaBufferUnsoil();
+        return;
+    }
+    hookMirrors++;
     OSMGAMesaBufferMirror();
 }
 
@@ -1652,6 +1833,7 @@ double OSMGAMesaHookLastWin(unsigned long v, unsigned long c)
 
 unsigned long OSMGAMesaHookDrawn(void)    { return hookDrawn; }
 unsigned long OSMGAMesaHookClears(void)   { return hookClears; }
+unsigned long OSMGAMesaHookMirrors(void)  { return hookMirrors; }
 int           OSMGAMesaHookClearWhy(void) { return hookClearWhy; }
 unsigned long OSMGAMesaHookDeclined(void) { return hookDeclined; }
 unsigned long OSMGAMesaHookSoftware(void) { return hookSoftware; }

@@ -44,6 +44,8 @@ unsigned long OSMGAMesaHookDrawn(void);
  * nought when it was taken.  The codes are read off the source; they exist
  * so a clear that quietly does nothing can say which gate stopped it. */
 unsigned long OSMGAMesaHookClears(void);
+/* Brackets that actually copied the surface back.  A pure read does not. */
+unsigned long OSMGAMesaHookMirrors(void);
 int           OSMGAMesaHookClearWhy(void);
 unsigned long OSMGAMesaHookDeclined(void);
 /* Triangles handed to the software path because this back end could not

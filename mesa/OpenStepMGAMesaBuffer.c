@@ -419,6 +419,29 @@ OSMGAMesaBufferSoiled(void)
 }
 
 /*
+ * Was it already dirty, and put it back.
+ *
+ * A render bracket that turns out to have been a pure READ has to leave this
+ * exactly as it found it.  Marking at the start of every bracket is what
+ * keeps a frame made only of primitives this back end refused from being
+ * mirrored away as "nothing happened" -- the software rasteriser writes the
+ * same surface and does not announce it -- so the mark cannot simply be
+ * dropped.  What it can be is taken back, once the bracket is over and the
+ * spans have said it never wrote anything.
+ */
+int
+OSMGAMesaBufferIsDirty(void)
+{
+    return bufDirty;
+}
+
+void
+OSMGAMesaBufferUnsoil(void)
+{
+    bufDirty = 0;
+}
+
+/*
  * The caller's own picture, into the surface.
  *
  * In OSMesa the buffer handed over IS the colour buffer: whatever is already
