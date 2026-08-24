@@ -11,6 +11,7 @@
 #include "OpenStepMGAHW3D.h"   /* OSMGA_HW3D_PITCH_ALIGN */
 
 extern caddr_t mmap(caddr_t, int, int, int, int, long);
+extern int ioctl(int, long, void *);
 
 #define PROT_READ   0x01
 #define PROT_WRITE  0x02
@@ -34,6 +35,16 @@ static void *bufApp;      /* what the application gave us */
 static unsigned long bufAppRow;  /* and how its rows are laid out */
 static int   bufDirty;
 static void *depthMapped;
+/*
+ * Present mode: the caller has opted into ON-SCREEN delivery, and its own
+ * array is EXPLICITLY STALE from that moment.  Everything that would touch
+ * that array -- the mirror, the constant delivery of a clear, and the import
+ * a rebind does -- consults this and stands down.  It lives here at the
+ * buffer level rather than in the hook because all three of those paths pass
+ * through this file, and a flag the hook kept would miss the two the hook
+ * does not wrap.
+ */
+static int bufPresent;
 static unsigned long depthOrigin, depthBytes;
 /*
  * The texture arena, mapped.  Colour and depth each have a mapping of their
@@ -472,6 +483,14 @@ osmgaMesaBufferImport(void)
     unsigned long *dst;
     unsigned long y;
 
+    /*
+     * In present mode a rebind must NOT import: the caller's array holds
+     * whatever it held before present mode began, and writing that over the
+     * live frame would put a stale picture on the screen.  Cross-review
+     * caught this path; it is the rebind's first act and easy to forget.
+     */
+    if (bufPresent)
+        return;
     if (bufMapped == 0 || bufApp == 0)
         return;
     src = (const unsigned long *)bufApp;
@@ -493,6 +512,8 @@ OSMGAMesaBufferMirror(void)
     unsigned long *dst;
     unsigned long y, w;
 
+    if (bufPresent)
+        return;                 /* on-screen delivery; the array is stale */
     if (bufMapped == 0 || bufApp == 0 || !bufDirty)
         return;
     bufDirty = 0;
@@ -548,6 +569,8 @@ OSMGAMesaBufferFill(unsigned long word)
     unsigned long *dst;
     unsigned long y, w;
 
+    if (bufPresent)
+        return;                 /* on-screen delivery; the array is stale */
     if (bufMapped == 0 || bufApp == 0)
         return;
     bufDirty = 0;
@@ -561,6 +584,48 @@ OSMGAMesaBufferFill(unsigned long word)
         for (x = 0UL; x < w; x++)
             d[x] = word;
     }
+}
+
+void
+OSMGAMesaBufferPresentMode(int on)
+{
+    bufPresent = (on != 0);
+}
+
+/*
+ * Ask the kernel to put this surface's picture on the screen at (dstX, dstY).
+ *
+ * The rectangle is the whole picture; the kernel re-checks both ends and the
+ * engine copies VRAM to VRAM, so nothing here touches the caller's array and
+ * nothing crosses the bus.  Returns 0 on success; otherwise the kernel's
+ * verdict is in *outVerdict for the caller to print.
+ */
+int
+OSMGAMesaBufferPresent(long dstX, long dstY, unsigned long *outVerdict)
+{
+    OSMGAHW3DPresentBlock blk;
+    int fd = OSMGAMesaProbeDeviceFd();
+
+    if (outVerdict)
+        *outVerdict = OSMGA_PRESENT_E_MODE;
+    if (fd < 0 || bufMapped == 0 || dstX < 0 || dstY < 0)
+        return -1;
+    blk.magic = OSMGA_HW3D_PRESENT_MAGIC;
+    blk.srcOrg = bufOrigin;
+    blk.srcStride = bufStride;
+    blk.srcX = 0UL;
+    blk.srcY = 0UL;
+    blk.w = bufWidth;
+    blk.h = bufHeight;
+    blk.dstX = (unsigned long)dstX;
+    blk.dstY = (unsigned long)dstY;
+    blk.status = 0UL;
+    blk.verdict = 0UL;
+    if (ioctl(fd, (long)OSMGA_IOC_PRESENT, &blk) < 0)
+        return -1;
+    if (outVerdict)
+        *outVerdict = blk.verdict;
+    return (blk.status == 0UL) ? 0 : -1;
 }
 
 void
@@ -580,6 +645,7 @@ OpenStepMesaAccelReleaseBuffer(void *ctx)
     if (ctx != 0 && bufCtx != 0 && bufCtx != ctx)
         return;
     bufBound = 0;
+    bufPresent = 0;
     if (depthMapped != 0) {
         (void)vm_deallocate(task_self(), (vm_address_t)depthMapped,
                             (vm_size_t)depthBytes);

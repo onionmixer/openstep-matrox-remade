@@ -178,6 +178,8 @@
 
 /* M1-3b-3: run the batch in the command window. */
 - (IOReturn)runHW3DSubmit;
+- (IOReturn)runHW3DPresent:(void *)blk;   /* OSMGAHW3DPresentBlock; the
+                                 shared header is the .m's business */
 - setBrightness:(int)level token:(int)token;
 - free;
 

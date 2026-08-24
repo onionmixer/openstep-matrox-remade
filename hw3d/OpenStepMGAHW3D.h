@@ -895,6 +895,68 @@ typedef struct {
     ((unsigned long)OSMGA_IOC_GROUP << 8) | 2UL))
 
 /*
+ * Presenting a drawn surface ON THE SCREEN, by the engine, without the
+ * picture ever crossing the bus.
+ *
+ * This is the one deliberate opening of the visible framebuffer to a client,
+ * and it exists because the alternative was measured to be structurally
+ * hopeless: delivering a frame to system memory costs 229 ms at 640x480
+ * (5.49 MB/s uncached reads), which is fifteen times what software takes to
+ * DRAW the same frame.  A VRAM-to-VRAM engine blit moves the same frame in
+ * a few milliseconds and touches system memory not at all.
+ *
+ * The client says where its picture is -- origin and stride, the same two
+ * numbers its batches already declare -- and where on the screen it wants
+ * the rectangle.  The kernel checks BOTH ends: the source must lie entirely
+ * inside the offscreen window (checked in the division form, so nothing can
+ * overflow first), the destination entirely inside the visible mode.  Source
+ * and destination cannot overlap by construction: the window begins a guard
+ * above the visible surface, and both containments are re-checked here
+ * rather than assumed.
+ *
+ * What this deliberately does NOT decide: whose rectangle of the screen it
+ * is.  There is no window-ownership authority to consult -- the window
+ * server does not arbitrate for us (measured; it never sends blits) -- so
+ * any client of this device may paint any screen rectangle, and the same
+ * shared-surface caveats recorded for the batch path apply.  Tearing is also
+ * accepted: the blit is not synchronised to scanout.
+ *
+ * The blit itself is the EXA shape, verified against mga_exa.c: PITCH is the
+ * DESTINATION's pitch, AR5 the SOURCE's own stride (they are separate
+ * registers, and X.Org copies between differently-pitched pixmaps with
+ * exactly this encoding), SRCORG the source origin, DSTORG the screen.
+ */
+#define OSMGA_HW3D_PRESENT_MAGIC 0x4d474150UL   /* 'MGAP' */
+
+typedef struct {
+    unsigned long magic;     /* OSMGA_HW3D_PRESENT_MAGIC */
+    unsigned long srcOrg;    /* byte origin of the surface, in the window */
+    unsigned long srcStride; /* the surface's row stride, in PIXELS */
+    unsigned long srcX, srcY;/* top-left of the rectangle, in the surface */
+    unsigned long w, h;      /* rectangle size in pixels; both > 0 */
+    unsigned long dstX, dstY;/* top-left on the visible screen */
+    /* out */
+    unsigned long status;    /* 0 presented; else an errno-style reason */
+    unsigned long verdict;   /* OSMGA_PRESENT_* saying which check refused */
+} OSMGAHW3DPresentBlock;
+
+#define OSMGA_PRESENT_OK        0UL
+#define OSMGA_PRESENT_E_MAGIC   1UL   /* wrong magic (or size skew) */
+#define OSMGA_PRESENT_E_SRC     2UL   /* source rect leaves the window */
+#define OSMGA_PRESENT_E_DST     3UL   /* dest rect leaves the visible mode */
+#define OSMGA_PRESENT_E_GEOM    4UL   /* zero size, or a packed field would
+                                       * not hold the value */
+#define OSMGA_PRESENT_E_BUSY    5UL   /* engine busy; try again */
+#define OSMGA_PRESENT_E_LATCH   6UL   /* acceleration disabled permanently */
+#define OSMGA_PRESENT_E_MODE    7UL   /* mode changed under the request, or
+                                       * no window is offered */
+
+#define OSMGA_IOC_PRESENT   ((unsigned long)(OSMGA_IOC_OUT_BIT | \
+    OSMGA_IOC_IN_BIT | \
+    ((sizeof(OSMGAHW3DPresentBlock) & OSMGA_IOC_PARM_MASK) << 16) | \
+    ((unsigned long)OSMGA_IOC_GROUP << 8) | 3UL))
+
+/*
  * Copying a drawn surface out of video memory, done by the driver.
  *
  * A client's first read after a submission returns can still hold what was

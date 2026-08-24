@@ -93,6 +93,17 @@ void OSMGAMesaBufferMirror(void);
  */
 void OSMGAMesaBufferFill(unsigned long word);
 
+/*
+ * On-screen delivery.  PresentMode(1) declares the caller's array stale --
+ * the mirror, the clear's constant delivery and the rebind import all stand
+ * down -- and Present() asks the kernel to blit the whole picture to
+ * (dstX, dstY) on the visible screen, VRAM to VRAM, nothing crossing the
+ * bus.  The kernel re-validates both rectangles; its refusal comes back in
+ * *outVerdict as an OSMGA_PRESENT_* code.
+ */
+void OSMGAMesaBufferPresentMode(int on);
+int  OSMGAMesaBufferPresent(long dstX, long dstY, unsigned long *outVerdict);
+
 /* Something has been drawn; the next mirror has work to do. */
 void OSMGAMesaBufferSoiled(void);
 /* Read it back, and take it back -- for a bracket that turns out to have

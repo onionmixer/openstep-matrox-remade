@@ -1272,6 +1272,69 @@ osmgaStormBlit(vm_address_t base, unsigned long stride,
 }
 
 /*
+ * M1-5 -- present: copy a rectangle of an offscreen surface onto the visible
+ * screen, in one engine operation, with the source and destination at
+ * DIFFERENT pitches.
+ *
+ * This is the EXA copy shape, taken from xf86-video-mga's mga_exa.c and
+ * verified there line by line: PITCH carries the DESTINATION's pitch and
+ * AR5 the SOURCE's own row stride -- they are separate registers -- while
+ * SRCORG and DSTORG carry the two origins.  X.Org copies between
+ * differently-pitched pixmaps with exactly this encoding, which is the fact
+ * the whole present path rests on.  Our own S2 blit could not say this: it
+ * passes one stride to both registers because both of its ends are the
+ * screen.
+ *
+ * No direction handling, deliberately.  The source lives in the offscreen
+ * window, which begins a guard megabyte ABOVE the visible surface the
+ * destination lives in, so the two rectangles cannot overlap and the copy
+ * always walks down-right.  The caller has already validated both rectangles;
+ * this function only programs registers.
+ *
+ * Same return contract as osmgaStormBlit: 1 done, 0 nothing issued,
+ * -1 timed out after EXEC (caller must latch).
+ */
+static int
+osmgaStormPresentBlit(vm_address_t base,
+                      unsigned long srcOrg, unsigned long srcStridePx,
+                      unsigned long srcX, unsigned long srcY,
+                      unsigned long w, unsigned long h,
+                      unsigned long dstX, unsigned long dstY,
+                      unsigned long dstPitchPx)
+{
+    unsigned long w1 = w - 1UL;
+    unsigned long start = srcY * srcStridePx + srcX;
+    unsigned long end   = start + w1;
+
+    if (!osmgaStormWaitFifo(base, 13U))
+        return 0;
+    /* The clip is the DESTINATION rectangle, in the destination's pitch. */
+    osmgaStormInitState(base, dstPitchPx, dstX, dstX + w1,
+                        dstY * dstPitchPx, (dstY + h - 1UL) * dstPitchPx);
+    osmgaW32(base, MGA_DWGCTL, MGA_DWGCTL_BITBLT);
+
+    if (!osmgaStormWaitFifo(base, 4U))
+        return 0;
+    /* InitState wrote SRCORG = 0 for the screen-to-screen case; the present
+     * source is the surface, so it is set AFTER, and DSTORG stays 0 -- the
+     * destination is the visible framebuffer at the window's own origin. */
+    osmgaW32(base, MGA_SRCORG, srcOrg);
+    osmgaW32(base, MGA_SGN, MGA_SGN_DOWN_RIGHT);
+    osmgaW32(base, MGA_AR5, srcStridePx);
+
+    if (!osmgaStormWaitFifo(base, 4U))
+        return 0;
+    osmgaW32(base, MGA_AR0, end);
+    osmgaW32(base, MGA_AR3, start);
+    osmgaW32(base, MGA_FXBNDRY, ((dstX + w1) << 16) | (dstX & 0xffffUL));
+    osmgaW32(base, MGA_YDSTLEN + MGA_EXEC, (dstY << 16) | h);
+
+    if (!osmgaStormWaitIdle(base))
+        return -1;
+    return 1;
+}
+
+/*
  * ---- S4a character device: offscreen VRAM window ----
  *
  * These three values are written ONCE, before the cdevsw entry is published,
@@ -1435,6 +1498,7 @@ static int
  * space goes with it -- but the gap is real and it is not closed by counting
  * or by excluding.
  */
+static unsigned long statPresentOk;
 static unsigned long osmgaDevOpens;
 static unsigned long osmgaDevCloses;
 
@@ -1512,6 +1576,18 @@ osmgaDevIoctl(int dev, int cmd, caddr_t data, int flag)
         [osmgaCapsInstance osmgaFillHW3DCaps:words];
         for (i = 0U; i < OSMGA_HW3D_CAPS_COUNT; i++)
             blk->caps[i] = (unsigned long)words[i];
+        return 0;
+    }
+
+    if ((unsigned long)cmd == OSMGA_IOC_PRESENT) {
+        OSMGAHW3DPresentBlock *pb = (OSMGAHW3DPresentBlock *)data;
+
+        /*
+         * Like the submit: return zero whatever happened, because a 4.3BSD
+         * ioctl copies the block back only on a zero return, and the block
+         * is where the verdict and the reason live.
+         */
+        (void)[osmgaCapsInstance runHW3DPresent:pb];
         return 0;
     }
 
@@ -2121,6 +2197,7 @@ static IODisplayInfo osmgaModeTemplate = {
     statRefusedPreExec = 0; statPostExecTimeout = 0;
     statCursorShow = 0; statCursorMove = 0; statCursorHide = 0;
     statCursorWhileBusy = 0; statThin1px = 0;
+    statPresentOk = 0;
     statEnterLinear = 0; statRevertVGA = 0; statTransferTable = 0;
     configuredVideoMemoryBytes = 0;
 
@@ -3693,6 +3770,153 @@ unmap:
  * character device instead.  Both call here, so the two cannot drift, and
  * neither can quietly acquire a check the other lacks.
  */
+/*
+ * M1-5 -- the present request, validated end to end and then handed to the
+ * engine.  See the block's note in the shared header for what this opens
+ * and what it deliberately does not decide.
+ *
+ * Every bound is checked in the division/subtraction form so that no
+ * expression can overflow before the check that would have caught it -- the
+ * same discipline the 3D validator uses, and for the same reason.
+ */
+- (IOReturn)runHW3DPresent:(void *)blkVoid
+{
+    OSMGAHW3DPresentBlock *blk = (OSMGAHW3DPresentBlock *)blkVoid;
+    const OSMGARes *pr;
+    const OSMGAFormat *pf;
+    unsigned long dispW, dispH, dstPitchPx, rowBytes, avail, lastRow, tail;
+    int rc;
+
+    blk->status = EINVAL;
+    if (blk->magic != OSMGA_HW3D_PRESENT_MAGIC) {
+        blk->verdict = OSMGA_PRESENT_E_MAGIC;
+        return IO_R_INVALID_ARG;
+    }
+    if (!linearModeActive || !osmgaMmapRegistered ||
+        osmgaMmapWindowStart >= osmgaMmapWindowEnd) {
+        blk->verdict = OSMGA_PRESENT_E_MODE;
+        return IO_R_UNSUPPORTED;
+    }
+
+    /*
+     * Claim the engine FIRST, then read the geometry and validate.  The mode
+     * cannot change under a request that holds the claim (a mode switch goes
+     * through the same serialisation), so everything read below describes
+     * the screen the blit will actually land on.
+     */
+    simple_lock(&stormLock);
+    if (stormBlitFailed) {
+        simple_unlock(&stormLock);
+        blk->verdict = OSMGA_PRESENT_E_LATCH;
+        blk->status = EIO;
+        return IO_R_RESOURCE;
+    }
+    if (stormBusy) {
+        simple_unlock(&stormLock);
+        blk->verdict = OSMGA_PRESENT_E_BUSY;
+        blk->status = EBUSY;
+        return IO_R_BUSY;
+    }
+    stormBusy = YES;
+    simple_unlock(&stormLock);
+
+    pr = &osmgaRes[selectedResIndex];
+    pf = &osmgaFmt[selectedFormatIndex];
+    dispW = (unsigned long)pr->width;
+    dispH = (unsigned long)pr->height;
+    dstPitchPx = (unsigned long)[self displayInfo]->rowBytes / 4UL;
+
+    /* The engine draws 32-bit pixels here and the present assumes it. */
+    if (pf->bytesPerPixel != 4) {
+        blk->verdict = OSMGA_PRESENT_E_MODE;
+        goto refuse;
+    }
+
+    /* Geometry: nothing zero, nothing a packed 16-bit field would lose. */
+    if (blk->w == 0UL || blk->h == 0UL ||
+        blk->w > 0xFFFFUL || blk->h > 0xFFFFUL ||
+        blk->srcStride == 0UL || blk->srcStride > 0x8000UL) {
+        blk->verdict = OSMGA_PRESENT_E_GEOM;
+        goto refuse;
+    }
+
+    /* Destination: entirely inside the visible mode.  Subtraction form. */
+    if (blk->w > dispW || blk->dstX > dispW - blk->w ||
+        blk->h > dispH || blk->dstY > dispH - blk->h) {
+        blk->verdict = OSMGA_PRESENT_E_DST;
+        goto refuse;
+    }
+
+    /*
+     * Source: the origin inside the window and aligned, the rectangle inside
+     * its own rows, and the last byte the walk can touch inside the window.
+     */
+    if (blk->srcOrg < osmgaMmapWindowStart ||
+        blk->srcOrg >= osmgaMmapWindowEnd ||
+        (blk->srcOrg & 63UL) != 0UL) {
+        blk->verdict = OSMGA_PRESENT_E_SRC;
+        goto refuse;
+    }
+    if (blk->w > blk->srcStride || blk->srcX > blk->srcStride - blk->w) {
+        blk->verdict = OSMGA_PRESENT_E_SRC;
+        goto refuse;
+    }
+    avail = osmgaMmapWindowEnd - blk->srcOrg;
+    rowBytes = blk->srcStride * 4UL;            /* srcStride <= 0x8000: safe */
+    lastRow = blk->srcY + blk->h - 1UL;         /* both <= 0xFFFF: safe */
+    if (lastRow > (avail - 1UL) / rowBytes) {
+        blk->verdict = OSMGA_PRESENT_E_SRC;
+        goto refuse;
+    }
+    tail = avail - lastRow * rowBytes;
+    if ((blk->srcX + blk->w) * 4UL > tail) {
+        blk->verdict = OSMGA_PRESENT_E_SRC;
+        goto refuse;
+    }
+
+    if (!osmgaStormWaitIdle(mmioBase)) {
+        blk->verdict = OSMGA_PRESENT_E_BUSY;
+        blk->status = EBUSY;
+        goto refuse2;
+    }
+
+    rc = osmgaStormPresentBlit(mmioBase, blk->srcOrg, blk->srcStride,
+                               blk->srcX, blk->srcY, blk->w, blk->h,
+                               blk->dstX, blk->dstY, dstPitchPx);
+    if (rc == 1) {
+        blk->verdict = OSMGA_PRESENT_OK;
+        blk->status = 0UL;
+        statPresentOk++;
+    } else if (rc == 0) {
+        /* Nothing was issued; the engine is as it was. */
+        blk->verdict = OSMGA_PRESENT_E_BUSY;
+        blk->status = EBUSY;
+    } else {
+        /*
+         * Timed out after EXEC: the engine may still be writing TO THE
+         * VISIBLE SCREEN.  The same latch as every other post-EXEC timeout,
+         * for the same reason -- nothing may hand it more work.
+         */
+        stormBlitFailed = YES;
+        blk->verdict = OSMGA_PRESENT_E_LATCH;
+        blk->status = EIO;
+        IOLog("OpenStepMGA M1-5: present timed out after EXEC; acceleration "
+              "DISABLED permanently\n");
+    }
+    simple_lock(&stormLock);
+    stormBusy = NO;
+    simple_unlock(&stormLock);
+    return (blk->status == 0UL) ? IO_R_SUCCESS : IO_R_IO;
+
+refuse:
+    blk->status = EINVAL;
+refuse2:
+    simple_lock(&stormLock);
+    stormBusy = NO;
+    simple_unlock(&stormLock);
+    return IO_R_INVALID_ARG;
+}
+
 - (IOReturn)runHW3DSubmit
 {
     OSMGAHW3DBatch *batch;
