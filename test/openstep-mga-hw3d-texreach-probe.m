@@ -3215,7 +3215,7 @@ main(void)
             (void)setup(64UL, 0UL, 8UL, 4UL, 0L, 0UL);
             batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
             batch->state.tmr[3] = 0L;
-            batch->state.tmr[6] = -4097L;
+            batch->state.tmr[6] = -1048577L;
             batch->state.tmr[7] = 0L;
             v = fire();
             say("one unit past the allowance is still refused",

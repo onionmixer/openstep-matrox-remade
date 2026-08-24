@@ -64,11 +64,12 @@ osmgaHW3DRatioOK(long p, long q, long roomHi)
      *
      * The bound is against q so that it is the same COORDINATE at every
      * scale: p / q * 65536 >= -ALLOW is p >= -q * ALLOW / 65536, and the
-     * divisor below is 65536 / ALLOW.  Written as a division of q it cannot
-     * overflow, and the build refuses a width that does not divide 65536
-     * exactly, since then the two forms would part company.
+     * multiplier below is ALLOW / 65536.  The build refuses a width that is
+     * not a whole number of those, since then the two forms would part
+     * company.  q is at most 2^23 and the multiplier sixteen, so the product
+     * is 2^27 and stays inside a long.
      */
-    if (p < -(q / (long)(OSMGA_HW3D_Q_ONE / OSMGA_HW3D_TEX_NEG_ALLOW)))
+    if (p < -(q * (long)(OSMGA_HW3D_TEX_NEG_ALLOW / OSMGA_HW3D_Q_ONE)))
         return 0;
     return p <= roomHi * q;
 }
@@ -704,10 +705,33 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                          * coordinates.  So the same reach serves both.
                          */
                         if (reach != 0) {
-                            if (ux  > reach->uMax) reach->uMax = ux;
-                            if (ly  > reach->uMax) reach->uMax = ly;
-                            if (vx2 > reach->vMax) reach->vMax = vx2;
-                            if (ry  > reach->vMax) reach->vMax = ry;
+                            /*
+                             * The MAGNITUDE, not the signed maximum.  The
+                             * engine picks its band from how large the
+                             * numerator is, and a coordinate is allowed to go
+                             * below nought -- so a batch whose numerators are
+                             * all negative would otherwise report a reach of
+                             * nought and be given the bias for a tiny
+                             * coordinate.
+                             *
+                             * Today that cannot bite: a negative numerator is
+                             * held to q/16, so its magnitude is at most 2^19,
+                             * and every bias from biasFor(0) to biasFor(2^20)
+                             * is the same 496.  python checks every reachable
+                             * combination and finds no case where the two
+                             * choose differently.  It has to be the magnitude
+                             * before the negative range is widened, not
+                             * after.
+                             */
+                            long au  = (ux  < 0L) ? -ux  : ux;
+                            long al  = (ly  < 0L) ? -ly  : ly;
+                            long av  = (vx2 < 0L) ? -vx2 : vx2;
+                            long ar  = (ry  < 0L) ? -ry  : ry;
+
+                            if (au > reach->uMax) reach->uMax = au;
+                            if (al > reach->uMax) reach->uMax = al;
+                            if (av > reach->vMax) reach->vMax = av;
+                            if (ar > reach->vMax) reach->vMax = ar;
                         }
                     }
                 }

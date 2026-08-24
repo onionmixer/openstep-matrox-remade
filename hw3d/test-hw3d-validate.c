@@ -250,22 +250,26 @@ main(void)
          * The endpoints are written as literals, not as the constant.  A test
          * that says "whatever the constant is" drifts with the code and stops
          * being a contract; these two say where the edge IS, and moving it
-         * has to be a deliberate edit in both places.
+         * has to be a deliberate edit in both places.  It has moved once, from
+         * a quarter of a texel to a whole texture, and this is one of the two
+         * places that had to change.
          */
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                  b.state.tmr[6] = -1;           expect("a u start just below nought", OSMGA_HW3D_OK);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                  b.state.tmr[7] = -1;           expect("a v start just below nought", OSMGA_HW3D_OK);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
-                 b.state.tmr[6] = -4096L;       expect("a u start at the allowance", OSMGA_HW3D_OK);
+                 b.state.tmr[6] = -1048576L;    expect("a u start at the allowance", OSMGA_HW3D_OK);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
-                 b.state.tmr[7] = -4096L;       expect("a v start at the allowance", OSMGA_HW3D_OK);
+                 b.state.tmr[7] = -1048576L;    expect("a v start at the allowance", OSMGA_HW3D_OK);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
-                 b.state.tmr[6] = -4097L;       expect("a u start one past it", OSMGA_HW3D_E_TEXCOORD);
+                 b.state.tmr[6] = -1048577L;    expect("a u start one past it", OSMGA_HW3D_E_TEXCOORD);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
-                 b.state.tmr[7] = -4097L;       expect("a v start one past it", OSMGA_HW3D_E_TEXCOORD);
+                 b.state.tmr[7] = -1048577L;    expect("a v start one past it", OSMGA_HW3D_E_TEXCOORD);
         reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
-                 b.state.tmr[0] = -span;        expect("a negative u increment", OSMGA_HW3D_E_TEXCOORD);
+                 b.state.tmr[0] = -span * 2L;   expect("a negative u increment that leaves the allowance", OSMGA_HW3D_E_TEXCOORD);
+        reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                 b.state.tmr[0] = -span;        expect("and one that stays inside it", OSMGA_HW3D_OK);
         /* The budget covers the start AND what the increments add across
          * the clip, so a start at the whole budget only fits when the
          * increments are zero. */
@@ -409,7 +413,22 @@ main(void)
              * hide them, and a zero start would then be accepted while the
              * hardware ran the coordinate below zero on pixels it drew.
              */
-            {   long ident = (long)(OSMGA_HW3D_TEX_SPAN / 64UL);
+            /*
+             * The gradient is a texel of a SIXTEEN texture now, not a
+             * sixty-four one, so that thirty-one columns of leftward
+             * excursion carry the coordinate two textures below nought --
+             * past the allowance, which is one.  With the smaller gradient
+             * the whole excursion fits inside the allowance and the case
+             * stopped testing anything the moment that widened.
+             *
+             * And the pair below walks the allowance itself rather than
+             * nought: a start that leaves the leftmost pixel exactly at the
+             * allowance is admitted, one unit less is not.  That ties the
+             * walk's prediction to the boundary instead of to a zero it no
+             * longer has to reach.
+             */
+            {   long ident = (long)(OSMGA_HW3D_TEX_SPAN / 16UL);
+                long allow = (long)OSMGA_HW3D_TEX_SPAN;
 
                 reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                          b.tri[0].fxbndry = (48UL << 16) | 40UL;
@@ -433,8 +452,16 @@ main(void)
                          b.tri[0].ar0 = 32; b.tri[0].ar2 = -32; b.tri[0].ar1 = -1;
                          b.tri[0].sgn = 0x2;
                          b.state.tmr[0] = ident;
-                         b.state.tmr[6] = ident * 30L;   /* one short */
-                                                expect("one texel short of covering it", OSMGA_HW3D_E_TEXCOORD);
+                         b.state.tmr[6] = ident * 31L - allow;
+                                                expect("a start that leaves it exactly at the allowance", OSMGA_HW3D_OK);
+                reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+                         b.tri[0].fxbndry = (48UL << 16) | 40UL;
+                         b.tri[0].h = 32; b.tri[0].ar6 = 32;
+                         b.tri[0].ar0 = 32; b.tri[0].ar2 = -32; b.tri[0].ar1 = -1;
+                         b.tri[0].sgn = 0x2;
+                         b.state.tmr[0] = ident;
+                         b.state.tmr[6] = ident * 31L - allow - 1L;
+                                                expect("one unit past it", OSMGA_HW3D_E_TEXCOORD);
             }
 
             /*
@@ -579,7 +606,7 @@ main(void)
                 b.triCount = 2;
                 b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
                 b.tri[1] = b.tri[0];
-                b.state.tmr[6] = -4097L;    /* one past the allowance */
+                b.state.tmr[6] = -1048577L; /* one past the allowance */
                 which = 0xDEADUL;
                 v = osmgaHW3DValidate(&b, &lim, &which);
                 if (v == OSMGA_HW3D_E_TEXCOORD && which == 0UL)
@@ -878,7 +905,7 @@ main(void)
  b.state.tmr[0] = -(1L << 14);
                                                 expect("a texture running right to left", OSMGA_HW3D_OK);
     reset(); b.tri[0].dwgctl |= 0x0002UL;
- b.state.tmr[6] = (long)lim.clipX1 * (1L << 14) - 4097L;
+ b.state.tmr[6] = (long)lim.clipX1 * (1L << 14) - 1048577L;
  b.state.tmr[0] = -(1L << 14);
                                                 expect("short enough that a corner leaves the allowance", OSMGA_HW3D_E_TEXCOORD);
     reset(); b.tri[0].dwgctl |= 0x0002UL;

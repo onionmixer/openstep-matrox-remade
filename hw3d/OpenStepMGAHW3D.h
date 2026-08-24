@@ -305,7 +305,21 @@
  * the denominator so the same coordinate means the same thing at any scale:
  * a coordinate of -SPAN/256 is a numerator of -q/16.
  */
-#define OSMGA_HW3D_TEX_NEG_ALLOW (OSMGA_HW3D_TEX_SPAN / 256UL)
+/*
+ * One whole texture below nought.
+ *
+ * It was a quarter of a texel, which is all the edge walk needs: the walk's
+ * integer x sits a fraction of a pixel outside the true edge and puts the
+ * coordinate a thousandth of a texel under.  A whole texture is not for that
+ * -- it is for ordinary tiling, glTexCoord2f(-1, 2), which the engine draws
+ * exactly as GL says and which still falls back to software.
+ *
+ * The builder is NOT opened with it.  Until the engine's addend has been
+ * measured for large negative numerators -- every measurement of the ladder
+ * so far used positive ones -- the only thing that can reach down here is the
+ * raw probe, so a wrong guess stays in an instrument instead of a picture.
+ */
+#define OSMGA_HW3D_TEX_NEG_ALLOW  OSMGA_HW3D_TEX_SPAN
 
 #define OSMGA_HW3D_Q_ONE         65536L         /* q = 1.0, 16.16 */
 /*
@@ -383,7 +397,7 @@
  * every scale.  A negative array size is the C89 way to fail the build.
  */
 typedef int OSMGAHW3DNegAllowCheck[
-    (((unsigned long)OSMGA_HW3D_Q_ONE % OSMGA_HW3D_TEX_NEG_ALLOW) == 0UL)
+    ((OSMGA_HW3D_TEX_NEG_ALLOW % (unsigned long)OSMGA_HW3D_Q_ONE) == 0UL)
         ? 1 : -1];
 
 /*
@@ -725,7 +739,7 @@ typedef int OSMGAHW3DCapsFits[
  * smallest one the batch can meet is the one its largest coordinate implies.
  */
 typedef struct {
-    long uMax;
+    long uMax;      /* the largest |numerator| this batch's pixels reach */
     long vMax;
 } OSMGAHW3DTexReach;
 

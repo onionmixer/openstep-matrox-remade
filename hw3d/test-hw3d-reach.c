@@ -67,14 +67,53 @@ oracle(const OSMGAHW3DTri *t, long *uOut, long *vOut, int *any)
         va = b.state.tmr[7] + b.state.tmr[2] * (lx - lx0)
              + b.state.tmr[3] * row;
         vb = va + b.state.tmr[2] * (rx - 1L - lx);
+        if (ua < 0L) ua = -ua;
+        if (ub < 0L) ub = -ub;
+        if (va < 0L) va = -va;
+        if (vb < 0L) vb = -vb;
         if (!*any) { *uOut = ua; *vOut = va; *any = 1; }
         if (ua > *uOut) *uOut = ua;
         if (ub > *uOut) *uOut = ub;
         if (va > *vOut) *vOut = va;
         if (vb > *vOut) *vOut = vb;
     }
-    if (*uOut < 0L) *uOut = 0L;      /* the validator's accumulator starts at nought */
-    if (*vOut < 0L) *vOut = 0L;
+}
+
+/* what the reach USED to be: the signed maximum, floored at nought */
+static void
+signedOracle(const OSMGAHW3DTri *t, long *uOut, long *vOut)
+{
+    long lx = (long)(t->fxbndry & 0xFFFFUL);
+    long rx = (long)((t->fxbndry >> 16) & 0xFFFFUL);
+    long lx0 = lx;
+    long lacc = t->ar1 - t->ar2, racc = t->ar4 - t->ar5;
+    long lsgn = (t->sgn & 0x2L)  ? -1L : 1L;
+    long rsgn = (t->sgn & 0x20L) ? -1L : 1L;
+    long row;
+
+    *uOut = 0L; *vOut = 0L;
+    for (row = 0L; row < t->h; row++) {
+        long ua, ub, va, vb;
+
+        if (row > 0L) {
+            lacc += t->ar2;
+            while (lacc < 0L) { lx += lsgn; lacc += t->ar0; }
+            racc += t->ar5;
+            while (racc < 0L) { rx += rsgn; racc += t->ar6; }
+        }
+        if (lx >= rx)
+            continue;
+        ua = b.state.tmr[6] + b.state.tmr[0] * (lx - lx0)
+             + b.state.tmr[1] * row;
+        ub = ua + b.state.tmr[0] * (rx - 1L - lx);
+        va = b.state.tmr[7] + b.state.tmr[2] * (lx - lx0)
+             + b.state.tmr[3] * row;
+        vb = va + b.state.tmr[2] * (rx - 1L - lx);
+        if (ua > *uOut) *uOut = ua;
+        if (ub > *uOut) *uOut = ub;
+        if (va > *vOut) *vOut = va;
+        if (vb > *vOut) *vOut = vb;
+    }
 }
 
 int
@@ -82,7 +121,7 @@ main(void)
 {
     unsigned long trial;
     unsigned long agreed = 0UL, checked = 0UL, accepted = 0UL, boundary = 0UL;
-    unsigned long perspOK = 0UL;
+    unsigned long perspOK = 0UL, magDiff = 0UL;
 
     lim.pitchBytes = 1024UL * 4UL;
     lim.clipX1 = 255UL; lim.clipY1 = 63UL;
@@ -101,7 +140,7 @@ main(void)
         unsigned long bad1 = 0UL, bad2 = 0UL;
         unsigned long h, x0, w;
         int v1, v2, any;
-        long ou, ov;
+        long ou, ov, ou2, ov2, osig, vsig;
         long band;
 
         memset(&b, 0, sizeof b);
@@ -154,8 +193,32 @@ main(void)
         band = (long)(1UL << (19U + (unsigned)rnd(4UL)));
         b.state.tmr[6] = band - (long)rnd(4096UL) + (long)rnd(2048UL);
         b.state.tmr[7] = band - (long)rnd(4096UL) + (long)rnd(2048UL);
-        if (b.state.tmr[6] < 0L) b.state.tmr[6] = 0L;
-        if (b.state.tmr[7] < 0L) b.state.tmr[7] = 0L;
+        /*
+         * A third of them are pushed below nought instead of being clamped to
+         * it.  The clamp was hiding the whole question this file now has to
+         * answer: the reach used to be a signed maximum and is now a
+         * magnitude, and a batch whose numerators never go positive is
+         * exactly where the two could part company.  With every start clamped
+         * non-negative such a batch could not occur.
+         */
+        if ((trial % 3UL) == 0UL) {
+            b.state.tmr[6] = -(long)rnd(4096UL);
+            b.state.tmr[7] = -(long)rnd(4096UL);
+            /*
+             * And with no gradient for half of those, so the numerators stay
+             * negative at every pixel.  With a gradient they climb back above
+             * nought and the signed reach sees the same maximum the magnitude
+             * does -- which made the comparison below vacuous the first time
+             * this ran: not one batch in forty thousand had the two differ.
+             */
+            if ((trial % 6UL) == 0UL) {
+                b.state.tmr[0] = 0L; b.state.tmr[1] = 0L;
+                b.state.tmr[2] = 0L; b.state.tmr[3] = 0L;
+            }
+        } else {
+            if (b.state.tmr[6] < 0L) b.state.tmr[6] = 0L;
+            if (b.state.tmr[7] < 0L) b.state.tmr[7] = 0L;
+        }
 
         /*
          * Half of them in perspective.  Forcing the row walk there is new --
@@ -193,6 +256,8 @@ main(void)
         accepted++;
         if ((b.state.texFlags & OSMGA_HW3D_TEXF_PERSP) != 0UL) perspOK++;
         oracle(t, &ou, &ov, &any);
+        signedOracle(t, &osig, &vsig);
+        ou2 = ou; ov2 = ov;
         if (r.uMax != ou || r.vMax != ov) {
             if (failures < 5)
                 printf("   FAIL  reach u %ld want %ld, v %ld want %ld"
@@ -203,6 +268,40 @@ main(void)
         if (osmgaHW3DTexBiasFor(r.uMax) != OSMGA_HW3D_TEX_BIAS ||
             osmgaHW3DTexBiasFor(r.vMax) != OSMGA_HW3D_TEX_BIAS)
             boundary++;
+        /*
+         * The property the magnitude change exists for, and it has to hold
+         * whatever the negative range is.
+         *
+         * It began life as "the magnitude picks the same bias as the signed
+         * maximum would have", which was true while a negative numerator was
+         * held to a quarter of a texel -- and it stopped being true the moment
+         * the range was widened to a whole texture, which is exactly what the
+         * change was preparing for.  So the assertion is the SAFETY property
+         * rather than the neutrality one: the magnitude is never smaller than
+         * the signed maximum, so the bias it picks is never LARGER, and a
+         * bias that is never larger is a residual that is never negative.
+         */
+        {
+            long su = (osig > 0L) ? osig : 0L;
+            long sv = (vsig > 0L) ? vsig : 0L;
+
+            if (r.uMax < su || r.vMax < sv ||
+                osmgaHW3DTexBiasFor(r.uMax) > osmgaHW3DTexBiasFor(su) ||
+                osmgaHW3DTexBiasFor(r.vMax) > osmgaHW3DTexBiasFor(sv)) {
+                if (failures < 5)
+                    printf("   FAIL  the magnitude reach is smaller, or its"
+                           " bias larger: signed %ld/%ld -> %d/%d, magnitude"
+                           " %ld/%ld -> %d/%d (trial %lu)\n",
+                           su, sv, (int)osmgaHW3DTexBiasFor(su),
+                           (int)osmgaHW3DTexBiasFor(sv),
+                           r.uMax, r.vMax, (int)osmgaHW3DTexBiasFor(r.uMax),
+                           (int)osmgaHW3DTexBiasFor(r.vMax), trial);
+                failures++;
+            }
+            if (osmgaHW3DTexBiasFor(r.uMax) != osmgaHW3DTexBiasFor(su) ||
+                osmgaHW3DTexBiasFor(r.vMax) != osmgaHW3DTexBiasFor(sv))
+                magDiff++;
+        }
     }
 
     printf("   %lu batches, %lu verdicts identical, %lu accepted\n",
@@ -210,6 +309,9 @@ main(void)
     printf("   %lu of the accepted reach past 2^20, so the bias really moves\n",
            boundary);
     printf("   %lu of the accepted were perspective\n", perspOK);
+    printf("   %lu chose a SMALLER bias than the signed reach would have,\n"
+           "   which is the widened negative range doing what it is for\n",
+           magDiff);
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===",
            failures);
