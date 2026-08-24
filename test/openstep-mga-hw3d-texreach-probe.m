@@ -97,6 +97,8 @@ why(unsigned v)
 static IODeviceMaster *master;
 static IOObjectNumber objNum;
 static OSMGAHW3DBatch *batch;
+/* what section 84 asks for; nought for every other section */
+static unsigned long osmgaProbeBiasReq;
 static volatile unsigned long *colour;
 static int failures;
 
@@ -238,6 +240,7 @@ osmgaProbeReadVFar(long v7)
     batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
     batch->state.tmr[2] = 0L; batch->state.tmr[3] = climb;
     setTU(batch, 0L); setTV(batch, v7);
+    batch->state.texBiasReqV = osmgaProbeBiasReq;
     v = fire();
     if (v != OSMGA_HW3D_OK)
         return 99999UL;
@@ -264,6 +267,7 @@ osmgaProbeReadV(long v7)
     batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
     batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
     setTU(batch, 0L); setTV(batch, v7);
+    batch->state.texBiasReqV = osmgaProbeBiasReq;
     v = fire();
     if (v != OSMGA_HW3D_OK)
         return 99999UL;
@@ -5878,6 +5882,80 @@ main(void)
                 }
             }
         }
+    }
+
+    /*
+     * 84. Asking both trapezoids onto one rung closes the seam.
+     *
+     * 82 measured it: on a texture of 2048 rows, the near and far readings
+     * part over 112 units and twelve of sixty-four samples at an ordinary
+     * tiling rate read a different row.  The batch can now ask for a rung,
+     * and the kernel takes the larger of the request and each trapezoid's
+     * own -- so asking for the far one's rung puts both on it.
+     *
+     * Three things are asked, and the third is what stops the first two
+     * being satisfied by a mechanism that simply broke the near reading:
+     *
+     *   covered    request the far rung; the twelve must become none
+     *   uncovered  request a rung BELOW the far one's own; the far
+     *              trapezoid keeps its own and the twelve must remain
+     *   inert      request nothing; byte for byte what 82 measured
+     */
+    {
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / 2048UL);
+        long bnd = 512L * texel;
+        int mode;
+        static const char *mn[3] = { "asking nothing", "asking the far rung",
+                                     "asking below it" };
+        static const unsigned long req[3] = { 0UL, 4UL, 2UL };
+
+        printf("\n84. one rung for both, and the seam\n");
+        for (mode = 0; mode < 3; mode++) {
+            int crossed = 0, tot = 0;
+            long k;
+            int j;
+
+            for (k = 0L; k < 16L; k++) {
+                for (j = 0; j < 4; j++) {
+                    long c = bnd - texel + k * (texel / 16L)
+                             + (long)j * (texel / 4L);
+                    unsigned long near, far;
+
+                    osmgaProbeBiasReq = req[mode];
+                    near = osmgaProbeReadV(c);
+                    far  = osmgaProbeReadVFar(c);
+                    osmgaProbeBiasReq = 0UL;
+                    if (near == 99999UL || far == 99999UL) {
+                        printf("   FAIL  a reading was refused, %s\n",
+                               mn[mode]);
+                        failures++;
+                        continue;
+                    }
+                    tot++;
+                    if (near != far)
+                        crossed++;
+                }
+            }
+            printf("   %-22s %2d of %2d positions differ\n", mn[mode],
+                   crossed, tot);
+            if (mode == 0 && crossed != 12) {
+                printf("   FAIL  asking nothing must reproduce 82's twelve\n");
+                failures++;
+            }
+            if (mode == 1 && crossed != 0) {
+                printf("   FAIL  the far rung was asked for and the seam"
+                       " stayed\n");
+                failures++;
+            }
+            if (mode == 2 && crossed != 12) {
+                printf("   FAIL  a request below the far trapezoid's own must"
+                       " leave it alone\n");
+                failures++;
+            }
+        }
+        if (failures == 0)
+            printf("   ok    the seam closes when both are asked onto one"
+                   " rung, and only then\n");
     }
 
     printf("\n%s (%d failing)\n",

@@ -38,7 +38,7 @@
  * version had to move -- the probe demands an exact match precisely so that
  * a library and a driver disagreeing about where the fields are cannot draw.
  */
-#define OSMGA_HW3D_VERSION      5UL
+#define OSMGA_HW3D_VERSION      6UL
 
 /* The 64 KiB IOMallocLow block is split: the client writes the batch at the
  * start, the kernel builds the command list after it.  28 KiB and 36 KiB
@@ -556,6 +556,32 @@ typedef struct {
      * nine so that anything still reaching for the old index fails the build
      * rather than reading a gradient as an anchor. */
     long tmr[6];
+    /*
+     * A ladder rung the whole batch asks for, per axis.  Nought asks for
+     * nothing; 1 through OSMGA_HW3D_TEX_BANDS mean that rung plus one.
+     *
+     * The bias belongs to the trapezoid and comes from its own reach, so two
+     * neighbours can see the same coordinate through different biases and it
+     * lands in two places.  On a sixteen-texel texture that window is a sixth
+     * of a percent of a texel and nothing ever lands in it; on one of 2048
+     * rows it is nearly a quarter, and twelve of sixty-four samples at an
+     * ordinary tiling rate read a different row -- measured, probe section
+     * 82.  That is a visible seam on a tiled floor.
+     *
+     * Asking for a rung lets a client put every primitive of a surface on the
+     * same one, so they share a residual and the seam goes.  The kernel does
+     * not trust the number: it takes the LARGER of the request and the
+     * trapezoid's own, because a larger rung subtracts less and leaves a
+     * bigger residual, and the residual is what must never go negative.  So
+     * the client can buy continuity with accuracy and cannot sell safety.
+     *
+     * Nought means no request FOR A REASON.  The batch is a mapped buffer
+     * that clients reuse and write field by field, so a field left alone
+     * keeps whatever was in it; nought being the inert value means a stale
+     * one cannot switch the policy on.
+     */
+    unsigned long texBiasReqU;
+    unsigned long texBiasReqV;
 } OSMGAHW3DState;
 
 typedef struct {
@@ -864,6 +890,19 @@ typedef struct {
 } OSMGAHW3DTexBand;
 
 #define OSMGA_HW3D_TEX_BANDS 6      /* 496, 480, 448, 384, 256, 0 */
+#define OSMGA_HW3D_TEX_BIAS_NONE 0UL   /* the inert request */
+
+/*
+ * The largest rung that keeps a trapezoid's farthest coordinate inside the
+ * range the coordinate check admits.
+ *
+ * At a trapezoid's own rung the addend and the bias at that coordinate are
+ * the same ladder value, so the residual there is exactly nought and the
+ * effective coordinate is the reach itself.  A higher rung subtracts less and
+ * the residual stops being nought -- a reach of 2^23 asked to sit on rung
+ * four lands at 8388736, past COORD_MAX.  This is what stops that.
+ */
+unsigned char osmgaHW3DTexBandHeadroom(long reach);
 
 long osmgaHW3DTexBiasOfBand(unsigned char band);
 unsigned char osmgaHW3DTexBandFor(long maxCoord);

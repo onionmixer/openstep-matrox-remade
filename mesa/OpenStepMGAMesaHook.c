@@ -505,12 +505,30 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         batch->state.tmr[3] = tmr[0][3];
         batch->state.tmr[4] = tmr[0][4];
         batch->state.tmr[5] = tmr[0][5];
+        /*
+         * No rung is asked for, and it is written rather than left alone.
+         *
+         * The batch is a mapped buffer this library reuses and fills field by
+         * field, so anything not written keeps what the last submission put
+         * there.  Nought is the inert value precisely so that a stale one
+         * cannot switch the policy on -- but only if it is actually nought,
+         * which is what this line is for.
+         *
+         * Asking for one would put a whole surface's primitives on the same
+         * rung and remove the seam probe section 82 measures.  Deciding WHICH
+         * rung is a policy question this back end has not answered: it sees
+         * one triangle at a time and does not know the surface's reach.
+         */
+        batch->state.texBiasReqU = OSMGA_HW3D_TEX_BIAS_NONE;
+        batch->state.texBiasReqV = OSMGA_HW3D_TEX_BIAS_NONE;
     } else {
         batch->state.texorg = 0UL;
         batch->state.texW = batch->state.texH = batch->state.texPitch = 0UL;
         batch->state.texFormat = 0UL;
         batch->state.texFlags = 0UL;
         memset(batch->state.tmr, 0, sizeof batch->state.tmr);
+        batch->state.texBiasReqU = OSMGA_HW3D_TEX_BIAS_NONE;
+        batch->state.texBiasReqV = OSMGA_HW3D_TEX_BIAS_NONE;
     }
     /* Where the surface is, asked of the one place that decides it -- not
      * worked out again here, where it could disagree. */

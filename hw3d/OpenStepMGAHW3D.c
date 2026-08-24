@@ -131,6 +131,7 @@ osmgaHW3DTexBiasFor(long maxCoord)
 static const long osmgaHW3DBiasLadder[OSMGA_HW3D_TEX_BANDS] = {
     OSMGA_HW3D_TEX_BIAS, 480L, 448L, 384L, 256L, 0L
 };
+static long osmgaHW3DTexAddend(long v);
 
 unsigned char
 osmgaHW3DTexBandFor(long maxCoord)
@@ -141,6 +142,47 @@ osmgaHW3DTexBandFor(long maxCoord)
     if (maxCoord <= (long)(1UL << 23)) return 3U;
     if (maxCoord <= (long)(1UL << 24)) return 4U;
     return 5U;
+}
+
+/*
+ * What the engine ADDS to a coordinate of this magnitude before it picks a
+ * texel.  The same ladder the bias walks, indexed by the value rather than by
+ * the rung -- and a flat 511 below nought, which is measured and is not
+ * symmetric with the positive side.
+ */
+static long
+osmgaHW3DTexAddend(long v)
+{
+    unsigned char r;
+
+    if (v < 0L)
+        return 511L;
+    r = osmgaHW3DTexBandFor(v);
+    if (r >= (unsigned char)OSMGA_HW3D_TEX_BANDS)
+        r = (unsigned char)(OSMGA_HW3D_TEX_BANDS - 1);
+    return osmgaHW3DBiasLadder[r];
+}
+
+unsigned char
+osmgaHW3DTexBandHeadroom(long reach)
+{
+    long a = osmgaHW3DTexAddend(reach);
+    unsigned char r = (unsigned char)(OSMGA_HW3D_TEX_BANDS - 1);
+
+    /*
+     * The largest rung whose bias still leaves the farthest coordinate inside
+     * the range.  Walked down from the top rather than solved, because the
+     * ladder is six entries and a loop cannot get a boundary wrong the way an
+     * inequality can.
+     */
+    for (;;) {
+        if (reach + a - osmgaHW3DTexBiasOfBand(r) <=
+            (long)OSMGA_HW3D_TEX_COORD_MAX)
+            return r;
+        if (r == 0U)
+            return 0U;
+        r--;
+    }
 }
 
 long
@@ -331,6 +373,16 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
             pitch < w || pitch > OSMGA_HW3D_TEX_MAX_PIT)
             return OSMGA_HW3D_E_TEXSIZE;
         if (b->state.texFormat != OSMGA_HW3D_TEXFMT_TW32)
+            return OSMGA_HW3D_E_TEXSIZE;
+        /*
+         * The requested rungs, which are the rung PLUS ONE so that nought is
+         * the inert value -- see the note by the fields.  Anything above the
+         * ladder is a client that has not read the header, and is refused
+         * rather than clamped: clamping would let a wrong number look as
+         * though it had worked.
+         */
+        if (b->state.texBiasReqU > OSMGA_HW3D_TEX_BANDS ||
+            b->state.texBiasReqV > OSMGA_HW3D_TEX_BANDS)
             return OSMGA_HW3D_E_TEXSIZE;
         /*
          * The diagnostic minification selector, and what it costs.
@@ -876,8 +928,47 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                      * nought wants.
                      */
                     if (bands != 0) {
-                        bands[i].u = osmgaHW3DTexBandFor(triU);
-                        bands[i].v = osmgaHW3DTexBandFor(triV);
+                        unsigned char ou = osmgaHW3DTexBandFor(triU);
+                        unsigned char ov = osmgaHW3DTexBandFor(triV);
+
+                        bands[i].u = ou;
+                        bands[i].v = ov;
+                        /*
+                         * A batch may ask every trapezoid onto one rung, so
+                         * that a surface drawn as several of them shares a
+                         * residual and shows no seam.
+                         *
+                         *    used = max(own, min(request, headroom))
+                         *
+                         * The inner min is the range: raising the rung raises
+                         * the residual at the farthest coordinate, which at
+                         * its own rung is exactly nought, and enough of it
+                         * would push that coordinate past what the check
+                         * above admits.
+                         *
+                         * The outer max is not decoration.  A perspective
+                         * numerator may exceed COORD_MAX quite legally -- the
+                         * cap on it is three times that -- so the headroom
+                         * can come out BELOW the trapezoid's own rung, and
+                         * its own rung is always safe because the residual
+                         * there is nought.
+                         */
+                        if (b->state.texBiasReqU != OSMGA_HW3D_TEX_BIAS_NONE) {
+                            unsigned char q =
+                                (unsigned char)(b->state.texBiasReqU - 1UL);
+                            unsigned char h = osmgaHW3DTexBandHeadroom(triU);
+
+                            if (q > h) q = h;
+                            if (q > ou) bands[i].u = q;
+                        }
+                        if (b->state.texBiasReqV != OSMGA_HW3D_TEX_BIAS_NONE) {
+                            unsigned char q =
+                                (unsigned char)(b->state.texBiasReqV - 1UL);
+                            unsigned char h = osmgaHW3DTexBandHeadroom(triV);
+
+                            if (q > h) q = h;
+                            if (q > ov) bands[i].v = q;
+                        }
                     }
                     ;
             }
