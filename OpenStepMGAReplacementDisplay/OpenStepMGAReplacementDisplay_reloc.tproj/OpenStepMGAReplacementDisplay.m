@@ -7624,8 +7624,20 @@ osmgaProbeVramExtent(unsigned long fbPhysical, unsigned long visibleEnd,
         return;
     }
 
-    /* Save and write, one page at a time: the alias is mapped and released
-     * around every access rather than holding fifteen megabytes at once. */
+    /*
+     * SAVE EVERYTHING FIRST, and only then write anything.
+     *
+     * These were one pass -- save this word, write its signature, move on --
+     * and that is wrong in exactly the case the probe exists to find.  If a
+     * later candidate aliases onto an earlier one, its "original" content is
+     * the signature already written there, and putting that back at the end
+     * leaves a probe signature in video memory instead of what was in it.
+     * The probe would corrupt the boards it is meant to identify.  Two passes
+     * cost two more map/unmap cycles per candidate and nothing else.
+     *
+     * The alias is mapped and released around every access rather than
+     * holding fifteen megabytes of it at once.
+     */
     for (i = 0UL; i < n; i++) {
         vm_address_t alias = 0;
         unsigned long len = 0UL;
@@ -7638,8 +7650,22 @@ osmgaProbeVramExtent(unsigned long fbPhysical, unsigned long visibleEnd,
                                   &alias, &len, &p) != IO_R_SUCCESS)
             continue;
         saved[i] = *p;
-        *p = 0x5A000000UL | (off[i] >> 8);
         held[i] = 1;
+        IOUnmapPhysicalFromIOTask(alias, len);
+    }
+    for (i = 0UL; i < n; i++) {
+        vm_address_t alias = 0;
+        unsigned long len = 0UL;
+        volatile unsigned long *p = 0;
+
+        if (!held[i])
+            continue;
+        if (osmgaMapUncachedBlock(fbPhysical, off[i], off[i] + 4UL,
+                                  &alias, &len, &p) != IO_R_SUCCESS) {
+            held[i] = 0;
+            continue;
+        }
+        *p = 0x5A000000UL | (off[i] >> 8);
         IOUnmapPhysicalFromIOTask(alias, len);
     }
 
@@ -7682,6 +7708,37 @@ osmgaProbeVramExtent(unsigned long fbPhysical, unsigned long visibleEnd,
         }
         *p = saved[i];
         IOUnmapPhysicalFromIOTask(alias, len);
+    }
+
+    /*
+     * And check that the restore took.  A restore that silently did not is
+     * the one failure this whole routine must not have, since what it would
+     * leave behind is a probe signature in somebody's video memory.
+     */
+    {
+        unsigned long bad = 0UL;
+
+        for (i = 0UL; i < n; i++) {
+            vm_address_t alias = 0;
+            unsigned long len = 0UL;
+            volatile unsigned long *p = 0;
+
+            if (!held[i])
+                continue;
+            if (osmgaMapUncachedBlock(fbPhysical, off[i], off[i] + 4UL,
+                                      &alias, &len, &p) != IO_R_SUCCESS) {
+                bad++;
+                continue;
+            }
+            if (*p != saved[i]) {
+                IOLog("OpenStepMGA M1-4F0: %lu did NOT go back -- holds "
+                      "%08lx, wanted %08lx\n", off[i], *p, saved[i]);
+                bad++;
+            }
+            IOUnmapPhysicalFromIOTask(alias, len);
+        }
+        IOLog("OpenStepMGA M1-4F0: restore verified, %lu of %lu wrong\n",
+              bad, n);
     }
 
     highest = 0UL;
