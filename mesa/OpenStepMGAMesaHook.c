@@ -877,21 +877,23 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
     /*
      * Texturing, when the state is one that can be reproduced.
      *
-     * Blending is still refused alongside it, and the reason has changed.  It
-     * used to be structural: a split textured triangle went out as two
-     * batches, so a refused second half left the first drawn and the software
-     * redraw wrote those pixels a second time -- harmless only because
-     * without blending the second write writes the same value.
+     * Blending used to be refused alongside it, and the reason was
+     * structural: a split textured triangle went out as two batches, so a
+     * refused second half left the first drawn and the software redraw wrote
+     * those pixels a second time -- harmless only because without blending
+     * the second write writes the same value.
      *
-     * The anchors are per trapezoid now and the whole triangle goes in one
-     * batch, so a refusal draws nothing.  What is left before this opens is
-     * evidence, not structure: probe section 79 has to show that a refused
-     * second trapezoid left the first one's pixels AND its depth untouched,
-     * with a positive control proving the first trapezoid could have drawn.
+     * The anchors are per trapezoid now, the whole triangle goes in one
+     * batch, and a refusal draws nothing.  Measured, not argued: probe
+     * section 79 refuses a deliberately bad second trapezoid and finds the
+     * first one's colour AND depth untouched, with a positive control
+     * proving that trapezoid does write both when it is submitted alone.
+     *
+     * Which alpha the blend then uses is settled above, and settled by
+     * measurement too -- section 81, which had to turn the combiner's own
+     * modulate on before the two candidate readings said different things.
      */
     if ((ctx->RasterMask & (GLuint)TEXTURE_BIT) != 0) {
-        if ((ctx->RasterMask & (GLuint)BLEND_BIT) != 0)
-            return NULL;
         if (!osmgaMesaTexStateOK(ctx))
             return NULL;
     }

@@ -90,6 +90,74 @@ maketexRGBA(GLuint *id)
                  GL_RGBA, GL_UNSIGNED_BYTE, px);
 }
 
+/*
+ * The blend scenes want their own RGBA texture.
+ *
+ * maketexRGBA's alpha runs 17..182, and the stage's product under modulate
+ * takes that down to 2 against the vertex alpha used here -- which is an
+ * endpoint in all but name, and an endpoint is where a wrong rule can agree
+ * with a right one by accident.  A floor of 64 keeps every alpha in the four
+ * scenes between 24 and 229; python checked the whole 16 by 16 grid.
+ *
+ * The colours are the same self-naming texels, so a blended pixel can still
+ * be traced back through the unblended pass.
+ */
+static void
+maketexBlend(GLuint *id)
+{
+    static GLubyte px[TD * TD * 4];
+    int x, y;
+
+    for (y = 0; y < TD; y++)
+        for (x = 0; x < TD; x++) {
+            px[(y * TD + x) * 4 + 0] = (GLubyte)(x * 16 + 8);
+            px[(y * TD + x) * 4 + 1] = (GLubyte)(y * 16 + 4);
+            px[(y * TD + x) * 4 + 2] = (GLubyte)(x + y);
+            px[(y * TD + x) * 4 + 3] = (GLubyte)(x * 8 + y * 3 + 64);
+        }
+    glGenTextures(1, id);
+    glBindTexture(GL_TEXTURE_2D, *id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, TD, TD, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, px);
+}
+
+/*
+ * The quad the blend scenes draw: a texture coordinate at each corner, and a
+ * colour AND alpha that both vary.
+ *
+ * The alpha varies because a flat one measures a0 and says nothing about adx
+ * and ady.  The colour varies and is not white because RGB replace and RGB
+ * modulate have the same alpha at every pixel -- GL says so -- and colour is
+ * the only thing that separates them; a white vertex colour makes modulate
+ * the identity and the two scenes become one.
+ *
+ * Alpha runs 96 to 224 left to right, which python picked: with the blend
+ * texture's own 64..229 it keeps the stage's product between 24 and 201 and
+ * away from either endpoint.
+ */
+static void
+blendquad(double x0, double y0, double x1, double y1)
+{
+    glBegin(GL_TRIANGLES);
+      glColor4ub(0xC0, 0x50, 0x30, 96);
+      glTexCoord2f(0.0f, 0.0f); glVertex2d(x0, y0);
+      glColor4ub(0x30, 0xB0, 0x60, 224);
+      glTexCoord2f(1.0f, 0.0f); glVertex2d(x1, y0);
+      glColor4ub(0x40, 0x60, 0xD0, 224);
+      glTexCoord2f(1.0f, 1.0f); glVertex2d(x1, y1);
+      glColor4ub(0xC0, 0x50, 0x30, 96);
+      glTexCoord2f(0.0f, 0.0f); glVertex2d(x0, y0);
+      glColor4ub(0x40, 0x60, 0xD0, 224);
+      glTexCoord2f(1.0f, 1.0f); glVertex2d(x1, y1);
+      glColor4ub(0x90, 0x80, 0x20, 96);
+      glTexCoord2f(0.0f, 1.0f); glVertex2d(x0, y1);
+    glEnd();
+}
+
 static void
 quad(double x0, double y0, double x1, double y1)
 {
@@ -578,6 +646,113 @@ main(int argc, char **argv)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         }
+        /*
+         * The four blend scenes, and their unblended twins.
+         *
+         *      bl<f><e>     blending ON  over a painted destination
+         *      bl<f><e>n    the same geometry with blending OFF
+         *
+         * f is 'a' for the RGBA texture and 'r' for the RGB one; e is 'm' for
+         * GL_MODULATE and 'r' for GL_REPLACE.
+         *
+         * The unblended twin is the oracle's INPUT, not a second opinion: it
+         * is the exact colour and alpha the blend consumes, so the scorer
+         * never has to model the geometry, the sampling or the addend ladder.
+         * What that cannot catch is the two passes being wrong the same way,
+         * which is why the scorer requires the hardware and software twins to
+         * agree with each other before it will score anything at all.
+         *
+         * The destination is PAINTED rather than cleared, so it is not the
+         * clear colour in any channel and its alpha is not the clear alpha:
+         * a blend that ignored the destination, or read its alpha from the
+         * wrong place, would otherwise land on a plausible number.
+         */
+        if (argc > 2 && strncmp(argv[2], "bl", 2) == 0 &&
+            (argv[2][2] == 'a' || argv[2][2] == 'r' || argv[2][2] == 'c')) {
+            GLuint bt;
+            int plain   = (argv[2][2] == 'c');   /* no texture: the colour */
+            int rgba    = (argv[2][2] == 'a');
+            int mod     = (!plain && argv[2][3] == 'm');
+            int blended = (plain ? (argv[2][3] != 'n')
+                                 : (argv[2][4] != 'n'));
+            unsigned long d0, s1, u0, c0;
+
+            /*
+             * SMOOTH, against this file's global GL_FLAT.
+             *
+             * A flat quad shows which selector was chosen and nothing about
+             * the alpha interpolator: with one alpha per triangle only a0 is
+             * exercised, and adx and ady could both be nought unnoticed.
+             * Measured before this line existed -- the alpha came back 96
+             * over one triangle and 224 over the other, which is the two
+             * vertex alphas and not a gradient.
+             */
+            glShadeModel(GL_SMOOTH);
+
+            if (plain)
+                glDisable(GL_TEXTURE_2D);
+            else {
+                if (rgba)
+                    maketexBlend(&bt);
+                glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE,
+                          mod ? GL_MODULATE : GL_REPLACE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                                GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+                                GL_NEAREST);
+            }
+
+            /*
+             * The destination through glClear, not by writing the buffer.
+             *
+             * Painting app[] directly was tried and is wrong: the blend came
+             * out as though the destination alpha were nought -- 196 where
+             * As*As/255 + Ad*(1 - As/255) wants 216 -- because a buffer
+             * written behind Mesa's back is not necessarily where Mesa keeps
+             * the alpha it blends against.  Clearing goes through Mesa and
+             * sets whatever it actually reads.
+             *
+             * Nothing here is a default: the alpha is not the clear alpha
+             * this file uses elsewhere, and no channel equals another.
+             */
+            glClearColor(0x20 / 255.0f, 0x40 / 255.0f, 0x60 / 255.0f,
+                         0xA0 / 255.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glClearColor(0x10 / 255.0f, 0x20 / 255.0f, 0x30 / 255.0f, 1.0f);
+
+            if (blended) {
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            } else
+                glDisable(GL_BLEND);
+
+            d0 = OSMGAMesaHookDrawn();
+            s1 = OSMGAMesaHookSoftware();
+            u0 = OSMGAMesaHookUnsupported();
+            c0 = OSMGAMesaHookDeclined();
+            blendquad(40.0, 40.0, 168.0, 168.0);
+            glFinish();
+            /*
+             * On stderr, so stdout stays exactly the pixel lines the scorer
+             * reads.  A pass that fell back to software has to be visible as
+             * itself and must never be scored as a hardware result.
+             */
+            fprintf(stderr, "# %s drawn %lu software %lu unsupported %lu"
+                    " declined %lu destination %08lx\n", argv[2],
+                    OSMGAMesaHookDrawn() - d0,
+                    OSMGAMesaHookSoftware() - s1,
+                    OSMGAMesaHookUnsupported() - u0,
+                    OSMGAMesaHookDeclined() - c0,
+                    app[0]);
+            glDisable(GL_BLEND);
+            glEnable(GL_TEXTURE_2D);
+            for (y = 40; y < 168; y++)
+                for (x = 40; x < 168; x++)
+                    printf("P %ld %ld %lu\n", x, y, app[y * W + x]);
+            return 0;
+        }
         if (argc > 2 && strcmp(argv[2], "lin") == 0) {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
                             GL_CLAMP_TO_EDGE);
@@ -691,7 +866,7 @@ main(int argc, char **argv)
          * software.
          */
         cases[2].name = "the default mipmapped min filter";
-        cases[3].name = "blending on";
+        cases[3].name = "blending with factors the engine has not got";
         /*
          * Linear IS taken now, but only with CLAMP_TO_EDGE: under a linear
          * filter GL_CLAMP blends a border colour into the outer half texel
@@ -706,7 +881,19 @@ main(int argc, char **argv)
             if (k == 2)
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
                                 GL_NEAREST_MIPMAP_LINEAR);
-            if (k == 3) glEnable(GL_BLEND);
+            /*
+             * Blending is TAKEN now; what is refused is a blend the engine
+             * cannot do.  GL_ONE/GL_ZERO would change the RGB factors and the
+             * alpha ones together, so one refusal would stand in for two
+             * checks; the separate call changes only the alpha pair and
+             * leaves the RGB pair the one the chooser accepts.  A refusal
+             * here is therefore the ALPHA factor check and nothing else.
+             */
+            if (k == 3) {
+                glEnable(GL_BLEND);
+                glBlendFuncSeparateEXT(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
+                                       GL_ONE, GL_ZERO);
+            }
             if (k == 4) {
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -719,12 +906,43 @@ main(int argc, char **argv)
             if (k == 2)
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
                                 GL_NEAREST);
-            if (k == 3) glDisable(GL_BLEND);
+            if (k == 3) {
+                glDisable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            }
             if (k == 4) {
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
             }
         }
+    }
+
+    /*
+     * The positive twin of case three, which is what makes it a test of the
+     * FACTORS rather than of blending.
+     *
+     * Same scene, same texture, same everything -- only the alpha factors
+     * differ, and this pair is the one the chooser accepts.  Without this the
+     * refusal above could be any of the other reasons a state is turned away
+     * and would look like the factor check working.
+     */
+    {
+        unsigned long before, soft, uns;
+
+        glClear(GL_COLOR_BUFFER_BIT);
+        before = OSMGAMesaHookDrawn();
+        soft = OSMGAMesaHookSoftware();
+        uns = OSMGAMesaHookUnsupported();
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        quad(40.0, 40.0, 168.0, 168.0);
+        glFinish();
+        glDisable(GL_BLEND);
+        say("the same state with the factors it does have",
+            OSMGAMesaHookDrawn() > before, 0);
+        say("and it did not fall back",
+            OSMGAMesaHookSoftware() == soft &&
+            OSMGAMesaHookUnsupported() == uns, 0);
     }
 
     /* and linear WITH the edge clamp is taken */

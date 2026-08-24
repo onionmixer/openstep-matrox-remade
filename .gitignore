@@ -28,3 +28,4 @@ sym/
 build/mesa/
 scratch-cov/
 scratch-att/
+build/blend/
