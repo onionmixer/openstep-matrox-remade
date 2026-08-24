@@ -1152,6 +1152,12 @@ osmgaStormInitState(vm_address_t base, unsigned long stridePixels,
  * not make cached reads coherent with engine writes.  IOMapPhysicalIntoIOTask
  * is known-uncached from H1 S2 (VCOUNT read through it increments).
  */
+/* Defined far below, beside the other probes, but called from the mode
+ * programming while the screen is blanked. */
+static void osmgaProbeVramExtent(unsigned long fbPhysical,
+                                 unsigned long visibleEnd,
+                                 volatile unsigned char *mmio);
+
 static IOReturn
 osmgaMapUncachedBlock(unsigned long fbPhysical, unsigned long byteStart,
                       unsigned long byteEnd, vm_address_t *outAlias,
@@ -2684,6 +2690,16 @@ static IODisplayInfo osmgaModeTemplate = {
           (f->isPseudo && paletteValid) ? "colormap" :
           (f->ioBpp == IO_15BitsPerPixel) ? "15bpp-32step" :
           (f->grayLevels > 1) ? "gray-quantized" : "linear");
+
+    /*
+     * The one moment this driver owns the aperture and nothing is scanned
+     * out of it: the mode is programmed and the screen is still blanked.
+     * Measures only -- see the note on the function.
+     */
+    osmgaProbeVramExtent(frameBufferPhysical,
+                         (unsigned long)r->width * (unsigned long)f->bytesPerPixel *
+                             (unsigned long)r->height,
+                         base);
 
     /* re-latch CRTCEXT0 (display start) */
     osmgaWriteCrtcExt(base, 0, ext[0]);
@@ -7537,6 +7553,153 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                        MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL))
         return 0UL;
     return pos;
+}
+
+/*
+ * M1-4F0 -- how much of the aperture is real, DISTINCT memory.
+ *
+ * MEASURES ONLY.  Nothing downstream moves this boot: OSMGA_S1_VRAM_PROVEN
+ * stays where it is and the offscreen window keeps its present size.  The
+ * point is to have a number before deciding anything, the same way the
+ * client-lifetime question was settled.
+ *
+ * WHY IT IS WORTH ASKING.  OSMGA_S1_VRAM_PROVEN is 7 MiB and everything is
+ * bounded by it -- the offscreen window comes out at 3 MiB, and the Mesa back
+ * end carves colour, depth and a texture arena out of that.  Measured: the
+ * arena is empty at 1024x768, so textures are refused at the display's own
+ * size for no reason except that nobody ever established how much memory the
+ * board has.  Sixteen megabytes are mapped.
+ *
+ * WHY NOT X.ORG'S PROBE.  MGACountRam writes a byte at the top of each step
+ * and takes the highest one that reads back.  That asks whether a write
+ * STUCK.  If the aperture aliases rather than dropping accesses beyond the
+ * installed memory, the write at 16 MiB lands at 8 MiB, the read at 16 MiB
+ * reads it back, and an 8 MiB card is reported as 16.  The failure is silent
+ * and what it would corrupt is textures.  So this asks a different question:
+ * is every candidate DISTINCT?  Each gets a signature that encodes its own
+ * offset, they are all written before any is read, and a candidate counts
+ * only if it reads back its own.  Aliasing then shows up as one candidate
+ * holding another's signature, which the stuck-write test cannot see.
+ *
+ * THROUGH THE UNCACHED ALIAS, NOT THE FRAMEBUFFER MAPPING.  This driver
+ * already records that the framebuffer mapping's cache attribute is unproven
+ * and that `volatile` does not make it coherent (see osmgaMapUncachedBlock).
+ * A probe run through it could pass on the processor's own cache while video
+ * memory never took the write at all -- which is the same silent failure by
+ * another route.  Cross-review caught this; the first draft used the ordinary
+ * mapping.
+ *
+ * WHEN.  After the mode is programmed and while the screen is still BLANKED,
+ * which is the only moment when this driver owns the aperture and nothing is
+ * being scanned out of it.  Before that the console may still be live in it,
+ * and "nothing of OURS is displayed" is not the same claim.
+ *
+ * WHAT IT DOES NOT PROVE.  Two words a megabyte cannot exclude holes, a dead
+ * address line inside an interval, or a partial decode.  It says what it
+ * measured: the sampled addresses are distinct and hold what was put in them.
+ */
+#define OSMGA_VRAM_PROBE_MAX   32
+
+static void
+osmgaProbeVramExtent(unsigned long fbPhysical, unsigned long visibleEnd,
+                     volatile unsigned char *mmio)
+{
+    unsigned long off[OSMGA_VRAM_PROBE_MAX];
+    unsigned long saved[OSMGA_VRAM_PROBE_MAX];
+    unsigned long got[OSMGA_VRAM_PROBE_MAX];
+    int held[OSMGA_VRAM_PROBE_MAX];
+    unsigned long n = 0UL, i, mb, firstMb, highest;
+    unsigned long meg = 1024UL * 1024UL;
+
+    /* Start a whole megabyte above anything the mode can display, so that a
+     * mistake cannot land on the picture even though it is blanked. */
+    firstMb = (visibleEnd / meg) + 2UL;
+    for (mb = firstMb; mb < 16UL && n + 2UL <= OSMGA_VRAM_PROBE_MAX; mb++) {
+        off[n++] = mb * meg;                    /* first word of the MiB */
+        off[n++] = (mb + 1UL) * meg - 4UL;      /* and its last */
+    }
+    if (n == 0UL) {
+        IOLog("OpenStepMGA M1-4F0: nothing above the visible %lu bytes to "
+              "probe\n", visibleEnd);
+        return;
+    }
+
+    /* Save and write, one page at a time: the alias is mapped and released
+     * around every access rather than holding fifteen megabytes at once. */
+    for (i = 0UL; i < n; i++) {
+        vm_address_t alias = 0;
+        unsigned long len = 0UL;
+        volatile unsigned long *p = 0;
+
+        held[i] = 0;
+        saved[i] = 0UL;
+        got[i] = 0UL;
+        if (osmgaMapUncachedBlock(fbPhysical, off[i], off[i] + 4UL,
+                                  &alias, &len, &p) != IO_R_SUCCESS)
+            continue;
+        saved[i] = *p;
+        *p = 0x5A000000UL | (off[i] >> 8);
+        held[i] = 1;
+        IOUnmapPhysicalFromIOTask(alias, len);
+    }
+
+    /* A register read and a wait, for the same reason X.Org does it: to give
+     * anything posted or combined somewhere a chance to land before it is
+     * read back. */
+    (void)osmgaR32(mmio, MGA_ENGSTATUS);
+    IODelay(1000);
+
+    for (i = 0UL; i < n; i++) {
+        vm_address_t alias = 0;
+        unsigned long len = 0UL;
+        volatile unsigned long *p = 0;
+
+        if (!held[i])
+            continue;
+        if (osmgaMapUncachedBlock(fbPhysical, off[i], off[i] + 4UL,
+                                  &alias, &len, &p) != IO_R_SUCCESS) {
+            held[i] = 0;
+            continue;
+        }
+        got[i] = *p;
+        IOUnmapPhysicalFromIOTask(alias, len);
+    }
+
+    /* Put back everything that was taken, including where the readback
+     * failed -- the write happened whatever the read did. */
+    for (i = 0UL; i < n; i++) {
+        vm_address_t alias = 0;
+        unsigned long len = 0UL;
+        volatile unsigned long *p = 0;
+
+        if (!held[i])
+            continue;
+        if (osmgaMapUncachedBlock(fbPhysical, off[i], off[i] + 4UL,
+                                  &alias, &len, &p) != IO_R_SUCCESS) {
+            IOLog("OpenStepMGA M1-4F0: could NOT restore %lu -- that word is "
+                  "left holding a probe signature\n", off[i]);
+            continue;
+        }
+        *p = saved[i];
+        IOUnmapPhysicalFromIOTask(alias, len);
+    }
+
+    highest = 0UL;
+    for (i = 0UL; i < n; i++) {
+        unsigned long want = 0x5A000000UL | (off[i] >> 8);
+        int ok = held[i] && got[i] == want;
+
+        IOLog("OpenStepMGA M1-4F0: %8lu  wrote %08lx  read %08lx  %s\n",
+              off[i], want, got[i],
+              !held[i] ? "NOT PROBED" : (ok ? "distinct" : "WRONG"));
+        if (ok && off[i] > highest)
+            highest = off[i];
+        else if (!ok)
+            break;                      /* the first failure ends the run */
+    }
+    IOLog("OpenStepMGA M1-4F0: sampled distinct up to %lu bytes (%lu MiB); "
+          "the proven bound stays %lu and nothing below has moved\n",
+          highest, (highest + 4UL) / meg, OSMGA_S1_VRAM_PROVEN);
 }
 
 /*
