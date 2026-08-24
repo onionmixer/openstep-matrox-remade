@@ -6044,6 +6044,150 @@ main(void)
         }
     }
 
+    /*
+     * 86. The other blend factors, and where the engine saturates.
+     *
+     * The chooser takes one pair, SRC_ALPHA over ONE_MINUS_SRC_ALPHA, and the
+     * engine's field has nine source factors and eight destination ones that
+     * look like GL 1.1's own sets in GL's own order.  Before Mesa is taught
+     * to ask for them, the register is asked directly -- the arithmetic and
+     * the saturation are hardware facts and belong here, not in a GL test.
+     *
+     * The pairs are chosen so that python's answers differ from each other,
+     * and ONE over ONE is chosen so that the red channel OVERFLOWS: source
+     * c08040 over destination 804020 sums to 0x140 in red, so
+     *
+     *     saturating   ff c0 60
+     *     wrapping     40 c0 60
+     *
+     * and the two are not confusable.  Nothing in the tree records which it
+     * is, and a wrapped highlight is a black hole where a white one belongs.
+     */
+    {
+        static const struct { unsigned long ac; const char *n;
+                              unsigned long want; } bf[6] = {
+            { 0x00000111UL, "ONE       ONE      ", 0x00FFC060UL },
+            { 0x00000101UL, "ONE       ZERO     ", 0x00C08040UL },
+            { 0x00000110UL, "ZERO      ONE      ", 0x00804020UL },
+            { 0x00000102UL, "DST_COLOR ZERO     ", 0x00602008UL },
+            { 0x00000120UL, "ZERO      SRC_COLOR", 0x00602008UL },
+            { 0x00000154UL, "SRC_ALPHA 1-SRC_A  ", 0x00A06030UL }
+        };
+        unsigned long rr, cc;
+        int j;
+
+        printf("\n86. the blend factors at the register, and saturation\n");
+        printf("     source c08040 over destination 804020,"
+               " fragment alpha 128\n");
+        for (j = 0; j < 6; j++) {
+            OSMGAHW3DTri *t;
+            unsigned long got;
+            unsigned v;
+
+            /* a texture of one solid colour, so the source is exactly it */
+            for (rr = 0UL; rr < 64UL; rr++)
+                for (cc = 0UL; cc < 64UL; cc++)
+                    tex[rr * 64UL + cc] = 0x80C08040UL;
+            for (rr = 0UL; rr < 4UL; rr++)
+                for (cc = 0UL; cc < 16UL; cc++)
+                    colour[rr * STRIDE_DW + cc] = 0x00804020UL;
+
+            t = setup(1024UL, 0UL, 8UL, 4UL, 0L, OSMGA_HW3D_TEXF_TEXALPHA);
+            batch->state.texW = 64UL; batch->state.texH = 64UL;
+            batch->state.texPitch = 64UL;
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            setTU(batch, 0L); setTV(batch, 0L);
+            t->alphactrl = bf[j].ac;
+            t->a0 = 128UL << 15;      /* the fragment alpha the pairs use */
+            t->adx = 0UL; t->ady = 0UL;
+            v = fire();
+            got = (v != OSMGA_HW3D_OK) ? 0xFFFFFFFFUL
+                                       : (pixat(0UL, 2UL) & 0xFFFFFFUL);
+            printf("   %s -> %06lx   python %06lx  %s\n", bf[j].n, got,
+                   bf[j].want, (got == bf[j].want) ? "" : "  <-- DIFFERS");
+            if (v != OSMGA_HW3D_OK) {
+                printf("   FAIL  refused (%u)\n", v);
+                failures++;
+            } else if (got != bf[j].want) {
+                if (j == 0 && got == 0x0040C060UL) {
+                    printf("   FAIL  ONE over ONE WRAPPED instead of"
+                           " saturating -- Mesa must not offer it\n");
+                    failures++;
+                } else {
+                    printf("   FAIL  the engine does not compute what python"
+                           " says for this pair\n");
+                    failures++;
+                }
+            }
+        }
+        printf("     the first pair overflows red on purpose:"
+               " ff means it saturates, 40 means it wraps\n");
+
+        /*
+         * And WHERE the rounding happens.
+         *
+         * "Clamped per product" against "clamped after the sum" cannot be
+         * told apart -- every legal factor is at most one, so no single
+         * product can pass 255.  What can be told apart is whether each
+         * product is ROUNDED before they are added.  With a source and a
+         * destination of 1 and both alphas at 128:
+         *
+         *     one rounding at the end    (1*128 + 1*128 + 127)/255 = 1
+         *     a rounding per product     round(128/255)*2          = 2
+         *
+         * The transparency pair was fitted over 262144 samples and said one
+         * rounding; this asks the same question of a pair that does not go
+         * through that path.
+         */
+        {
+            OSMGAHW3DTri *t;
+            unsigned long got;
+            unsigned v;
+
+            for (rr = 0UL; rr < 64UL; rr++)
+                for (cc = 0UL; cc < 64UL; cc++)
+                    tex[rr * 64UL + cc] = 0x80010101UL;
+            for (rr = 0UL; rr < 4UL; rr++)
+                for (cc = 0UL; cc < 16UL; cc++)
+                    colour[rr * STRIDE_DW + cc] = 0x00010101UL;
+            t = setup(1024UL, 0UL, 8UL, 4UL, 0L, OSMGA_HW3D_TEXF_TEXALPHA);
+            batch->state.texW = 64UL; batch->state.texH = 64UL;
+            batch->state.texPitch = 64UL;
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            setTU(batch, 0L); setTV(batch, 0L);
+            t->alphactrl = 0x00000164UL;   /* SRC_ALPHA over DST_ALPHA */
+            t->a0 = 128UL << 15;
+            t->adx = 0UL; t->ady = 0UL;
+            /* the destination alpha the pair reads */
+            for (rr = 0UL; rr < 4UL; rr++)
+                for (cc = 0UL; cc < 16UL; cc++)
+                    colour[rr * STRIDE_DW + cc] = 0x80010101UL;
+            v = fire();
+            got = (v != OSMGA_HW3D_OK) ? 0xFFFFFFFFUL
+                                       : (pixat(0UL, 2UL) & 0xFFUL);
+            printf("   SRC_ALPHA DST_ALPHA on 1 over 1, both alphas 128"
+                   " -> %lu\n", got);
+            printf("     one rounding at the end gives 1, a rounding per"
+                   " product gives 2\n");
+            if (v != OSMGA_HW3D_OK) {
+                printf("   FAIL  refused (%u)\n", v);
+                failures++;
+            } else if (got == 1UL)
+                printf("   ok    one rounding, the same as the pair that was"
+                       " fitted\n");
+            else if (got == 2UL) {
+                printf("   FAIL  it rounds each product -- the blend oracle"
+                       " is wrong for this pair\n");
+                failures++;
+            } else {
+                printf("   FAIL  neither: %lu\n", got);
+                failures++;
+            }
+        }
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;
