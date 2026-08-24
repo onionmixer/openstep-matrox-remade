@@ -600,8 +600,18 @@ OSMGAMesaBufferPresentMode(int on)
  * nothing crosses the bus.  Returns 0 on success; otherwise the kernel's
  * verdict is in *outVerdict for the caller to print.
  */
+/*
+ * The rect form exists for a window HALF off the screen: the caller clips
+ * the picture against the screen itself and presents only the part that
+ * fits, instead of skipping the frame and leaving the window empty.  srcY
+ * counts memory rows from the surface's row nought, which the callers lay
+ * out as the visual top, so clipping the top of the picture and stepping
+ * srcY are the same act.
+ */
 int
-OSMGAMesaBufferPresent(long dstX, long dstY, unsigned long *outVerdict)
+OSMGAMesaBufferPresentRect(unsigned long srcX, unsigned long srcY,
+                           unsigned long w, unsigned long h,
+                           long dstX, long dstY, unsigned long *outVerdict)
 {
     OSMGAHW3DPresentBlock blk;
     int fd = OSMGAMesaProbeDeviceFd();
@@ -613,10 +623,10 @@ OSMGAMesaBufferPresent(long dstX, long dstY, unsigned long *outVerdict)
     blk.magic = OSMGA_HW3D_PRESENT_MAGIC;
     blk.srcOrg = bufOrigin;
     blk.srcStride = bufStride;
-    blk.srcX = 0UL;
-    blk.srcY = 0UL;
-    blk.w = bufWidth;
-    blk.h = bufHeight;
+    blk.srcX = srcX;
+    blk.srcY = srcY;
+    blk.w = w;
+    blk.h = h;
     blk.dstX = (unsigned long)dstX;
     blk.dstY = (unsigned long)dstY;
     blk.status = 0UL;
@@ -626,6 +636,13 @@ OSMGAMesaBufferPresent(long dstX, long dstY, unsigned long *outVerdict)
     if (outVerdict)
         *outVerdict = blk.verdict;
     return (blk.status == 0UL) ? 0 : -1;
+}
+
+int
+OSMGAMesaBufferPresent(long dstX, long dstY, unsigned long *outVerdict)
+{
+    return OSMGAMesaBufferPresentRect(0UL, 0UL, bufWidth, bufHeight,
+                                      dstX, dstY, outVerdict);
 }
 
 void

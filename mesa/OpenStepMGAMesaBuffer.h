@@ -103,6 +103,10 @@ void OSMGAMesaBufferFill(unsigned long word);
  */
 void OSMGAMesaBufferPresentMode(int on);
 int  OSMGAMesaBufferPresent(long dstX, long dstY, unsigned long *outVerdict);
+int  OSMGAMesaBufferPresentRect(unsigned long srcX, unsigned long srcY,
+                                unsigned long w, unsigned long h,
+                                long dstX, long dstY,
+                                unsigned long *outVerdict);
 
 /* Something has been drawn; the next mirror has work to do. */
 void OSMGAMesaBufferSoiled(void);

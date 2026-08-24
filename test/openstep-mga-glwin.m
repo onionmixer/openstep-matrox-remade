@@ -70,7 +70,10 @@
     unsigned long *buf;
     double angle;
     float screenW, screenH;
-    unsigned long frames, skips;
+    unsigned long frames, skips, moveSkips;
+    float lastX, lastY;
+    int havePos;
+    int moving;
     double sumMs, minMs, maxMs, lastReport;
     int presenting;
 }
@@ -148,21 +151,63 @@
     long dstX, dstY;
     double t0, t1, ms, nowT;
     unsigned long verdict = 0UL;
+    unsigned long srcX, srcY;
+    long pw, ph;
     double cx = GLW / 2.0, cy = GLH / 2.0, r = 180.0;
 
     if (!presenting)
         return;
     if (![win isVisible] || [win isMiniaturized] || [NSApp isHidden])
         return;
+    if (moving) {
+        moveSkips++;
+        return;
+    }
 
     p = [view convertPoint:NSMakePoint(0, 0) toView:nil];
     p = [win convertBaseToScreen:p];
+
+    /*
+     * PRESENT ONLY WHEN THE WINDOW IS STANDING STILL.
+     *
+     * Title-bar drags on this system are performed by the WINDOW SERVER,
+     * which moves the on-screen pixels itself and repaints what the window
+     * vacated.  Our present bypasses the server, so a stamp issued at a
+     * position the server has already left lands on repainted screen and
+     * nothing ever erases it -- that is the trail the first version drew
+     * whenever a drag outran the position the app could see.
+     *
+     * So a frame is presented only when the position matches the PREVIOUS
+     * tick's.  While the window is in motion nothing is stamped at all --
+     * the server's own blit-move carries the last presented picture along
+     * with the window, so it still follows perfectly, merely frozen -- and
+     * the animation resumes one tick after the window settles.
+     */
+    if (!havePos || p.x != lastX || p.y != lastY) {
+        lastX = p.x; lastY = p.y; havePos = 1;
+        moveSkips++;
+        return;
+    }
+
     dstX = (long)p.x;
     dstY = (long)(screenH - (p.y + (float)GLH));
-    if (dstX < 0 || dstY < 0 ||
-        dstX + GLW > (long)screenW || dstY + GLH > (long)screenH) {
+
+    /*
+     * Clip against the screen rather than skipping.  Skipping left the
+     * window empty the moment one edge crossed the screen border; the
+     * kernel's present already takes a source rectangle, so the part that
+     * is on the screen is presented and the rest simply is not.  Memory row
+     * nought is the visual top (the projection is flipped), so trimming the
+     * top of the picture and advancing srcY are the same act.
+     */
+    srcX = 0UL; srcY = 0UL; pw = (long)GLW; ph = (long)GLH;
+    if (dstX < 0) { srcX = (unsigned long)(-dstX); pw += dstX; dstX = 0; }
+    if (dstY < 0) { srcY = (unsigned long)(-dstY); ph += dstY; dstY = 0; }
+    if (dstX + pw > (long)screenW) pw = (long)screenW - dstX;
+    if (dstY + ph > (long)screenH) ph = (long)screenH - dstY;
+    if (pw <= 0 || ph <= 0) {
         skips++;
-        return;                 /* partly off-screen: skip, do not clip */
+        return;                 /* fully off-screen */
     }
 
     t0 = [NSDate timeIntervalSinceReferenceDate];
@@ -179,7 +224,26 @@
     glEnd();
     glFinish();
 
-    if (OSMGAMesaBufferPresent(dstX, dstY, &verdict) != 0) {
+    /*
+     * And once more AFTER the render: the window can start moving during the
+     * three milliseconds the frame takes, and a stamp at the position it is
+     * leaving is exactly the trail this function exists to avoid.  The frame
+     * is simply dropped; the next stable tick draws a fresh one.
+     */
+    {
+        NSPoint q = [view convertPoint:NSMakePoint(0, 0) toView:nil];
+
+        q = [win convertBaseToScreen:q];
+        if (q.x != lastX || q.y != lastY) {
+            lastX = q.x; lastY = q.y;
+            moveSkips++;
+            return;
+        }
+    }
+
+    if (OSMGAMesaBufferPresentRect(srcX, srcY, (unsigned long)pw,
+                                   (unsigned long)ph,
+                                   dstX, dstY, &verdict) != 0) {
         presenting = 0;
         [win setTitle:[NSString stringWithFormat:
                           @"OpenGL: present refused (%lu)", verdict]];
@@ -197,11 +261,32 @@
     nowT = t1;
     if (nowT - lastReport >= 5.0) {
         printf("glwin: %lu frames, mean %.2f ms (min %.2f max %.2f), "
-               "%lu skipped\n",
-               frames, sumMs / (double)frames, minMs, maxMs, skips);
+               "%lu offscreen, %lu while moving\n",
+               frames, sumMs / (double)frames, minMs, maxMs, skips,
+               moveSkips);
         fflush(stdout);
         lastReport = nowT;
     }
+}
+
+/*
+ * The server tells us when a title-bar drag BEGINS and ENDS, and that
+ * bracket is the real fix for the trails: the stillness gate below can only
+ * see positions the app has been told about, and a drag whose updates
+ * arrive late looks exactly like standing still -- so the gate happily
+ * stamped the old spot while the window was elsewhere.  From willMove to
+ * didMove nothing is stamped at all; the server's own blit-move carries the
+ * last frame along with the window.
+ */
+- (void)windowWillMove:(NSNotification *)n
+{
+    moving = 1;
+}
+
+- (void)windowDidMove:(NSNotification *)n
+{
+    moving = 0;
+    havePos = 0;                /* re-learn the position before presenting */
 }
 
 - (void)windowWillClose:(NSNotification *)n

@@ -56,8 +56,12 @@ default:
     exit 2
 endsw
 set mesa_src  = "$MESA_STAGE_PARENT/OpenStepMesa342/src/Mesa-3.4.2"
-set mga_src   = /ndrv/openstep-matrox-remade
-set port_src  = /ndrv/opennstep-mesa342/upstream/Mesa-3.4.2
+# The mount point is not always /ndrv: a wedged mount falls back to /ndrv2
+# (tools/nx-mount.sh), and a script that hardcodes the primary cannot build
+# from the fallback.  Same convention as the sh tools.
+if (! $?MOUNTPT) setenv MOUNTPT /ndrv
+set mga_src   = $MOUNTPT/openstep-matrox-remade
+set port_src  = $MOUNTPT/opennstep-mesa342/upstream/Mesa-3.4.2
 set out       = "$MGA_OUT_PARENT/OpenStepMesaMGA"
 
 # Enforced, not only asked for in the comment above: the two must be separate
