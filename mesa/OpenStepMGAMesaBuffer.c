@@ -681,8 +681,15 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
      * what becomes the pitch the engine walks.  A 333-pixel picture laid out
      * on a 352-pixel row is fine; a 333-pixel row is not.
      */
-    if (((unsigned long)appRowLength % OSMGA_HW3D_PITCH_ALIGN) != 0UL)
-        return 0;
+    /*
+     * A row length that is not a multiple of the pitch alignment used to be
+     * refused here, and with it every width that is not a multiple of 32 --
+     * a 500-wide render got no acceleration at all.  It is PADDED now
+     * instead, below, where the probe's limits are known.  The reason it was
+     * refused rather than padded is still true and still enforced: the engine
+     * walks the pitch the batch declares, so a pitch it cannot walk must not
+     * become a surface.  Rounding up gives it one it can.
+     */
 
     /*
      * Binding again at the same size is the ordinary case and gets the same
@@ -754,6 +761,22 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
         return 0;               /* a row would run into the next */
     if (stride > probe.caps[OSMGA_HW3D_CAP_STRIDE])
         return 0;               /* wider than the pitch register is known to hold */
+    /*
+     * And now round it up to something the engine can walk.
+     *
+     * The caller's own row length stays in bufAppRow -- the mirror, the
+     * import and the constant fill all use that one, so the caller's array is
+     * read and written exactly as it was.  What changes is the SURFACE, which
+     * gets whole 32-pixel rows and therefore a pitch the engine accepts.
+     *
+     * Bounded against the pitch register BEFORE the rounding, so the addition
+     * cannot overflow, and again after, because rounding can cross a limit
+     * the unrounded value was inside.
+     */
+    stride = ((stride + OSMGA_HW3D_PITCH_ALIGN - 1UL) /
+              OSMGA_HW3D_PITCH_ALIGN) * OSMGA_HW3D_PITCH_ALIGN;
+    if (stride > probe.caps[OSMGA_HW3D_CAP_STRIDE])
+        return 0;
 
     /*
      * Rows times a row of bytes, checked by division so the product is never
@@ -786,13 +809,21 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
     bufStride = stride;
 
     /*
-     * Nothing to override: Mesa is already laying the surface out this way,
-     * and the batch will tell the engine to read it the same.  Nothing is
-     * flipped either -- OSMesa puts GL row y at base + y * pitch by default
-     * and the engine draws its rows from the origin the same way, so the two
-     * agree without being told to.
+     * And Mesa has to be told, because the surface is no longer necessarily
+     * laid out at the caller's row length.
+     *
+     * This used to hand back nought -- "no override" -- and that was right
+     * only while the two were always the same.  With padding they are not,
+     * and the software rasteriser addresses the SURFACE: if it walked the
+     * caller's row length while the engine walked the padded one, a frame
+     * drawn partly each way would come out sheared, which is a wrong picture
+     * rather than a slow one.  The two strides must not be allowed to differ.
+     *
+     * Nothing is flipped either -- OSMesa puts GL row y at base + y * pitch
+     * by default and the engine draws its rows from the origin the same way,
+     * so the two agree without being told to.
      */
-    *rowLength = 0;
+    *rowLength = (int)stride;
     osmgaMesaBufferImport();
     return bufMapped;
 }
