@@ -11,7 +11,12 @@
  * batch would have drawn with whatever texture state was left behind --
  * the same inheritance that once made every pixel of an image differ.
  *
- *   cc -O -Wall -o /tmp/osmga-hw3d-tex openstep-mga-hw3d-tex-client.m -lDriver
+ *   cc -O -Wall -I../hw3d -o /tmp/osmga-hw3d-tex \
+ *       openstep-mga-hw3d-tex-client.m -lDriver
+ *
+ * The include path is not optional: the header this needs lives beside the
+ * driver, not anywhere the compiler looks by default, and the line here said
+ * otherwise for long enough to be worth correcting.
  */
 #import <stdio.h>
 #import <string.h>
@@ -528,14 +533,65 @@ main(int argc, char **argv)
      * must still land where it did before.
      */
     {
-        static const struct { const char *what; int idx; long val; unsigned want; }
+        /*
+         * WHERE THE COORDINATE LIVES, AND WHAT THE RULE IS -- both moved,
+         * and this table did not follow them for a long time.
+         *
+         * It used to write state.tmr[6] and [7] and call them "a negative u
+         * start".  tmr is six longs (OpenStepMGAHW3D.h), so those two indices
+         * are PAST THE END of the array, and what sits after it is
+         * texBiasReqU and texBiasReqV.  Writing -1 there asked for an
+         * enormous ladder rung, which the validator refuses with E_TEXSIZE --
+         * so the test reported "wrong verdict" while actually testing a
+         * field it did not mean to touch, through a write out of bounds, into
+         * a buffer shared with the kernel.  The anchor is the trapezoid's
+         * tu0/tv0 now; tmr[0..5] is the matrix and nothing reads [6] or [7].
+         *
+         * And a negative coordinate is no longer refused on sight.  The
+         * negative-reach work gave it an allowance of one texture span, so
+         * -1 is accepted, -1048576 is accepted, and one past that is not.
+         * The increment is bounded by what it accumulates ACROSS THIS
+         * PRIMITIVE, and this rectangle is 64 wide -- the same width the
+         * eight-times case below was measured at -- so the negative cases
+         * mirror it exactly.
+         *
+         * kind says which field: 0 the matrix, 1 the trapezoid's u anchor,
+         * 2 its v anchor.
+         */
+        static const struct { const char *what; int kind; int idx; long val;
+                              unsigned want; }
         cases[] = {
-            { "a negative u start",            6, -1L,          OSMGA_HW3D_E_TEXCOORD },
-            { "a negative v start",            7, -1L,          OSMGA_HW3D_E_TEXCOORD },
-            { "a negative u increment",        0, -0x4000L,     OSMGA_HW3D_E_TEXCOORD },
-            { "magnified eight times",         0, 0x4000L * 8L, OSMGA_HW3D_OK },
-            { "magnified nine times",          0, 0x4000L * 9L, OSMGA_HW3D_E_TEXCOORD },
-            { "the H family, which is ours",   4, -1L,          OSMGA_HW3D_OK },
+            { "a u anchor just below nought",  1, 0, -1L,
+                                                  OSMGA_HW3D_OK },
+            { "a u anchor at the allowance",   1, 0, -1048576L,
+                                                  OSMGA_HW3D_OK },
+            { "a u anchor one past it",        1, 0, -1048577L,
+                                                  OSMGA_HW3D_E_TEXCOORD },
+            { "a v anchor one past it",        2, 0, -1048577L,
+                                                  OSMGA_HW3D_E_TEXCOORD },
+            { "magnified eight times",         0, 0, 0x4000L * 8L,
+                                                  OSMGA_HW3D_OK },
+            { "magnified nine times",          0, 0, 0x4000L * 9L,
+                                                  OSMGA_HW3D_E_TEXCOORD },
+            /*
+             * The two directions are NOT symmetric, and finding that out is
+             * the point of having both.  Upward the coordinate may reach
+             * eight spans; downward it may only reach the allowance, which
+             * is one.  So one texel per column downward fits across this
+             * 64-wide rectangle -- 63 * 0x4000 = 1,032,192, just inside
+             * 1,048,576 -- and two does not.  I expected eight to work here
+             * by symmetry with the case above; the driver refused it, and
+             * the driver was right.
+             */
+            { "one texel a column, downward",  0, 0, -0x4000L,
+                                                  OSMGA_HW3D_OK },
+            { "two texels a column, downward", 0, 0, -0x4000L * 2L,
+                                                  OSMGA_HW3D_E_TEXCOORD },
+            /* Not "the H family": the kernel owns TMR4/5/8 now, so what this
+             * shows is that a client's H input is INERT -- which is worth a
+             * case, under its own name. */
+            { "a client H value, now inert",   0, 4, -1L,
+                                                  OSMGA_HW3D_OK },
         };
         unsigned long k;
 
@@ -556,7 +612,11 @@ main(int argc, char **argv)
             batch->state.dstPitch  = 1024UL;
             texState(batch);
             rect(&batch->tri[0], 0UL, DIM, DWG_TEX);
-            batch->state.tmr[cases[k].idx] = cases[k].val;
+            switch (cases[k].kind) {
+            case 1:  batch->tri[0].tu0 = cases[k].val; break;
+            case 2:  batch->tri[0].tv0 = cases[k].val; break;
+            default: batch->state.tmr[cases[k].idx] = cases[k].val; break;
+            }
 
             (void)[master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
                           objectNumber:objNum count:0];
