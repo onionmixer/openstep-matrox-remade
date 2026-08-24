@@ -63,6 +63,9 @@ extern int open(const char *, int, ...);
 #define STRIDE_DW       1024UL
 #define DIM             64UL
 #define DWG_TEX         (0x6UL | (0x7UL << 4))
+#define DWG_TEXZ        (0x6UL | (0x3UL << 4))   /* the same, with depth */
+#define DEPTH_ORG       (5UL * 1024UL * 1024UL)   /* colour is at 4, texture at 6,
+                                                   * and the window ends at 7 */
 
 static caddr_t
 mapDevice(int fd, unsigned long offset, int len)
@@ -225,7 +228,8 @@ int
 main(void)
 {
     IOString kind;
-    caddr_t cmd, cwin, twin;
+    caddr_t cmd, cwin, twin, zwin;
+    volatile unsigned short *depth;
     volatile unsigned long *tex;
     int fd;
     unsigned long r, c, step, wrong;
@@ -241,12 +245,17 @@ main(void)
     /* Wide enough for section 52's other shapes as well as the 64 square:
      * the tallest is eight by 2048, which is exactly this. */
     twin = mapDevice(fd, TEX_ORG, (int)(64UL * 1024UL));
-    if (cmd == (caddr_t)-1 || cwin == (caddr_t)-1 || twin == (caddr_t)-1) {
+    /* Section 79 has to see whether a refused batch wrote DEPTH as
+     * well as colour; sixteen bits a pixel, the same stride. */
+    zwin = mapDevice(fd, DEPTH_ORG, (int)(64UL * STRIDE_DW * 2UL));
+    if (cmd == (caddr_t)-1 || cwin == (caddr_t)-1 ||
+        twin == (caddr_t)-1 || zwin == (caddr_t)-1) {
         printf("a window will not map\n"); return 1;
     }
     batch  = (OSMGAHW3DBatch *)cmd;
     colour = (volatile unsigned long *)cwin;
     tex    = (volatile unsigned long *)twin;
+    depth  = (volatile unsigned short *)zwin;
 
     for (r = 0UL; r < DIM; r++)
         for (c = 0UL; c < DIM; c++)
@@ -611,11 +620,11 @@ main(void)
         batch->tri[2].h = 8L; batch->tri[2].ar0 = 8L; batch->tri[2].ar6 = 8L;
         batch->tri[2].fxbndry = (40UL << 16) | 29UL;
         say("three textured primitives", fire(), OSMGA_HW3D_OK);
-        p0 = colour[ 0UL * STRIDE_DW +  0UL];
-        p1 = colour[20UL * STRIDE_DW + 17UL];
-        p2 = colour[40UL * STRIDE_DW + 29UL];
+        p0 = pixat( 0UL,  0UL);
+        p1 = pixat(20UL, 17UL);
+        p2 = pixat(40UL, 29UL);
         printf("         v at each primitive's first row: %lu, %lu, %lu"
-               "  (a running sum would be 3, 11, 19)\n",
+               "  (3, 11, 19 was the per-batch answer)\n",
                p0 >> 8, p1 >> 8, p2 >> 8);
         printf("         u at each: %lu, %lu, %lu  (a per-primitive anchor"
                " gives 5, 5, 5)\n",
@@ -677,17 +686,29 @@ main(void)
         batch->tri[3].fxbndry = (52UL << 16) | 41UL;
         say("four primitives, heights 5, 11, flat 7, 3", fire(), OSMGA_HW3D_OK);
 
-        a  = colour[ 0UL * STRIDE_DW +  0UL];
-        b2 = colour[ 8UL * STRIDE_DW + 17UL];
-        d  = colour[34UL * STRIDE_DW + 41UL];
+        a  = pixat( 0UL,  0UL);
+        b2 = pixat( 8UL, 17UL);
+        d  = pixat(34UL, 41UL);
         printf("         v at the three textured firsts: %lu, %lu, %lu\n",
                a >> 8, b2 >> 8, d >> 8);
-        printf("         a sum of heights gives 3, 8, 19;"
-               " a constant eight would give 3, 11, 19+\n");
-        if ((a >> 8) == 3UL && (b2 >> 8) == 8UL && (d >> 8) == 19UL)
-            printf("   ok    %-52s\n", "v is the sum of the textured heights");
+        printf("         3, 8, 19 was the answer while the matrix was"
+               " written once per BATCH\n");
+        /*
+         * It is not any more.  The anchors are the trapezoid's and the
+         * encoder writes the matrix ahead of every primitive's execute, and
+         * that write re-seeds -- so four primitives given the same anchor all
+         * read it and the heights no longer enter.
+         *
+         * Equal anchors cannot tell "each reads its own" from "the first is
+         * latched and the rest ignored".  Section 78 is what tells those
+         * apart, with anchors that differ; this is the weaker corollary.
+         */
+        if ((a >> 8) == 3UL && (b2 >> 8) == 3UL && (d >> 8) == 3UL)
+            printf("   ok    %-52s\n",
+                   "the per-primitive write re-seeds v (78 is the proof)");
         else {
-            printf("   FAIL  %-52s\n", "v is the sum of the textured heights");
+            printf("   FAIL  %-52s\n",
+                   "the per-primitive write re-seeds v (78 is the proof)");
             failures++;
         }
     }
@@ -828,8 +849,9 @@ main(void)
     printf("\n9c. does a textured STATE TRANSITION reset the accumulator?\n");
     {
         /*
-         * The encoder writes the texture registers once before the triangle
-         * loop but rewrites DWGCTL for every primitive.  If moving between
+         * The encoder USED to write the texture registers once before the
+         * triangle loop while rewriting DWGCTL for every primitive.  It
+         * writes both per primitive now.  If moving between
          * atype I and atype ZI re-seeded the vertical accumulator, the check
          * would be too wide rather than too narrow -- safe, but worth
          * knowing.  Depth is given an origin inside the window so the ZI
@@ -861,18 +883,23 @@ main(void)
             printf("         verdict %u%s\n", ver,
                    ver == OSMGA_HW3D_OK ? "" : " (not accepted -- see below)");
             if (ver == OSMGA_HW3D_OK) {
-                a  = colour[ 0UL * STRIDE_DW +  0UL];
-                c2 = colour[24UL * STRIDE_DW + 41UL];
+                a  = pixat( 0UL,  0UL);
+                c2 = pixat(24UL, 41UL);
                 printf("         v at the first and the third: %lu, %lu\n",
                        a >> 8, c2 >> 8);
-                printf("         19 means the ZI primitive stepped it too"
-                       " (3+3+13); 3 means the transition reset it\n");
-                if ((a >> 8) == 3UL && (c2 >> 8) == 19UL)
+                printf("         19 was the answer while the matrix was"
+                       " written once per BATCH\n");
+                /* Every primitive re-seeds from its own anchor now, so the
+                 * transition has nothing left to reset.  What this still
+                 * rules out is a transition CORRUPTING the anchor: a third
+                 * primitive coming back with something other than what it was
+                 * given would show here. */
+                if ((a >> 8) == 3UL && (c2 >> 8) == 3UL)
                     printf("   ok    %-52s\n",
-                           "an atype transition does not reset it");
+                           "an atype transition leaves the anchor alone");
                 else {
                     printf("   FAIL  %-52s\n",
-                           "an atype transition does not reset it");
+                           "an atype transition leaves the anchor alone");
                     failures++;
                 }
             } else {
@@ -5065,66 +5092,139 @@ main(void)
     }
 
     /*
-     * 78. Does writing the matrix between two primitives re-seed v?
+     * 78. Whose anchor does a primitive read?
      *
-     * The one fact the whole atomic-triangle change turns on, and neither the
-     * plan nor the review had measured it.  What WAS measured is that v runs
-     * on across the textured primitives of a batch and that each SUBMISSION
-     * starts afresh -- and a submission carries an idle wait and a DMA setup
-     * as well as the matrix write, so the cause was never isolated.
+     * The one fact the whole atomic-triangle change turns on.  The older
+     * sections above now read 3, 3, 3 where they used to read 3, 11, 19, and
+     * that looks like an answer until you notice what they set: setTV writes
+     * the SAME anchor into every trapezoid and the later ones are copies of
+     * the first (section 8b).  Three equal readings from three equal anchors
+     * cannot tell
      *
-     * Now the encoder writes TMR6/7/8 before every primitive, so one batch
-     * with two primitives answers it.  Both are given the SAME v anchor and
-     * no v gradient in x; the second one sits below the first.
+     *    A  each primitive re-seeds from its OWN newly written anchor
+     *    B  the engine latches the batch's first anchor and ignores the rest
      *
-     *    re-seeds        both rows read the same texel row
-     *    runs on         the second reads its anchor plus the first's height
+     * apart, and B would quietly mis-draw the second trapezoid of every split
+     * triangle.  So: three primitives with anchors that DIFFER.
      *
-     * A v gradient per row of one texel makes the two answers differ by
-     * exactly the first primitive's height in texels, which is legible.
+     *    A         3/2, 5/4, 9/6      each reads what it was given
+     *    B         3/2, 3/2, 3/2      only the first anchor ever lands
+     *    runs on   3/2, 5+h/4, 9+h/6  the row index accumulates as well
+     *
+     * The texture has to be put back first: section 77 fills the whole thing
+     * with one colour, and a uniform texture reads the same everywhere -- the
+     * first cut of this section and of 80 were both vacuous for that reason.
      */
     {
         long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
         OSMGAHW3DTri *t;
-        unsigned long a, b2;
+        unsigned long p0, p1, p2;
         unsigned v;
 
-        printf("\n78. is v re-seeded when the matrix is written per primitive\n");
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = (r << 8) | c;
+
+        printf("\n78. whose anchor does each primitive read\n");
         blank();
         t = setup(64UL, 0UL, 8UL, 4UL, 0L, 0UL);
-        batch->state.tmr[0] = 0L;      /* no u across the row */
-        batch->state.tmr[1] = 0L;
-        batch->state.tmr[2] = 0L;      /* no v across the row either */
-        batch->state.tmr[3] = texel;   /* one texel of v per row */
-        t->tu0 = 2L * texel;           /* a column that is easy to see */
-        t->tv0 = 3L * texel;
+        batch->state.tmr[0] = 0L;   /* constant across the primitive, so the */
+        batch->state.tmr[1] = 0L;   /* reading is the anchor and nothing else */
+        batch->state.tmr[2] = 0L;
+        batch->state.tmr[3] = 0L;
+        t->tu0 = 2L * texel;  t->tv0 = 3L * texel;
+        batch->triCount = 3UL;
+        batch->tri[1] = batch->tri[0];
+        batch->tri[1].y = 8L;
+        batch->tri[1].tu0 = 4L * texel;  batch->tri[1].tv0 = 5L * texel;
+        batch->tri[2] = batch->tri[0];
+        batch->tri[2].y = 16L;
+        batch->tri[2].tu0 = 6L * texel;  batch->tri[2].tv0 = 9L * texel;
+        v = fire();
+        p0 = pixat( 0UL, 2UL);
+        p1 = pixat( 8UL, 2UL);
+        p2 = pixat(16UL, 2UL);
+        printf("   verdict %u   v/u read: %lu/%lu, %lu/%lu, %lu/%lu\n", v,
+               (p0 >> 8) & 0xFFUL, p0 & 0xFFUL,
+               (p1 >> 8) & 0xFFUL, p1 & 0xFFUL,
+               (p2 >> 8) & 0xFFUL, p2 & 0xFFUL);
+        printf("   own anchor -> 3/2, 5/4, 9/6;  first latched -> 3/2 three"
+               " times;  accumulating -> v grows by the heights\n");
+        if (v != OSMGA_HW3D_OK) {
+            printf("   FAIL  the three-primitive batch was refused\n");
+            failures++;
+        } else if (((p0 >> 8) & 0xFFUL) != 3UL || (p0 & 0xFFUL) != 2UL) {
+            printf("   FAIL  even the first primitive did not read its"
+                   " anchor\n");
+            failures++;
+        } else if (((p1 >> 8) & 0xFFUL) == 5UL && (p1 & 0xFFUL) == 4UL &&
+                   ((p2 >> 8) & 0xFFUL) == 9UL && (p2 & 0xFFUL) == 6UL)
+            printf("   ok    every primitive reads its own anchor\n");
+        else if (((p1 >> 8) & 0xFFUL) == 3UL && (p1 & 0xFFUL) == 2UL) {
+            printf("   FAIL  ONLY THE FIRST ANCHOR LANDS -- the second"
+                   " trapezoid of every\n"
+                   "         split triangle would be drawn from the first"
+                   " one's start.\n");
+            failures++;
+        } else {
+            printf("   FAIL  neither answer\n");
+            failures++;
+        }
+    }
+
+    /*
+     * 78b. And the DENOMINATOR's anchor -- does TMR8 re-seed too?
+     *
+     * Section 78 settles the numerators and says nothing about q, because it
+     * runs affine.  The builder gives a split triangle's halves their own q
+     * anchor as well (OpenStepMGAMesaTriangle.c, the perspective branch), so
+     * a latched TMR8 would misdraw every projective split even though the
+     * numerators were right.
+     *
+     * Two primitives, both with u = 8 texels and v = 10 texels in the
+     * NUMERATOR, and q doubled on the second.  A re-seeded q halves the
+     * quotient; a latched one leaves it alone.
+     */
+    {
+        long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+        OSMGAHW3DTri *t;
+        unsigned long p0, p1;
+        unsigned v;
+
+        printf("\n78b. does the denominator's anchor re-seed as well\n");
+        blank();
+        t = setup(64UL, 0UL, 8UL, 4UL, 0L, OSMGA_HW3D_TEXF_PERSP);
+        batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+        batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+        batch->state.tmr[4] = 0L; batch->state.tmr[5] = 0L;
+        t->tu0 = 8L * texel;  t->tv0 = 10L * texel;
+        t->tq0 = OSMGA_HW3D_Q_ONE;
         batch->triCount = 2UL;
         batch->tri[1] = batch->tri[0];
-        batch->tri[1].y = 8L;          /* four rows of gap below the first */
-        batch->tri[1].tu0 = 2L * texel;
-        batch->tri[1].tv0 = 3L * texel;   /* the SAME anchor as the first */
+        batch->tri[1].y = 8L;
+        batch->tri[1].tq0 = 2L * OSMGA_HW3D_Q_ONE;
         v = fire();
-        a  = pixat(0UL, 2UL);
-        b2 = pixat(8UL, 2UL);
-        printf("   verdict %u   first row %06lx   second primitive %06lx\n",
-               v, a & 0xFFFFFFUL, b2 & 0xFFFFFFUL);
-        printf("   texel row is the high byte: re-seeded -> 03 03,"
-               "  runs on -> 03 07\n");
+        p0 = pixat(0UL, 2UL);
+        p1 = pixat(8UL, 2UL);
+        printf("   verdict %u   v/u read: %lu/%lu then %lu/%lu\n", v,
+               (p0 >> 8) & 0xFFUL, p0 & 0xFFUL,
+               (p1 >> 8) & 0xFFUL, p1 & 0xFFUL);
+        printf("   q re-seeds -> 5/4 on the second;  q latched -> 10/8\n");
         if (v != OSMGA_HW3D_OK) {
-            printf("   FAIL  the two-primitive batch was refused\n");
+            printf("   FAIL  the perspective pair was refused\n");
             failures++;
-        } else if (((a >> 8) & 0xFFUL) != 3UL) {
-            printf("   FAIL  the first primitive did not read texel row 3\n");
+        } else if (((p0 >> 8) & 0xFFUL) != 10UL || (p0 & 0xFFUL) != 8UL) {
+            printf("   FAIL  the first primitive did not read 10/8\n");
             failures++;
-        } else if (((b2 >> 8) & 0xFFUL) == 3UL)
-            printf("   RE-SEEDS: the matrix write reloads v.\n"
-                   "             Leave OSMGA_TMR_RESEED unset.\n");
-        else if (((b2 >> 8) & 0xFFUL) == 7UL)
-            printf("   RUNS ON: the accumulator ignores the write.\n"
-                   "            Mesa needs OSMGA_TMR_RESEED=0.\n");
-        else {
-            printf("   FAIL  neither answer: texel row %lu\n",
-                   (b2 >> 8) & 0xFFUL);
+        } else if (((p1 >> 8) & 0xFFUL) == 5UL && (p1 & 0xFFUL) == 4UL)
+            printf("   ok    the denominator re-seeds with the numerators\n");
+        else if (((p1 >> 8) & 0xFFUL) == 10UL && (p1 & 0xFFUL) == 8UL) {
+            printf("   FAIL  TMR8 IS LATCHED -- projective splits would be"
+                   " drawn with the\n"
+                   "         first half's denominator throughout.\n");
+            failures++;
+        } else {
+            printf("   FAIL  neither answer\n");
             failures++;
         }
     }
@@ -5135,35 +5235,65 @@ main(void)
      * This is what opens texture-plus-blending, so it is not enough to see
      * the batch refused and the surface blank: a first trapezoid that could
      * never have drawn would give exactly that.  The positive control goes
-     * first -- the same first trapezoid, submitted alone, has to change the
-     * pixel.  Only then does the failing pair mean anything.
+     * first -- the same first trapezoid, submitted alone, has to change both
+     * the pixel and its depth word.  Only then does the failing pair mean
+     * anything.
      *
-     * The depth region is checked too, because a batch that wrote depth and
-     * not colour would still be a partial draw.
+     * DEPTH IS TESTED, and the first cut of this claimed to and did not: it
+     * used DWG_TEX, whose atype is I, so no depth was ever written and the
+     * depth half of the assertion was vacuous.  This one uses DWG_TEXZ.
+     *
+     * The reads after the refusal also wait rather than being taken straight
+     * away.  Submit returns when the list has been handed over, not when the
+     * engine has finished, so an immediate read is biased towards finding the
+     * surface still blank -- which is the answer this section is hoping for,
+     * and therefore the one it must not be allowed to get cheaply.  A whole
+     * valid batch is drawn elsewhere afterwards and waited for; anything the
+     * refused batch had in flight would have landed by then.
      */
     {
         long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
         OSMGAHW3DTri *t;
         unsigned long alone, paired;
+        unsigned short zalone, zpaired;
         unsigned v1, v2;
+        unsigned long i2;
 
         printf("\n79. a refused second trapezoid leaves the first undrawn\n");
 
         blank();
+        for (i2 = 0UL; i2 < 64UL * STRIDE_DW; i2++)
+            depth[i2] = 0xFFFFU;
         t = setup(64UL, 0UL, 8UL, 4UL, texel, 0UL);
+        t->dwgctl = DWG_TEXZ;
+        batch->state.zorg = DEPTH_ORG;
+        t->z0 = 0x4000UL << 15; t->zdx = 0UL; t->zdy = 0UL;
         t->tu0 = 2L * texel;
         t->tv0 = 3L * texel;
         v1 = fire();
-        alone = colour[0UL * STRIDE_DW + 2UL];
+        alone  = pixat(0UL, 2UL);
+        zalone = depth[0UL * STRIDE_DW + 2UL];
         say("the positive control draws", v1, OSMGA_HW3D_OK);
         if (alone == BLANK) {
-            printf("   FAIL  the control left the pixel blank, so the test"
-                   " below is vacuous\n");
+            printf("   FAIL  the control left the pixel blank, so the colour"
+                   " test below is vacuous\n");
             failures++;
         }
+        if (zalone == 0xFFFFU) {
+            printf("   FAIL  the control left the depth word alone, so the"
+                   " depth test below is vacuous\n");
+            failures++;
+        } else
+            printf("   ok    and it wrote depth: %04x\n",
+                   (unsigned)zalone);
 
         blank();
+        for (i2 = 0UL; i2 < 64UL * STRIDE_DW; i2++)
+            depth[i2] = 0xFFFFU;
         t = setup(64UL, 0UL, 8UL, 4UL, texel, 0UL);
+        t->dwgctl = DWG_TEXZ;
+        batch->state.zorg = DEPTH_ORG;
+        t->z0 = 0x4000UL << 15; t->zdx = 0UL; t->zdy = 0UL;
         t->tu0 = 2L * texel;
         t->tv0 = 3L * texel;
         batch->triCount = 2UL;
@@ -5172,75 +5302,133 @@ main(void)
         /* one past the allowance, which the anchor check refuses */
         batch->tri[1].tu0 = -(long)OSMGA_HW3D_TEX_COORD_MAX - 1L;
         v2 = fire();
-        paired = colour[0UL * STRIDE_DW + 2UL];
         if (v2 == OSMGA_HW3D_OK) {
             printf("   FAIL  the bad second trapezoid was accepted\n");
             failures++;
         } else
             printf("   ok    the pair is refused                          "
                    "     verdict %u\n", v2);
+
+        /* now give the engine real work far away, and wait for it, so that
+         * anything the refused batch had in flight has had its chance */
+        {
+            OSMGAHW3DTri *w;
+
+            w = setup(64UL, 0UL, 8UL, 4UL, texel, 0UL);
+            w->y = 40L;
+            w->tu0 = 2L * texel;
+            w->tv0 = 3L * texel;
+            (void)fire();
+            (void)pixat(40UL, 2UL);
+        }
+        paired  = colour[0UL * STRIDE_DW + 2UL];
+        zpaired = depth[0UL * STRIDE_DW + 2UL];
         if (paired != BLANK) {
-            printf("   FAIL  the first trapezoid drew anyway: %06lx\n",
+            printf("   FAIL  the first trapezoid drew colour anyway: %06lx\n",
                    paired & 0xFFFFFFUL);
             failures++;
         } else
-            printf("   ok    and the first trapezoid drew nothing\n");
+            printf("   ok    and the first trapezoid drew no colour\n");
+        if (zpaired != 0xFFFFU) {
+            printf("   FAIL  the first trapezoid wrote depth anyway: %04x\n",
+                   (unsigned)zpaired);
+            failures++;
+        } else
+            printf("   ok    and it wrote no depth either\n");
     }
 
     /*
-     * 80. The threshold: batching must not move the first trapezoid.
+     * 80. What batching a far trapezoid costs the near one.
      *
-     * The bias comes from the batch's reach, so putting two trapezoids in one
-     * batch can lower it for BOTH when only the second crosses a ladder edge.
-     * "Their reaches are nearly equal" is not an argument at a discontinuity:
-     * one unit past 2^20 takes the addend from 496 to 480.
+     * The bias comes from the BATCH's reach and osmgaHW3DTexBiasFor is
+     * non-increasing in it, so putting a far trapezoid beside a near one can
+     * only lower the bias for both -- which leaves the near one's residual
+     * (its own addend, less the batch bias) LARGER than it was alone.  The
+     * residual stays non-negative, so a boundary-aligned coordinate still
+     * cannot fall into the texel below; what it can do is cross upward.
      *
-     * So: a first trapezoid that stays at or below 2^20, submitted alone and
-     * then again beside a second that goes above it.  The first one's pixel
-     * has to read the same texel either way.
+     * python, over the real constants:
+     *
+     *     near 8*T aligned   addend 510  bias 496 alone / 448 batched
+     *                        residual 14 / 62      column 8 either way
+     *     near 8*T - 20      residual 14 / 62      column 7 alone, 8 batched
+     *
+     * so the two halves ask different questions:
+     *
+     *   a  boundary-aligned, the case the bias rule exists for.  Asserted,
+     *      and asserted as the VALUE -- the first cut compared two readings
+     *      of a texture section 77 had filled with one colour, so it
+     *      compared two equal meaningless numbers.
+     *   b  twenty units below, inside the residual.  Expected to move up by
+     *      one texel; reported, and the only assertion is that it never
+     *      moves DOWN.  This is also the control that proves (a) really did
+     *      cross the bias threshold rather than passing because nothing
+     *      changed at all.
      */
     {
         long texel = (long)(OSMGA_HW3D_TEX_SPAN / DIM);
-        long low = (long)(1UL << 20) - texel / 2L;
-        OSMGAHW3DTri *t;
+        long far = (long)(1UL << 21) + texel;   /* two bands above the near */
         unsigned long alone, batched;
         unsigned v1, v2;
+        int k;
 
-        printf("\n80. batching a far trapezoid beside a near one\n");
+        for (r = 0UL; r < DIM; r++)
+            for (c = 0UL; c < DIM; c++)
+                tex[r * DIM + c] = (r << 8) | c;
 
-        blank();
-        t = setup(64UL, 0UL, 8UL, 4UL, 0L,
-                  OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV);
-        batch->state.tmr[0] = 0L; batch->state.tmr[3] = 0L;
-        t->tu0 = low;
-        t->tv0 = 0L;
-        v1 = fire();
-        alone = pixat(0UL, 2UL);
+        printf("\n80. what batching a far trapezoid costs the near one\n");
 
-        blank();
-        t = setup(64UL, 0UL, 8UL, 4UL, 0L,
-                  OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV);
-        batch->state.tmr[0] = 0L; batch->state.tmr[3] = 0L;
-        t->tu0 = low;
-        t->tv0 = 0L;
-        batch->triCount = 2UL;
-        batch->tri[1] = batch->tri[0];
-        batch->tri[1].y = 8L;
-        batch->tri[1].tu0 = (long)(1UL << 21) + texel;   /* the band above */
-        v2 = fire();
-        batched = pixat(0UL, 2UL);
+        for (k = 0; k < 2; k++) {
+            long near = 8L * texel - (k ? 20L : 0L);
+            OSMGAHW3DTri *t;
 
-        printf("   alone verdict %u -> %06lx   batched verdict %u -> %06lx\n",
-               v1, alone & 0xFFFFFFUL, v2, batched & 0xFFFFFFUL);
-        if (v1 != OSMGA_HW3D_OK || v2 != OSMGA_HW3D_OK) {
-            printf("   FAIL  one of the two was refused\n");
-            failures++;
-        } else if (alone != batched) {
-            printf("   FAIL  batching moved the near trapezoid's texel\n");
-            failures++;
-        } else
-            printf("   ok    the near trapezoid reads the same texel"
-                   " either way\n");
+            blank();
+            t = setup(64UL, 0UL, 8UL, 4UL, 0L,
+                      OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV);
+            batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+            batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+            t->tu0 = near; t->tv0 = 0L;
+            v1 = fire();
+            alone = pixat(0UL, 2UL);
+
+            blank();
+            t = setup(64UL, 0UL, 8UL, 4UL, 0L,
+                      OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV);
+            batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+            batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+            t->tu0 = near; t->tv0 = 0L;
+            batch->triCount = 2UL;
+            batch->tri[1] = batch->tri[0];
+            batch->tri[1].y = 8L;
+            batch->tri[1].tu0 = far;
+            v2 = fire();
+            batched = pixat(0UL, 2UL);
+
+            printf("   %-22s alone %u -> col %lu    batched %u -> col %lu\n",
+                   k ? "twenty units below:" : "boundary aligned:",
+                   v1, alone & 0xFFUL, v2, batched & 0xFFUL);
+            if (v1 != OSMGA_HW3D_OK || v2 != OSMGA_HW3D_OK) {
+                printf("   FAIL  one of the two was refused\n");
+                failures++;
+            } else if (!k) {
+                if ((alone & 0xFFUL) != 8UL || (batched & 0xFFUL) != 8UL) {
+                    printf("   FAIL  a boundary-aligned coordinate did not"
+                           " read texel 8\n");
+                    failures++;
+                } else
+                    printf("   ok    boundary aligned reads texel 8 either"
+                           " way\n");
+            } else if ((batched & 0xFFUL) < (alone & 0xFFUL)) {
+                printf("   FAIL  batching moved the near trapezoid DOWN a"
+                       " texel\n");
+                failures++;
+            } else if ((batched & 0xFFUL) == (alone & 0xFFUL))
+                printf("   ok    and the worst case did not move at all\n");
+            else
+                printf("   ok    the worst case moved up %lu texel, the"
+                       " residual doing what it does\n",
+                       (batched & 0xFFUL) - (alone & 0xFFUL));
+        }
     }
 
     printf("\n%s (%d failing)\n",
