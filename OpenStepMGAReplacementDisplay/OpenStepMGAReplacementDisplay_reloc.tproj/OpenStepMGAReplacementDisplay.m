@@ -3500,6 +3500,13 @@ unmap:
      * since changed.
      */
     simple_lock(&stormLock);
+    /*
+     * The latch a post-execute timeout leaves behind, honoured here as well.
+     * It was set only by the blit path and checked only by the blit and fill
+     * paths, so a 3D submission would hand a new list to an engine that had
+     * already been declared unsafe to touch.
+     */
+    if (stormBlitFailed) { simple_unlock(&stormLock); return IO_R_RESOURCE; }
     if (stormBusy) { simple_unlock(&stormLock); return IO_R_BUSY; }
     stormBusy = YES;
     epoch3 = osmgaModeEpoch;
@@ -3861,9 +3868,62 @@ unmap:
                     (void)osmgaProbeAlias[settle3 - 1UL];
                 rc3 = 1;
             }
-            else
-                IOLog("OpenStepMGA M1-2b: submission did not complete "
-                      "(status %08lx, spins %lu)\n", status3, spins3);
+            else {
+                /*
+                 * The completion poll gave up.  That does NOT mean the engine
+                 * stopped, and letting go here is what made this dangerous:
+                 * the client treats a failure after the list was handed over
+                 * as unrecoverable and sends everything after it to the
+                 * software rasteriser -- into the same video memory an engine
+                 * that never finished may still be writing.
+                 *
+                 * So ask again, for the WHOLE completion condition and not a
+                 * piece of it.  Completion here is three things at once: the
+                 * trap at the end of the list has fired, the drawing engine
+                 * is idle, and the DMA read pointer has reached the end.  The
+                 * idle helper tests only the middle one, so a wait on it can
+                 * return while DMA is still fetching the list and about to
+                 * queue more drawing -- which would have made this recovery
+                 * report safety it had not established.
+                 *
+                 * And the trap is NOT acknowledged before asking.  It is one
+                 * of the three signals; clearing it first would throw away
+                 * the evidence the question needs.
+                 */
+                unsigned long rec3;
+
+                for (rec3 = 0UL; rec3 < OSMGA_S1_SPIN_LIMIT; rec3++) {
+                    status3 = osmgaR32(mmioBase, MGA_ENGSTATUS);
+                    if ((status3 & MGA_DMA_DONE_MASK) == MGA_DMA_DONE_VALUE)
+                        break;
+                }
+                if (rec3 < OSMGA_S1_SPIN_LIMIT) {
+                    osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
+                    IOLog("OpenStepMGA M1-2b: the poll gave up but completion "
+                          "arrived during recovery (status %08lx, %lu more "
+                          "spins); the engine is quiescent and software may "
+                          "have the surface back\n", status3, rec3);
+                }
+                else {
+                    /*
+                     * It never completed.  The engine may still be writing,
+                     * so nothing may hand it another list -- the same latch
+                     * a blit that timed out after EXEC sets, for the same
+                     * reason and with the same permanence.
+                     *
+                     * Honest about what this does NOT fix: it stops the
+                     * KERNEL giving the engine more work.  It cannot stop a
+                     * client that already has the surface mapped from writing
+                     * it with the processor, and that race is what
+                     * REMAINING_WORK 3-15 is about.  Closing it needs a reset
+                     * or a quarantine, and this driver has neither.
+                     */
+                    stormBlitFailed = YES;
+                    IOLog("OpenStepMGA M1-2b: submission never completed "
+                          "(status %08lx); acceleration DISABLED permanently "
+                          "-- the engine may still be writing\n", status3);
+                }
+            }
         }
     }
     simple_lock(&stormLock);
