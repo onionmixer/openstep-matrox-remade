@@ -421,16 +421,39 @@ main(void)
 
     printf("\n6b. the negative side of the anchor -- the check now sees it\n");
     {
-        static const long starts[3] = { 0L, 31L, 30L };
-        static const int wantOK[3]  = { 0, 1, 0 };
-        static const char *label[3] = {
+        /*
+         * In texels of the 64 texture, except the last two, which are in raw
+         * units because they walk the allowance rather than a texel.
+         *
+         * The first and third used to be refusals: the edge opens leftward,
+         * so the coordinate runs backwards from the anchor and went below
+         * nought on pixels the primitive draws.  A coordinate may now go a
+         * whole texture below nought, and thirty-one texels of a 64 texture
+         * is well inside that, so both are admitted -- deliberately.  What
+         * still has to be caught is an excursion that leaves the ALLOWANCE,
+         * and that is the pair at the end: a start that puts the leftmost
+         * pixel exactly on it is taken, one unit less is not.
+         */
+        static const long starts[5] = {
+            0L * (long)(OSMGA_HW3D_TEX_SPAN / DIM),
+            31L * (long)(OSMGA_HW3D_TEX_SPAN / DIM),
+            30L * (long)(OSMGA_HW3D_TEX_SPAN / DIM),
+            31L * (long)(OSMGA_HW3D_TEX_SPAN / DIM)
+                - (long)OSMGA_HW3D_TEX_SPAN,
+            31L * (long)(OSMGA_HW3D_TEX_SPAN / DIM)
+                - (long)OSMGA_HW3D_TEX_SPAN - 1L
+        };
+        static const int wantOK[5]  = { 1, 1, 1, 1, 0 };
+        static const char *label[5] = {
             "a left-opening edge with a zero start",
             "the same edge with a start that covers it",
-            "one texel short of covering it"
+            "one texel short of covering it",
+            "a start that leaves the leftmost pixel on the allowance",
+            "one unit past the allowance"
         };
         int k;
 
-        for (k = 0; k < 3; k++) {
+        for (k = 0; k < 5; k++) {
             OSMGAHW3DTri *t;
             unsigned ver;
 
@@ -441,11 +464,11 @@ main(void)
             t->ar2 = -32L;
             t->ar1 = -1L;
             t->sgn = 0x2L;                  /* left edge decreasing */
-            batch->state.tmr[6] = starts[k] * (long)(OSMGA_HW3D_TEX_SPAN / DIM);
+            batch->state.tmr[6] = starts[k];
             ver = fire();
             say(label[k], ver, wantOK[k] ? OSMGA_HW3D_OK
                                          : OSMGA_HW3D_E_TEXCOORD);
-            if (wantOK[k] && ver == OSMGA_HW3D_OK) {
+            if (k == 1 && ver == OSMGA_HW3D_OK) {
                 unsigned long lo  = colour[31UL * STRIDE_DW +  9UL];
                 unsigned long mid = colour[31UL * STRIDE_DW + 40UL];
                 unsigned long hi  = colour[31UL * STRIDE_DW + 47UL];
@@ -3468,7 +3491,7 @@ main(void)
             for (cc = 0UL; cc < 8UL; cc++)
                 tex[rr * 8UL + cc] = rr;
 
-        for (bi = 0; bi < 5; bi++) {
+        for (bi = 0; bi < 7; bi++) {
             long base = (long)band[bi] - 512L;   /* still inside the band */
             long lo = -256L, hi = 512L;
             unsigned long vlo = osmgaProbeReadV(base + lo);
@@ -4078,9 +4101,9 @@ main(void)
                 prev = got;
             }
             printf("     %-9s numerator %9ld  verdict %u  step %+6ld"
-                   "  addend %4ld\n",
+                   "  511 minus bias would be %4ld\n",
                    wnm[wi], anc + gx * 4L, firstV, stepAt,
-                   (stepAt == 99999L) ? -1L : (496L - stepAt));
+                   (stepAt == 99999L) ? -1L : -stepAt);
         }
         printf("     everything strictly between 2^23 and 2^24 reads 256, which\n"
                "     is the ladder carrying on.  The two that read ~495 are not\n"
@@ -4134,10 +4157,298 @@ main(void)
                 printf("     band 2^25   numerator %9ld  verdict %u"
                        "  step %+6ld  addend %4ld\n",
                        anc + g * 4L + g * 4L, firstV, stepAt,
-                       (stepAt == 99999L) ? -1L : (496L - stepAt));
+                       (stepAt == 99999L) ? -1L : -stepAt);
             }
             printf("     the ladder would want 0 there (g = 512)\n");
         }
+    }
+
+    printf("\n66. the addend for a NEGATIVE numerator, band by band\n");
+    {
+        /*
+         * Every measurement of the ladder so far used positive numerators.
+         * The bias rule picks its band from the magnitude, and the negative
+         * range has just been widened to a whole texture -- so whether the
+         * ladder is the same on this side is no longer a curiosity, it is the
+         * thing the widening rests on.  If it is not symmetric, a batch whose
+         * numerators go far negative gets a bias that is too large and the
+         * coordinate lands BELOW where the caller put it, which is the one
+         * failure the contract exists to prevent.
+         *
+         * Affine, so the numerator is the coordinate.  A texel on the
+         * 2048-tall texture is 512 units, and each base below is a multiple
+         * of it just past a power of two in magnitude, so the band is
+         * unambiguous and the coordinate sits exactly on a boundary.  The
+         * offset at which the reading steps is the net bias negated, and the
+         * addend is 496 plus it.
+         *
+         * If the ladder is symmetric these read 511, 510, 508, 504, 496.
+         */
+        /*
+         * The last two are POSITIVE, and they are the control: the ladder on
+         * that side is already known, so if the arithmetic below does not
+         * reproduce 504 and 496 for them then the arithmetic is wrong and
+         * nothing the negative rows say can be trusted.  It caught a sign
+         * error the first time -- the addend is 496 MINUS the step, and the
+         * printout had it plus.
+         */
+        static const long bases[7] = {
+            -1024L, -66048L, -131584L, -262656L, -524800L,
+            262656L, 524800L
+        };
+        static const char *bnm[7] = {
+            "-2^16", "-2^17", "-2^18", "-2^19", "-2^20",
+            "+2^19", "+2^20"
+        };
+        int bi;
+        unsigned long rr, cc;
+
+        for (rr = 0UL; rr < 2048UL; rr++)
+            for (cc = 0UL; cc < 8UL; cc++)
+                tex[rr * 8UL + cc] = rr;
+
+        for (bi = 0; bi < 7; bi++) {
+            long base = bases[bi];
+            long off, stepAt = 99999L;
+            unsigned long prev = 99999UL;
+            unsigned firstV = 0U;
+
+            for (off = -40L; off <= 40L; off += 1L) {
+                unsigned long got;
+                unsigned v;
+
+                blank();
+                (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                            OSMGA_HW3D_TEXF_REPEATU
+                            | OSMGA_HW3D_TEXF_REPEATV);
+                batch->state.texW = 8UL; batch->state.texH = 2048UL;
+                batch->state.texPitch = 8UL;
+                batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+                batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+                batch->state.tmr[6] = 0L;
+                batch->state.tmr[7] = base + off;
+                v = fire();
+                if (off == -40L) firstV = v;
+                got = (v != OSMGA_HW3D_OK) ? 99999UL
+                                           : (pixat(0UL, 0UL) & 0xFFFFUL);
+                if (prev != 99999UL && got != prev && stepAt == 99999L)
+                    stepAt = off;
+                prev = got;
+            }
+            printf("     band %-4s base %9ld  verdict %u  step %+6ld"
+                   "  511 minus bias would be %4ld\n",
+                   bnm[bi], base, firstV, stepAt,
+                   (stepAt == 99999L) ? -1L : -stepAt);
+        }
+        printf("     a symmetric ladder would read 511, 510, 508, 504, 496\n"
+               "     on the negative rows; the two positive rows must read\n"
+               "     504 and 496, which is what the positive work already found\n");
+    }
+
+    printf("\n67. large negative coordinates read the texel GL asks for\n");
+    {
+        /*
+         * 52 did this for coordinates a sliver below nought.  The allowance is
+         * a whole texture now, so the same question has to be asked of the
+         * whole of it -- and it is the last gate before the builder may be
+         * opened, because it is the difference between "the engine tolerates
+         * these" and "the engine draws what GL says".
+         *
+         * The addend on this side is a flat 511 whatever the magnitude (66),
+         * so the net after the encoder's 496 is +15 everywhere and python can
+         * say what each reading must be: floor((p + 15)/texel) mod size under
+         * repeat, and texel nought under clamp.
+         *
+         * Width stops at 1024 because the pitch field is eleven bits, so the
+         * 2048 case is taken down the v axis, as it was in 52.
+         */
+        static const long ps[6] = {
+            -1048576L, -786432L, -524288L, -262144L, -65536L, -4096L
+        };
+        static const unsigned long cw[4]  = { 8UL, 64UL, 1024UL, 8UL };
+        static const unsigned long chh[4] = { 8UL, 64UL, 4UL, 2048UL };
+        static const int cax[4] = { 0, 0, 0, 1 };
+        static const char *cnm[4] = { "8 wide", "64 wide", "1024 wide",
+                                      "2048 tall" };
+        /* python: floor((p + 15)/texel) mod size, for the six values above */
+        static const unsigned long want[4][6] = {
+            {    0UL,    2UL,    4UL,    6UL,    7UL,    7UL },
+            {    0UL,   16UL,   32UL,   48UL,   60UL,   63UL },
+            {    0UL,  256UL,  512UL,  768UL,  960UL, 1020UL },
+            {    0UL,  512UL, 1024UL, 1536UL, 1920UL, 2040UL }
+        };
+        int ci, j, k;
+
+        for (ci = 0; ci < 4; ci++) {
+            unsigned long rr, cc;
+
+            for (rr = 0UL; rr < chh[ci]; rr++)
+                for (cc = 0UL; cc < cw[ci]; cc++)
+                    tex[rr * cw[ci] + cc] = cax[ci] ? rr : cc;
+
+            for (k = 0; k < 2; k++) {
+                int bad = 0;
+
+                printf("   %-10s %-9s", cnm[ci], k ? "repeating" : "clamped");
+                for (j = 0; j < 6; j++) {
+                    unsigned long got, wnt;
+                    unsigned v;
+
+                    blank();
+                    (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                                k ? (OSMGA_HW3D_TEXF_REPEATU
+                                     | OSMGA_HW3D_TEXF_REPEATV) : 0UL);
+                    batch->state.texW = cw[ci];
+                    batch->state.texH = chh[ci];
+                    batch->state.texPitch = cw[ci];
+                    batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+                    batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+                    batch->state.tmr[6] = cax[ci] ? 0L : ps[j];
+                    batch->state.tmr[7] = cax[ci] ? ps[j] : 0L;
+                    v = fire();
+                    if (v != OSMGA_HW3D_OK) { printf("   ref"); bad = 1; continue; }
+                    got = pixat(0UL, 0UL) & 0xFFFFUL;
+                    wnt = k ? want[ci][j] : 0UL;
+                    printf("  %5lu", got);
+                    if (got != wnt) bad = 1;
+                }
+                printf("   %s\n", bad ? "  <<" : "");
+                if (bad) failures++;
+            }
+        }
+        printf("     wanted, repeating: the python rows above; clamped: nought\n");
+    }
+
+    printf("\n68. trying to break \"negatives always get 511\"\n");
+    {
+        /*
+         * 66 swept the negative bands at q = 65536, where the numerator IS
+         * the coordinate -- so it could only reach bands 2^16 to 2^20, since
+         * the allowance is on the coordinate.  But the BAND comes from the
+         * numerator, and with a large denominator a coordinate well inside
+         * the allowance carries a numerator far beyond it: at q = 2^23 one
+         * coordinate unit is 128 numerator units, so a coordinate of -2^17 is
+         * a numerator of -2^24.
+         *
+         * That is the cheapest way to refute the claim, and it needs nothing
+         * widened.  The reachable negative numerator is capped at three times
+         * COORD_MAX by the anchor and the slope bounds, exactly as the
+         * positive one is, so these three cover the rest of the range.
+         *
+         * If the claim holds every row steps at -15.  A step anywhere else is
+         * the ladder biting on this side after all, and the bias rule would
+         * have to be told about it before the builder is opened.
+         */
+        /*
+         * The targets are one texel ABOVE each power of two, so the anchor
+         * has room to be swept either side of the boundary.  Putting them ON
+         * the power of two needed the anchor at its own ceiling, and the
+         * sweep then ran into the refusal instead of a texel edge -- twice.
+         */
+        static const long ancs[3] = { 65536L, -8323072L, -8323072L };
+        static const long gxs[3]  = { -(1L << 23) / 4L, -(1L << 23) / 4L,
+                                      -(1L << 23) / 4L };
+        static const long gys[3]  = { 0L, 0L, -(1L << 23) / 4L };
+        static const char *bnm[3] = { "-2^23", "-2^24", "-2^25" };
+        int bi;
+        unsigned long rr, cc;
+
+        for (rr = 0UL; rr < 2048UL; rr++)
+            for (cc = 0UL; cc < 8UL; cc++)
+                tex[rr * 8UL + cc] = rr;
+
+        for (bi = 0; bi < 3; bi++) {
+            long q = 1L << 23;
+            long off, stepAt = 99999L;
+            unsigned long prev = 99999UL;
+            unsigned firstV = 0U;
+            long hh = gys[bi] ? 5L : 4L;
+            long rdrow = gys[bi] ? 4L : 0L;
+
+            for (off = -600L; off <= 40L; off += 1L) {
+                unsigned long got;
+                unsigned v;
+
+                blank();
+                (void)setup(64UL, 0UL, 5UL, (unsigned long)hh, 0L,
+                            OSMGA_HW3D_TEXF_REPEATU
+                            | OSMGA_HW3D_TEXF_REPEATV
+                            | OSMGA_HW3D_TEXF_PERSP);
+                batch->tri[0].ar0 = hh; batch->tri[0].ar6 = hh;
+                batch->state.texW = 8UL; batch->state.texH = 2048UL;
+                batch->state.texPitch = 8UL;
+                batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+                batch->state.tmr[2] = gxs[bi]; batch->state.tmr[3] = gys[bi];
+                batch->state.tmr[4] = 0L; batch->state.tmr[5] = 0L;
+                batch->state.tmr[6] = 0L;
+                batch->state.tmr[7] = ancs[bi] + off;
+                batch->state.tmr[8] = q;
+                v = fire();
+                if (off == -600L) firstV = v;
+                got = (v != OSMGA_HW3D_OK) ? 99999UL
+                                           : (pixat((unsigned long)rdrow, 4UL)
+                                              & 0xFFFFUL);
+                if (prev != 99999UL && got != prev && stepAt == 99999L)
+                    stepAt = off;
+                prev = got;
+            }
+            printf("     band %-6s numerator %12ld  verdict %u  step %+6ld"
+                   "  511 minus bias would be %4ld\n",
+                   bnm[bi],
+                   ancs[bi] + gxs[bi] * 4L + gys[bi] * (hh - 1L),
+                   firstV, stepAt,
+                   (stepAt == 99999L) ? -1L : -stepAt);
+        }
+        printf("     511 in every row means the claim survives; anything else\n"
+               "     means the ladder bites on this side too\n");
+    }
+
+    printf("\n69. bilinear at a large negative coordinate\n");
+    {
+        /*
+         * 55 measured the filter across the WRAPPED seam, at a coordinate a
+         * few hundred units below nought.  The allowance is a whole texture
+         * now, so the obvious next question is the seam at large negatives --
+         * and there is not one.  The wrap period is one whole texture, 2^20
+         * units, so inside a 2^20 allowance there is exactly one seam and it
+         * is the one 55 already measured.
+         *
+         * What is left down here is ordinary interior filtering, which is
+         * what this checks: red on row 1000, which in the negative range sits
+         * at u of 1000 - 2048 texels, and the red that comes back is that
+         * row's weight.  python says what the ramp must be under GL's
+         * straddle rule with the +15 the encoder leaves at this reach.
+         */
+        long base = -1048L * 512L;
+        long off;
+        unsigned long rr, cc;
+
+        for (rr = 0UL; rr < 2048UL; rr++)
+            for (cc = 0UL; cc < 8UL; cc++)
+                tex[rr * 8UL + cc] = (rr == 1000UL) ? 0x00FF0000UL : 0UL;
+
+        printf("     p from %ld by 64, red is the weight of row 1000\n     ",
+               base - 320L);
+        for (off = -320L; off <= 320L; off += 64L) {
+            unsigned long got;
+            unsigned v;
+
+            blank();
+            (void)setup(64UL, 0UL, 8UL, 4UL, 0L,
+                        OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV
+                        | OSMGA_HW3D_TEXF_BILIN);
+            batch->state.texW = 8UL; batch->state.texH = 2048UL;
+            batch->state.texPitch = 8UL;
+            batch->state.tmr[0] = 0L; batch->state.tmr[1] = 0L;
+            batch->state.tmr[2] = 0L; batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = 0L;
+            batch->state.tmr[7] = base + off;
+            v = fire();
+            if (v != OSMGA_HW3D_OK) { printf(" ref"); continue; }
+            got = pixat(0UL, 0UL);
+            printf(" %3lu", (got == BLANK) ? 999UL : ((got >> 16) & 0xFFUL));
+        }
+        printf("\n     python wants 0 7 39 71 103 135 167 199 231 248 216\n");
     }
 
     printf("\n%s (%d failing)\n",

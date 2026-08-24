@@ -843,15 +843,37 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
          * The kernel checks a wider box and may still refuse; that is what
          * the software fallback is for.
          */
+        /*
+         * Below nought is allowed now, as far as one whole texture.
+         *
+         * It used to be nought exactly, which turned away ordinary tiling --
+         * glTexCoord2f(-1, 2) draws the same picture as (0, 3) under
+         * GL_REPEAT and went to software while (0, 3) did not.  The kernel
+         * takes a coordinate down to -SPAN, and the engine draws it the way
+         * GL says: measured at texture sizes 8, 64 and 1024 wide and 2048
+         * tall, clamped and repeating, over six coordinates spanning the
+         * whole range -- forty-eight readings, every one matching
+         * floor((p + 15)/texel) mod size.
+         *
+         * The addend the engine puts on a negative numerator is a flat 511
+         * whatever its magnitude, which is NOT the ladder the positive side
+         * has.  That was measured before this line moved, first affine across
+         * five bands and then in perspective at three more with three
+         * different biases, and it is what makes the widening safe: the
+         * residual on this side is 511 less the bias, which is at least
+         * fifteen and can never be negative.
+         */
         lo = hi = ua;
         if (ub < lo) lo = ub;   if (ub > hi) hi = ub;
         if (uc < lo) lo = uc;   if (uc > hi) hi = uc;
-        if (lo < 0.0 || hi > (double)OSMGA_HW3D_TEX_COORD_MAX)
+        if (lo < -(double)OSMGA_HW3D_TEX_SPAN ||
+            hi > (double)OSMGA_HW3D_TEX_COORD_MAX)
             return OSMGA_MESA_TRI_UNSUPPORTED;
         lo = hi = va;
         if (vb < lo) lo = vb;   if (vb > hi) hi = vb;
         if (vc < lo) lo = vc;   if (vc > hi) hi = vc;
-        if (lo < 0.0 || hi > (double)OSMGA_HW3D_TEX_COORD_MAX)
+        if (lo < -(double)OSMGA_HW3D_TEX_SPAN ||
+            hi > (double)OSMGA_HW3D_TEX_COORD_MAX)
             return OSMGA_MESA_TRI_UNSUPPORTED;
 
         if (a->qw == b->qw && a->qw == c->qw) {
