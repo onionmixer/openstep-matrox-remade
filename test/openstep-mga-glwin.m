@@ -160,7 +160,18 @@
 
     if (!presenting)
         return;
-    if (![win isVisible] || [win isMiniaturized] || [NSApp isHidden])
+    /*
+     * And not while somebody ELSE'S window has the user.  True z-order is
+     * unenforceable -- the server does not know our pixels exist, so a stamp
+     * always lands on top of whatever overlaps the rectangle -- but raising
+     * another application's window requires CLICKING it, and that instant
+     * deactivates this one.  Stamping only while active means the raised
+     * window is painted over our region by the server and stays there, which
+     * is exactly what occlusion is supposed to look like; clicking our
+     * window reactivates, raises it, and the animation resumes.
+     */
+    if (![win isVisible] || [win isMiniaturized] || [NSApp isHidden] ||
+        ![NSApp isActive])
         return;
     if (moving) {
         /*
