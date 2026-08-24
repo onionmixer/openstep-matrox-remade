@@ -7650,6 +7650,64 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
  * measured: the sampled addresses are distinct and hold what was put in them.
  */
 /*
+ * The witnesses M1-4F1 leaves across everything below the region it is
+ * opening, so that a write up there landing down here is seen wherever it
+ * lands -- not only on the page immediately under.
+ */
+#define OSMGA_VRAM_WITNESS_MAX  32
+
+static void
+osmgaRestoreWitnesses(unsigned long fbPhysical, const unsigned long *off,
+                      const unsigned long *was, unsigned long n)
+{
+    unsigned long i;
+
+    for (i = 0UL; i < n; i++) {
+        vm_address_t a = 0;
+        unsigned long l = 0UL;
+        volatile unsigned long *q = 0;
+
+        if (osmgaMapUncachedBlock(fbPhysical, off[i], off[i] + 4UL,
+                                  &a, &l, &q) != IO_R_SUCCESS) {
+            IOLog("OpenStepMGA M1-4F1: could NOT put the witness at %lu "
+                  "back\n", off[i]);
+            continue;
+        }
+        *q = was[i];
+        IOUnmapPhysicalFromIOTask(a, l);
+    }
+}
+
+static unsigned long
+osmgaCheckWitnesses(unsigned long fbPhysical, const unsigned long *off,
+                    const unsigned long *was, unsigned long n,
+                    unsigned long from, const char *when)
+{
+    unsigned long i, bad = 0UL;
+
+    (void)was;
+    for (i = 0UL; i < n; i++) {
+        vm_address_t a = 0;
+        unsigned long l = 0UL;
+        volatile unsigned long *q = 0;
+        unsigned long want = 0xA5A50000UL | (off[i] >> 16);
+
+        if (osmgaMapUncachedBlock(fbPhysical, off[i], off[i] + 4UL,
+                                  &a, &l, &q) != IO_R_SUCCESS) {
+            bad++;
+            continue;
+        }
+        if (*q != want) {
+            IOLog("OpenStepMGA M1-4F1: writing above %lu changed %lu (%s) -- "
+                  "holds %08lx, left %08lx\n", from, off[i], when, *q, want);
+            bad++;
+        }
+        IOUnmapPhysicalFromIOTask(a, l);
+    }
+    return bad;
+}
+
+/*
  * M1-4F1 -- prove the memory a client would be handed, and only then hand it.
  *
  * The sparse probe below says the sampled addresses across the aperture are
@@ -7686,14 +7744,16 @@ static int
 osmgaProveVramTo(unsigned long fbPhysical, unsigned long from, unsigned long to,
                  vm_address_t mmio)
 {
-    vm_address_t alias = 0, walias = 0;
-    unsigned long len = 0UL, wlen = 0UL;
+    vm_address_t alias = 0;
+    unsigned long len = 0UL;
     volatile unsigned long *p = 0;
-    volatile unsigned long *w = 0;
     unsigned long page = (unsigned long)PAGE_SIZE;
     unsigned long words = page / 4UL;
-    unsigned long off, bad = 0UL, pages = 0UL;
-    unsigned long witnessOff, witnessWas, sig;
+    unsigned long halfMeg = 512UL * 1024UL;
+    unsigned long off, bad = 0UL, pages = 0UL, nw = 0UL;
+    unsigned long wOff[OSMGA_VRAM_WITNESS_MAX];
+    unsigned long wWas[OSMGA_VRAM_WITNESS_MAX];
+    unsigned long sig;
 
     if (from >= to || (from % page) != 0UL || (to % page) != 0UL)
         return 0;
@@ -7701,26 +7761,67 @@ osmgaProveVramTo(unsigned long fbPhysical, unsigned long from, unsigned long to,
         return 0;
 
     /*
-     * A witness below the region, so that a write up here landing DOWN there
-     * is seen.  It sits one page under the region, which is inside what the
-     * window already covers and therefore already ours.
+     * WITNESSES ACROSS EVERYTHING BELOW, not one word under the region.
+     *
+     * A single witness answers "did a write up here land on the page just
+     * below", which is the least likely place for it to land.  What has to be
+     * ruled out is the region being decoded somewhere else entirely -- onto
+     * the visible framebuffer at nought, say -- and one word cannot see that.
+     * Cross-review found it.  So the whole of what lies below gets sampled,
+     * every half megabyte, and each sample carries a value of its own.
+     *
+     * They are checked TWICE, and the first check comes after only two pages
+     * of the region have been written.  If this region is decoded onto live
+     * memory, the damage is then two words rather than five megabytes.
      */
-    witnessOff = from - page;
-    if (osmgaMapUncachedBlock(fbPhysical, witnessOff, witnessOff + 4UL,
-                              &walias, &wlen, &w) != IO_R_SUCCESS)
+    for (off = 0UL; off < from && nw < OSMGA_VRAM_WITNESS_MAX; off += halfMeg) {
+        vm_address_t wa = 0;
+        unsigned long wl = 0UL;
+        volatile unsigned long *wp = 0;
+
+        if (osmgaMapUncachedBlock(fbPhysical, off, off + 4UL, &wa, &wl, &wp)
+                != IO_R_SUCCESS)
+            continue;
+        wOff[nw] = off;
+        wWas[nw] = *wp;
+        *wp = 0xA5A50000UL | (off >> 16);
+        nw++;
+        IOUnmapPhysicalFromIOTask(wa, wl);
+    }
+    if (nw == 0UL)
         return 0;
-    witnessWas = *w;
-    *w = 0xA5A5F00DUL;
 
     if (osmgaMapUncachedBlock(fbPhysical, from, to, &alias, &len, &p)
             != IO_R_SUCCESS) {
-        *w = witnessWas;
-        IOUnmapPhysicalFromIOTask(walias, wlen);
+        osmgaRestoreWitnesses(fbPhysical, wOff, wWas, nw);
         return 0;
     }
 
-    /* Every page gets a signature carrying its own offset, at its first word
-     * and its last, and they all go in before any comes out. */
+    /* Two pages first, then look down.  This is the cheap half of the test
+     * and it is the half that limits what a wrong answer costs. */
+    sig = 0x5B000000UL | (from >> 8);
+    p[0] = sig;
+    p[words - 1UL] = ~sig;
+    {
+        unsigned long lastOff = ((to - from - page) / page) * page;
+
+        sig = 0x5B000000UL | ((from + lastOff) >> 8);
+        p[lastOff / 4UL] = sig;
+        p[lastOff / 4UL + words - 1UL] = ~sig;
+    }
+    (void)osmgaR32(mmio, MGA_ENGSTATUS);
+    IODelay(1000);
+    bad += osmgaCheckWitnesses(fbPhysical, wOff, wWas, nw, from, "two pages in");
+    if (bad != 0UL) {
+        osmgaRestoreWitnesses(fbPhysical, wOff, wWas, nw);
+        IOUnmapPhysicalFromIOTask(alias, len);
+        IOLog("OpenStepMGA M1-4F1: %lu..%lu is decoded somewhere below it; "
+              "stopped after two pages, KEEPING THE CONSERVATIVE BOUND\n",
+              from, to);
+        return 0;
+    }
+
+    /* Now the rest of them. */
     for (off = 0UL; from + off < to; off += page) {
         sig = 0x5B000000UL | ((from + off) >> 8);
         p[off / 4UL] = sig;
@@ -7735,11 +7836,7 @@ osmgaProveVramTo(unsigned long fbPhysical, unsigned long from, unsigned long to,
         if (p[off / 4UL] != sig || p[off / 4UL + words - 1UL] != ~sig)
             bad++;
     }
-    if (*w != 0xA5A5F00DUL) {
-        IOLog("OpenStepMGA M1-4F1: a write above %lu changed the witness "
-              "below it -- the region aliases\n", from);
-        bad++;
-    }
+    bad += osmgaCheckWitnesses(fbPhysical, wOff, wWas, nw, from, "all of it");
 
     /*
      * Zero what passed, rather than putting back what was there.  This
@@ -7747,13 +7844,18 @@ osmgaProveVramTo(unsigned long fbPhysical, unsigned long from, unsigned long to,
      * probe signatures in it would hand a client this routine's leavings,
      * and there is nothing above the old bound that anyone was keeping.
      */
+    /*
+     * Zeroed only when it passed.  A region that FAILED may be somebody
+     * else's memory decoded here -- that is what failing can mean -- and
+     * writing zeroes over it would be the same mistake again, larger.  The
+     * signatures stay where they are; nothing hands that region out.
+     */
     if (bad == 0UL)
         for (off = 0UL; from + off < to; off += 4UL)
             p[off / 4UL] = 0UL;
 
-    *w = witnessWas;
+    osmgaRestoreWitnesses(fbPhysical, wOff, wWas, nw);
     IOUnmapPhysicalFromIOTask(alias, len);
-    IOUnmapPhysicalFromIOTask(walias, wlen);
 
     IOLog("OpenStepMGA M1-4F1: %lu..%lu, %lu pages, %lu wrong -> %s\n",
           from, to, pages, bad,
