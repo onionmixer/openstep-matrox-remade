@@ -187,6 +187,11 @@ blank(void)
  * no texel can produce, so waiting for it to go is a sound way to wait for
  * the column to be written.
  */
+/* one texel of a square texture of this side, in coordinate units */
+static long
+texelOf(unsigned long side)
+{ return (long)(OSMGA_HW3D_TEX_SPAN / side); }
+
 static unsigned long
 pixat(unsigned long r, unsigned long c)
 {
@@ -5956,6 +5961,87 @@ main(void)
         if (failures == 0)
             printf("   ok    the seam closes when both are asked onto one"
                    " rung, and only then\n");
+    }
+
+    /*
+     * 85. Does NOZCMP still WRITE the depth?
+     *
+     * It decides whether GL_ALWAYS is expressible at all.  GL_ALWAYS with the
+     * depth test on means every fragment passes AND the depth is written; if
+     * the engine's "no compare" turns the depth stage off instead, then what
+     * it gives is GL_ALWAYS with the write suppressed, which is a different
+     * thing and not what the chooser would be admitting.
+     *
+     * The repository already measured a NOZCMP band and recorded "depth left
+     * 8000" -- but the clear was 8000 too, so wrote-the-same and wrote-nothing
+     * look identical there.  This draws at a depth the clear does not have.
+     *
+     *    depth becomes 4000   NOZCMP passes and writes    GL_ALWAYS is real
+     *    depth stays   8000   the stage is off            it is not
+     *
+     * A ZLT control goes with it, so a depth that did not change cannot be
+     * blamed on the depth write being broken generally.
+     */
+    {
+        unsigned long i2;
+        int k;
+        static const unsigned long zm[2] = { 0x0000UL, 0x0400UL };
+        static const char *zn[2] = { "NOZCMP", "ZLT   " };
+        unsigned short got[2];
+        unsigned long col[2];
+
+        printf("\n85. does the engine write depth with no comparison\n");
+        for (k = 0; k < 2; k++) {
+            OSMGAHW3DTri *t;
+            unsigned v;
+
+            blank();
+            for (i2 = 0UL; i2 < 64UL * STRIDE_DW; i2++)
+                depth[i2] = 0x8000U;
+            t = setup(64UL, 0UL, 8UL, 4UL,
+                      (long)(OSMGA_HW3D_TEX_SPAN / DIM), 0UL);
+            /* textured, atype ZI, and the comparison under test */
+            t->dwgctl = DWG_TEXZ | zm[k];
+            batch->state.zorg = DEPTH_ORG;
+            /* 0x4000, which the clear is not */
+            t->z0 = 0x4000UL << 15; t->zdx = 0UL; t->zdy = 0UL;
+            t->tu0 = 2L * texelOf(DIM); t->tv0 = 3L * texelOf(DIM);
+            v = fire();
+            if (v != OSMGA_HW3D_OK) {
+                printf("   FAIL  %s was refused (%u)\n", zn[k], v);
+                failures++;
+                got[k] = 0xFFFFU; col[k] = 0UL;
+                continue;
+            }
+            col[k] = pixat(0UL, 2UL);
+            got[k] = depth[0UL * STRIDE_DW + 2UL];
+            printf("   %s  colour %06lx  depth %04x  (cleared to 8000,"
+                   " drawn at 4000)\n", zn[k], col[k] & 0xFFFFFFUL,
+                   (unsigned)got[k]);
+        }
+        if (col[1] == BLANK || got[1] != 0x4000U) {
+            printf("   FAIL  the ZLT control did not draw and write, so"
+                   " nothing above can be read\n");
+            failures++;
+        } else if (col[0] == BLANK) {
+            printf("   FAIL  NOZCMP drew no colour at all\n");
+            failures++;
+        } else if (got[0] == 0x4000U)
+            printf("   ok    NOZCMP passes AND writes -- GL_ALWAYS is the"
+                   " engine's own\n");
+        else if (got[0] == 0x8000U) {
+            printf("   NOZCMP passes but does NOT write: the depth stage is"
+                   " off, so\n"
+                   "         GL_ALWAYS with depth writes is not expressible"
+                   " this way.\n");
+            printf("   FAIL  recorded as a limit, and the chooser must keep"
+                   " refusing GL_ALWAYS\n");
+            failures++;
+        } else {
+            printf("   FAIL  neither: depth came back %04x\n",
+                   (unsigned)got[0]);
+            failures++;
+        }
     }
 
     printf("\n%s (%d failing)\n",
