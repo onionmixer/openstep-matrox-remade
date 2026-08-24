@@ -217,6 +217,58 @@ void  OpenStepMesaAccelMirror(void)             { OSMGAMesaBufferMirror(); }
 unsigned long OpenStepMesaAccelStride(void)      { return OSMGAMesaBufferStride(); }
 
 /*
+ * The shared depth, out into a buffer of Mesa's own.
+ *
+ * This exists for one moment: the back end handing the surface back in the
+ * middle of a context.  The colour is mirrored out there and the depth was
+ * simply dropped -- DepthBuffer to nought, the software one turned back on,
+ * and Mesa's allocator, whose own comment is "allocate new depth buffer, but
+ * don't initialize it".  So an application that had rendered depth found
+ * malloc's leavings in it afterwards.  Measured: a code of 8000 written
+ * while accelerated read back as 0000 after the fallback.
+ *
+ * Only the case the rest of this file already restricts itself to: sixteen
+ * bits, and a surface whose stride IS its width -- which is the precondition
+ * the depth mapping is handed out under in the first place, and which makes
+ * Mesa's own Width-by-Height layout the same layout.  Anything else returns
+ * nought and the caller keeps the uninitialised buffer, which is no worse
+ * than before this existed.
+ *
+ * The read is direct, and that is not an assumption: the settling the
+ * hardware needs is for the first 64 bytes of the mapping window, and the
+ * depth surface sits past the colour one on a page boundary.  Every depth
+ * test in this tree reads this mapping the same way immediately after a
+ * finish and gets what the engine wrote.
+ */
+int
+OpenStepMesaAccelCopyDepth(void *dst, int width, int height, int bytesPerValue)
+{
+    const unsigned short *src;
+    unsigned short *d;
+    unsigned long y;
+
+    if (dst == 0 || depthMapped == 0 || bytesPerValue != 2)
+        return 0;
+    if (bufStride != bufWidth)
+        return 0;
+    if ((unsigned long)width != bufWidth ||
+        (unsigned long)height != bufHeight)
+        return 0;
+
+    src = (const unsigned short *)depthMapped;
+    d   = (unsigned short *)dst;
+    for (y = 0UL; y < bufHeight; y++) {
+        const unsigned short *s = src + y * bufStride;
+        unsigned short *t = d + y * bufWidth;
+        unsigned long x;
+
+        for (x = 0UL; x < bufWidth; x++)
+            t[x] = s[x];
+    }
+    return 1;
+}
+
+/*
  * Said once, and only when a resource was asked for and refused.
  *
  * Returning nothing from the depth accessor is ordinary for a second
@@ -364,6 +416,51 @@ void
 OSMGAMesaBufferSoiled(void)
 {
     bufDirty = 1;
+}
+
+/*
+ * The caller's own picture, into the surface.
+ *
+ * In OSMesa the buffer handed over IS the colour buffer: whatever is already
+ * in it is what the frame starts from, and drawing over a background the
+ * caller loaded is an ordinary use of the library.  This back end puts video
+ * memory behind that pointer and copies the surface back out after every
+ * frame -- and for a long time the copy ran ONE WAY.  A caller's picture was
+ * simply gone: the first frame mirrored video memory over it.  Measured at
+ * 128 by 96, every one of the 10688 pixels outside a drawn quad lost what
+ * the caller had put there.
+ *
+ * So this is the inbound half, and it runs at BIND -- first bind and
+ * same-size rebind alike -- because that is the moment the caller says which
+ * memory is the buffer.  Once per bind, not per frame.
+ *
+ * It does NOT mark the surface dirty.  After this the two sides agree, and
+ * saying otherwise would only buy a mirror back out of what just came in.
+ *
+ * What it does not cure: a caller that writes its buffer directly while it
+ * is still current.  Nothing can see that happen, and the next frame will
+ * render from video memory that no longer matches.  Rebinding is the
+ * boundary at which the two are made to agree again.
+ */
+static void
+osmgaMesaBufferImport(void)
+{
+    const unsigned long *src;
+    unsigned long *dst;
+    unsigned long y;
+
+    if (bufMapped == 0 || bufApp == 0)
+        return;
+    src = (const unsigned long *)bufApp;
+    dst = (unsigned long *)bufMapped;
+    for (y = 0UL; y < bufHeight; y++) {
+        const unsigned long *s = src + y * bufAppRow;
+        unsigned long *d = dst + y * bufStride;
+        unsigned long x;
+
+        for (x = 0UL; x < bufWidth; x++)
+            d[x] = s[x];
+    }
 }
 
 void
@@ -540,6 +637,7 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
             bufAppRow = (unsigned long)appRowLength;
             *rowLength = (int)bufStride;
             bufBound = ctx;
+            osmgaMesaBufferImport();
             return bufMapped;
         }
         /*
@@ -616,5 +714,6 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
      * agree without being told to.
      */
     *rowLength = 0;
+    osmgaMesaBufferImport();
     return bufMapped;
 }
