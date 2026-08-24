@@ -4451,6 +4451,77 @@ main(void)
         printf("\n     python wants 0 7 39 71 103 135 167 199 231 248 216\n");
     }
 
+    printf("\n70. is there a lambda -- does the engine choose MIN or MAG per pixel\n");
+    {
+        /*
+         * TEXFILTER has two fields, and the encoder now writes both.  But
+         * something has to CHOOSE between them at each fragment, and that
+         * something is lambda.  Whether this path computes one at all is the
+         * question mipmapping turns on: if it does, the gate that requires
+         * MinFilter to equal MagFilter can be widened and the mipmap modes
+         * are worth looking for; if it does not, setting MIN means "always
+         * minify" and the two fields are not independent at all.
+         *
+         * The instrument is a gradient that MAGNIFIES at one end of a row and
+         * MINIFIES at the other, with the two filters deliberately different:
+         * MAG nearest, MIN bilinear.  A texture whose texels alternate hard
+         * between two values then reads sharp where the rate is under one
+         * texel per pixel and blended where it is over -- IF the engine
+         * chooses.  If it does not, the whole row is one or the other.
+         *
+         * The rate cannot vary along a row without perspective, so the sweep
+         * varies it BETWEEN rows instead: each row is drawn with its own
+         * gradient, from a quarter of a texel per pixel up to four.
+         */
+        static const long rates[7] = { 4096L, 8192L, 16384L, 32768L,
+                                       65536L, 131072L, 262144L };
+        static const char *rnm[7] = { "1/4", "1/2", "1", "2", "4", "8", "16" };
+        int j, k;
+        unsigned long rr, cc;
+
+        /* texels alternate 0 and 255 in red, so any blend is obvious */
+        for (rr = 0UL; rr < 64UL; rr++)
+            for (cc = 0UL; cc < 64UL; cc++)
+                tex[rr * 64UL + cc] = (cc & 1UL) ? 0x00FF0000UL : 0UL;
+
+        for (k = 0; k < 3; k++) {
+            unsigned long fl =
+                (k == 0) ? 0UL
+              : (k == 1) ? OSMGA_HW3D_TEXF_BILIN
+                         : OSMGA_HW3D_TEXF_BILINMIN;
+
+            printf("   %-14s", (k == 0) ? "neither" :
+                               (k == 1) ? "MAG only" : "MIN only");
+            for (j = 0; j < 7; j++) {
+                unsigned long got;
+                unsigned v;
+
+                blank();
+                (void)setup(1024UL, 0UL, 16UL, 4UL, rates[j],
+                            fl | OSMGA_HW3D_TEXF_REPEATU
+                               | OSMGA_HW3D_TEXF_REPEATV);
+                batch->state.texW = 64UL; batch->state.texH = 64UL;
+                batch->state.texPitch = 64UL;
+                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                batch->state.tmr[3] = 0L;
+                batch->state.tmr[6] = rates[j] / 2L;   /* half a step in */
+                batch->state.tmr[7] = 0L;
+                v = fire();
+                if (v != OSMGA_HW3D_OK) { printf("  ref"); continue; }
+                got = pixat(0UL, 8UL);
+                printf(" %4lu", (got == BLANK) ? 999UL
+                                               : ((got >> 16) & 0xFFUL));
+            }
+            printf("\n");
+        }
+        printf("     rate (texels per pixel):");
+        for (j = 0; j < 7; j++) printf(" %4s", rnm[j]);
+        printf("\n");
+        printf("     0 or 255 is a point sample; anything between is a blend.\n"
+               "     If MIN-only blends where the rate is over one and points\n"
+               "     where it is under, the engine chooses -- there is a lambda.\n");
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;

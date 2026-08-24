@@ -289,6 +289,25 @@
 #define OSMGA_HW3D_TEXF_PERSP    0x80UL
 
 /*
+ * The MINIFICATION filter, which is a different register field from the
+ * magnification one.
+ *
+ * The chooser used to say the engine had a single filter switch and require
+ * MinFilter to equal MagFilter on those grounds.  It has two: TEXFILTER holds
+ * a MIN field and a MAG field (xf86-video-mga mga_reg.h:576-580), and the
+ * encoder was writing only MAG.  So a GL_LINEAR texture that MINIFIED was
+ * point sampled -- measured, a scene at two texels to the pixel differed from
+ * the software rasteriser on all 1024 of its pixels, the hardware reading
+ * texel one exactly where the software blended nought and one.
+ *
+ * Kept a separate flag from BILIN rather than folded into it, because the two
+ * being independent is what lets the probe ask whether the hardware chooses
+ * between them per fragment -- which is lambda, and which decides whether
+ * mipmapping is reachable on this path at all.
+ */
+#define OSMGA_HW3D_TEXF_BILINMIN 0x100UL
+
+/*
  * How far below nought a coordinate may go before it is refused.
  *
  * Not a licence to sample outside the texture -- the addressing does not let

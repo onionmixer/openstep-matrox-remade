@@ -262,6 +262,44 @@ main(int argc, char **argv)
         }
         /* "tile" runs the quad's texture coordinates out to three, which
          * only means anything with repeat */
+        if (argc > 2 && strcmp(argv[2], "minlin") == 0) {
+            /*
+             * A LINEAR texture that is MINIFIED: four textures across
+             * thirty-two pixels, so two texels to a pixel.
+             *
+             * The chooser requires MinFilter and MagFilter to be equal, on
+             * the grounds that the engine has one filter switch -- but the
+             * engine has TWO, a MIN field and a MAG field in TEXFILTER, and
+             * the encoder writes only the MAG one.  So a GL_LINEAR texture
+             * that magnifies gets bilinear and one that minifies gets point
+             * sampling, which is not what GL asks for.  Every scene here so
+             * far magnifies, so nothing has ever asked the question.
+             */
+            glClear(GL_COLOR_BUFFER_BIT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+            glBegin(GL_TRIANGLES);
+              glTexCoord2f(0.0f, 0.0f); glVertex2d(40.0, 40.0);
+              glTexCoord2f(4.0f, 0.0f); glVertex2d(72.0, 40.0);
+              glTexCoord2f(4.0f, 4.0f); glVertex2d(72.0, 72.0);
+              glTexCoord2f(0.0f, 0.0f); glVertex2d(40.0, 40.0);
+              glTexCoord2f(4.0f, 4.0f); glVertex2d(72.0, 72.0);
+              glTexCoord2f(0.0f, 4.0f); glVertex2d(40.0, 72.0);
+            glEnd();
+            glFinish();
+            fprintf(stderr,
+                    "# minlin: drawn %lu software %lu unsupported %lu"
+                    " declined %lu\n",
+                    OSMGAMesaHookDrawn(), OSMGAMesaHookSoftware(),
+                    OSMGAMesaHookUnsupported(), OSMGAMesaHookDeclined());
+            for (y = 0; y < H; y++)
+                for (x = 0; x < W; x++)
+                    if (app[y * W + x] != CLEARC)
+                        printf("P %ld %ld %lu\n", x, y, app[y * W + x]);
+            return 0;
+        }
         if (argc > 2 && strcmp(argv[2], "bandseam") == 0) {
             /*
              * Two quads side by side, sharing an edge, with continuous

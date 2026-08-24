@@ -7049,10 +7049,19 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
         ok = ok && osmgaDmaBlock(list, listDwords, &pos,
                  MGA_TEXCTL2,      MGA_TEXCTL2_G400_MAGIC |
                                    MGA_TEXCTL2_CKSTRANSDIS,
+                 /*
+                  * 0x20 is the MAGNIFICATION field's bilinear bit and 0x02 is
+                  * the MINIFICATION field's.  Only the first was ever written,
+                  * so a texture drawn smaller than itself was point sampled
+                  * however GL had asked for it to be filtered.
+                  */
                  MGA_TEXFILTER,    MGA_TEXFILTER_ALPHA | (0x10UL << 21) |
                                    (((b->state.texFlags &
                                       OSMGA_HW3D_TEXF_BILIN) != 0UL)
-                                    ? 0x20UL : 0UL),
+                                    ? 0x20UL : 0UL) |
+                                   (((b->state.texFlags &
+                                      OSMGA_HW3D_TEXF_BILINMIN) != 0UL)
+                                    ? 0x02UL : 0UL),
                  MGA_TEXTRANS,     0x0000ffffUL,
                  MGA_TEXTRANSHIGH, 0x0000ffffUL);
         ok = ok && osmgaDmaBlock(list, listDwords, &pos,

@@ -400,7 +400,9 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
             const struct gl_texture_image *ti = to->Image[to->BaseLevel];
 
             batch->state.texFlags =
-                ((to->MagFilter == GL_LINEAR) ? OSMGA_HW3D_TEXF_BILIN : 0UL)
+                ((to->MagFilter == GL_LINEAR)
+                     ? (OSMGA_HW3D_TEXF_BILIN
+                        | OSMGA_HW3D_TEXF_BILINMIN) : 0UL)
                 /*
                  * GL_REPLACE gives Av = At for a texture that has an alpha
                  * and Av = Af for one that has not, and Format is the STORED
