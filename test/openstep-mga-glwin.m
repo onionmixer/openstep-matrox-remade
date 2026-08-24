@@ -74,6 +74,9 @@
     float lastX, lastY;
     int havePos;
     int moving;
+    unsigned long stillTicks;
+    float mvX, mvY;
+    int haveMv;
     double sumMs, minMs, maxMs, lastReport;
     int presenting;
 }
@@ -160,6 +163,29 @@
     if (![win isVisible] || [win isMiniaturized] || [NSApp isHidden])
         return;
     if (moving) {
+        /*
+         * willMove arrives on the title bar's MOUSE-DOWN, before anything
+         * has moved -- and if the user releases without dragging, didMove
+         * never comes and the freeze would be permanent.  There is no
+         * button-state query in this AppKit's operator headers (checked),
+         * so the tie-breaker is time: a full second of the window not
+         * moving means it was a click, and the animation resumes.  A real
+         * drag still resumes instantly through didMove.
+         *
+         * The residual risk is accepted and named: hold the title bar for
+         * longer than the second and THEN drag, and a few stale stamps can
+         * trail again until the drag's own notifications catch up.
+         */
+        NSPoint m = [view convertPoint:NSMakePoint(0, 0) toView:nil];
+
+        m = [win convertBaseToScreen:m];
+        if (!haveMv || m.x != mvX || m.y != mvY) {
+            mvX = m.x; mvY = m.y; haveMv = 1;
+            stillTicks = 0UL;
+        } else if (++stillTicks >= 60UL) {
+            moving = 0;
+            havePos = 0;
+        }
         moveSkips++;
         return;
     }
@@ -281,6 +307,8 @@
 - (void)windowWillMove:(NSNotification *)n
 {
     moving = 1;
+    stillTicks = 0UL;
+    haveMv = 0;
 }
 
 - (void)windowDidMove:(NSNotification *)n
