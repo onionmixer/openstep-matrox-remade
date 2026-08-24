@@ -3447,7 +3447,7 @@ unmap:
     const OSMGAFormat *f3 = &osmgaFmt[selectedFormatIndex];
     unsigned long stride3, total3, tail3, listPhys3, spins3, status3;
     unsigned long epoch3, dstW3, dstH3, dstP3, avail3, settle3;
-    int anyZI3 = 0, overlap3 = 0;
+    int anyDepth3 = 0, overlap3 = 0;
     unsigned long *list3, listDwords3, badTri3 = 0UL;
     OSMGAHW3DTexReach reach3;
     int v3, rc3 = 0;
@@ -3677,22 +3677,24 @@ unmap:
      * zero-area triangle costs an extra read and nothing worse.  The other
      * error would be the expensive one.
      *
-     * Depth is asked only when some triangle is ZI, which is the condition
-     * the validator and the encoder both use, and by the same expression.
+     * Depth is asked only when some triangle addresses it, which is the
+     * condition the validator and the encoder use -- now by CALLING the same
+     * function rather than by writing the same expression out a third time.
+     * The expression they shared was atype ZI, and it was wrong for atype I
+     * with a real comparison: that reads depth, so a depth origin sitting in
+     * the dead zone needed the settling read and was not getting it.
      */
     {
         unsigned long i3;
 
-        anyZI3 = 0;
+        anyDepth3 = 0;
         for (i3 = 0UL; i3 < osmgaHW3DSnapshot.triCount; i3++) {
-            unsigned long d3 = osmgaHW3DSnapshot.tri[i3].dwgctl &
-                               OSMGA_HW3D_DWG_CLIENT;
-
-            if (((d3 >> 4) & 0x7UL) == OSMGA_HW3D_ATYPE_ZI) anyZI3 = 1;
+            if (osmgaHW3DAddressesDepth(osmgaHW3DSnapshot.tri[i3].dwgctl))
+                anyDepth3 = 1;
         }
         overlap3 = (osmgaHW3DSnapshot.state.dstorg - osmgaMmapWindowStart)
                        < OSMGA_HW3D_DEAD_BYTES;
-        if (anyZI3 &&
+        if (anyDepth3 &&
             (osmgaHW3DSnapshot.state.zorg - osmgaMmapWindowStart)
                 < OSMGA_HW3D_DEAD_BYTES)
             overlap3 = 1;
@@ -6969,7 +6971,7 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
 {
     unsigned long pos = 0UL, i;
     unsigned long tds0 = 0UL, tds1 = 0UL, clampBits = 0UL, perspBits = 0UL;
-    int anyZI = 0, anyTex = 0;
+    int anyDepth = 0, anyTex = 0;
     int ok = 1;
     /*
      * What to take off each coordinate.  The engine's addend depends on the
@@ -6988,21 +6990,24 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
      */
 
     for (i = 0UL; i < b->triCount; i++) {
-        unsigned long d = b->tri[i].dwgctl & OSMGA_HW3D_DWG_CLIENT;
-
-        if (((d >> 4) & 0x7UL) == OSMGA_HW3D_ATYPE_ZI) anyZI = 1;
-        if ((d & 0xFUL) == OSMGA_HW3D_OPCODE_TEX)      anyTex = 1;
+        if (osmgaHW3DAddressesDepth(b->tri[i].dwgctl))            anyDepth = 1;
+        if ((b->tri[i].dwgctl & 0xFUL) == OSMGA_HW3D_OPCODE_TEX)  anyTex = 1;
     }
 
     /* When no triangle addresses depth, ZORG should still point somewhere
      * harmless rather than at zero: zero is the visible framebuffer, so
      * the one case the validator does not check is the one that would be
      * worst if a depth write happened anyway.  "Not addressed" is a claim
-     * about the hardware, and this makes it not matter. */
+     * about the hardware, and this makes it not matter.
+     *
+     * Which triangles those are is osmgaHW3DAddressesDepth's answer, the
+     * same one the validator bounded zorg against.  Asking it differently
+     * here would hand the real origin to a batch nobody checked, or the
+     * scratch one to a batch that meant to use its own. */
     ok = ok && osmgaDmaBlock(list, listDwords, &pos,
                              MGA_DSTORG,   b->state.dstorg,
-                             MGA_ZORG,     anyZI ? b->state.zorg
-                                                 : OSMGA_D3_ZORG,
+                             MGA_ZORG,     anyDepth ? b->state.zorg
+                                                    : OSMGA_D3_ZORG,
                              MGA_DMAPAD,   0UL,
                              MGA_DMAPAD,   0UL);
 

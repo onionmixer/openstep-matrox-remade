@@ -38,7 +38,7 @@
  * version had to move -- the probe demands an exact match precisely so that
  * a library and a driver disagreeing about where the fields are cannot draw.
  */
-#define OSMGA_HW3D_VERSION      7UL
+#define OSMGA_HW3D_VERSION      8UL
 
 /* The 64 KiB IOMallocLow block is split: the client writes the batch at the
  * start, the kernel builds the command list after it.  28 KiB and 36 KiB
@@ -131,6 +131,30 @@
 #define OSMGA_HW3D_OPCODE_TEX   0x6UL
 #define OSMGA_HW3D_ATYPE_I      0x7UL
 #define OSMGA_HW3D_ATYPE_ZI     0x3UL
+#define OSMGA_HW3D_ZMODE_NOZCMP 0x0UL
+
+/*
+ * Does this triangle address the depth buffer?
+ *
+ * ZI is "depth mode with gouraud" and I is "Gouraud (with depth compare)" --
+ * Matrox's own register decoder says so, in those words
+ * (xf86-video-mga-2.0.0/util/stormdwg.c:32 and :35).  So atype alone does not
+ * answer it: I with a real comparison reads depth, and only I with NOZCMP --
+ * a comparison that always passes, which is what "no depth" has always been
+ * spelled as here -- does not.
+ *
+ * This lives in one place because three copies of it existed, written out by
+ * hand, in the validator, the encoder and the submit path's dead-zone test,
+ * and the third one carried a comment promising it was "the condition the
+ * validator and the encoder both use, and by the same expression".  A promise
+ * is not a mechanism.  The masking is inside on purpose: a caller that hands
+ * over an unmasked dwgctl must not be able to make the answer wrong.
+ *
+ * Reserved zmode 1 counts as a comparison.  The validator lets it through --
+ * deliberately, since no zmode can move a write -- so containment has to
+ * assume it addresses depth rather than assume it does not.
+ */
+int osmgaHW3DAddressesDepth(unsigned long dwgctl);
 
 /*
  * ALPHACTRL likewise.  Its named fields cover bits 0-9, 11-25; bits 10

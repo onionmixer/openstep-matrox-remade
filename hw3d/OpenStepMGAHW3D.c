@@ -145,6 +145,24 @@ osmgaHW3DTexBandFor(long maxCoord)
 }
 
 /*
+ * Does this triangle address the depth buffer?  The header carries the
+ * reasoning; this is the one implementation of it.
+ */
+int
+osmgaHW3DAddressesDepth(unsigned long dwgctl)
+{
+    unsigned long d = dwgctl & OSMGA_HW3D_DWG_CLIENT;
+    unsigned long atype = (d >> 4) & 0x7UL;
+    unsigned long zmode = (d >> 8) & 0x7UL;
+
+    if (atype == OSMGA_HW3D_ATYPE_ZI)
+        return 1;
+    if (atype == OSMGA_HW3D_ATYPE_I && zmode != OSMGA_HW3D_ZMODE_NOZCMP)
+        return 1;
+    return 0;
+}
+
+/*
  * What the engine ADDS to a coordinate of this magnitude before it picks a
  * texel.  The same ladder the bias walks, indexed by the value rather than by
  * the rung -- and a flat 511 below nought, which is measured and is not
@@ -211,7 +229,7 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                        OSMGAHW3DTexBand *bands)
 {
     unsigned long i, rows, opcode, atype;
-    int anyZI, anyTex;
+    int anyDepth, anyTex;
     /*
      * How far a texture coordinate actually travels in this batch.
      *
@@ -348,16 +366,20 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
      * "all of them" would let exactly that triangle draw against an origin
      * nobody checked.
      */
-    anyZI = 0;
+    /*
+     * "Addresses depth" is osmgaHW3DAddressesDepth and nothing else -- the
+     * same call the encoder and the submit path make.  It used to be atype
+     * ZI spelled out here, which missed atype I asking for a real
+     * comparison: that reads depth, and read from where nobody bounded.
+     */
+    anyDepth = 0;
     anyTex = 0;
     for (i = 0UL; i < b->triCount; i++) {
-        unsigned long d = b->tri[i].dwgctl & OSMGA_HW3D_DWG_CLIENT;
-
-        if (((d >> 4) & 0x7UL) == OSMGA_HW3D_ATYPE_ZI) anyZI = 1;
-        if ((d & 0xFUL) == OSMGA_HW3D_OPCODE_TEX)      anyTex = 1;
+        if (osmgaHW3DAddressesDepth(b->tri[i].dwgctl))            anyDepth = 1;
+        if ((b->tri[i].dwgctl & 0xFUL) == OSMGA_HW3D_OPCODE_TEX)  anyTex = 1;
     }
 
-    if (anyZI) {
+    if (anyDepth) {
         unsigned long zstride = (lim->pitchBytes / 4UL) * OSMGA_HW3D_DEPTH_BYTES;
 
         if (!osmgaHW3DReach(b->state.zorg, rows, zstride,

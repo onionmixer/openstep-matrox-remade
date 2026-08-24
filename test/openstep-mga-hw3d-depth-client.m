@@ -92,6 +92,8 @@ why(unsigned v)
     case OSMGA_HW3D_E_TRIROW:   return "triangle rows";
     case OSMGA_HW3D_E_TRICOL:   return "triangle columns";
     case OSMGA_HW3D_E_TRISLOPE: return "edge slope";
+    case OSMGA_HW3D_E_DSTSIZE:  return "destination size";
+    case OSMGA_HW3D_E_DSTPITCH: return "destination pitch";
     default:                    return "other";
     }
 }
@@ -255,12 +257,22 @@ main(void)
         }
     printf("   guard: colour %lu, depth %lu\n", guardC, guardZ);
 
-    /* The validator, both ways round. */
+    /* The validator, both ways round.
+     *
+     * The destination size and pitch have to be here.  They were not, for as
+     * long as this probe sat outside the build script and nobody ran it, and
+     * a batch that leaves them at nought is refused for its PITCH -- verdict
+     * 16 -- long before the validator reaches the depth origin these two
+     * cases are about.  Both then "failed" for a reason that had nothing to
+     * do with what they were asking. */
     memset(batch, 0, sizeof *batch);
     batch->magic = OSMGA_HW3D_MAGIC;
     batch->version = OSMGA_HW3D_VERSION;
     batch->triCount = 1;
     batch->state.dstorg = COLOUR_ORG;
+    batch->state.dstWidth  = 64UL;
+    batch->state.dstHeight = 120UL;
+    batch->state.dstPitch  = 1024UL;
     batch->state.zorg = 0UL;                    /* the visible framebuffer */
     fillRect(&batch->tri[0], 0UL, BAND, 0x7000UL, DWG_ZI | ZMODE_NOZCMP);
     (void)[master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
@@ -277,6 +289,171 @@ main(void)
     printf("   the same bad zorg with atype I  -> verdict %u (%s), and it "
            "must be accepted because depth is not addressed\n", v, why(v));
     if (v != OSMGA_HW3D_OK) fails++;
+
+    /*
+     * ---- Does atype I compare depth, and does it leave depth alone? ----
+     *
+     * Matrox's own register decoder calls atype ZI "depth mode with gouraud"
+     * and atype I "Gouraud (with depth compare)"
+     * (xf86-video-mga-2.0.0/util/stormdwg.c:32 and :35).  Read plainly, I
+     * compares and does not write -- which is glDepthMask(GL_FALSE), a state
+     * this driver has had to refuse.  Read is all it is, though: no
+     * measurement in this tree has ever asked, because every atype I the
+     * driver has ever sent carried zmode NOZCMP, and a comparison that always
+     * passes cannot be told apart from no comparison at all.
+     *
+     * This asks.  Two bands, both starting from the same cleared depth:
+     *
+     *   band 0   I + ZLT, z nearer than the clear   -- must draw
+     *   band 1   I + ZLT, z farther than the clear  -- must not draw
+     *
+     * and afterwards the depth of BOTH must still be the clear.  The three
+     * answers are distinguishable and none of them is a guess:
+     *
+     *   drew, did not draw, depth unchanged  -> I compares and does not write
+     *   both drew                            -> I ignores depth
+     *   depth changed                        -> I writes, and is not a mask
+     *
+     * Until the kernel learned that atype I with a real zmode addresses
+     * depth, this could not have been asked from here at all: the encoder
+     * handed such a batch the scratch depth origin, so the comparison would
+     * have been against somebody else's memory.
+     */
+    for (row = 0UL; row < ROWS; row++)
+        for (col = 0UL; col < CLIP_COLS; col++) {
+            colour[row * STRIDE_DW + col] = SENTINEL;
+            depth[row * STRIDE_DW + col] =
+                (row < NBAND * BAND) ? ZCLEAR : ZGUARD;
+        }
+    if (depth[0] != ZCLEAR) {
+        printf("   FAIL -- the second depth clear did not read back (%04x)\n",
+               depth[0]);
+        return 1;
+    }
+
+    memset(batch, 0, sizeof *batch);
+    batch->magic = OSMGA_HW3D_MAGIC;
+    batch->version = OSMGA_HW3D_VERSION;
+    batch->triCount = 2;
+    batch->state.dstorg = COLOUR_ORG;
+    batch->state.dstWidth  = 64UL;
+    batch->state.dstHeight = 120UL;
+    batch->state.dstPitch  = 1024UL;
+    batch->state.zorg = DEPTH_ORG;
+    fillRect(&batch->tri[0], 0UL,  BAND, 0x4000UL, DWG_I | ZMODE_ZLT);
+    fillRect(&batch->tri[1], BAND, BAND, 0xC000UL, DWG_I | ZMODE_ZLT);
+
+    v = ([master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
+                 objectNumber:objNum count:0] == IO_R_SUCCESS)
+        ? OSMGA_HW3D_OK : verdict(master, objNum);
+    if (v != OSMGA_HW3D_OK) {
+        printf("   atype I with a real zmode was refused (verdict %u, %s)\n",
+               v, why(v));
+        fails++;
+    } else {
+        unsigned long drewNear = 0UL, drewFar = 0UL, zmoved = 0UL;
+
+        for (row = 0UL; row < BAND; row++)
+            for (col = 0UL; col < CLIP_COLS; col++) {
+                if (colour[row * STRIDE_DW + col] != SENTINEL) drewNear++;
+                if (depth[row * STRIDE_DW + col] != ZCLEAR) zmoved++;
+            }
+        for (row = BAND; row < 2UL * BAND; row++)
+            for (col = 0UL; col < CLIP_COLS; col++) {
+                if (colour[row * STRIDE_DW + col] != SENTINEL) drewFar++;
+                if (depth[row * STRIDE_DW + col] != ZCLEAR) zmoved++;
+            }
+
+        printf("   atype I + ZLT: near band drew %lu of %lu, far band drew "
+               "%lu of %lu, depth moved in %lu pixels\n",
+               drewNear, BAND * CLIP_COLS, drewFar, BAND * CLIP_COLS, zmoved);
+
+        /*
+         * The far band drew nothing -- but it differs from the near band in
+         * its ROWS as well as its depth, so on its own that is two changes
+         * and one result.  This is the control: the same rows again, atype I
+         * with NOZCMP, which cannot reject anything.  If those rows can be
+         * drawn at all, the only thing left to explain the empty band is the
+         * comparison.
+         */
+        memset(batch, 0, sizeof *batch);
+        batch->magic = OSMGA_HW3D_MAGIC;
+        batch->version = OSMGA_HW3D_VERSION;
+        batch->triCount = 1;
+        batch->state.dstorg = COLOUR_ORG;
+        batch->state.dstWidth  = 64UL;
+        batch->state.dstHeight = 120UL;
+        batch->state.dstPitch  = 1024UL;
+        batch->state.zorg = DEPTH_ORG;
+        fillRect(&batch->tri[0], BAND, BAND, 0xC000UL, DWG_I | ZMODE_NOZCMP);
+        if ([master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
+                    objectNumber:objNum count:0] != IO_R_SUCCESS) {
+            printf("   the NOZCMP control over the far band was refused\n");
+            fails++;
+        } else {
+            unsigned long ctrl = 0UL;
+
+            for (row = BAND; row < 2UL * BAND; row++)
+                for (col = 0UL; col < CLIP_COLS; col++)
+                    if (colour[row * STRIDE_DW + col] != SENTINEL) ctrl++;
+            printf("   control: the same rows with NOZCMP drew %lu of %lu\n",
+                   ctrl, BAND * CLIP_COLS);
+            if (ctrl != BAND * CLIP_COLS) {
+                printf("   FAIL -- those rows cannot be drawn at all, so the "
+                       "empty far band proves nothing about the comparison\n");
+                fails++;
+            }
+        }
+
+        /*
+         * And the guard, recounted.  It was counted before any of this and
+         * asserted after it, which meant the assertion was about the earlier
+         * batches and said nothing at all about these.
+         */
+        guardC = 0UL;
+        guardZ = 0UL;
+        for (row = NBAND * BAND; row < ROWS; row++)
+            for (col = 0UL; col < CLIP_COLS; col++) {
+                if (colour[row * STRIDE_DW + col] != SENTINEL) guardC++;
+                if (depth[row * STRIDE_DW + col] != ZGUARD) guardZ++;
+            }
+        printf("   guard after the atype I batches: colour %lu, depth %lu\n",
+               guardC, guardZ);
+        if (drewNear == BAND * CLIP_COLS && drewFar == 0UL && zmoved == 0UL)
+            printf("   ANSWER: atype I compares depth and does not write it "
+                   "-- glDepthMask(GL_FALSE) is expressible\n");
+        else if (drewNear == BAND * CLIP_COLS &&
+                 drewFar == BAND * CLIP_COLS && zmoved == 0UL)
+            printf("   ANSWER: atype I ignores depth -- the comparison did "
+                   "not happen, and a mask cannot be spelled this way\n");
+        else if (zmoved != 0UL)
+            printf("   ANSWER: atype I WRITES depth -- it is not a mask\n");
+        else
+            printf("   ANSWER: neither -- read the counts above before "
+                   "concluding anything\n");
+    }
+
+    /*
+     * And the containment that goes with it: a comparing atype I must have
+     * its depth origin bounded now, where before nobody looked.
+     */
+    memset(batch, 0, sizeof *batch);
+    batch->magic = OSMGA_HW3D_MAGIC;
+    batch->version = OSMGA_HW3D_VERSION;
+    batch->triCount = 1;
+    batch->state.dstorg = COLOUR_ORG;
+    batch->state.dstWidth  = 64UL;
+    batch->state.dstHeight = 120UL;
+    batch->state.dstPitch  = 1024UL;
+    batch->state.zorg = 0UL;                    /* the visible framebuffer */
+    fillRect(&batch->tri[0], 0UL, BAND, 0x4000UL, DWG_I | ZMODE_ZLT);
+    (void)[master setIntValues:(unsigned *)0 forParameter:SUBMIT_PARAM
+                  objectNumber:objNum count:0];
+    v = verdict(master, objNum);
+    printf("   the same bad zorg with atype I + ZLT -> verdict %u (%s), and "
+           "it must be refused because a comparison reads depth\n",
+           v, why(v));
+    if (v != OSMGA_HW3D_E_ZORG) fails++;
 
     if (guardC != 0UL || guardZ != 0UL)
         printf("STOP -- a write escaped its band (colour %lu, depth %lu)\n",
