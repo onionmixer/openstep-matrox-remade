@@ -178,6 +178,38 @@ blendquadz(double x0, double y0, double x1, double y1, double z)
     glEnd();
 }
 
+/*
+ * A texture tall enough for the bias seam to matter.
+ *
+ * 2048 rows puts a texel at 512 units, and the difference between two
+ * neighbouring bias rungs is 16 units and upward -- so a join where the rung
+ * changes can move by a fraction of a texel that is actually visible.  Each
+ * row names itself so a shifted row is legible; eight columns is enough and
+ * keeps the upload small.
+ */
+#define TALLH 2048
+static void
+maketexTall(GLuint *id)
+{
+    static GLubyte px[8 * TALLH * 3];
+    int x, y;
+
+    for (y = 0; y < TALLH; y++)
+        for (x = 0; x < 8; x++) {
+            px[(y * 8 + x) * 3 + 0] = (GLubyte)(y & 0xFF);
+            px[(y * 8 + x) * 3 + 1] = (GLubyte)((y >> 8) & 0xFF);
+            px[(y * 8 + x) * 3 + 2] = (GLubyte)(x * 32 + 8);
+        }
+    glGenTextures(1, id);
+    glBindTexture(GL_TEXTURE_2D, *id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 8, TALLH, 0,
+                 GL_RGB, GL_UNSIGNED_BYTE, px);
+}
+
 static void
 quad(double x0, double y0, double x1, double y1)
 {
@@ -838,6 +870,76 @@ main(int argc, char **argv)
                         OSMGAMesaHookSoftware() - s3,
                         OSMGAMesaHookTexPersp() - p1);
             }
+            for (y = 0; y < H; y++)
+                for (x = 0; x < W; x++)
+                    if (app[y * W + x] != CLEARC)
+                        printf("P %ld %ld %lu\n", x, y, app[y * W + x]);
+            return 0;
+        }
+        /*
+         * Eight stacked quads on a 2048-row texture, v running from k to k+1
+         * repeats, so each quad's reach is its own largest v and the ladder
+         * rung changes at three of the joins -- between quads 0 and 1, 1 and
+         * 2, and 3 and 4 (python: reaches 1..8 times 2^20 give rungs
+         * 0,1,2,2,3,3,3,3).
+         *
+         * This is the question the probe could not answer.  Probe section 82
+         * built a three-rung gap on purpose and found a seam; whether ORDINARY
+         * Mesa geometry produces one is a different claim, and this is
+         * ordinary Mesa geometry: continuous texture coordinates over a
+         * tiled strip.
+         *
+         * The comparison is against the software rasteriser, which has no
+         * bias at all, so any row where the engine's residual has moved the
+         * sample across a texel boundary shows as a difference -- and their
+         * distribution says whether it is a seam at the joins or the ordinary
+         * scatter every textured scene has.
+         */
+        if (argc > 2 && strncmp(argv[2], "seam", 4) == 0) {
+            GLuint tt;
+            int k;
+            /*
+             * "seamx" is the positive control, and it is the reason "seam"
+             * finding nothing means anything.
+             *
+             * Ordinary tiling gives each primitive a coordinate range close
+             * to its own reach, so its rung and its coordinates' addends
+             * agree and the residual is small.  The control breaks that on
+             * purpose: one band of the strip covers four repeats at once, so
+             * its reach jumps four rungs above its neighbour's while the
+             * coordinates at their shared edge are identical.  If the scene
+             * cannot show a seam there, it could not have shown one anywhere.
+             */
+            int control = (argv[2][4] == 'x');
+
+            maketexTall(&tt);
+            glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+            glClear(GL_COLOR_BUFFER_BIT);
+            for (k = 0; k < 8; k++) {
+                double y0 = 20.0 + (double)k * 25.0;
+                double y1 = y0 + 25.0;
+                /*
+                 * v at the two edges.  Ordinarily each band advances by one
+                 * repeat; the control makes band 1 advance by four, so band
+                 * 0 reaches one repeat and band 1 reaches five -- rung 0
+                 * against rung 3 -- while they share the edge at v = 1.
+                 */
+                float va = (float)k, vb = (float)(k + 1);
+
+                if (control) {
+                    va = (k == 0) ? 0.0f : (float)(1 + 4 * (k - 1));
+                    vb = (k == 0) ? 1.0f : (float)(1 + 4 * k);
+                }
+                glBegin(GL_TRIANGLES);
+                  glTexCoord2f(0.0f, va); glVertex2d(40.0, y0);
+                  glTexCoord2f(1.0f, va); glVertex2d(168.0, y0);
+                  glTexCoord2f(1.0f, vb); glVertex2d(168.0, y1);
+                  glTexCoord2f(0.0f, va); glVertex2d(40.0, y0);
+                  glTexCoord2f(1.0f, vb); glVertex2d(168.0, y1);
+                  glTexCoord2f(0.0f, vb); glVertex2d(40.0, y1);
+                glEnd();
+            }
+            glFinish();
             for (y = 0; y < H; y++)
                 for (x = 0; x < W; x++)
                     if (app[y * W + x] != CLEARC)
