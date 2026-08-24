@@ -4728,6 +4728,146 @@ main(void)
                "     a level the engine found for itself.\n");
     }
 
+    printf("\n74. is the mipmap bit inert -- whole-image comparison\n");
+    {
+        /*
+         * 73 read ONE pixel per setting and found every mode reading the base
+         * level.  That is consistent with two very different things: the
+         * modes work and the hardware chose level nought, or bit three of the
+         * field -- the one that separates mm1s from nrst and mm4s from bilin
+         * -- does nothing at all on this path.
+         *
+         * The values say which to expect.  nrst is 0x0 and mm1s is 0x8; bilin
+         * is 0x2 and mm4s is 0xa.  Each pair differs in bit three alone.  So
+         * if the pair renders IDENTICALLY over a whole image, that bit is
+         * inert here, and no amount of sweeping the other fields will make a
+         * mip level appear.  If it differs anywhere, the bit does something
+         * and is worth chasing.
+         *
+         * Whole rows, not one pixel, and at a strong minification where a
+         * mipmapped read would differ most.
+         */
+        static const unsigned long fl[4] = {
+            0UL,
+            OSMGA_HW3D_TEXF_MINMODE_MM1S << OSMGA_HW3D_TEXF_MINMODE_SHIFT,
+            OSMGA_HW3D_TEXF_BILIN | OSMGA_HW3D_TEXF_BILINMIN,
+            OSMGA_HW3D_TEXF_MINMODE_MM4S << OSMGA_HW3D_TEXF_MINMODE_SHIFT
+        };
+        static const char *fn[4] = { "nrst 0x0", "mm1s 0x8",
+                                     "bilin 0x2", "mm4s 0xa" };
+        static unsigned long shot[4][64];
+        int k, j;
+        unsigned long col, i;
+
+        for (i = 0UL; i < 16UL * 1024UL; i++) {
+            unsigned long r = i & 0xFFUL, g = (i >> 8) & 0xFFUL;
+
+            tex[i] = (r << 16) | (g << 8) | (((r * r) + (g * g)) & 0xFFUL);
+        }
+
+        for (k = 0; k < 4; k++) {
+            unsigned v;
+
+            blank();
+            (void)setup(1024UL, 0UL, 64UL, 4UL, 65536L,
+                        fl[k] | OSMGA_HW3D_TEXF_REPEATU
+                              | OSMGA_HW3D_TEXF_REPEATV);
+            batch->state.texW = 64UL; batch->state.texH = 64UL;
+            batch->state.texPitch = 64UL;
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = 32768L; batch->state.tmr[7] = 0L;
+            v = fire();
+            for (col = 0UL; col < 64UL; col++)
+                shot[k][col] = (v == OSMGA_HW3D_OK)
+                             ? pixat(0UL, col) : 0xFFFFFFFFUL;
+        }
+        for (k = 0; k < 4; k += 2) {
+            unsigned long same = 0UL;
+
+            for (col = 0UL; col < 64UL; col++)
+                if (shot[k][col] == shot[k + 1][col]) same++;
+            printf("   %-10s vs %-10s  identical on %lu of 64 columns\n",
+                   fn[k], fn[k + 1], same);
+        }
+        printf("     they differ only in bit three of the minification field.\n"
+               "     Sixty-four of sixty-four means that bit does nothing here.\n");
+        for (j = 0; j < 4; j++) {
+            printf("     %-10s first eight:", fn[j]);
+            for (col = 0UL; col < 8UL; col++)
+                printf(" %8lx", shot[j][col]);
+            printf("\n");
+        }
+    }
+
+    printf("\n75. does any rfw wake the mipmap bit\n");
+    {
+        /*
+         * 74 showed bit three of the minification field inert -- mm1s renders
+         * exactly as nrst and mm4s exactly as bilin, over a whole row.  One
+         * explanation left standing is that the bit is gated by something
+         * that currently says "there are no levels", and rfw is the only
+         * candidate anyone has: the driver fills it with 8 - log2(width) and
+         * nothing in the code says why.
+         *
+         * The encoder derives rfw from the DECLARED width, so declaring a
+         * different width is a handle on it without another reboot -- nine of
+         * the sixty-four values, including nought and the wrapped ones past
+         * 256.  Declaring a width the texture does not have changes the
+         * addressing too, but it changes it the SAME way for both settings,
+         * so a difference between them still isolates bit three.
+         */
+        static const unsigned long dims[8] = { 8UL, 16UL, 32UL, 64UL,
+                                               128UL, 256UL, 512UL, 1024UL };
+        int j;
+        unsigned long i;
+
+        for (i = 0UL; i < 16UL * 1024UL; i++) {
+            unsigned long r = i & 0xFFUL, g = (i >> 8) & 0xFFUL;
+
+            tex[i] = (r << 16) | (g << 8) | (((r * r) + (g * g)) & 0xFFUL);
+        }
+
+        printf("     %6s %5s   %s\n", "texW", "rfw", "mm1s against nrst");
+        for (j = 0; j < 8; j++) {
+            unsigned long shot[2][16];
+            int k;
+            unsigned long col, lw = 0UL, d = dims[j];
+            unsigned long same = 0UL;
+            int refused = 0;
+
+            while ((1UL << lw) < d) lw++;
+            for (k = 0; k < 2; k++) {
+                unsigned long fl = k ? (OSMGA_HW3D_TEXF_MINMODE_MM1S
+                                        << OSMGA_HW3D_TEXF_MINMODE_SHIFT)
+                                     : 0UL;
+                unsigned v;
+
+                blank();
+                (void)setup(1024UL, 0UL, 16UL, 4UL, 65536L,
+                            fl | OSMGA_HW3D_TEXF_REPEATU
+                               | OSMGA_HW3D_TEXF_REPEATV);
+                batch->state.texW = d; batch->state.texH = 8UL;
+                batch->state.texPitch = d;
+                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                batch->state.tmr[3] = 0L;
+                batch->state.tmr[6] = 32768L; batch->state.tmr[7] = 0L;
+                v = fire();
+                if (v != OSMGA_HW3D_OK) refused = 1;
+                for (col = 0UL; col < 16UL; col++)
+                    shot[k][col] = (v == OSMGA_HW3D_OK)
+                                 ? pixat(0UL, col) : 0xFFFFFFFFUL;
+            }
+            for (col = 0UL; col < 16UL; col++)
+                if (shot[0][col] == shot[1][col]) same++;
+            printf("     %6lu %5lu   %s\n", d, (8UL - lw) & 63UL,
+                   refused ? "refused"
+                           : (same == 16UL ? "identical on all 16"
+                                           : "DIFFERS"));
+        }
+        printf("     any row that differs is the bit doing something\n");
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;
