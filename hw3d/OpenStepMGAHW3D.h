@@ -308,6 +308,32 @@
 #define OSMGA_HW3D_TEXF_BILINMIN 0x100UL
 
 /*
+ * A DIAGNOSTIC selector for the minification field, four bits wide.
+ *
+ * Nought means the ordinary behaviour, where BILIN and BILINMIN decide the
+ * two fields.  Anything else goes straight into TEXFILTER's minification
+ * field, and only the four mipmap modes the generated register description
+ * names are accepted -- mm1s, mm2s, mm4s and mm8s.  0xd is MIN_ANISO in the
+ * hand-written header and absent from the generated one; whatever it selects
+ * is a different fetch footprint and it is not an input to this experiment.
+ *
+ * This exists so the probe can ask WHERE a mipmap mode reads from, which is
+ * the one thing standing between this driver and mipmapping: the half that
+ * chooses a level per fragment is already there and measured, and where the
+ * levels live is not.
+ *
+ * The builder never sets it.  When it is set the validator requires twice the
+ * base texture's rows to be inside the proven texture window, because a whole
+ * mip chain is four thirds of the base and the engine may walk one.
+ */
+#define OSMGA_HW3D_TEXF_MINMODE_SHIFT 9
+#define OSMGA_HW3D_TEXF_MINMODE_MASK  0x1E00UL
+#define OSMGA_HW3D_TEXF_MINMODE_MM1S  0x8UL
+#define OSMGA_HW3D_TEXF_MINMODE_MM2S  0x9UL
+#define OSMGA_HW3D_TEXF_MINMODE_MM4S  0xAUL
+#define OSMGA_HW3D_TEXF_MINMODE_MM8S  0xCUL
+
+/*
  * How far below nought a coordinate may go before it is refused.
  *
  * Not a licence to sample outside the texture -- the addressing does not let

@@ -4636,6 +4636,98 @@ main(void)
                "     is looking at one axis only.\n");
     }
 
+    printf("\n73. where does a mipmap mode read from\n");
+    {
+        /*
+         * The half of mipmapping that chooses a level per fragment is already
+         * there and measured (70, 71, 72).  What is missing is where the
+         * levels live, and no amount of reading the register description
+         * settles it: there is ONE texture origin, the mode names mm1s, mm2s,
+         * mm4s and mm8s say nothing about addressing, and the rfw field the
+         * driver fills with 8 - log2(width) has no explanation anywhere --
+         * only the observation that a 1024-wide texture, whose rfw wraps to
+         * 62, samples correctly, so rfw does not touch ordinary fetching.
+         *
+         * So the whole texture window is filled with an ATLAS whose every
+         * word holds its own offset, and the question becomes not what came
+         * back but WHERE it came from.  The code is
+         *
+         *      red = offset & 255, green = offset >> 8,
+         *      blue = (red*red + green*green) & 255
+         *
+         * -- a checksum a blend of two words cannot usually satisfy, which
+         * matters because averaging two addresses would otherwise look like a
+         * third address.  python: under four in a thousand random blends
+         * decode, and a real fetch shows a RUN of consistent addresses where
+         * a blend shows noise, so the run is the real discriminator.
+         *
+         * The controls come first: the same atlas read with the ordinary
+         * nearest and bilinear filters, so that a mode's reading can be told
+         * against a known-good decode of the same memory.
+         */
+        unsigned long base = TEX_ORG;
+        unsigned long words = 16UL * 1024UL;      /* the mapped window */
+        unsigned long i;
+        static const unsigned long modes[4] = { 0x8UL, 0x9UL, 0xAUL, 0xCUL };
+        static const char *mnm[4] = { "mm1s", "mm2s", "mm4s", "mm8s" };
+        int k, j;
+
+        for (i = 0UL; i < words; i++) {
+            unsigned long r = i & 0xFFUL, g = (i >> 8) & 0xFFUL;
+
+            tex[i] = (r << 16) | (g << 8) | (((r * r) + (g * g)) & 0xFFUL);
+        }
+        (void)base;
+
+        printf("     the atlas holds its own word offsets, checksummed\n");
+        for (k = 0; k < 6; k++) {
+            unsigned long fl;
+            const char *nm;
+
+            if (k == 0)      { fl = 0UL; nm = "nearest (control)"; }
+            else if (k == 1) { fl = OSMGA_HW3D_TEXF_BILIN
+                                    | OSMGA_HW3D_TEXF_BILINMIN;
+                               nm = "bilinear (control)"; }
+            else             { fl = modes[k - 2]
+                                    << OSMGA_HW3D_TEXF_MINMODE_SHIFT;
+                               nm = mnm[k - 2]; }
+
+            printf("     %-18s", nm);
+            /* one-axis minification, four rates well away from the crossing */
+            for (j = 0; j < 4; j++) {
+                static const long rate[4] = { 32768L, 65536L, 131072L,
+                                              262144L };
+                unsigned long got, r, g, off;
+                unsigned v;
+
+                blank();
+                (void)setup(1024UL, 0UL, 16UL, 4UL, rate[j],
+                            fl | OSMGA_HW3D_TEXF_REPEATU
+                               | OSMGA_HW3D_TEXF_REPEATV);
+                batch->state.texW = 64UL; batch->state.texH = 64UL;
+                batch->state.texPitch = 64UL;
+                batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+                batch->state.tmr[3] = 0L;
+                batch->state.tmr[6] = rate[j] / 2L;
+                batch->state.tmr[7] = 0L;
+                v = fire();
+                if (v != OSMGA_HW3D_OK) { printf("   ref%-6u", v); continue; }
+                got = pixat(0UL, 4UL);
+                r = (got >> 16) & 0xFFUL; g = (got >> 8) & 0xFFUL;
+                off = (g << 8) | r;
+                if ((got & 0xFFUL) == (((r * r) + (g * g)) & 0xFFUL))
+                    printf("  %6lu", off);
+                else
+                    printf("   mixed");
+            }
+            printf("\n");
+        }
+        printf("     rates 2, 4, 8, 16 texels per pixel; a number is a word\n"
+               "     offset from the texture origin, \"mixed\" is a blend.\n"
+               "     The base texture is words 0..4095; anything past that is\n"
+               "     a level the engine found for itself.\n");
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;

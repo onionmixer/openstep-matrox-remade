@@ -297,11 +297,37 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
             b->state.tmr[7] < -(long)OSMGA_HW3D_TEX_COORD_MAX ||
             b->state.tmr[7] > (long)OSMGA_HW3D_TEX_COORD_MAX)
             return OSMGA_HW3D_E_TEXCOORD;
-        /* Reach from the size the client gave, which is the size the
-         * kernel will program: pitch texels of four bytes, h rows. */
-        if (!osmgaHW3DReach(b->state.texorg, h, pitch * 4UL,
-                            lim->texStart, lim->texEnd))
-            return OSMGA_HW3D_E_TEXORG;
+        /*
+         * The diagnostic minification selector, and what it costs.
+         *
+         * Only the four modes the generated register description names are
+         * let through.  The rest of the field is unnamed there -- including
+         * the 0xd the hand-written header calls MIN_ANISO -- and an unnamed
+         * fetch footprint is not something to hand the engine on a guess.
+         */
+        {
+            unsigned long mm = (b->state.texFlags
+                                & OSMGA_HW3D_TEXF_MINMODE_MASK)
+                               >> OSMGA_HW3D_TEXF_MINMODE_SHIFT;
+
+            if (mm != 0UL &&
+                mm != OSMGA_HW3D_TEXF_MINMODE_MM1S &&
+                mm != OSMGA_HW3D_TEXF_MINMODE_MM2S &&
+                mm != OSMGA_HW3D_TEXF_MINMODE_MM4S &&
+                mm != OSMGA_HW3D_TEXF_MINMODE_MM8S)
+                return OSMGA_HW3D_E_TEXSIZE;
+            /*
+             * Reach from the size the client gave, which is the size the
+             * kernel will program: pitch texels of four bytes, h rows.  With
+             * a mipmap mode asked for it is TWICE that -- a whole chain is
+             * four thirds of the base, and the engine may walk one to an
+             * address this driver has not worked out yet.  Reading beyond the
+             * texture would be reading VRAM nobody proved.
+             */
+            if (!osmgaHW3DReach(b->state.texorg, (mm != 0UL) ? h * 2UL : h,
+                                pitch * 4UL, lim->texStart, lim->texEnd))
+                return OSMGA_HW3D_E_TEXORG;
+        }
 
         /* The coordinate check is after the triangle loop, because what it
          * needs -- how far the drawing actually reaches -- is what that loop

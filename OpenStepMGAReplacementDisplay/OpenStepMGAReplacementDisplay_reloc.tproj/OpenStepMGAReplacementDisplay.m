@@ -7059,9 +7059,20 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                                    (((b->state.texFlags &
                                       OSMGA_HW3D_TEXF_BILIN) != 0UL)
                                     ? 0x20UL : 0UL) |
+                                   /*
+                                    * The diagnostic selector wins the
+                                    * minification field when it is set; the
+                                    * validator has already held it to the
+                                    * four named mipmap modes.
+                                    */
                                    (((b->state.texFlags &
-                                      OSMGA_HW3D_TEXF_BILINMIN) != 0UL)
-                                    ? 0x02UL : 0UL),
+                                      OSMGA_HW3D_TEXF_MINMODE_MASK) != 0UL)
+                                    ? ((b->state.texFlags
+                                        & OSMGA_HW3D_TEXF_MINMODE_MASK)
+                                       >> OSMGA_HW3D_TEXF_MINMODE_SHIFT)
+                                    : ((((b->state.texFlags &
+                                          OSMGA_HW3D_TEXF_BILINMIN) != 0UL)
+                                        ? 0x02UL : 0UL))),
                  MGA_TEXTRANS,     0x0000ffffUL,
                  MGA_TEXTRANSHIGH, 0x0000ffffUL);
         ok = ok && osmgaDmaBlock(list, listDwords, &pos,
