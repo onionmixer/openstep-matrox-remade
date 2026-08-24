@@ -35,8 +35,16 @@
 static unsigned long *app;
 static int failures;
 
-static void softOn(void)  { glEnable(GL_SCISSOR_TEST); glScissor(0, 0, W, H); }
-static void softOff(void) { glDisable(GL_SCISSOR_TEST); }
+/*
+ * The path, changed by asking for it.
+ *
+ * This used to be a full-surface scissor -- a state the chooser
+ * refused, which clipped nothing -- and that was borrowed rather than
+ * owned: the moment the scissor is admitted, this comparison would
+ * become hardware against hardware and pass without asking anything.
+ */
+static void softOn(void)  { OSMGAMesaHookForceSoftware(1); }
+static void softOff(void) { OSMGAMesaHookForceSoftware(0); }
 
 static void
 quad(float r, float g, float b, float a)

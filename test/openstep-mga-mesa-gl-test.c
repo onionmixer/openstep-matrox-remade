@@ -92,21 +92,24 @@ main(void)
            OSMGAMesaHookDrawn() > drewHW);
 
     /*
-     * And one it refuses.  The scissor test is a state the chooser declines,
-     * so this goes through the software rasteriser -- into the same surface
-     * if the substitution worked, and into a different one if it did not.
+     * And one that goes the other way.  The path is asked to step aside, so
+     * this goes through the software rasteriser -- into the same surface if
+     * the substitution worked, and into a different one if it did not.
+     *
+     * It used to ask by turning on a scissor, which the chooser refused.
+     * That was borrowed: admitting the scissor would have made this compare
+     * the accelerated path with itself.
      */
     drewSW = OSMGAMesaHookDrawn();
-    glEnable(GL_SCISSOR_TEST);
-    glScissor(0, 0, W, H);
+    OSMGAMesaHookForceSoftware(1);
     glBegin(GL_TRIANGLES);
       glColor3ub(0, 255, 255); glVertex2f(30.0f, 30.0f);
       glColor3ub(0, 255, 255); glVertex2f(30.0f, 50.0f);
       glColor3ub(0, 255, 255); glVertex2f(50.0f, 50.0f);
     glEnd();
     glFinish();
-    glDisable(GL_SCISSOR_TEST);
-    expect("the scissored triangle was left to software",
+    OSMGAMesaHookForceSoftware(0);
+    expect("the triangle asked to software was left to software",
            OSMGAMesaHookDrawn() == drewSW);
 
     if (!OSMesaGetColorBuffer(ctx, &bw, &bh, &bf, &surface) || !surface) {
@@ -250,29 +253,27 @@ main(void)
           glVertex3f(40.0f,  0.0f,  0.5f);
           glVertex3f( 0.0f, 40.0f,  0.5f);
         glEnd();
-        glEnable(GL_SCISSOR_TEST);          /* refused -> software */
-        glScissor(0, 0, W, H);
+        OSMGAMesaHookForceSoftware(1);      /* -> software */
         glBegin(GL_TRIANGLES);              /* software, depth 0.75 */
           glColor3ub(255, 0, 0);
           glVertex3f( 0.0f,  0.0f, -0.5f);
           glVertex3f(40.0f,  0.0f, -0.5f);
           glVertex3f( 0.0f, 40.0f, -0.5f);
         glEnd();
-        glDisable(GL_SCISSOR_TEST);
+        OSMGAMesaHookForceSoftware(0);
         glFinish();
         px1 = ((unsigned long *)appbuf)[5UL * W + 5UL] & 0xffffffUL;
 
         /* and the other way round */
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        glEnable(GL_SCISSOR_TEST);
-        glScissor(0, 0, W, H);
+        OSMGAMesaHookForceSoftware(1);
         glBegin(GL_TRIANGLES);              /* software, depth 0.25 */
           glColor3ub(0, 255, 0);
           glVertex3f( 0.0f,  0.0f,  0.5f);
           glVertex3f(40.0f,  0.0f,  0.5f);
           glVertex3f( 0.0f, 40.0f,  0.5f);
         glEnd();
-        glDisable(GL_SCISSOR_TEST);
+        OSMGAMesaHookForceSoftware(0);
         glBegin(GL_TRIANGLES);              /* accelerated, depth 0.75 */
           glColor3ub(255, 0, 0);
           glVertex3f( 0.0f,  0.0f, -0.5f);
@@ -337,7 +338,7 @@ main(void)
 
             glClear(GL_COLOR_BUFFER_BIT);
             glDisable(GL_BLEND);
-            glEnable(GL_SCISSOR_TEST); glScissor(0, 0, W, H);
+            OSMGAMesaHookForceSoftware(1);
             glBegin(GL_TRIANGLES);
               glColor4ub(255, 0, 0, 0x40);
               glVertex2f( 0.0f,  0.0f);
@@ -352,7 +353,7 @@ main(void)
               glVertex2f( 0.0f, 40.0f);
             glEnd();
             glDisable(GL_BLEND);
-            glDisable(GL_SCISSOR_TEST);
+            OSMGAMesaHookForceSoftware(0);
             glFinish();
             asw = ((unsigned long *)appbuf)[5UL * W + 5UL] >> 24;
             printf("   blended alpha: hardware %02lx, software %02lx\n",
@@ -388,14 +389,14 @@ main(void)
         ah = ((unsigned long *)appbuf)[5UL * W + 5UL] >> 24;
 
         glClear(GL_COLOR_BUFFER_BIT);
-        glEnable(GL_SCISSOR_TEST); glScissor(0, 0, W, H);
+        OSMGAMesaHookForceSoftware(1);
         glBegin(GL_TRIANGLES);          /* software, same triangle */
           glColor4ub(0, 255, 0, 255);
           glVertex2f( 0.0f,  0.0f);
           glVertex2f(40.0f,  0.0f);
           glVertex2f( 0.0f, 40.0f);
         glEnd();
-        glDisable(GL_SCISSOR_TEST);
+        OSMGAMesaHookForceSoftware(0);
         glFinish();
         printf("   opaque alpha: hardware %02lx, software %02lx\n",
                ah, ((unsigned long *)appbuf)[5UL * W + 5UL] >> 24);

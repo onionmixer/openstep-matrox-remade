@@ -87,14 +87,22 @@ drawIt(void)
     glFinish();
 }
 
-/* Software is forced by turning on a scissor that covers the whole surface:
- * the chooser refuses any raster bit it has not been shown to handle, and
- * SCISSOR_BIT is not among the three it allows, while a box the size of the
- * surface clips nothing.  So the path changes and the picture does not. */
+/*
+ * The path, changed by asking for it.
+ *
+ * This used to be a full-surface scissor -- a state the chooser refused,
+ * which clipped nothing -- and that was borrowed rather than owned: the
+ * moment the scissor is admitted, this comparison would become hardware
+ * against hardware and pass without asking anything.
+ *
+ * The environment switch is not a substitute here in particular: it also
+ * turns off the video-memory surface and the shared depth buffer, and this
+ * file compares the two paths writing into exactly those.
+ */
 static void
-softOn(void)  { glEnable(GL_SCISSOR_TEST); glScissor(0, 0, W, H); }
+softOn(void)  { OSMGAMesaHookForceSoftware(1); }
 static void
-softOff(void) { glDisable(GL_SCISSOR_TEST); }
+softOff(void) { OSMGAMesaHookForceSoftware(0); }
 
 static int
 snap(unsigned short *dst, OSMesaContext ctx)

@@ -140,8 +140,16 @@ zfor(int s, int v)
  * puts an extra span stage in the software path, which is one more thing that
  * could differ, so it was dropped in favour of this.
  */
-static void softOn(void)  { glEnable(GL_SCISSOR_TEST); glScissor(0, 0, W, H); }
-static void softOff(void) { glDisable(GL_SCISSOR_TEST); }
+/*
+ * The path, changed by asking for it.
+ *
+ * This used to be a full-surface scissor -- a state the chooser
+ * refused, which clipped nothing -- and that was borrowed rather than
+ * owned: the moment the scissor is admitted, this comparison would
+ * become hardware against hardware and pass without asking anything.
+ */
+static void softOn(void)  { OSMGAMesaHookForceSoftware(1); }
+static void softOff(void) { OSMGAMesaHookForceSoftware(0); }
 
 /* One colour per triangle, so a pixel can be attributed to the triangle that
  * wrote it.  Abutting triangles never share a colour. */

@@ -53,6 +53,30 @@ unsigned long OSMGAMesaHookSoftState(void);
 unsigned long OSMGAMesaHookTexPersp(void);
 unsigned long OSMGAMesaHookTexAbsent(void);
 /* Submissions.  A textured triangle that splits makes two of them. */
+/*
+ * Take the hardware path out of use, and put it back.
+ *
+ * This exists for the tests, and it exists because they need something that
+ * the ordinary GL state cannot give them.  Every one of them compares the
+ * two paths on the SAME buffer inside ONE process, and until now they did it
+ * by turning on a full-surface scissor -- a state the chooser refused, which
+ * clipped nothing and so changed the path without changing the picture.
+ *
+ * That was always borrowed rather than owned, and it comes due the moment the
+ * scissor is admitted: those comparisons would quietly become hardware
+ * against hardware and pass without asking anything.
+ *
+ * The environment switch is not a substitute.  It is read once, before the
+ * first draw, and it turns off the VRAM surface and the shared depth buffer
+ * as well as the path -- so a test that used it would not be comparing the
+ * same two things, and one of them could not run its comparison at all.
+ *
+ * So: this changes the CHOOSER and nothing else.  The probe still ran, the
+ * surface is still in video memory, the depth buffer is still shared.  It is
+ * off unless a test turns it on, and no application has a way to reach it.
+ */
+void OSMGAMesaHookForceSoftware(int on);
+
 unsigned long OSMGAMesaHookBatches(void);
 /* trapezoids submitted, which is what says a triangle split */
 unsigned long OSMGAMesaHookTraps(void);

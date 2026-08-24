@@ -53,6 +53,10 @@ static unsigned long hookTexPersp, hookTexAbsent;
  * splits goes out as two batches, because tmr[] is batch state.  hookDrawn
  * counts triangles and cannot see that.
  */
+/* see OSMGAMesaHookForceSoftware -- the tests' way to change the path
+ * without changing anything else */
+static int hookForcedSoftware;
+
 static unsigned long hookBatches;
 /* Trapezoids, not batches.  A split triangle in one batch and a triangle
  * that never split are both one batch, so the batch count alone stopped
@@ -915,6 +919,7 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
     OSMGAMesaProbe probe;
 
     OSMGAMesaProbeRun(&probe);
+    if (hookForcedSoftware)           return NULL;
     if (probe.verdict != OSMGA_PROBE_HARDWARE) return NULL;
 
     /*
@@ -1334,6 +1339,7 @@ unsigned long OSMGAMesaHookHardState(void) { return hookHardState; }
 unsigned long OSMGAMesaHookSoftState(void) { return hookSoftState; }
 unsigned long OSMGAMesaHookTexPersp(void)  { return hookTexPersp; }
 unsigned long OSMGAMesaHookTexAbsent(void) { return hookTexAbsent; }
+void OSMGAMesaHookForceSoftware(int on)    { hookForcedSoftware = on; }
 unsigned long OSMGAMesaHookBatches(void)   { return hookBatches; }
 unsigned long OSMGAMesaHookTraps(void)     { return hookTraps; }
 unsigned long OSMGAMesaHookUnsupported(void) { return hookUnsupported; }
