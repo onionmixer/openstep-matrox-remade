@@ -101,6 +101,22 @@ unsigned long OSMGAMesaHookTexAbsent(void);
  */
 void OSMGAMesaHookForceSoftware(int on);
 
+/*
+ * The pending batch (M1-6).  Triangles accumulate and ship together; these
+ * exist for the paths and tests that need to force or observe the boundary.
+ * FlushPending ships whatever is accumulated (safe to call empty);
+ * BatchLimit(1) reproduces the old one-triangle-per-submission behaviour
+ * exactly, which is what the identical-image comparison runs against;
+ * Replayed counts source triangles redrawn in software after a refused
+ * batch; FlushCounts reports why flushes happened (bracket, key, full,
+ * other).
+ */
+void OSMGAMesaHookFlushPending(void);
+void OSMGAMesaHookInjectRefusal(int on);   /* test only: see the .c */
+void OSMGAMesaHookBatchLimit(unsigned long limit);
+unsigned long OSMGAMesaHookReplayed(void);
+void OSMGAMesaHookFlushCounts(unsigned long out[4]);
+
 unsigned long OSMGAMesaHookBatches(void);
 /* trapezoids submitted, which is what says a triangle split */
 unsigned long OSMGAMesaHookTraps(void);

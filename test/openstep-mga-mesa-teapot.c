@@ -171,10 +171,22 @@ main(int argc, char **argv)
     OSMesaContext ctx;
     unsigned long *buf;
     unsigned long drawn0, drawn1, soft0, soft1, unsup0, unsup1;
+    unsigned long batches0;
     unsigned long mir0, mir1;
     const char *out = (argc > 1) ? argv[1] : "/tmp/teapot.tiff";
     int forceSoft = (argc > 2 && strcmp(argv[2], "soft") == 0);
     int grid = (argc > 3) ? atoi(argv[3]) : 12;
+    /* argv[4]: the batch limit.  1 reproduces the pre-batching behaviour
+     * exactly, so two runs (limit 1 and no argument) must write identical
+     * files -- that is the batching identity gate, compared on the host. */
+    if (argc > 4)
+        OSMGAMesaHookBatchLimit((unsigned long)atoi(argv[4]));
+    /* argv[5] "inject": refuse every flushed batch in the kernel so the
+     * software replay draws the whole scene -- the resulting file must be
+     * byte-identical to the forced-software file, and the replayed count
+     * must equal the source count. */
+    if (argc > 5 && strcmp(argv[5], "inject") == 0)
+        OSMGAMesaHookInjectRefusal(1);
 
     t0 = now();
     buf = (unsigned long *)malloc((unsigned)(W * H) * sizeof *buf);
@@ -209,6 +221,7 @@ main(int argc, char **argv)
 
     if (forceSoft)
         OSMGAMesaHookForceSoftware(1);
+    batches0 = OSMGAMesaHookBatches();
     mir0 = OSMGAMesaHookMirrors();
     drawn0 = OSMGAMesaHookDrawn();
     soft0  = OSMGAMesaHookSoftware();
@@ -249,9 +262,14 @@ main(int argc, char **argv)
     unsup1 = OSMGAMesaHookUnsupported();
 
     printf("   surface walked back     : %lu times\n", mir1 - mir0);
-    printf("   batches on the engine   : %lu\n", drawn1 - drawn0);
+    printf("   source triangles drawn  : %lu\n", drawn1 - drawn0);
+    printf("   submissions             : %lu   (batching: %lu sources per"
+           " submission)\n", OSMGAMesaHookBatches() - batches0,
+           (OSMGAMesaHookBatches() - batches0) ? (drawn1 - drawn0) /
+               (OSMGAMesaHookBatches() - batches0) : 0UL);
     printf("   triangles left to Mesa  : %lu\n", soft1 - soft0);
     printf("   refused as unsupported  : %lu\n", unsup1 - unsup0);
+    printf("   replayed after refusal  : %lu\n", OSMGAMesaHookReplayed());
     if ((drawn1 - drawn0) + (soft1 - soft0) > 0UL)
         printf("   share drawn by the card : %lu%%\n",
                (drawn1 - drawn0) * 100UL /

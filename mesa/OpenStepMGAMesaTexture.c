@@ -33,6 +33,7 @@
 #include "mem.h"
 
 #include "OpenStepMGAMesaBuffer.h"
+#include "OpenStepMGAMesaHook.h"
 #include "OpenStepMGAMesaTexArena.h"
 #include "OpenStepMGAMesaTexture.h"
 #include "OpenStepMGAHW3D.h"
@@ -241,6 +242,15 @@ OSMGAMesaTexResident(void *ctxv, struct gl_texture_object *tObj,
         r->valid = 0;
     }
     if (!r->valid) {
+        /*
+         * About to WRITE texels into the arena.  Trapezoids still pending in
+         * the batch may reference this very region (a re-upload of the same
+         * texture, or an evicted slot being reused), and they must sample
+         * the OLD texels -- so they ship first.  Uploads are lazy (the
+         * TexImage wrappers only invalidate), which makes this copy the one
+         * choke point where the ordering can be enforced.
+         */
+        OSMGAMesaHookFlushPending();
         osmgaTexCopy(img, (unsigned long *)((char *)map +
                                             (r->origin - aOrg)), r->w);
         r->valid = 1;

@@ -181,6 +181,165 @@ static GLcontext *savedTriangleCtx;
 static triangle_func savedTriangle;
 
 /*
+ * M1-6 -- the pending batch.
+ *
+ * One source triangle used to be one submission, and the submission is the
+ * expensive half: 73 microseconds of ioctl and engine round trip against 15
+ * milliseconds of geometry for a whole teapot frame -- 16106 submissions,
+ * 1.2 seconds, for a scene the processor prepares in 0.015.  Trapezoids now
+ * accumulate in the mapped batch and go out together.
+ *
+ * WHAT MAY SHARE A BATCH.  dwgctl and alphactrl are per trapezoid, so depth
+ * modes, depth-mask and blending vary freely inside one batch.  What is
+ * batch STATE -- the texture block (gradients tmr[0..5], origin, size,
+ * pitch, flags, format) and the scissor -- keys a flush: the first textured
+ * triangle of a run sets the key and a different key flushes first.
+ * Untextured triangles carry no key and mix with anything.
+ *
+ * THE REPLAY CONTRACT.  The kernel validates before it encodes, so a refused
+ * batch drew nothing and every accumulated source triangle is replayed
+ * through the software rasteriser -- which needs its VB indices alive.  Two
+ * gates protect that:
+ *   - accumulation never crosses a render bracket (the RenderFinish wrapper
+ *     flushes), inside which ctx->VB is stable (vbrender.c:699-728, and the
+ *     indirect path pins it, vbindirect.c:311-338);
+ *   - a VB that clips (ClipOrMask != 0) does not batch at all, because
+ *     clipped triangles use temporary vertices in the VB's free area and a
+ *     LATER clip may overwrite an EARLIER one's -- an index replayed after
+ *     that reads the wrong vertex.  Those triangles submit immediately,
+ *     alone, exactly as before, and their replay happens while the
+ *     temporaries still hold their values.  (Cross-review missed this one;
+ *     the gate is ours.)
+ *   - Mesa multipass repeats the loop before RenderFinish (vbrender.c:721),
+ *     so a context with a MultipassFunc does not batch either.
+ *
+ * REENTRANCY.  The flush detaches the pending counts before it submits or
+ * replays, and holds a guard, so a replayed software triangle that lands
+ * back in these wrappers finds an empty batch instead of recursing.
+ */
+static unsigned long pendTraps;      /* trapezoids already in batch->tri[] */
+static unsigned long pendSrcCount;   /* source triangles those came from */
+static struct { GLuint v0, v1, v2, pv; } pendSrc[OSMGA_HW3D_MAX_TRI];
+static GLcontext *pendCtx;
+static void *pendVB;
+static int pendHasTex;
+static unsigned long pendTexOrg, pendTexW, pendTexH, pendTexPitch;
+static unsigned long pendTexFlags;
+static long pendTmr[6];
+static int pendInFlush;
+/* Why flushes happened, so fragmentation is a number and not a feeling. */
+static unsigned long hookFlushBracket, hookFlushKey, hookFlushFull;
+static unsigned long hookFlushOther, hookReplayed;
+/* The A/B knob: 1 reproduces the old one-triangle-per-submission behaviour
+ * exactly, which is what the identical-image comparison runs against. */
+static unsigned long hookBatchLimit = OSMGA_HW3D_MAX_TRI;
+/* Test-only: corrupt the magic of every flushed batch so the kernel refuses
+ * it (E_MAGIC, before anything is drawn) and the replay path runs for real.
+ * Nothing sets this but the injection setter, and nothing should. */
+static int hookInjectRefusal;
+
+static int osmgaMesaSubmitBatch(GLcontext *ctx, OSMGAHW3DBatch *batch,
+                                OSMGAHW3DSubmitBlock *out);
+static void osmgaMesaBatchUntextured(OSMGAHW3DBatch *batch);
+static int osmgaMesaSoftly(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2,
+                           GLuint pv);
+
+/*
+ * Ship whatever is pending.  Success soils the surface and counts the
+ * sources as drawn; a validator refusal replays every source through
+ * software (nothing was drawn); a failure after validation revokes, exactly
+ * as the one-triangle path always has.
+ */
+static void
+osmgaMesaFlushPending(void)
+{
+    OSMGAHW3DBatch *batch;
+    OSMGAHW3DSubmitBlock res;
+    GLcontext *ctx;
+    unsigned long nsrc, ntraps, i;
+
+    if (pendTraps == 0UL || pendInFlush)
+        return;
+    pendInFlush = 1;
+    ctx = pendCtx;
+    ntraps = pendTraps;
+    nsrc = pendSrcCount;
+    /* Detach FIRST: a replayed triangle re-entering sees an empty batch. */
+    pendTraps = 0UL;
+    pendSrcCount = 0UL;
+
+    batch = OSMGAMesaProbeBatch();
+    if (batch == 0 || ctx == 0) {
+        /* The window went away with work pending; the probe has revoked and
+         * the surface is gone, so there is nothing to draw INTO. */
+        hookFlushOther++;
+        pendInFlush = 0;
+        return;
+    }
+    batch->magic = hookInjectRefusal ? (OSMGA_HW3D_MAGIC ^ 1UL)
+                                     : OSMGA_HW3D_MAGIC;
+    batch->version = OSMGA_HW3D_VERSION;
+    batch->triCount = ntraps;
+    if (pendHasTex) {
+        batch->state.texorg = pendTexOrg;
+        batch->state.texW = pendTexW;
+        batch->state.texH = pendTexH;
+        batch->state.texPitch = pendTexPitch;
+        batch->state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
+        batch->state.texFlags = pendTexFlags;
+        for (i = 0UL; i < 6UL; i++)
+            batch->state.tmr[i] = pendTmr[i];
+        batch->state.texBiasReqU = OSMGA_HW3D_TEX_BIAS_NONE;
+        batch->state.texBiasReqV = OSMGA_HW3D_TEX_BIAS_NONE;
+    } else {
+        osmgaMesaBatchUntextured(batch);
+    }
+    hookBatches++;
+    hookTraps += ntraps;
+    if (osmgaMesaSubmitBatch(ctx, batch, &res) != 0) {
+        if (res.verdict == OSMGA_HW3D_OK) {
+            /* Validation passed and the trouble came later: some of it may
+             * be on the screen, and drawing it again would double it. */
+            OSMGAMesaProbeRevoke("a batch failed after the engine had it");
+        } else {
+            for (i = 0UL; i < nsrc; i++)
+                (void)osmgaMesaSoftly(ctx, pendSrc[i].v0, pendSrc[i].v1,
+                                      pendSrc[i].v2, pendSrc[i].pv);
+            hookReplayed += nsrc;
+            if (++hookRefusedRun >= OSMGA_MESA_REFUSAL_LIMIT)
+                OSMGAMesaProbeRevoke("the driver kept refusing batches");
+        }
+    } else {
+        hookRefusedRun = 0;
+        hookDrawn += nsrc;
+        OSMGAMesaBufferSoiled();
+    }
+    pendInFlush = 0;
+}
+
+void
+OSMGAMesaHookFlushPending(void)
+{
+    osmgaMesaFlushPending();
+}
+
+void
+OSMGAMesaHookInjectRefusal(int on)
+{
+    osmgaMesaFlushPending();
+    hookInjectRefusal = (on != 0);
+}
+
+void
+OSMGAMesaHookBatchLimit(unsigned long limit)
+{
+    osmgaMesaFlushPending();
+    if (limit < 1UL) limit = 1UL;
+    if (limit > OSMGA_HW3D_MAX_TRI) limit = OSMGA_HW3D_MAX_TRI;
+    hookBatchLimit = limit;
+}
+
+/*
  * Hand this triangle to the software path, and say whether that happened.
  *
  * Mesa dispatches a triangle to whatever is in Driver.TriangleFunc and there
@@ -193,6 +352,12 @@ osmgaMesaSoftly(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
 {
     if (savedTriangle == 0 || savedTriangleCtx != ctx)
         return 0;
+    /*
+     * A software triangle about to draw must land OVER every accelerated one
+     * accumulated before it.  During a refusal replay the guard makes this a
+     * no-op -- the batch was already detached.
+     */
+    osmgaMesaFlushPending();
     (*savedTriangle)(ctx, v0, v1, v2, pv);
     /*
      * It drew into the substituted surface and did not tell us.  Without
@@ -735,120 +900,94 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
      * draws nothing.  That is what lets blending join texturing.
      */
     {
-    int cnt = n;
     int j;
+    unsigned long texFlagsL = 0UL;
+    int batchable;
 
-    batch->magic = OSMGA_HW3D_MAGIC;
-    batch->version = OSMGA_HW3D_VERSION;
-    batch->triCount = (unsigned long)cnt;
-    for (j = 0; j < cnt; j++)
-        batch->tri[j] = built[j];
+    /*
+     * The texture flags, computed BEFORE the batching decision because they
+     * are half of the compatibility key.  The comments that used to sit on
+     * each term still hold; see the flush function for where they land.
+     */
     if (texOn) {
-        batch->state.texorg = texOrg;
-        batch->state.texW = texW;
-        batch->state.texH = texH;
-        batch->state.texPitch = texPitch;
-        batch->state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
-        /*
-         * The gate has already held each filter to GL_NEAREST or GL_LINEAR,
-         * separately -- they no longer have to agree, so each drives its own
-         * field.
-         */
-        {
-            const struct gl_texture_object *to =
-                ctx->Texture.Unit[0].CurrentD[2];
-            const struct gl_texture_image *ti = to->Image[to->BaseLevel];
+        const struct gl_texture_object *to =
+            ctx->Texture.Unit[0].CurrentD[2];
+        const struct gl_texture_image *ti = to->Image[to->BaseLevel];
 
-            batch->state.texFlags =
-                /*
-                 * Each field from its own filter.  While the two had to be
-                 * equal it did not matter which one was read; now it does.
-                 */
-                ((to->MagFilter == GL_LINEAR) ? OSMGA_HW3D_TEXF_BILIN : 0UL)
-                | ((to->MinFilter == GL_LINEAR)
-                     ? OSMGA_HW3D_TEXF_BILINMIN : 0UL)
-                /*
-                 * GL_REPLACE gives Av = At for a texture that has an alpha
-                 * and Av = Af for one that has not, and Format is the STORED
-                 * format -- Mesa derives it from internalFormat, not from the
-                 * pixels the caller handed over -- so RGB data uploaded into
-                 * an RGBA texture reads GL_RGBA here, which is right.
-                 */
-                | ((ti != 0 && ti->Format == GL_RGBA)
-                   ? OSMGA_HW3D_TEXF_TEXALPHA : 0UL)
-                | ((ctx->Texture.Unit[0].EnvMode == GL_MODULATE)
-                   ? OSMGA_HW3D_TEXF_MODULATE : 0UL)
-                | ((to->WrapS == GL_REPEAT) ? OSMGA_HW3D_TEXF_REPEATU : 0UL)
-                | ((to->WrapT == GL_REPEAT) ? OSMGA_HW3D_TEXF_REPEATV : 0UL)
-                | ((tmr[0][8] != 0L) ? OSMGA_HW3D_TEXF_PERSP : 0UL);
+        texFlagsL =
+            ((to->MagFilter == GL_LINEAR) ? OSMGA_HW3D_TEXF_BILIN : 0UL)
+            | ((to->MinFilter == GL_LINEAR)
+                 ? OSMGA_HW3D_TEXF_BILINMIN : 0UL)
+            | ((ti != 0 && ti->Format == GL_RGBA)
+               ? OSMGA_HW3D_TEXF_TEXALPHA : 0UL)
+            | ((ctx->Texture.Unit[0].EnvMode == GL_MODULATE)
+               ? OSMGA_HW3D_TEXF_MODULATE : 0UL)
+            | ((to->WrapS == GL_REPEAT) ? OSMGA_HW3D_TEXF_REPEATU : 0UL)
+            | ((to->WrapT == GL_REPEAT) ? OSMGA_HW3D_TEXF_REPEATV : 0UL)
+            | ((tmr[0][8] != 0L) ? OSMGA_HW3D_TEXF_PERSP : 0UL);
+    }
+
+    /*
+     * May this triangle JOIN a batch?  Not when the VB clips -- clipped
+     * triangles borrow temporary vertices a later clip can overwrite, so
+     * their replay indices are only good RIGHT NOW -- and not under a
+     * multipass driver, which repeats the loop before the bracket closes.
+     * Either way it still goes through the engine; it just travels alone,
+     * exactly as every triangle used to.
+     */
+    batchable = (VB->ClipOrMask == 0) && (ctx->Driver.MultipassFunc == 0);
+
+    if (pendTraps != 0UL) {
+        int part = 0;
+
+        if (pendCtx != ctx || pendVB != (void *)VB) {
+            hookFlushOther++;
+            part = 1;
+        } else if (pendTraps + (unsigned long)n > hookBatchLimit ||
+                   pendSrcCount >= hookBatchLimit) {
+            hookFlushFull++;
+            part = 1;
+        } else if (texOn && pendHasTex &&
+                   (pendTexOrg != texOrg || pendTexW != texW ||
+                    pendTexH != texH || pendTexPitch != texPitch ||
+                    pendTexFlags != texFlagsL ||
+                    pendTmr[0] != tmr[0][0] || pendTmr[1] != tmr[0][1] ||
+                    pendTmr[2] != tmr[0][2] || pendTmr[3] != tmr[0][3] ||
+                    pendTmr[4] != tmr[0][4] || pendTmr[5] != tmr[0][5])) {
+            hookFlushKey++;
+            part = 1;
         }
-        /*
-         * Gradients only.  The anchors are the trapezoid's and the builder
-         * has already put them there; slot eight is the builder's answer to
-         * "was this a perspective solve", not a value.
-         */
-        batch->state.tmr[0] = tmr[0][0];
-        batch->state.tmr[1] = tmr[0][1];
-        batch->state.tmr[2] = tmr[0][2];
-        batch->state.tmr[3] = tmr[0][3];
-        batch->state.tmr[4] = tmr[0][4];
-        batch->state.tmr[5] = tmr[0][5];
-        /*
-         * No rung is asked for, and it is written rather than left alone.
-         *
-         * The batch is a mapped buffer this library reuses and fills field by
-         * field, so anything not written keeps what the last submission put
-         * there.  Nought is the inert value precisely so that a stale one
-         * cannot switch the policy on -- but only if it is actually nought,
-         * which is what this line is for.
-         *
-         * Asking for one would put a whole surface's primitives on the same
-         * rung and remove the seam probe section 82 measures.  Deciding WHICH
-         * rung is a policy question this back end has not answered: it sees
-         * one triangle at a time and does not know the surface's reach.
-         */
-        batch->state.texBiasReqU = OSMGA_HW3D_TEX_BIAS_NONE;
-        batch->state.texBiasReqV = OSMGA_HW3D_TEX_BIAS_NONE;
-    } else {
-        osmgaMesaBatchUntextured(batch);
+        if (part)
+            osmgaMesaFlushPending();
     }
-    hookBatches++;
-    hookTraps += (unsigned long)cnt;
-    if (osmgaMesaSubmitBatch(ctx, batch, &res) != 0) {
-        /*
-         * Whether this may be drawn again is not a matter of taste.
-         *
-         * The driver validates before it encodes anything and before it
-         * writes the addresses that start the engine, so a batch the
-         * validator refused was never drawn and the triangle can go to
-         * software.  A failure AFTER that -- the "did not complete" path --
-         * happens with the command list already handed over, and some or all
-         * of it may be on the screen; drawing it again would double it, and
-         * with depth or blending that is visible.
-         *
-         * The block says which: the verdict is the validator's answer, so a
-         * verdict of OK with a failing status means validation passed and
-         * the trouble came later.
-         */
-        if (res.verdict == OSMGA_HW3D_OK) {
-            OSMGAMesaProbeRevoke("a batch failed after the engine had it");
-            return;             /* lost, and losing it beats drawing it twice */
-        }
-        (void)osmgaMesaSoftly(ctx, v0, v1, v2, pv);
-        /*
-         * Refusing once costs one triangle's worth of software.  Refusing
-         * every time, and trying every time, is a performance cliff, so a run
-         * of them gives up.  The number is a first guess and is meant to be
-         * measured, not defended.
-         */
-        if (++hookRefusedRun >= OSMGA_MESA_REFUSAL_LIMIT)
-            OSMGAMesaProbeRevoke("the driver kept refusing batches");
-        return;
+
+    if (pendTraps == 0UL) {
+        pendCtx = ctx;
+        pendVB = (void *)VB;
+        pendHasTex = 0;
     }
+    if (texOn && !pendHasTex) {
+        pendHasTex = 1;
+        pendTexOrg = texOrg;
+        pendTexW = texW;
+        pendTexH = texH;
+        pendTexPitch = texPitch;
+        pendTexFlags = texFlagsL;
+        for (j = 0; j < 6; j++)
+            pendTmr[j] = tmr[0][j];
     }
-    hookRefusedRun = 0;
-    hookDrawn++;
-    OSMGAMesaBufferSoiled();
+    for (j = 0; j < n; j++)
+        batch->tri[pendTraps + (unsigned long)j] = built[j];
+    pendTraps += (unsigned long)n;
+    pendSrc[pendSrcCount].v0 = v0;
+    pendSrc[pendSrcCount].v1 = v1;
+    pendSrc[pendSrcCount].v2 = v2;
+    pendSrc[pendSrcCount].pv = pv;
+    pendSrcCount++;
+
+    if (!batchable)
+        osmgaMesaFlushPending();
+    }
 }
 
 /*
@@ -1398,6 +1537,7 @@ static void
 osmgaWriteRGBASpan(const GLcontext *ctx, GLuint n, GLint x, GLint y,
                    CONST GLubyte rgba[][4], const GLubyte mask[])
 {
+    osmgaMesaFlushPending();
     spanWrote = 1;
     if (prevWriteRGBASpan) (*prevWriteRGBASpan)(ctx, n, x, y, rgba, mask);
 }
@@ -1406,6 +1546,7 @@ static void
 osmgaWriteRGBSpan(const GLcontext *ctx, GLuint n, GLint x, GLint y,
                   CONST GLubyte rgb[][3], const GLubyte mask[])
 {
+    osmgaMesaFlushPending();
     spanWrote = 1;
     if (prevWriteRGBSpan) (*prevWriteRGBSpan)(ctx, n, x, y, rgb, mask);
 }
@@ -1414,6 +1555,7 @@ static void
 osmgaWriteMonoRGBASpan(const GLcontext *ctx, GLuint n, GLint x, GLint y,
                        const GLubyte mask[])
 {
+    osmgaMesaFlushPending();
     spanWrote = 1;
     if (prevWriteMonoRGBASpan) (*prevWriteMonoRGBASpan)(ctx, n, x, y, mask);
 }
@@ -1423,6 +1565,7 @@ osmgaWriteRGBAPixels(const GLcontext *ctx, GLuint n, const GLint x[],
                      const GLint y[], CONST GLubyte rgba[][4],
                      const GLubyte mask[])
 {
+    osmgaMesaFlushPending();
     spanWrote = 1;
     if (prevWriteRGBAPixels) (*prevWriteRGBAPixels)(ctx, n, x, y, rgba, mask);
 }
@@ -1431,6 +1574,7 @@ static void
 osmgaWriteMonoRGBAPixels(const GLcontext *ctx, GLuint n, const GLint x[],
                          const GLint y[], const GLubyte mask[])
 {
+    osmgaMesaFlushPending();
     spanWrote = 1;
     if (prevWriteMonoRGBAPixels)
         (*prevWriteMonoRGBAPixels)(ctx, n, x, y, mask);
@@ -1440,6 +1584,7 @@ static void
 osmgaReadRGBASpan(const GLcontext *ctx, GLuint n, GLint x, GLint y,
                   GLubyte rgba[][4])
 {
+    osmgaMesaFlushPending();
     spanRead = 1;
     if (prevReadRGBASpan) (*prevReadRGBASpan)(ctx, n, x, y, rgba);
 }
@@ -1448,6 +1593,7 @@ static void
 osmgaReadRGBAPixels(const GLcontext *ctx, GLuint n, const GLint x[],
                     const GLint y[], GLubyte rgba[][4], const GLubyte mask[])
 {
+    osmgaMesaFlushPending();
     spanRead = 1;
     if (prevReadRGBAPixels) (*prevReadRGBAPixels)(ctx, n, x, y, rgba, mask);
 }
@@ -1541,6 +1687,15 @@ static void
 osmgaMesaMirror(GLcontext *ctx)
 {
     (void)ctx;
+    /*
+     * The bracket is closing (or a finish/flush was called): anything still
+     * accumulated goes to the engine NOW, and a refusal replays through
+     * software, all before the mirror looks at the surface -- otherwise the
+     * copy would deliver a frame with its last triangles missing.
+     */
+    if (pendTraps != 0UL)
+        hookFlushBracket++;
+    osmgaMesaFlushPending();
     /*
      * A bracket that read and did not write is a bracket that changed
      * nothing, so there is nothing to put back -- and putting it back is
@@ -1641,6 +1796,12 @@ osmgaMesaClearOnEngine(GLcontext *ctx, GLbitfield mask, GLboolean all,
      * the engine, and every test that compares the two paths would be
      * comparing a mixture with itself.
      */
+    /*
+     * Before ANYTHING else: the clear builds its trapezoids into the same
+     * mapped tri[] array the pending batch accumulates in, so pending work
+     * must ship first or the clear would overwrite it.
+     */
+    osmgaMesaFlushPending();
     if (hookForcedSoftware)              { hookClearWhy = 1; return 0; }
     if (batch == 0)                      { hookClearWhy = 2; return 0; }
     if (OSMGAMesaBufferOrigin() == 0UL)  { hookClearWhy = 3; return 0; }
@@ -1809,6 +1970,14 @@ OpenStepMesaAccelUpdateState(GLcontext *ctx, int rowLength, int yUp)
     triangle_func f;
 
     /*
+     * A state update can rebind the surface (the import would overwrite it),
+     * or uninstall this back end (savedTriangle goes away, and the replay
+     * needs it).  Either way pending work ships first, while everything it
+     * depends on is still standing.
+     */
+    osmgaMesaFlushPending();
+
+    /*
      * Both paths must put GL row y in the same place.  With the origin at
      * the bottom -- OSMesa's default -- row y is base + y * pitch, and the
      * engine draws its rows from the destination origin exactly that way, so
@@ -1931,6 +2100,15 @@ OpenStepMesaAccelClearPixel(void *ctx, unsigned long word)
 }
 
 unsigned long OSMGAMesaHookUniformFills(void) { return hookUniformFills; }
+unsigned long OSMGAMesaHookReplayed(void)     { return hookReplayed; }
+void
+OSMGAMesaHookFlushCounts(unsigned long out[4])
+{
+    out[0] = hookFlushBracket;
+    out[1] = hookFlushKey;
+    out[2] = hookFlushFull;
+    out[3] = hookFlushOther;
+}
 unsigned long OSMGAMesaHookUniformArmed(void) { return hookUniformArmed; }
 unsigned long OSMGAMesaHookDrawn(void)    { return hookDrawn; }
 unsigned long OSMGAMesaHookClears(void)   { return hookClears; }

@@ -46,6 +46,10 @@
 #include "../mesa/OpenStepMGAMesaBuffer.h"
 #include "OpenStepMGAHW3D.h"
 
+/* The Utah teapot, cut from the Mesa tree at build time -- same arrangement
+ * as the teapot renderer, same licence reasoning (nothing committed). */
+#include "teapot-geometry.h"
+
 #define GLW 640
 #define GLH 480
 
@@ -124,13 +128,41 @@
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     /* Top and bottom swapped: memory row nought lands on the top screen
-     * row and a blit cannot flip, so the projection does. */
-    glOrtho(0.0, (double)GLW, (double)GLH, 0.0, -1.0, 1.0);
+     * row and a blit cannot flip, so the projection does.  Winding reverses
+     * with it, which is why culling stays off. */
+    glFrustum(-1.0, 1.0, 0.75, -0.75, 2.0, 20.0);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
-    glDisable(GL_DEPTH_TEST); glDisable(GL_BLEND); glDisable(GL_DITHER);
+    glTranslatef(0.0f, -0.2f, -5.0f);
+    glRotatef(-20.0f, 1.0f, 0.0f, 0.0f);
+    glDisable(GL_BLEND); glDisable(GL_DITHER);
     glDisable(GL_TEXTURE_2D); glDisable(GL_CULL_FACE);
     glShadeModel(GL_SMOOTH);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glClearDepth(1.0);
+    {
+        GLfloat amb[4], dif[4], pos[4], lamb[4];
+        GLfloat mamb[4], mdif[4], mspec[4];
+
+        amb[0] = 0.0f; amb[1] = 0.0f; amb[2] = 0.0f; amb[3] = 1.0f;
+        dif[0] = 1.0f; dif[1] = 1.0f; dif[2] = 1.0f; dif[3] = 1.0f;
+        pos[0] = 0.0f; pos[1] = 3.0f; pos[2] = 3.0f; pos[3] = 0.0f;
+        lamb[0] = 0.2f; lamb[1] = 0.2f; lamb[2] = 0.2f; lamb[3] = 1.0f;
+        glLightfv(GL_LIGHT0, GL_AMBIENT, amb);
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, dif);
+        glLightfv(GL_LIGHT0, GL_POSITION, pos);
+        glLightModelfv(GL_LIGHT_MODEL_AMBIENT, lamb);
+        glEnable(GL_LIGHTING);
+        glEnable(GL_LIGHT0);
+        mamb[0] = 0.18f; mamb[1] = 0.07f; mamb[2] = 0.03f; mamb[3] = 1.0f;
+        mdif[0] = 0.9f;  mdif[1] = 0.35f; mdif[2] = 0.15f; mdif[3] = 1.0f;
+        mspec[0] = 0.9f; mspec[1] = 0.9f; mspec[2] = 0.9f; mspec[3] = 1.0f;
+        glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT, mamb);
+        glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, mdif);
+        glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, mspec);
+        glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 50.0f);
+    }
     glClearColor(0.06f, 0.08f, 0.14f, 1.0f);
 
     minMs = 1e9; maxMs = 0.0; sumMs = 0.0;
@@ -156,8 +188,6 @@
     unsigned long verdict = 0UL;
     unsigned long srcX, srcY;
     long pw, ph;
-    double cx = GLW / 2.0, cy = GLH / 2.0, r = 180.0;
-
     if (!presenting)
         return;
     /*
@@ -248,17 +278,11 @@
     }
 
     t0 = [NSDate timeIntervalSinceReferenceDate];
-    glClear(GL_COLOR_BUFFER_BIT);
-    glBegin(GL_TRIANGLES);
-      glColor3f(1.0f, 0.25f, 0.2f);
-      glVertex2d(cx + r * cos(angle), cy + r * sin(angle));
-      glColor3f(0.2f, 1.0f, 0.35f);
-      glVertex2d(cx + r * cos(angle + 2.0944),
-                 cy + r * sin(angle + 2.0944));
-      glColor3f(0.25f, 0.4f, 1.0f);
-      glVertex2d(cx + r * cos(angle + 4.1888),
-                 cy + r * sin(angle + 4.1888));
-    glEnd();
+    glClear((GLbitfield)(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
+    glPushMatrix();
+    glRotatef((float)(angle * 57.29578), 0.0f, 1.0f, 0.0f);
+    teapot(4, 1.3, GL_FILL);
+    glPopMatrix();
     glFinish();
 
     /*
@@ -288,7 +312,7 @@
     }
     t1 = [NSDate timeIntervalSinceReferenceDate];
 
-    angle += 0.0523598;
+    angle += 0.0261799;              /* one and a half degrees */
     ms = (t1 - t0) * 1000.0;
     frames++;
     sumMs += ms;
