@@ -158,6 +158,26 @@ blendquad(double x0, double y0, double x1, double y1)
     glEnd();
 }
 
+/* the blend quad at a chosen depth, and shifted so the two overlap partly */
+static void
+blendquadz(double x0, double y0, double x1, double y1, double z)
+{
+    glBegin(GL_TRIANGLES);
+      glColor4ub(0xC0, 0x50, 0x30, 96);
+      glTexCoord2f(0.0f, 0.0f); glVertex3d(x0, y0, z);
+      glColor4ub(0x30, 0xB0, 0x60, 224);
+      glTexCoord2f(1.0f, 0.0f); glVertex3d(x1, y0, z);
+      glColor4ub(0x40, 0x60, 0xD0, 224);
+      glTexCoord2f(1.0f, 1.0f); glVertex3d(x1, y1, z);
+      glColor4ub(0xC0, 0x50, 0x30, 96);
+      glTexCoord2f(0.0f, 0.0f); glVertex3d(x0, y0, z);
+      glColor4ub(0x40, 0x60, 0xD0, 224);
+      glTexCoord2f(1.0f, 1.0f); glVertex3d(x1, y1, z);
+      glColor4ub(0x90, 0x80, 0x20, 96);
+      glTexCoord2f(0.0f, 1.0f); glVertex3d(x0, y1, z);
+    glEnd();
+}
+
 static void
 quad(double x0, double y0, double x1, double y1)
 {
@@ -1219,6 +1239,96 @@ main(int argc, char **argv)
         }
         say("the arena does run out", ran, 0);
         glDeleteTextures(24, big);
+    }
+
+    /*
+     * Texture, blending and depth, which have never run together.
+     *
+     * The state is set here rather than inherited, because every one of these
+     * decides whether the result means anything: the comparison the gate
+     * admits is GL_LESS with writes on, the two primitives need depths far
+     * enough apart that quantisation cannot make them equal (equal fails
+     * LESS, and the test would pass for the wrong reason), and both draws
+     * have to be blended or the second is not the case under test.
+     *
+     * Near first then far must change NOTHING -- not colour, not alpha, not
+     * depth.  Far first then near must change ALL THREE.  Without the second
+     * half the first is satisfied by a driver that draws neither.
+     */
+    {
+        void *zb = 0;
+        GLint dw = 0, dh = 0, bpv = 0;
+
+        if (!OSMesaGetDepthBuffer(ctx, &dw, &dh, &bpv, &zb) || !zb ||
+            bpv != 2) {
+            printf("   ---   texture, blending and depth: NOT RUN,"
+                   " no 16-bit depth buffer\n");
+            failures++;
+        } else {
+            volatile unsigned short *zp = (volatile unsigned short *)zb;
+            unsigned long c1, c2;
+            unsigned z1, z2;
+            unsigned long d0, s2, u1, c3;
+            long at = (100 * W + 100);
+
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LESS);
+            glDepthMask(GL_TRUE);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glShadeModel(GL_SMOOTH);
+            glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glClearColor(0x20 / 255.0f, 0x40 / 255.0f, 0x60 / 255.0f,
+                         0xA0 / 255.0f);
+            glClearDepth(1.0);
+
+            /* near, then far over it */
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            d0 = OSMGAMesaHookDrawn(); s2 = OSMGAMesaHookSoftware();
+            u1 = OSMGAMesaHookUnsupported(); c3 = OSMGAMesaHookDeclined();
+            blendquadz(40.0, 40.0, 168.0, 168.0,  0.5);   /* nearer */
+            glFinish();
+            c1 = app[at]; z1 = zp[at];
+            blendquadz(60.0, 60.0, 188.0, 188.0, -0.5);   /* further */
+            glFinish();
+            c2 = app[at]; z2 = zp[at];
+            say("near then far: the colour is unchanged", c1 == c2, 0);
+            say("near then far: the depth is unchanged", z1 == z2, 0);
+            say("and both draws were the engine's",
+                OSMGAMesaHookSoftware() == s2 &&
+                OSMGAMesaHookUnsupported() == u1 &&
+                OSMGAMesaHookDeclined() == c3 &&
+                OSMGAMesaHookDrawn() > d0, 0);
+            if (c1 == (0xA0204060UL)) {
+                printf("   FAIL  the near quad never drew, so the case above"
+                       " is vacuous\n");
+                failures++;
+            }
+
+            /* far, then near over it */
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            d0 = OSMGAMesaHookDrawn(); s2 = OSMGAMesaHookSoftware();
+            blendquadz(60.0, 60.0, 188.0, 188.0, -0.5);
+            glFinish();
+            c1 = app[at]; z1 = zp[at];
+            blendquadz(40.0, 40.0, 168.0, 168.0,  0.5);
+            glFinish();
+            c2 = app[at]; z2 = zp[at];
+            say("far then near: the colour moves", c1 != c2, 0);
+            say("far then near: the depth moves", z1 != z2, 0);
+            say("and those were the engine's too",
+                OSMGAMesaHookSoftware() == s2 &&
+                OSMGAMesaHookDrawn() > d0, 0);
+
+            glDisable(GL_DEPTH_TEST);
+            glDisable(GL_BLEND);
+            glShadeModel(GL_FLAT);
+            glClearColor(0x10 / 255.0f, 0x20 / 255.0f, 0x30 / 255.0f, 1.0f);
+        }
     }
 
     printf("\n%s (%d failing)\n",

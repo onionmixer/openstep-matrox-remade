@@ -198,3 +198,33 @@
    reach 프로브  0 failing
    tv trh trs tr 0 failing
 ```
+
+## 14. 깊이까지 셋 (§5 를 codex 의 목록대로)
+
+```
+   ok  near then far: the colour is unchanged
+   ok  near then far: the depth is unchanged
+   ok  and both draws were the engine's
+   ok  far then near: the colour moves
+   ok  far then near: the depth moves
+   ok  and those were the engine's too
+```
+
+세운 상태는 물려받지 않고 전부 명시했다 — `GL_LESS`, 쓰기 켜기, 두 프리미티브의
+깊이를 양자화가 같게 만들 수 없을 만큼 떨어뜨리기(같으면 `LESS` 가 실패해서
+엉뚱한 이유로 통과한다), **양쪽 다** 블렌딩 켜기, 소거색과 소거깊이 명시,
+그리고 네 그리기 전부가 엔진 것이었음을 따로 단언.
+
+역방향이 없으면 첫 절반은 "아무것도 안 그리는 드라이버"로도 만족된다.  그리고
+가까운 사각형이 애초에 안 그려졌으면 그것도 공허하므로, 목적지 색 그대로면
+실패로 잡는다.
+
+## 15. 최종 회귀
+
+```
+   기준 열 개        SCENES_MOVED=0
+   블렌드 네 장면    BLEND_SCENES_BAD=0   (각 16384 화소, 네 채널)
+   reach 프로브      0 failing
+   texdraw           0 failing
+   tv trh trs        0 failing
+```
