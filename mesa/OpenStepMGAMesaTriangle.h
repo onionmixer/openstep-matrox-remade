@@ -42,6 +42,21 @@ typedef struct {
      * it reaches here.
      */
     double qw;
+    /*
+     * The texture coordinate's OWN homogeneous divisor, from glTexCoord4f or
+     * from a projective texture matrix -- 1 when there is neither.
+     *
+     * GL gives the fragment s/q, and what is linear in screen space is s/w
+     * and q/w, so the engine's numerator carries s*(1/w) and its denominator
+     * q*(1/w).  Mesa's own rasteriser builds exactly those two
+     * (Mesa-3.4.2/src/tritemp.h: the numerator from s * invW, the divisor
+     * from the fourth coordinate * invW when the vector has one and from
+     * invW alone when it has not).
+     *
+     * It multiplies the DENOMINATOR only.  Folding it into qw would multiply
+     * the numerator with it and the whole thing would cancel back to s.
+     */
+    double tq;
     unsigned long r, g, b, a;   /* 0..255 */
     /*
      * Depth, also fixed point in 1/256, so 0..65535*256.  Ignored unless a

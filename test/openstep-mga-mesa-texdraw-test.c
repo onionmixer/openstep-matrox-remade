@@ -773,6 +773,77 @@ main(int argc, char **argv)
                     printf("P %ld %ld %lu\n", x, y, app[y * W + x]);
             return 0;
         }
+        /*
+         * A texture coordinate with a homogeneous divisor of its own.
+         *
+         *      texq    q at the corners is 1, 2, 4, 2
+         *      texqn   the same s and t with q of one throughout
+         *
+         * The pair is the point.  texq against software says whether the
+         * engine draws what GL asks for; texq against texqn says the scene
+         * is asking anything at all -- python puts the two on different
+         * texels at 1640 of 1722 sample points, so a driver that quietly
+         * ignored q could not pass both.
+         *
+         * s and t are chosen so that s/q and t/q cover 0..1 exactly: the
+         * corners project to (0,0), (1,0), (1,1), (0,1).  The denominator
+         * spans a ratio of four, well inside the 1024 the engine's q range
+         * allows, so this is about the arithmetic and not about the limit.
+         *
+         * Nearest and clamp, so nothing is decided by a filter or a wrap.
+         */
+        if (argc > 2 && strncmp(argv[2], "texq", 4) == 0) {
+            int unit = (argv[2][4] == 'n');   /* the q = 1 control */
+            float qs[4];
+
+            qs[0] = 1.0f; qs[1] = 2.0f; qs[2] = 4.0f; qs[3] = 2.0f;
+            if (unit) { qs[0] = qs[1] = qs[2] = qs[3] = 1.0f; }
+
+            glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            /*
+             * Not GL_FASTEST: that hint sends Mesa down its affine path,
+             * which would make the software side an oracle for a different
+             * question.  And no polygon smoothing, whose template pins the
+             * coordinate size at three and ignores q outright.
+             */
+            glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST);
+            glDisable(GL_POLYGON_SMOOTH);
+            glClear(GL_COLOR_BUFFER_BIT);
+            {
+                unsigned long d0 = OSMGAMesaHookDrawn();
+                unsigned long s3 = OSMGAMesaHookSoftware();
+                unsigned long p1 = OSMGAMesaHookTexPersp();
+
+                glBegin(GL_TRIANGLES);
+                  glTexCoord4f(0.0f, 0.0f, 0.0f, qs[0]);
+                  glVertex2d(40.0, 40.0);
+                  glTexCoord4f(2.0f, 0.0f, 0.0f, qs[1]);
+                  glVertex2d(168.0, 40.0);
+                  glTexCoord4f(4.0f, 4.0f, 0.0f, qs[2]);
+                  glVertex2d(168.0, 168.0);
+                  glTexCoord4f(0.0f, 0.0f, 0.0f, qs[0]);
+                  glVertex2d(40.0, 40.0);
+                  glTexCoord4f(4.0f, 4.0f, 0.0f, qs[2]);
+                  glVertex2d(168.0, 168.0);
+                  glTexCoord4f(0.0f, 2.0f, 0.0f, qs[3]);
+                  glVertex2d(40.0, 168.0);
+                glEnd();
+                glFinish();
+                fprintf(stderr, "# %s drawn %lu software %lu texpersp %lu\n",
+                        argv[2], OSMGAMesaHookDrawn() - d0,
+                        OSMGAMesaHookSoftware() - s3,
+                        OSMGAMesaHookTexPersp() - p1);
+            }
+            for (y = 0; y < H; y++)
+                for (x = 0; x < W; x++)
+                    if (app[y * W + x] != CLEARC)
+                        printf("P %ld %ld %lu\n", x, y, app[y * W + x]);
+            return 0;
+        }
         if (argc > 2 && strcmp(argv[2], "lin") == 0) {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
                             GL_CLAMP_TO_EDGE);
@@ -1239,6 +1310,117 @@ main(int argc, char **argv)
         }
         say("the arena does run out", ran, 0);
         glDeleteTextures(24, big);
+    }
+
+    /*
+     * A texture q of its own, in the two shapes the plan asks for and at the
+     * limit of what the engine's denominator can hold.
+     *
+     * The dump scene "texq" covers equal w with varying q, which is the case
+     * the affine shortcut used to get wrong.  These three are the ones a
+     * picture comparison cannot answer: whether a perspective projection and
+     * a projective coordinate compose, and what happens at the far end of
+     * the denominator's range, where the answer wanted is a clean refusal
+     * and not a wrong picture.
+     */
+    {
+        unsigned long d1, s4, p2, u2;
+        int k;
+        static const char *qn[3] = {
+            "q with a perspective projection too",
+            "a q ratio the engine can express",
+            "a q ratio it cannot, which must fall back"
+        };
+
+        /*
+         * Texturing ON, explicitly.  Without this line these cases ran with
+         * it off -- the hook then reports no texture coordinate at all, the
+         * driver saw a q of one at every vertex, and all three "passed"
+         * while asking nothing.  The binding is restated for the same
+         * reason.
+         */
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glEnable(GL_TEXTURE_2D);
+        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST);
+
+        for (k = 0; k < 3; k++) {
+            /*
+             * How far the q ratio may go, which is NOT Q_MAX over Q_MIN.
+             *
+             * That ratio, 1024, is the denominator's own range and it is not
+             * the binding one.  The scale factor has to satisfy the
+             * denominator's floor AND the numerator's ceiling at once, and
+             * the numerator carries the coordinate TIMES q -- so for a
+             * coordinate spanning C textures,
+             *
+             *      qhi/qlo  <=  COORD_MAX * Q_ONE / (Q_MIN * C * SPAN)
+             *
+             * which python puts at 256 for a quarter texture, 64 for a whole
+             * one and 32 for two.  Here the coordinate spans one texture, so
+             * 16 is inside and 256 is four times past.
+             *
+             * Measured the wrong way round first: 512 was chosen as
+             * "comfortably inside 1024" and came back refused, and the
+             * refusal was right.
+             */
+            float far = (k == 0) ? 2.0f : ((k == 1) ? 16.0f : 256.0f);
+
+            glMatrixMode(GL_PROJECTION); glLoadIdentity();
+            if (k == 0) {
+                glFrustum(-1.0, 1.0, -0.75, 0.75, 1.0, 20.0);
+                glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+                glTranslated(0.0, 0.0, -4.0);
+            } else {
+                glOrtho(0.0, (double)W, 0.0, (double)H, -1.0, 1.0);
+                glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+            }
+            glClear(GL_COLOR_BUFFER_BIT);
+            d1 = OSMGAMesaHookDrawn();
+            s4 = OSMGAMesaHookSoftware();
+            p2 = OSMGAMesaHookTexPersp();
+            u2 = OSMGAMesaHookUnsupported();
+            glBegin(GL_TRIANGLES);
+              if (k == 0) {
+                  glTexCoord4f(0.0f, 0.0f, 0.0f, 1.0f);
+                  glVertex3d(-0.8, -0.6, 0.0);
+                  glTexCoord4f(2.0f, 0.0f, 0.0f, 2.0f);
+                  glVertex3d( 0.8, -0.6, -2.0);
+                  glTexCoord4f(4.0f, 4.0f, 0.0f, far * 2.0f);
+                  glVertex3d( 0.8,  0.6, -4.0);
+              } else {
+                  glTexCoord4f(0.0f, 0.0f, 0.0f, 1.0f);
+                  glVertex2d(40.0, 40.0);
+                  glTexCoord4f(far, 0.0f, 0.0f, far);
+                  glVertex2d(168.0, 40.0);
+                  glTexCoord4f(far, far, 0.0f, far);
+                  glVertex2d(168.0, 168.0);
+              }
+            glEnd();
+            glFinish();
+            fprintf(stderr, "# q case %d: drawn %lu software %lu"
+                    " unsupported %lu texpersp %lu\n", k,
+                    OSMGAMesaHookDrawn() - d1,
+                    OSMGAMesaHookSoftware() - s4,
+                    OSMGAMesaHookUnsupported() - u2,
+                    OSMGAMesaHookTexPersp() - p2);
+            if (k == 2)
+                say(qn[k],
+                    OSMGAMesaHookDrawn() == d1 &&
+                    OSMGAMesaHookSoftware() > s4, 0);
+            else
+                say(qn[k],
+                    OSMGAMesaHookDrawn() > d1 &&
+                    OSMGAMesaHookSoftware() == s4 &&
+                    OSMGAMesaHookTexPersp() == p2, 0);
+        }
+        glMatrixMode(GL_PROJECTION); glLoadIdentity();
+        glOrtho(0.0, (double)W, 0.0, (double)H, -1.0, 1.0);
+        glMatrixMode(GL_MODELVIEW); glLoadIdentity();
     }
 
     /*

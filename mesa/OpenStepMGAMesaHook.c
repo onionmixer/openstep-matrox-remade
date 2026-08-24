@@ -252,6 +252,8 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         (dst).s = texOn ? (double)VB->TexCoordPtr[0]->data[idx][0] : 0.0; \
         (dst).tc = texOn ? (double)VB->TexCoordPtr[0]->data[idx][1] : 0.0;\
         (dst).qw = (double)VB->Win.data[idx][3];                         \
+        (dst).tq = (texOn && VB->TexCoordPtr[0]->size > 3)                \
+                   ? (double)VB->TexCoordPtr[0]->data[idx][3] : 1.0;      \
     } while (0)
 
     /*
@@ -281,10 +283,25 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
             (void)osmgaMesaSoftly(ctx, v0, v1, v2, pv);
             return;
         }
+        /*
+         * A texture q of its own is taken now; what is refused is one that
+         * is not strictly positive.
+         *
+         * The engine divides one plane by another and cannot be told what to
+         * do at a zero crossing, and a q that changes sign inside the
+         * triangle puts a singularity there.  Writing it as "not greater
+         * than nought" rather than "less than or equal" also turns away a
+         * NaN, which would pass the other spelling and then travel through
+         * the solver as a quiet infection.
+         *
+         * This is THIS back end declining what it cannot express, not GL
+         * calling it invalid: Mesa's software path does not refuse a
+         * negative q, it just divides by the interpolated denominator.
+         */
         if (VB->TexCoordPtr[0]->size > 3 &&
-            (VB->TexCoordPtr[0]->data[v0][3] != 1.0F ||
-             VB->TexCoordPtr[0]->data[v1][3] != 1.0F ||
-             VB->TexCoordPtr[0]->data[v2][3] != 1.0F)) {
+            (!(VB->TexCoordPtr[0]->data[v0][3] > 0.0F) ||
+             !(VB->TexCoordPtr[0]->data[v1][3] > 0.0F) ||
+             !(VB->TexCoordPtr[0]->data[v2][3] > 0.0F))) {
             hookTexPersp++;
             (void)osmgaMesaSoftly(ctx, v0, v1, v2, pv);
             return;

@@ -356,9 +356,20 @@ osmgaPerspPlanes(const OSMGAMesaVertex *a, const OSMGAMesaVertex *b,
                  OSMGAColourPlane *up, OSMGAColourPlane *vp,
                  OSMGAColourPlane *qp)
 {
-    double qa = a->qw, qb = b->qw, qc = c->qw;
-    double na = ua * qa, nb = ub * qb, nc = uc * qc;
-    double ma = va * qa, mb = vb * qb, mc = vc * qc;
+    /*
+     * The numerator is weighted by 1/w and the denominator by q/w, and they
+     * are NOT the same number.
+     *
+     * Folding the texture's q into the weight used for both would cancel it
+     * -- (s*qw*q)/(qw*q) is s, not s/q -- so the primitive would come out
+     * looking as though q had never been given.  Mesa's rasteriser keeps
+     * them apart the same way (tritemp.h: the numerator from s * invW, the
+     * divisor from the fourth coordinate * invW).
+     */
+    double wa = a->qw, wb = b->qw, wc = c->qw;
+    double qa = wa * a->tq, qb = wb * b->tq, qc = wc * c->tq;
+    double na = ua * wa, nb = ub * wb, nc = uc * wc;
+    double ma = va * wa, mb = vb * wb, mc = vc * wc;
     double ndx, ndy, mdx, mdy, qdx, qdy;
     double qlo, qhi, dxlo, dxhi, dylo, dyhi, ex, ey;
     double lamLo, lamHi, t, room, budget;
@@ -879,22 +890,67 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
          * residual on this side is 511 less the bias, which is at least
          * fifteen and can never be negative.
          */
-        lo = hi = ua;
-        if (ub < lo) lo = ub;   if (ub > hi) hi = ub;
-        if (uc < lo) lo = uc;   if (uc > hi) hi = uc;
+        /*
+         * A divisor this cannot divide by.
+         *
+         * The chooser already refuses one, but the builder is called
+         * directly by the host tests and by the probe, and a vertex that was
+         * merely zeroed has a q of nought: the checks below would then divide
+         * by it, compare NaN against the range, and PASS -- vacuously, since
+         * every comparison with NaN is false.  Spelt as "not greater than"
+         * so that a NaN is refused here too rather than travelling on.
+         */
+        if (!(a->tq > 0.0) || !(b->tq > 0.0) || !(c->tq > 0.0))
+            return OSMGA_MESA_TRI_UNSUPPORTED;
+
+        /*
+         * The COORDINATE, which is s/q and not s.
+         *
+         * These used to be the raw scaled s and t, which is the same number
+         * only while q is one.  At q = 4 a value of s = 8 means coordinate 2
+         * and the check would refuse it; at q = 1/4 it means coordinate 32
+         * and the check would let it through.
+         *
+         * Three vertices are enough even though the coordinate is a ratio.
+         * Writing the barycentric weights as l_i, the ratio at a point is
+         * sum(l_i D_i * N_i/D_i) / sum(l_i D_i) -- a convex combination of
+         * the vertex ratios, weighted by the denominators -- so it cannot
+         * leave the interval they span while every D_i is positive, which
+         * the chooser has already required.  The kernel's own header states
+         * the same property for its corner check.
+         */
+        lo = hi = ua / a->tq;
+        if (ub / b->tq < lo) lo = ub / b->tq;
+        if (ub / b->tq > hi) hi = ub / b->tq;
+        if (uc / c->tq < lo) lo = uc / c->tq;
+        if (uc / c->tq > hi) hi = uc / c->tq;
         if (lo < -(double)OSMGA_HW3D_TEX_SPAN ||
             hi > (double)OSMGA_HW3D_TEX_COORD_MAX)
             return OSMGA_MESA_TRI_UNSUPPORTED;
-        lo = hi = va;
-        if (vb < lo) lo = vb;   if (vb > hi) hi = vb;
-        if (vc < lo) lo = vc;   if (vc > hi) hi = vc;
+        lo = hi = va / a->tq;
+        if (vb / b->tq < lo) lo = vb / b->tq;
+        if (vb / b->tq > hi) hi = vb / b->tq;
+        if (vc / c->tq < lo) lo = vc / c->tq;
+        if (vc / c->tq > hi) hi = vc / c->tq;
         if (lo < -(double)OSMGA_HW3D_TEX_SPAN ||
             hi > (double)OSMGA_HW3D_TEX_COORD_MAX)
             return OSMGA_MESA_TRI_UNSUPPORTED;
 
-        if (a->qw == b->qw && a->qw == c->qw) {
-            /* w is the same at all three, so the divide is a constant and
-             * the coordinate interpolates straight.  Unchanged. */
+        if (a->qw * a->tq == b->qw * b->tq &&
+            a->qw * a->tq == c->qw * c->tq) {
+            /*
+             * The DENOMINATOR is the same at all three, so the divide is a
+             * constant and the coordinate interpolates straight.
+             *
+             * It used to ask about w alone, which is the same question only
+             * while the texture's own q is one everywhere.  With equal w and
+             * differing q the coordinate s/q is a ratio of two linear
+             * functions and is not screen-linear at all, and this branch
+             * would have drawn it as though it were.  Asking about the
+             * product also admits the case where the two vary reciprocally,
+             * which the pair of separate equalities would have turned away
+             * for no reason.
+             */
             uplane.dx   = ((ub - ua) * y2 - (uc - ua) * y1) / den;
             uplane.dy   = ((uc - ua) * x1 - (ub - ua) * x2) / den;
             uplane.at_a = ua;

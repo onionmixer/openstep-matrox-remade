@@ -186,6 +186,11 @@ static void
 vert(OSMGAMesaVertex *v, long x, long y)
 {
     memset(v, 0, sizeof *v);
+    /* A zeroed vertex has neither a w nor a texture q, and the
+     * builder divides by both.  One each is what "no perspective and
+     * no projective texture" means. */
+    v->qw = 1.0;
+    v->tq = 1.0;
     v->x = x * OSMGA_MESA_SUBONE; v->y = y * OSMGA_MESA_SUBONE;
     v->g = 255UL; v->a = 255UL;
 }
