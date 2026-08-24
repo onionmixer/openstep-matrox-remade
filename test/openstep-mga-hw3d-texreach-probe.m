@@ -4885,6 +4885,103 @@ main(void)
         printf("     any row that differs is the bit doing something\n");
     }
 
+    printf("\n76. does the engine blend with the TEXTURE's alpha\n");
+    {
+        /*
+         * Blending and texturing are each admitted on their own and refused
+         * together, for a reason that is about batching rather than about the
+         * engine (a partly submitted split triangle plus a software redraw
+         * would blend twice).  Before any of that is worth solving, the thing
+         * that would be a WRONG PICTURE rather than a refusal has to be
+         * measured: which alpha the blend consumes.
+         *
+         * GL_REPLACE on a texture that has an alpha gives Av = At, and the
+         * blend then wants that alpha.  Eight texels carrying alphas from
+         * nought to 224 in steps of 32, all white, drawn over a background of
+         * 0x204060 with the engine's only blend.
+         *
+         * python says what each must come out as.  If the engine took the
+         * FRAGMENT's alpha instead, every one of the eight would be the same
+         * -- which is the discriminator, and it needs no kernel change since
+         * the probe sets alphactrl itself.
+         */
+        /*
+         * python, rounding the engine's blend to nearest rather than down.
+         * Three forms fit all eight rows -- nearest, ceiling, and the shifted
+         * product the engine uses elsewhere -- and eight points cannot
+         * separate them, so what is asserted below is the CLAIM (that the
+         * texture's alpha reaches the blend at all), with the arithmetic left
+         * as an open question rather than picked from three.
+         */
+        static const unsigned long want[8][3] = {
+            {  32UL,  64UL,  96UL }, {  60UL,  88UL, 116UL },
+            {  88UL, 112UL, 136UL }, { 116UL, 136UL, 156UL },
+            { 144UL, 160UL, 176UL }, { 172UL, 184UL, 196UL },
+            { 200UL, 208UL, 216UL }, { 228UL, 232UL, 236UL }
+        };
+        unsigned long rr, cc;
+        int j, bad = 0, same = 1;
+        unsigned long first[3];
+        unsigned v;
+
+        for (rr = 0UL; rr < 64UL; rr++)
+            for (cc = 0UL; cc < 64UL; cc++)
+                tex[rr * 64UL + cc] = (((cc & 7UL) * 32UL) << 24)
+                                    | 0x00FFFFFFUL;
+
+        /* the background the blend has to read */
+        for (rr = 0UL; rr < 64UL; rr++)
+            for (cc = 0UL; cc < STRIDE_DW; cc++)
+                colour[rr * STRIDE_DW + cc] = 0x00204060UL;
+
+        {
+            OSMGAHW3DTri *t = setup(1024UL, 0UL, 8UL, 4UL,
+                                    (long)(OSMGA_HW3D_TEX_SPAN / 64UL),
+                                    OSMGA_HW3D_TEXF_TEXALPHA);
+
+            batch->state.texW = 64UL; batch->state.texH = 64UL;
+            batch->state.texPitch = 64UL;
+            batch->state.tmr[1] = 0L; batch->state.tmr[2] = 0L;
+            batch->state.tmr[3] = 0L;
+            batch->state.tmr[6] = (long)(OSMGA_HW3D_TEX_SPAN / 128UL);
+            batch->state.tmr[7] = 0L;
+            /*
+             * alphasel = fromtex.  The constant the builder uses,
+             * 0x01000154, has alphasel = diffused in bits 24-25 -- the
+             * INTERPOLATED alpha -- and this probe never writes ALPHASTART,
+             * so that alpha is nought and every texel came back as the bare
+             * background.  Which is not the engine failing to blend; it is
+             * the engine blending with the alpha it was told to use.
+             */
+            t->alphactrl = 0x00000154UL;
+            v = fire();
+        }
+        printf("     %-8s %14s %14s\n", "texel", "got", "wanted");
+        for (j = 0; j < 8; j++) {
+            unsigned long got = (v == OSMGA_HW3D_OK)
+                              ? colour[0UL * STRIDE_DW + (unsigned long)j]
+                              : 0UL;
+            unsigned long r = (got >> 16) & 0xFFUL;
+            unsigned long g = (got >> 8) & 0xFFUL;
+            unsigned long b = got & 0xFFUL;
+
+            if (j == 0) { first[0] = r; first[1] = g; first[2] = b; }
+            else if (r != first[0] || g != first[1] || b != first[2])
+                same = 0;
+            printf("     alpha %3d  %3lu %3lu %3lu   %3lu %3lu %3lu%s\n",
+                   j * 32, r, g, b,
+                   want[j][0], want[j][1], want[j][2],
+                   (r == want[j][0] && g == want[j][1] && b == want[j][2])
+                       ? "" : "   <<");
+            if (r != want[j][0] || g != want[j][1] || b != want[j][2]) bad++;
+        }
+        printf("     verdict %u.  All eight identical would mean the blend did\n"
+               "     not see the texture's alpha: %s\n",
+               v, same ? "they are" : "they are not");
+        say("fromtex puts the texture's alpha into the blend",
+            (bad == 0) ? 1U : 0U, 1U);
+    }
+
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;
