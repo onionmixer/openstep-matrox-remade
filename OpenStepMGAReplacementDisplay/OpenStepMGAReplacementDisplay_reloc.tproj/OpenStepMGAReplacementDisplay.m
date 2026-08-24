@@ -204,6 +204,24 @@
 #define OSMGA_S1_FILL           0xDEADBEEFUL
 /* Only VRAM proven real by the working 1600x1200x32 scanout (7.32 MiB). */
 #define OSMGA_S1_VRAM_PROVEN    (7UL * 1024UL * 1024UL)
+/*
+ * How far the offscreen window may be widened, IF the memory up there is
+ * shown to be real at this boot.  A number a person chose, not one the
+ * machine computes: it is the far edge of what clients may address, and the
+ * probe's job is to withhold it, never to exceed it.
+ *
+ * Twelve rather than the sixteen that are mapped.  The payoff is nearly all
+ * here -- the texture arena at 1024x768 goes from nothing to about three and
+ * a half megabytes, where sixteen would give seven and a half -- and the top
+ * four are left alone because that is where a board reserves things.  We know
+ * the hardware cursor is not one of them: this driver writes nought to the
+ * cursor base and nought to cursor control at every mode set (osmgaInitDAC
+ * 0x04..0x06, and X.Org's MGAGHideCursor writes the same nought to turn a
+ * cursor off), so no cursor image is living in video memory while this driver
+ * runs.  What else might be up there is not known, which is why the margin is
+ * there rather than argued away.
+ */
+#define OSMGA_S1_VRAM_CEILING   (12UL * 1024UL * 1024UL)
 #define OSMGA_S1_VRAM_BLOCK     (4UL * 1024UL * 1024UL)   /* offscreen test block */
 
 /*
@@ -1156,7 +1174,9 @@ osmgaStormInitState(vm_address_t base, unsigned long stridePixels,
  * programming while the screen is blanked. */
 static void osmgaProbeVramExtent(unsigned long fbPhysical,
                                  unsigned long visibleEnd,
-                                 volatile unsigned char *mmio);
+                                 vm_address_t mmio);
+static int osmgaProveVramTo(unsigned long fbPhysical, unsigned long from,
+                            unsigned long to, vm_address_t mmio);
 
 static IOReturn
 osmgaMapUncachedBlock(unsigned long fbPhysical, unsigned long byteStart,
@@ -2700,6 +2720,37 @@ static IODisplayInfo osmgaModeTemplate = {
                          (unsigned long)r->width * (unsigned long)f->bytesPerPixel *
                              (unsigned long)r->height,
                          base);
+
+    /*
+     * And the only place the offscreen window is ever widened.
+     *
+     * The window was published at init from the conservative bound.  If the
+     * memory between that bound and the ceiling proves out -- every page of
+     * it, at this boot, with a witness below to catch an alias -- the end
+     * moves up to the ceiling.  If anything disagrees the end stays where it
+     * was and the machine is exactly as it was yesterday.
+     *
+     * Widening rather than narrowing is what makes this safe to do after the
+     * device is already published: a mapping that exists keeps working, and
+     * the handler reads the end afresh every time it is asked.  Narrowing
+     * later would be a different and much worse thing, and nothing here does
+     * it.
+     *
+     * Only when the window is actually offered, and only from the bound it
+     * was offered at -- so a second mode set cannot widen it twice or widen
+     * one that was refused for some other reason.
+     */
+    if (osmgaMmapRegistered &&
+        osmgaMmapWindowEnd == (OSMGA_S1_VRAM_PROVEN &
+                               ~((unsigned long)PAGE_SIZE - 1UL)) &&
+        osmgaMmapWindowEnd < OSMGA_S1_VRAM_CEILING &&
+        osmgaProveVramTo(frameBufferPhysical, osmgaMmapWindowEnd,
+                         OSMGA_S1_VRAM_CEILING, base)) {
+        osmgaMmapWindowEnd = OSMGA_S1_VRAM_CEILING;
+        IOLog("OpenStepMGA M1-4F1: offscreen window widened to %lu..%lu "
+              "(%lu KiB)\n", osmgaMmapWindowStart, osmgaMmapWindowEnd,
+              (osmgaMmapWindowEnd - osmgaMmapWindowStart) / 1024UL);
+    }
 
     /* re-latch CRTCEXT0 (display start) */
     osmgaWriteCrtcExt(base, 0, ext[0]);
@@ -7598,11 +7649,124 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
  * address line inside an interval, or a partial decode.  It says what it
  * measured: the sampled addresses are distinct and hold what was put in them.
  */
+/*
+ * M1-4F1 -- prove the memory a client would be handed, and only then hand it.
+ *
+ * The sparse probe below says the sampled addresses across the aperture are
+ * distinct.  That is evidence, not a warrant: what widens the offscreen
+ * window widens what any client may map and what the validator lets the
+ * engine reach, so the region being opened has to be shown to hold data at
+ * the granularity it will be used at -- every page of it -- and shown at THIS
+ * boot rather than remembered from another.
+ *
+ * Fail-closed.  If anything about the region disagrees, the caller keeps the
+ * conservative bound and the only thing lost is acceleration.
+ *
+ * WHY THIS CAN RUN AT ALL.  The window is published at init from the
+ * conservative bound, and this only ever RAISES the end afterwards.  Raising
+ * is safe in a way lowering would not be: a mapping already made keeps
+ * working, and the handler reads the end afresh on every call, so nothing
+ * that was refused before becomes retroactively allowed for a mapping that
+ * already exists.
+ *
+ * WHAT IT WOULD COST TO BE WRONG.  Every offset this admits is
+ * frameBufferPhysical plus something under sixteen megabytes, and that is
+ * inside BAR0 -- a client cannot be handed a page outside the card whatever
+ * this decides.  An address no device decodes reads back as all ones and
+ * drops writes, so memory that is not there fails this test rather than
+ * passing it quietly.  The cost of a wrong answer here is corrupt pixels in
+ * the card's own memory, not a way out of it.  That is the reason this is
+ * judged worth doing on a boot-time measurement; it would not be if the
+ * failure could reach the system.
+ *
+ * The whole region is mapped once rather than a page at a time: a thousand
+ * map-and-release cycles at every mode set would cost more than the test.
+ */
+static int
+osmgaProveVramTo(unsigned long fbPhysical, unsigned long from, unsigned long to,
+                 vm_address_t mmio)
+{
+    vm_address_t alias = 0, walias = 0;
+    unsigned long len = 0UL, wlen = 0UL;
+    volatile unsigned long *p = 0;
+    volatile unsigned long *w = 0;
+    unsigned long page = (unsigned long)PAGE_SIZE;
+    unsigned long words = page / 4UL;
+    unsigned long off, bad = 0UL, pages = 0UL;
+    unsigned long witnessOff, witnessWas, sig;
+
+    if (from >= to || (from % page) != 0UL || (to % page) != 0UL)
+        return 0;
+    if (to > MGA_VRAM_16MB)
+        return 0;
+
+    /*
+     * A witness below the region, so that a write up here landing DOWN there
+     * is seen.  It sits one page under the region, which is inside what the
+     * window already covers and therefore already ours.
+     */
+    witnessOff = from - page;
+    if (osmgaMapUncachedBlock(fbPhysical, witnessOff, witnessOff + 4UL,
+                              &walias, &wlen, &w) != IO_R_SUCCESS)
+        return 0;
+    witnessWas = *w;
+    *w = 0xA5A5F00DUL;
+
+    if (osmgaMapUncachedBlock(fbPhysical, from, to, &alias, &len, &p)
+            != IO_R_SUCCESS) {
+        *w = witnessWas;
+        IOUnmapPhysicalFromIOTask(walias, wlen);
+        return 0;
+    }
+
+    /* Every page gets a signature carrying its own offset, at its first word
+     * and its last, and they all go in before any comes out. */
+    for (off = 0UL; from + off < to; off += page) {
+        sig = 0x5B000000UL | ((from + off) >> 8);
+        p[off / 4UL] = sig;
+        p[off / 4UL + words - 1UL] = ~sig;
+        pages++;
+    }
+    (void)osmgaR32(mmio, MGA_ENGSTATUS);
+    IODelay(1000);
+
+    for (off = 0UL; from + off < to; off += page) {
+        sig = 0x5B000000UL | ((from + off) >> 8);
+        if (p[off / 4UL] != sig || p[off / 4UL + words - 1UL] != ~sig)
+            bad++;
+    }
+    if (*w != 0xA5A5F00DUL) {
+        IOLog("OpenStepMGA M1-4F1: a write above %lu changed the witness "
+              "below it -- the region aliases\n", from);
+        bad++;
+    }
+
+    /*
+     * Zero what passed, rather than putting back what was there.  This
+     * region is about to become the window, so it is ours from here; leaving
+     * probe signatures in it would hand a client this routine's leavings,
+     * and there is nothing above the old bound that anyone was keeping.
+     */
+    if (bad == 0UL)
+        for (off = 0UL; from + off < to; off += 4UL)
+            p[off / 4UL] = 0UL;
+
+    *w = witnessWas;
+    IOUnmapPhysicalFromIOTask(alias, len);
+    IOUnmapPhysicalFromIOTask(walias, wlen);
+
+    IOLog("OpenStepMGA M1-4F1: %lu..%lu, %lu pages, %lu wrong -> %s\n",
+          from, to, pages, bad,
+          (bad == 0UL) ? "the window may be widened to it"
+                       : "KEEPING THE CONSERVATIVE BOUND");
+    return bad == 0UL;
+}
+
 #define OSMGA_VRAM_PROBE_MAX   32
 
 static void
 osmgaProbeVramExtent(unsigned long fbPhysical, unsigned long visibleEnd,
-                     volatile unsigned char *mmio)
+                     vm_address_t mmio)
 {
     unsigned long off[OSMGA_VRAM_PROBE_MAX];
     unsigned long saved[OSMGA_VRAM_PROBE_MAX];
