@@ -63,13 +63,13 @@ now(void)
  */
 static double
 timeFrames(int w, int h, int doClear, int fullQuad, unsigned long *drew,
-           int *accel)
+           unsigned long *mirrored, int *accel)
 {
     OSMesaContext ctx;
     unsigned long *app;
     double t0, t1;
     int i;
-    unsigned long before;
+    unsigned long before, mirrorsBefore;
 
     app = (unsigned long *)malloc((unsigned)(w * h) * sizeof(unsigned long));
     if (!app) return -1.0;
@@ -93,6 +93,7 @@ timeFrames(int w, int h, int doClear, int fullQuad, unsigned long *drew,
 
     *accel = (OSMGAMesaBufferOrigin() != 0UL);
     before = OSMGAMesaHookDrawn();
+    mirrorsBefore = OSMGAMesaHookMirrors();
     t0 = now();
     for (i = 0; i < FRAMES; i++) {
         if (doClear) glClear(GL_COLOR_BUFFER_BIT);
@@ -117,6 +118,15 @@ timeFrames(int w, int h, int doClear, int fullQuad, unsigned long *drew,
     }
     t1 = now();
     *drew = OSMGAMesaHookDrawn() - before;
+    /*
+     * And how many times the surface was walked back into system memory.
+     *
+     * Printed because this test and the clear-path test were quoted against
+     * each other while measuring different work: there the triangle is
+     * clipped away, so nothing rasterises and nothing mirrors.  The mirror
+     * count is what tells the two workloads apart at a glance.
+     */
+    *mirrored = OSMGAMesaHookMirrors() - mirrorsBefore;
 
     OSMesaDestroyContext(ctx);
     free(app);
@@ -143,8 +153,10 @@ main(void)
 
     for (i = 0; i < 3; i++) {
         unsigned long drew = 0UL;
+        unsigned long mirrored = 0UL;
         int accel = 0;
-        double t = timeFrames(sizes[i].w, sizes[i].h, 1, 0, &drew, &accel);
+        double t = timeFrames(sizes[i].w, sizes[i].h, 1, 0, &drew, &mirrored,
+                              &accel);
 
         if (t < 0.0) {
             printf("   %-9s  could not be made\n", sizes[i].n);
@@ -154,8 +166,8 @@ main(void)
         }
         area[i] = (double)sizes[i].w * (double)sizes[i].h;
         ms[i] = t * 1000.0;
-        printf("   %-9s %10.0f %12.3f %14.2f %lu%s\n",
-               sizes[i].n, area[i], ms[i], t * 1e9 / area[i], drew,
+        printf("   %-9s %10.0f %12.3f %14.2f %lu (%lu mirrors)%s\n",
+               sizes[i].n, area[i], ms[i], t * 1e9 / area[i], drew, mirrored,
                accel ? "" : "   <-- NOT on the engine's surface");
     }
 
@@ -185,10 +197,10 @@ main(void)
      * afternoon.
      */
     {
-        unsigned long d1 = 0UL, d2 = 0UL;
+        unsigned long d1 = 0UL, d2 = 0UL, m1 = 0UL, m2 = 0UL;
         int a1 = 0, a2 = 0;
-        double withClear = timeFrames(512, 384, 1, 0, &d1, &a1);
-        double noClear   = timeFrames(512, 384, 0, 0, &d2, &a2);
+        double withClear = timeFrames(512, 384, 1, 0, &d1, &m1, &a1);
+        double noClear   = timeFrames(512, 384, 0, 0, &d2, &m2, &a2);
 
         printf("\n   where the frame goes, at 512x384\n");
         if (withClear > 0.0 && noClear > 0.0) {
@@ -198,18 +210,27 @@ main(void)
                    withClear * 1000.0);
             printf("   triangle + finish         : %8.3f ms\n",
                    noClear * 1000.0);
-            printf("   so the clear is           : %8.3f ms, and what is"
-                   " left -- the mirror and\n"
-                   "                               one small triangle --"
-                   " is %.3f ms\n",
-                   clearMs, noClear * 1000.0);
-            if (noClear > withClear * 0.5)
-                printf("   the MIRROR is the larger half: narrowing it is"
-                       " the thing worth doing\n");
-            else
-                printf("   the CLEAR is the larger half: narrowing the"
-                       " mirror alone would not\n   buy what the size"
-                       " sweep suggests\n");
+            /*
+             * This line used to say "so the clear is", and that was wrong in
+             * a way that mattered: the clear runs on the ENGINE and writes no
+             * pixel with the processor, so it cannot cost a hundred and forty
+             * milliseconds.  What asking for it costs is a whole extra walk
+             * of the surface, because the clear gets its own render bracket
+             * (buffers.c:296-313) and this back end mirrors at the end of
+             * every bracket.  Calling that "the clear" sent the conclusion
+             * underneath the wrong way round.
+             */
+            printf("   so ASKING FOR THE CLEAR costs : %8.3f ms -- not the"
+                   " clearing, which is on the\n"
+                   "                                   engine, but the extra"
+                   " surface walk its own render\n"
+                   "                                   bracket causes\n",
+                   clearMs);
+            printf("   and drawing without it costs  : %8.3f ms, which is"
+                   " one walk plus one triangle\n", noClear * 1000.0);
+            printf("   a clear-and-draw frame therefore walks the surface"
+                   " TWICE, and neither walk\n   is the drawing: narrowing"
+                   " or dropping one of them is the whole of the win\n");
         }
     }
 
@@ -220,10 +241,10 @@ main(void)
      * do, so if it is not far below the CPU clear there is nothing to win.
      */
     {
-        unsigned long d3 = 0UL, d4 = 0UL;
+        unsigned long d3 = 0UL, d4 = 0UL, m3 = 0UL, m4 = 0UL;
         int a3 = 0, a4 = 0;
-        double quad   = timeFrames(512, 384, 0, 1, &d3, &a3);
-        double small  = timeFrames(512, 384, 0, 0, &d4, &a4);
+        double quad   = timeFrames(512, 384, 0, 1, &d3, &m3, &a3);
+        double small  = timeFrames(512, 384, 0, 0, &d4, &m4, &a4);
 
         printf("\n   what an engine clear would cost, at 512x384\n");
         if (quad > 0.0 && small > 0.0) {

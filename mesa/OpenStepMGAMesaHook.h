@@ -44,7 +44,12 @@ unsigned long OSMGAMesaHookDrawn(void);
  * nought when it was taken.  The codes are read off the source; they exist
  * so a clear that quietly does nothing can say which gate stopped it. */
 unsigned long OSMGAMesaHookClears(void);
-/* Brackets that actually copied the surface back.  A pure read does not. */
+/* How many times a mirror was ASKED for -- render brackets that were not a
+ * pure read, plus every glFinish and glFlush, since Driver.Finish and
+ * Driver.Flush are the same function.  NOT how many copies happened: the
+ * copy itself returns without doing anything when the surface is already
+ * clean, which is the ordinary case for the glFinish that ends a frame.
+ * Measured, a clear-and-draw frame asks three times and copies twice. */
 unsigned long OSMGAMesaHookMirrors(void);
 int           OSMGAMesaHookClearWhy(void);
 unsigned long OSMGAMesaHookDeclined(void);

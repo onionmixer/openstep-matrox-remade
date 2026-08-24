@@ -890,6 +890,40 @@ static const OSMGAFormat osmgaFmt[] = {
 #define OSMGA_FMT_COUNT ((int)(sizeof(osmgaFmt) / sizeof(osmgaFmt[0])))
 #define OSMGA_FMT_DEFAULT 0   /* RGB:888/32 */
 
+/*
+ * A mode whose row is a whole number of the units the CRTC counts in.
+ *
+ * The scanout pitch is not rowBytes.  It is CRTC[19] plus two bits of
+ * CRTCEXT0, written from wd = width >> (4 - bppShift), and the unit that
+ * register counts in is sixteen bytes -- 1024 wide at four bytes gives
+ * wd = 256, and 256 * 16 is 4096, the row.  X.Org's mga driver builds the
+ * same field from the same expression with the same shifts (mga_dacG.c
+ * :1380, mga_driver.c :2243-2246), which is where the shift table here
+ * comes from.
+ *
+ * The shift TRUNCATES.  So a width whose row is not a multiple of sixteen
+ * bytes would be scanned out at a pitch SHORTER than its own row, and the
+ * picture would shear -- and three other places would disagree with the
+ * hardware at the same time, all of them computing the extent of the visible
+ * surface as width * bytesPerPixel * height: the published rowBytes and
+ * memorySize, the initial clear of the framebuffer, and the start of the
+ * offscreen mmap window, which would then be free to overlap the tail of
+ * scanout.
+ *
+ * Every width this driver publishes is a multiple of sixteen pixels and
+ * every format is one, two or four bytes, so all twenty-five combinations
+ * pass and this has never fired.  It is here because that is a property of
+ * the numbers in two tables rather than of the code, and the next width
+ * somebody adds is where it stops being true.
+ */
+static int
+osmgaModePitchIsExact(const OSMGARes *r, const OSMGAFormat *f)
+{
+    return ((((unsigned long)r->width * (unsigned long)f->bytesPerPixel)
+             % 16UL) == 0UL);
+}
+
+
 static const unsigned char osmgaSEQ[5]     = { 0x00,0x01,0x0f,0x00,0x0e };
 static const unsigned char osmgaGR[9]      = { 0,0,0,0,0,0x40,0x05,0x0f,0xff };
 static const unsigned char osmgaAR[21] = {
@@ -2334,24 +2368,49 @@ static IODisplayInfo osmgaModeTemplate = {
 
     selectedResIndex = OSMGA_RES_DEFAULT;
     selectedFormatIndex = OSMGA_FMT_DEFAULT;
-    if (configTable == nil)
-        return;
-    text = (const char *)[configTable valueForStringKey:"Display Mode"];
-    if (text == 0)
-        return;
-    if (OSMGAParseManualDisplayMode(text, &mode)) {
-        for (i = 0; i < OSMGA_RES_COUNT; i++)
-            if ((unsigned int)osmgaRes[i].width == (unsigned int)mode.width &&
-                (unsigned int)osmgaRes[i].height == (unsigned int)mode.height) {
-                selectedResIndex = i;
+    /*
+     * Nested rather than returned from early, so that the check at the end
+     * runs whatever was chosen -- including the default nothing chose.
+     */
+    text = (configTable == nil) ? 0
+         : (const char *)[configTable valueForStringKey:"Display Mode"];
+    if (text != 0) {
+        if (OSMGAParseManualDisplayMode(text, &mode)) {
+            for (i = 0; i < OSMGA_RES_COUNT; i++)
+                if ((unsigned int)osmgaRes[i].width ==
+                        (unsigned int)mode.width &&
+                    (unsigned int)osmgaRes[i].height ==
+                        (unsigned int)mode.height) {
+                    selectedResIndex = i;
+                    break;
+                }
+        }
+        for (i = 0; i < OSMGA_FMT_COUNT; i++)
+            if (osmgaTextContains(text, osmgaFmt[i].cspace)) {
+                selectedFormatIndex = i;
                 break;
             }
     }
-    for (i = 0; i < OSMGA_FMT_COUNT; i++)
-        if (osmgaTextContains(text, osmgaFmt[i].cspace)) {
-            selectedFormatIndex = i;
-            break;
-        }
+    /*
+     * And the pair has to be one the CRTC can describe exactly.  Refused
+     * rather than patched up: rounding only the offscreen window would leave
+     * the shear, the published row and the initial clear all still wrong, so
+     * the mode is put back to the default, which is checked the same way.
+     */
+    if (!osmgaModePitchIsExact(&osmgaRes[selectedResIndex],
+                               &osmgaFmt[selectedFormatIndex])) {
+        IOLog("OpenStepMGAReplacementDisplay: %s %s has a row the CRTC "
+              "cannot describe exactly, falling back to the default mode\n",
+              osmgaRes[selectedResIndex].name,
+              osmgaFmt[selectedFormatIndex].cspace);
+        selectedResIndex = OSMGA_RES_DEFAULT;
+        selectedFormatIndex = OSMGA_FMT_DEFAULT;
+        if (!osmgaModePitchIsExact(&osmgaRes[selectedResIndex],
+                                   &osmgaFmt[selectedFormatIndex]))
+            IOLog("OpenStepMGAReplacementDisplay: the DEFAULT mode does not "
+                  "describe exactly either -- the mode tables disagree with "
+                  "the CRTC and the picture will shear\n");
+    }
     IOLog("OpenStepMGAReplacementDisplay: config selected %s %s\n",
           osmgaRes[selectedResIndex].name, osmgaFmt[selectedFormatIndex].cspace);
 }
