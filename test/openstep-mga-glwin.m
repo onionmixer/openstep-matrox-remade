@@ -38,6 +38,7 @@
  * tearing.
  */
 #import <AppKit/AppKit.h>
+#import <AppKit/psopsNeXT.h>
 #import <Foundation/Foundation.h>
 #include <math.h>
 #include <GL/gl.h>
@@ -74,8 +75,9 @@
     unsigned long *buf;
     double angle;
     float screenW, screenH;
-    unsigned long frames, skips, moveSkips;
+    unsigned long frames, skips, moveSkips, evSkips;
     float lastX, lastY;
+    float srvOffX, srvOffY;     /* server frame origin -> content origin */
     int havePos;
     int moving;
     unsigned long stillTicks;
@@ -133,7 +135,7 @@
     glFrustum(-1.0, 1.0, 0.75, -0.75, 2.0, 20.0);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
-    glTranslatef(0.0f, -0.2f, -5.0f);
+    glTranslatef(0.0f, -0.2f, -6.0f);
     glRotatef(-20.0f, 1.0f, 0.0f, 0.0f);
     glDisable(GL_BLEND); glDisable(GL_DITHER);
     glDisable(GL_TEXTURE_2D); glDisable(GL_CULL_FACE);
@@ -178,6 +180,40 @@
                                  forMode:NSEventTrackingRunLoopMode];
 
     [win makeKeyAndOrderFront:nil];
+
+    /*
+     * Calibrate the server-bounds offset while the cache is provably
+     * right: the window has just been placed and nothing has moved it.
+     * From here on the tick asks the server, not the cache.
+     */
+    {
+        NSPoint c = [view convertPoint:NSMakePoint(0, 0) toView:nil];
+        float bx, by, bw, bh;
+
+        c = [win convertBaseToScreen:c];
+        PScurrentwindowbounds([win windowNumber], &bx, &by, &bw, &bh);
+        srvOffX = c.x - bx;
+        srvOffY = c.y - by;
+        printf("glwin: server bounds %g %g %gx%g, content offset %g %g\n",
+               bx, by, bw, bh, srvOffX, srvOffY);
+        fflush(stdout);
+    }
+}
+
+/*
+ * WHERE THE WINDOW IS, BY THE SERVER'S OWN ACCOUNT.  The app-side frame
+ * cache lags a server-side drag -- that lag is the trail.  The DPS operator
+ * currentwindowbounds is a synchronous round trip to the server, so the
+ * answer is the position the server is actually drawing the window at, now.
+ * The bounds are the FRAME's; the constant offset to the content's origin
+ * is measured once at setup, while the window is provably where the cache
+ * says it is.
+ */
+- (NSPoint)serverOrigin
+{
+    float bx, by, bw, bh;
+    PScurrentwindowbounds([win windowNumber], &bx, &by, &bw, &bh);
+    return NSMakePoint(bx + srvOffX, by + srvOffY);
 }
 
 - (void)tick:(NSTimer *)t
@@ -203,6 +239,24 @@
     if (![win isVisible] || [win isMiniaturized] || [NSApp isHidden] ||
         ![NSApp isActive])
         return;
+    /*
+     * ANYTHING WAITING IN THE EVENT QUEUE skips the frame.  The trail race
+     * is the mouse-down that arrives while a frame is being drawn: the
+     * server starts carrying the window at once, the app has not yet seen
+     * the event, and a stamp goes to the position being vacated.  The
+     * notifications cannot fire until the event is dispatched, but the
+     * event is VISIBLE in the queue the moment it is pressed -- so a peek
+     * (dequeue NO, distantPast: a pure look, no waiting, nothing consumed)
+     * stands the frame down and lets the event dispatch first.
+     */
+    if ([NSApp nextEventMatchingMask:NSAnyEventMask
+                           untilDate:[NSDate distantPast]
+                              inMode:NSEventTrackingRunLoopMode
+                             dequeue:NO] != nil) {
+        evSkips++;
+        return;
+    }
+
     if (moving) {
         /*
          * willMove arrives on the title bar's MOUSE-DOWN, before anything
@@ -217,9 +271,8 @@
          * longer than the second and THEN drag, and a few stale stamps can
          * trail again until the drag's own notifications catch up.
          */
-        NSPoint m = [view convertPoint:NSMakePoint(0, 0) toView:nil];
+        NSPoint m = [self serverOrigin];
 
-        m = [win convertBaseToScreen:m];
         if (!haveMv || m.x != mvX || m.y != mvY) {
             mvX = m.x; mvY = m.y; haveMv = 1;
             stillTicks = 0UL;
@@ -231,8 +284,7 @@
         return;
     }
 
-    p = [view convertPoint:NSMakePoint(0, 0) toView:nil];
-    p = [win convertBaseToScreen:p];
+    p = [self serverOrigin];
 
     /*
      * PRESENT ONLY WHEN THE WINDOW IS STANDING STILL.
@@ -280,21 +332,39 @@
     t0 = [NSDate timeIntervalSinceReferenceDate];
     glClear((GLbitfield)(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
     glPushMatrix();
+    /*
+     * The teapot data carries the demo's own idea of up, and the flipped
+     * frustum mirrors the image once more; 180 about x, applied before the
+     * spin, is what stands it upright -- judged by eye on offline renders
+     * before it was put here.  The pot sits at -6 at unit scale so the
+     * spout cannot swing across the near plane (at -5 x 1.3 it did, and the
+     * clip cut a notch out of the body).
+     */
+    glRotatef(180.0f, 1.0f, 0.0f, 0.0f);
     glRotatef((float)(angle * 57.29578), 0.0f, 1.0f, 0.0f);
-    teapot(4, 1.3, GL_FILL);
+    teapot(4, 1.0, GL_FILL);
     glPopMatrix();
     glFinish();
 
     /*
-     * And once more AFTER the render: the window can start moving during the
-     * three milliseconds the frame takes, and a stamp at the position it is
-     * leaving is exactly the trail this function exists to avoid.  The frame
-     * is simply dropped; the next stable tick draws a fresh one.
+     * And once more AFTER the render: the teapot takes some thirty
+     * milliseconds, ten times the window the old triangle left open, and a
+     * drag begun inside it stamps the position being vacated.  The position
+     * recheck reads the app's own frame cache, which lags a server-side
+     * drag -- the queue peek does not: the press is in the queue before any
+     * cache moves.  Peek first, then recheck; a frame dropped here costs
+     * one tick.
      */
+    if ([NSApp nextEventMatchingMask:NSAnyEventMask
+                           untilDate:[NSDate distantPast]
+                              inMode:NSEventTrackingRunLoopMode
+                             dequeue:NO] != nil) {
+        evSkips++;
+        return;
+    }
     {
-        NSPoint q = [view convertPoint:NSMakePoint(0, 0) toView:nil];
+        NSPoint q = [self serverOrigin];
 
-        q = [win convertBaseToScreen:q];
         if (q.x != lastX || q.y != lastY) {
             lastX = q.x; lastY = q.y;
             moveSkips++;
@@ -322,9 +392,9 @@
     nowT = t1;
     if (nowT - lastReport >= 5.0) {
         printf("glwin: %lu frames, mean %.2f ms (min %.2f max %.2f), "
-               "%lu offscreen, %lu while moving\n",
+               "%lu offscreen, %lu while moving, %lu queue-peek\n",
                frames, sumMs / (double)frames, minMs, maxMs, skips,
-               moveSkips);
+               moveSkips, evSkips);
         fflush(stdout);
         lastReport = nowT;
     }
