@@ -164,6 +164,19 @@ static void counters(const char *tag)
                    r->tri.y, r->tri.h, r->tri.ar0, r->tri.ar6, r->tri.sgn,
                    r->tri.fxbndry, r->tri.dwgctl);
     }
+    {
+        unsigned long mk[64], mc[64], spill, tot = 0UL;
+        int k;
+
+        OSMGAMesaHookDeltaMasks(mk, mc, &spill);
+        for (k = 0; k < 64; k++) tot += mc[k];
+        if (tot != 0UL) {
+            printf("%s: masks -- %lu recorded, %lu spilled\n", tag, tot, spill);
+            for (k = 0; k < 64; k++)
+                if (mc[k] != 0UL)
+                    printf("%s: mask %07lx x %lu\n", tag, mk[k], mc[k]);
+        }
+    }
     printf("%s: flushes -- bracket %lu, key %lu, full %lu, other %lu\n",
            tag, fc[0], fc[1], fc[2], fc[3]);
     printf("%s: submits %lu, %lu us total (%.1f us each), %lu dwords "
@@ -181,8 +194,9 @@ static void counters(const char *tag)
            dl[2] ? 100.0 * (double)dl[3] / (double)dl[2] : 0.0);
     {
         static const char *bn[7] = {
-            "dwgctl+AR0-2", "AR4-6+SGN", "DR4/6/7/8", "DR10/11/12/14",
-            "DR15/Z0/ZDX/ZDY", "alpha", "fxbndry+exec"
+            "dwgctl+adx+Rdy+ady", "Rdx+Gdx+Bdy+Gdy", "ar6+ar5+ar4+ar1",
+            "ar0+Zdx+ar2+Zdy",    "Gs+Bs+Rs+Bdx",    "alpha start+ctrl",
+            "sgn+Zstart+fxbndry+exec"
         };
         int k;
 
@@ -278,7 +292,8 @@ int main(int argc, char **argv)
      * say so, because a frame time measured with it set is not the frame
      * time without it.
      */
-    if (strcmp(mode, "submit") == 0 || strcmp(mode, "delta") == 0) {
+    if (strcmp(mode, "submit") == 0 || strcmp(mode, "delta") == 0
+        || (argc > 3 && strcmp(argv[3], "inst") == 0)) {
         OSMGAMesaHookInstrument(1);
         printf("instrumented: submit timing and delta counting are ON, "
                "which costs about 0.76 ms a frame\n");

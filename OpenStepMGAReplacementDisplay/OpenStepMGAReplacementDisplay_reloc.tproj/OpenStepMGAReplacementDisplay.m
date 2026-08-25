@@ -861,6 +861,66 @@ static unsigned long osmgaHW3DEncode(unsigned long *list,
  * the card, and DWGCTL bit 31 (CLIPDIS) would switch off the very clipping
  * the offscreen bound relies on.
  */
+/*
+ * Which registers share a DMA block, and why it is not what it looks like.
+ *
+ * A block is four registers whatever they are, and the tracker sends the
+ * whole block if any one of them changed.  So what a grouping costs is not
+ * how often each register changes but how often the GROUP does, and that is
+ * a joint question the marginals cannot answer.
+ *
+ * The old grouping was by meaning -- the edge registers together, red and
+ * green together, the depth ones together.  Measured, that put dwgctl, which
+ * changes on 1.9% of trapezoids, in a block that went out on 100% of them
+ * because AR1 is there; and it put Bdy, which changes on 34.6%, with Zstart,
+ * which changes on 99.9%.
+ *
+ * So the whole 25-bit change pattern was recorded per trapezoid over four
+ * scenes -- the teapot, the same unlit, an eight-fold grid, and a small one
+ * -- and the arrangement below is the one that minimises the WORST of the
+ * four, not the best.  It saves 21.8%, 29.8%, 21.1% and 14.1% of the list
+ * respectively: every scene improves, which is what minimising the worst is
+ * for.
+ *
+ * The order is not arbitrary even though the grouping is.  DWGCTL stays in
+ * the first group emitted, so it still precedes every AR and SGN write as it
+ * does here and in X.Org's own trapezoid path (mga_storm.c:1705-1716).  That
+ * is belt and braces: MGA_DWGCTL_SLOPED clears ARZERO and SGNZERO on
+ * everything this writes, so the bits that would make the AR registers
+ * depend on DWGCTL's arrival are never set.  Beyond that, Matrox's own DRM
+ * driver mixes unrelated families in one block freely -- DSTORG, MACCESS,
+ * PLNWT and DWGCTL in one, ALPHACTRL, FOGCOL, WFLAG and ZORG in the next
+ * (mga_state.c:81-87) -- so there is nothing to preserve among the rest.
+ *
+ * -1 is a pad.  The two in osmgaDmaTail ride in the tail block's dead slots,
+ * which cost nothing because that block goes out for every trapezoid anyway;
+ * they are the two that change most often, so making them unconditional
+ * loses almost nothing and takes them out of a group that would then have to
+ * go out for their sake.
+ */
+#define OSMGA_DMA_VALUES  24
+#define OSMGA_DMA_GROUPS   6
+
+static const unsigned long osmgaDmaReg[OSMGA_DMA_VALUES] = {
+    MGA_DWGCTL, MGA_AR0, MGA_AR1, MGA_AR2, MGA_AR4, MGA_AR5, MGA_AR6, MGA_SGN,
+    MGA_DR4, MGA_DR6, MGA_DR7, MGA_DR8, MGA_DR10, MGA_DR11, MGA_DR12,
+    MGA_DR14, MGA_DR15, MGA_DR0, MGA_DR2, MGA_DR3,
+    MGA_ALPHASTART, MGA_ALPHAXINC, MGA_ALPHAYINC, MGA_ALPHACTRL
+};
+
+static const signed char osmgaDmaGroup[OSMGA_DMA_GROUPS][4] = {
+    {  0, 21, 10, 22 },   /* dwgctl, alpha dx, Rdy, alpha dy   */
+    {  9, 12, 16, 13 },   /* Rdx, Gdx, Bdy, Gdy                */
+    {  6,  5,  4,  2 },   /* ar6, ar5, ar4, ar1                */
+    {  1, 18,  3, 19 },   /* ar0, Zdx, ar2, Zdy                */
+    { 11, 14,  8, 15 },   /* Gstart, Bstart, Rstart, Bdx       */
+    { 20, 23, -1, -1 }    /* alpha start, alpha control        */
+};
+
+/* SGN and Zstart, in the tail block's two dead slots -- before FXBNDRY and
+ * so before the execute, which is the only order the engine requires. */
+static const signed char osmgaDmaTail[2] = { 7, 17 };
+
 #define OSMGA_DMA_BLOCK_DWORDS  5
 #define OSMGA_DMA_BLOCK_BYTES   (OSMGA_DMA_BLOCK_DWORDS * 4UL)
 #define OSMGA_DWGREG0           0x1c00
@@ -8212,7 +8272,7 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
     int anyDepth = 0, anyTex = 0;
     int ok = 1;
     int have;                           /* is anything held from the last one */
-    unsigned long prevC0[4], prevC1[4], prevA[4];
+    unsigned long prevV[OSMGA_DMA_VALUES];
     /*
      * What to take off each coordinate.  The engine's addend depends on the
      * band its NUMERATOR is in, and taking off the smallest one the batch can
@@ -8454,52 +8514,48 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
         unsigned long dwg = OSMGA_HW3D_DWG_FIXED |
                             (t->dwgctl & OSMGA_HW3D_DWG_CLIENT);
 
-        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
-                                 MGA_DWGCTL, MGA_DWGCTL_SLOPED(dwg),
-                                 MGA_AR0, (unsigned long)t->ar0,
-                                 MGA_AR1, (unsigned long)t->ar1,
-                                 MGA_AR2, (unsigned long)t->ar2);
-        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
-                                 MGA_AR4, (unsigned long)t->ar4,
-                                 MGA_AR5, (unsigned long)t->ar5,
-                                 MGA_AR6, (unsigned long)t->ar6,
-                                 MGA_SGN, (unsigned long)t->sgn);
-        if (!track || !have ||
-            prevC0[0] != t->dr[0] || prevC0[1] != t->dr[1] ||
-            prevC0[2] != t->dr[2] || prevC0[3] != t->dr[3])
+        unsigned long v[OSMGA_DMA_VALUES];
+        int g, sl;
+
+        v[0]  = MGA_DWGCTL_SLOPED(dwg);
+        v[1]  = (unsigned long)t->ar0;
+        v[2]  = (unsigned long)t->ar1;
+        v[3]  = (unsigned long)t->ar2;
+        v[4]  = (unsigned long)t->ar4;
+        v[5]  = (unsigned long)t->ar5;
+        v[6]  = (unsigned long)t->ar6;
+        v[7]  = (unsigned long)t->sgn;
+        v[8]  = t->dr[0]; v[9]  = t->dr[1]; v[10] = t->dr[2];
+        v[11] = t->dr[3]; v[12] = t->dr[4]; v[13] = t->dr[5];
+        v[14] = t->dr[6]; v[15] = t->dr[7]; v[16] = t->dr[8];
+        v[17] = t->z0;    v[18] = t->zdx;   v[19] = t->zdy;
+        v[20] = t->a0;    v[21] = t->adx;   v[22] = t->ady;
+        v[23] = t->alphactrl & OSMGA_HW3D_AC_CLIENT;
+
+        for (g = 0; ok && g < OSMGA_DMA_GROUPS; g++) {
+            int dirty = (!track || !have);
+            unsigned long r[4], d[4];
+
+            for (sl = 0; !dirty && sl < 4; sl++) {
+                int ix = osmgaDmaGroup[g][sl];
+
+                if (ix >= 0 && v[ix] != prevV[ix])
+                    dirty = 1;
+            }
+            if (!dirty)
+                continue;
+            for (sl = 0; sl < 4; sl++) {
+                int ix = osmgaDmaGroup[g][sl];
+
+                r[sl] = (ix >= 0) ? osmgaDmaReg[ix] : MGA_DMAPAD;
+                d[sl] = (ix >= 0) ? v[ix] : 0UL;
+            }
             ok = ok && osmgaDmaBlock(list, listDwords, &pos,
-                                     MGA_DR4,  t->dr[0], MGA_DR6,  t->dr[1],
-                                     MGA_DR7,  t->dr[2], MGA_DR8,  t->dr[3]);
-        if (!track || !have ||
-            prevC1[0] != t->dr[4] || prevC1[1] != t->dr[5] ||
-            prevC1[2] != t->dr[6] || prevC1[3] != t->dr[7])
-            ok = ok && osmgaDmaBlock(list, listDwords, &pos,
-                                     MGA_DR10, t->dr[4], MGA_DR11, t->dr[5],
-                                     MGA_DR12, t->dr[6], MGA_DR14, t->dr[7]);
-        /* DR15 shares its block with the depth registers, and the depth
-         * start changes on all but a thousandth of trapezoids, so this one
-         * has nothing to hold back and goes out every time. */
-        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
-                                 MGA_DR15, t->dr[8],
-                                 MGA_DR0,  t->z0,
-                                 MGA_DR2,  t->zdx,
-                                 MGA_DR3,  t->zdy);
-        if (!track || !have ||
-            prevA[0] != t->a0 || prevA[1] != t->adx ||
-            prevA[2] != t->ady ||
-            prevA[3] != (t->alphactrl & OSMGA_HW3D_AC_CLIENT))
-            ok = ok && osmgaDmaBlock(list, listDwords, &pos,
-                                     MGA_ALPHASTART, t->a0,
-                                     MGA_ALPHAXINC,  t->adx,
-                                     MGA_ALPHAYINC,  t->ady,
-                                     MGA_ALPHACTRL,
-                                     t->alphactrl & OSMGA_HW3D_AC_CLIENT);
-        prevC0[0] = t->dr[0]; prevC0[1] = t->dr[1];
-        prevC0[2] = t->dr[2]; prevC0[3] = t->dr[3];
-        prevC1[0] = t->dr[4]; prevC1[1] = t->dr[5];
-        prevC1[2] = t->dr[6]; prevC1[3] = t->dr[7];
-        prevA[0] = t->a0; prevA[1] = t->adx; prevA[2] = t->ady;
-        prevA[3] = t->alphactrl & OSMGA_HW3D_AC_CLIENT;
+                                     r[0], d[0], r[1], d[1],
+                                     r[2], d[2], r[3], d[3]);
+        }
+        for (sl = 0; sl < OSMGA_DMA_VALUES; sl++)
+            prevV[sl] = v[sl];
         have = 1;
         /*
          * FXBNDRY, and whether the execute rides with it.
@@ -8522,7 +8578,10 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                  ((dwg & 0xFUL) != OSMGA_HW3D_OPCODE_TEX);
         if (!packed)
             ok = ok && osmgaDmaBlock(list, listDwords, &pos,
-                                     MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                                     osmgaDmaReg[osmgaDmaTail[0]],
+                                     v[osmgaDmaTail[0]],
+                                     osmgaDmaReg[osmgaDmaTail[1]],
+                                     v[osmgaDmaTail[1]],
                                      MGA_FXBNDRY, t->fxbndry,
                                      MGA_DMAPAD, 0UL);
 
@@ -8555,7 +8614,10 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
 
         if (packed)
             ok = ok && osmgaDmaBlock(list, listDwords, &pos,
-                                     MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                                     osmgaDmaReg[osmgaDmaTail[0]],
+                                     v[osmgaDmaTail[0]],
+                                     osmgaDmaReg[osmgaDmaTail[1]],
+                                     v[osmgaDmaTail[1]],
                                      MGA_FXBNDRY, t->fxbndry,
                                      MGA_YDSTLEN + MGA_EXEC,
                                      (((unsigned long)t->y) << 16) |
@@ -9347,19 +9409,27 @@ osmgaProbeVramExtent(unsigned long fbPhysical, unsigned long visibleEnd,
     /*
      * Encode it both ways and check what the tracker took out.
      *
-     * Three blocks can be skipped on a repeated trapezoid -- the two colour
-     * blocks and the alpha block -- and a block is five dwords.  The depth
-     * block goes out every time because the depth start changes on all but
-     * a thousandth of real trapezoids, so it has nothing to hold back.
+     * EVERY group can be skipped on a repeated trapezoid, because a repeat
+     * changes none of the twenty-four tracked values, and a block is five
+     * dwords.  Only the tail goes out, carrying sgn, Zstart, FXBNDRY and the
+     * execute -- and the execute is what has to be there.
      *
-     * The number is computed from the block size rather than written as
-     * fifteen, so that changing the block layout changes the assertion
-     * instead of quietly invalidating it.
+     * It used to be three groups rather than six.  The old grouping wrote
+     * the dwgctl/AR blocks and the depth block unconditionally, so only the
+     * two colour blocks and the alpha block could be held back; the
+     * regrouping made all six conditional and this number doubled.  That is
+     * the change working, and it fired here as a PROBLEM on the boot that
+     * introduced it because the assertion still said three.
+     *
+     * The number is computed from the group count and the block size rather
+     * than written as thirty, so that changing the layout changes the
+     * assertion instead of quietly invalidating it.
      */
     {
         unsigned long offTail = 0UL, onTail = 0UL;
         unsigned long totalOff, totalOn;
-        unsigned long want = 3UL * (unsigned long)OSMGA_DMA_BLOCK_DWORDS;
+        unsigned long want = (unsigned long)OSMGA_DMA_GROUPS *
+                             (unsigned long)OSMGA_DMA_BLOCK_DWORDS;
 
         totalOff = osmgaHW3DEncode(list, listDwords, batch, osmgaHW3DBands,
                                    &offTail, 0);

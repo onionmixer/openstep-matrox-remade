@@ -262,6 +262,68 @@ OSMGAMesaHookDeltaRegs(unsigned long out[25])
         out[k] = deltaRegDirty[k];
 }
 
+/*
+ * Which registers change TOGETHER, not just how often each one changes.
+ *
+ * The blocks the kernel writes hold four registers each and go out whole if
+ * any one of them changed, so what a grouping costs depends on the JOINT
+ * pattern and not on the marginals.  Sorting the twenty-five by their own
+ * change rate and cutting every four would be sound only if a register that
+ * changes rarely never changed while its neighbours held still, and there is
+ * no reason to believe that across different families.
+ *
+ * So this records the whole twenty-five-bit pattern per trapezoid and keeps
+ * the commonest ones.  With that table any candidate grouping can be priced
+ * exactly, by counting the patterns each group intersects, instead of being
+ * argued from averages.
+ *
+ * Sixty-four slots, linear probing, and everything that does not fit goes to
+ * a spill count so the reader can see how much of the traffic the table
+ * actually speaks for.
+ */
+#define OSMGA_MESA_MASKS 64
+static unsigned long deltaMaskKey[OSMGA_MESA_MASKS];
+static unsigned long deltaMaskCnt[OSMGA_MESA_MASKS];
+static unsigned long deltaMaskSpill;
+
+static void
+osmgaMesaMaskRecord(unsigned long mask)
+{
+    unsigned long h = (mask * 2654435761UL) % (unsigned long)OSMGA_MESA_MASKS;
+    int probe;
+
+    for (probe = 0; probe < OSMGA_MESA_MASKS; probe++) {
+        unsigned long at = (h + (unsigned long)probe) %
+                           (unsigned long)OSMGA_MESA_MASKS;
+
+        if (deltaMaskCnt[at] == 0UL) {
+            deltaMaskKey[at] = mask;
+            deltaMaskCnt[at] = 1UL;
+            return;
+        }
+        if (deltaMaskKey[at] == mask) {
+            deltaMaskCnt[at]++;
+            return;
+        }
+    }
+    deltaMaskSpill++;
+}
+
+void
+OSMGAMesaHookDeltaMasks(unsigned long keys[64], unsigned long counts[64],
+                        unsigned long *spill)
+{
+    int k;
+
+    if (keys != 0 && counts != 0)
+        for (k = 0; k < OSMGA_MESA_MASKS; k++) {
+            keys[k] = deltaMaskKey[k];
+            counts[k] = deltaMaskCnt[k];
+        }
+    if (spill != 0)
+        *spill = deltaMaskSpill;
+}
+
 void
 OSMGAMesaHookDeltaBlocks(unsigned long out[7])
 {
@@ -289,9 +351,19 @@ osmgaMesaCountDeltas(const OSMGAHW3DBatch *b)
         int blocks = 0, changed = 0;
         int k;
         unsigned long tv[25], pv[25];
+        /*
+         * The kernel's grouping, which is no longer the obvious one: it was
+         * chosen by measuring which values change TOGETHER rather than how
+         * often each changes on its own.  This table has to move with
+         * osmgaDmaGroup in the driver or this counter stops describing what
+         * the driver does.  Values 7 (sgn) and 17 (Zstart) ride in the tail
+         * block's dead slots and so are always written, like fxbndry.
+         */
         static const int blockOf[25] = {
-            0,0,0,0,   1,1,1,1,   2,2,2,2,   3,3,3,3,
-            4,4,4,4,   5,5,5,5,   6
+            0, 3, 2, 3,  2, 2, 2, 6,
+            4, 1, 0, 4,  1, 1, 4, 4,
+            1, 6, 3, 3,  5, 0, 0, 5,
+            6
         };
         int blockDirty[7];
 
@@ -316,12 +388,18 @@ osmgaMesaCountDeltas(const OSMGAHW3DBatch *b)
             pv[24]=p->fxbndry;
         }
         for (k = 0; k < 7; k++) blockDirty[k] = (p == 0) ? 1 : 0;
-        for (k = 0; k < 25; k++) {
-            if (p == 0 || tv[k] != pv[k]) {
-                changed++;
-                deltaRegDirty[k]++;
-                blockDirty[blockOf[k]] = 1;
+        {
+            unsigned long mask = 0UL;
+
+            for (k = 0; k < 25; k++) {
+                if (p == 0 || tv[k] != pv[k]) {
+                    changed++;
+                    deltaRegDirty[k]++;
+                    blockDirty[blockOf[k]] = 1;
+                    mask |= 1UL << k;
+                }
             }
+            osmgaMesaMaskRecord(mask);
         }
         /* YDSTLEN+EXEC always goes out: it is what starts the drawing, and
          * y and h are the trapezoid's own.  It shares block 6 with FXBNDRY. */

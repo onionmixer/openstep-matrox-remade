@@ -147,6 +147,16 @@ void OSMGAMesaHookDeltaStats(unsigned long out[4]);
  * 0 dwgctl+AR0..2, 1 AR4..6+SGN, 2 DR4/6/7/8, 3 DR10/11/12/14,
  * 4 DR15/DR0/DR2/DR3, 5 alpha, 6 fxbndry+execute. */
 void OSMGAMesaHookDeltaBlocks(unsigned long out[7]);
+/*
+ * Test only: which registers changed TOGETHER, as whole 25-bit patterns
+ * with their counts, so a candidate grouping can be priced exactly
+ * rather than guessed from each register's own rate.  Bit k is the k'th
+ * value in the kernel's own order; see osmgaMesaCountDeltas.  Needs
+ * OSMGAMesaHookInstrument.
+ */
+void OSMGAMesaHookDeltaMasks(unsigned long keys[64],
+                             unsigned long counts[64],
+                             unsigned long *spill);
 
 /* Per register, in the order the encoder writes them: dwgctl, ar0, ar1, ar2,
  * ar4, ar5, ar6, sgn, DR4, DR6, DR7, DR8, DR10, DR11, DR12, DR14, DR15,
