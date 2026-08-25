@@ -366,13 +366,48 @@ static triangle_func savedTriangle;
  *   - Mesa multipass repeats the loop before RenderFinish (vbrender.c:721),
  *     so a context with a MultipassFunc does not batch either.
  *
+ * Those three gates are about the INDICES, and for a long time this comment
+ * stopped there -- as though an index were the whole of what a software
+ * triangle reads.  It is not.  Mesa passes part of its input through the
+ * context, and moves it around every callback: the polygon offset is
+ * computed just before the call and zeroed just after (vbrender.c:298-304,
+ * 324-328), and two-side lighting swings ColorPtr, IndexPtr and Specular
+ * between the front and back arrays by this triangle's facing
+ * (vbrender.c:306-311), with the render loop putting them back to front
+ * before RenderFinish (vbrender.c:714-718).
+ *
+ * A replay runs after all of that.  So each recorded triangle carries those
+ * four values with it and they are put back around its redraw; see pendSrc
+ * and the refusal arm of osmgaMesaFlushPending.  Without it a refused batch
+ * drew every offset triangle unoffset -- measured, not supposed: the
+ * replaystate test read 16384 out of the depth buffer where software left
+ * 17408.
+ *
  * REENTRANCY.  The flush detaches the pending counts before it submits or
  * replays, and holds a guard, so a replayed software triangle that lands
  * back in these wrappers finds an empty batch instead of recursing.
  */
 static unsigned long pendTraps;      /* trapezoids already in batch->tri[] */
 static unsigned long pendSrcCount;   /* source triangles those came from */
-static struct { GLuint v0, v1, v2, pv; } pendSrc[OSMGA_HW3D_MAX_TRI];
+/*
+ * The indices, and the state a software redraw of them reads.
+ *
+ * The four extra fields are not decoration.  Mesa hands a triangle function
+ * some of its input through the context rather than through the arguments,
+ * and it moves that input around EVERY callback rather than once a bracket:
+ * ctx->PolygonZoffset is computed just before the call and zeroed just after
+ * (vbrender.c:298-304, 324-328), and two-side lighting points ColorPtr,
+ * IndexPtr and Specular at the front or the back array according to this
+ * triangle's facing (vbrender.c:306-311).  A replay happens after all that
+ * has been undone, so it must bring its own copy.
+ */
+static struct {
+    GLuint        v0, v1, v2, pv;
+    GLfloat       zoff;          /* ctx->PolygonZoffset while this ran */
+    GLvector4ub  *cptr;          /* VB->ColorPtr, front or back */
+    GLvector1ui  *iptr;          /* VB->IndexPtr */
+    GLubyte     (*spec)[4];      /* VB->Specular */
+} pendSrc[OSMGA_HW3D_MAX_TRI];
 static GLcontext *pendCtx;
 static void *pendVB;
 static int pendHasTex;
@@ -455,9 +490,38 @@ osmgaMesaFlushPending(void)
              * be on the screen, and drawing it again would double it. */
             OSMGAMesaProbeRevoke("a batch failed after the engine had it");
         } else {
-            for (i = 0UL; i < nsrc; i++)
+            /*
+             * Put each triangle's own state back before it is redrawn.
+             *
+             * What the context holds NOW is not what it held then.  By the
+             * time a bracket closes Mesa has zeroed the polygon offset
+             * (vbrender.c:324-328) and pointed the colour arrays back at the
+             * front face (vbrender.c:714-718), so replaying against the live
+             * context draws every offset triangle flat and every back face
+             * in the front face's colours.
+             *
+             * The saving and restoring is not tidiness either.  A flush can
+             * happen INSIDE a triangle callback -- the batch fills, or a new
+             * texture key arrives -- and that callback goes on to use these
+             * same fields afterwards.
+             */
+            GLfloat       zoffWas = ctx->PolygonZoffset;
+            GLvector4ub  *cptrWas = ctx->VB->ColorPtr;
+            GLvector1ui  *iptrWas = ctx->VB->IndexPtr;
+            GLubyte     (*specWas)[4] = ctx->VB->Specular;
+
+            for (i = 0UL; i < nsrc; i++) {
+                ctx->PolygonZoffset = pendSrc[i].zoff;
+                ctx->VB->ColorPtr   = pendSrc[i].cptr;
+                ctx->VB->IndexPtr   = pendSrc[i].iptr;
+                ctx->VB->Specular   = pendSrc[i].spec;
                 (void)osmgaMesaSoftly(ctx, pendSrc[i].v0, pendSrc[i].v1,
                                       pendSrc[i].v2, pendSrc[i].pv);
+            }
+            ctx->PolygonZoffset = zoffWas;
+            ctx->VB->ColorPtr   = cptrWas;
+            ctx->VB->IndexPtr   = iptrWas;
+            ctx->VB->Specular   = specWas;
             hookReplayed += nsrc;
             if (++hookRefusedRun >= OSMGA_MESA_REFUSAL_LIMIT)
                 OSMGAMesaProbeRevoke("the driver kept refusing batches");
@@ -1152,6 +1216,10 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     pendSrc[pendSrcCount].v1 = v1;
     pendSrc[pendSrcCount].v2 = v2;
     pendSrc[pendSrcCount].pv = pv;
+    pendSrc[pendSrcCount].zoff = ctx->PolygonZoffset;
+    pendSrc[pendSrcCount].cptr = VB->ColorPtr;
+    pendSrc[pendSrcCount].iptr = VB->IndexPtr;
+    pendSrc[pendSrcCount].spec = VB->Specular;
     pendSrcCount++;
 
     if (!batchable)
