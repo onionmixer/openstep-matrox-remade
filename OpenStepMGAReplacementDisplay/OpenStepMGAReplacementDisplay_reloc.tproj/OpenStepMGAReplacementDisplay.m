@@ -57,7 +57,7 @@
 #define MGA_GR_INDEX            0x1fce
 #define MGA_GR_DATA             0x1fcf
 #define MGA_ATTR_INDEX          0x1fc0
-#define MGA_ATTR_DATA_R         0x1fc1
+#define MGA_ATTR_DATA_R         0x1fc1   /* attribute data, read side */
 #define MGA_INSTS1              0x1fda
 #define MGA_CRTC_INDEX          0x1fd4
 #define MGA_CRTC_DATA           0x1fd5
@@ -1118,6 +1118,154 @@ osmgaWriteAttr(vm_address_t base, unsigned char idx, unsigned char v)
     (void)osmgaR8(base, MGA_INSTS1);       /* reset attr flip-flop to index */
     osmgaW8(base, MGA_ATTR_INDEX, idx);
     osmgaW8(base, MGA_ATTR_INDEX, v);
+}
+
+static unsigned char
+osmgaReadSeq(vm_address_t base, unsigned char idx)
+{
+    osmgaW8(base, MGA_SEQ_INDEX, idx);
+    return osmgaR8(base, MGA_SEQ_DATA);
+}
+
+static unsigned char
+osmgaReadGr(vm_address_t base, unsigned char idx)
+{
+    osmgaW8(base, MGA_GR_INDEX, idx);
+    return osmgaR8(base, MGA_GR_DATA);
+}
+
+static unsigned char
+osmgaReadCrtcExt(vm_address_t base, unsigned char idx)
+{
+    osmgaW8(base, MGA_CRTCEXT_INDEX, idx);
+    return osmgaR8(base, MGA_CRTCEXT_DATA);
+}
+
+static unsigned char
+osmgaInDac(vm_address_t base, unsigned char idx)
+{
+    osmgaW8(base, MGA_DAC_INDEX, idx);
+    return osmgaR8(base, MGA_DAC_DATA);
+}
+
+/*
+ * Reading an attribute register.
+ *
+ * The index and data share one port and a flip-flop decides which a write
+ * lands in; reading the input status register puts it back on the index.
+ * That much this file already does when it WRITES an attribute.
+ *
+ * Reading also needs the palette address source bit CLEAR, because with it
+ * set the sixteen palette entries are not addressable -- and clearing it
+ * blanks the screen for as long as it stays clear.  X.Org's generic VGA save
+ * does exactly this and accepts the blank, and so does this: the snapshot is
+ * taken microseconds before the whole mode is reprogrammed, so the blank is
+ * inside a picture that is about to be replaced anyway.  osmgaVgaSnapshot
+ * puts the bit back before it returns.
+ */
+static unsigned char
+osmgaReadAttr(vm_address_t base, unsigned char idx)
+{
+    (void)osmgaR8(base, MGA_INSTS1);
+    osmgaW8(base, MGA_ATTR_INDEX, idx);
+    return osmgaR8(base, MGA_ATTR_DATA_R);
+}
+
+/*
+ * The card as the console had it, taken once, before this driver programs
+ * anything.
+ *
+ * WHY.  -revertToVGAMode is supposed to put the card back "into a state
+ * where it can be used as a standard VGA device" -- the DriverKit header
+ * says so and says the subclass must do it device-specifically.  This one
+ * does not: it clears a flag and calls super, while -programLinearMode
+ * rewrites SEQ, GR, ATTR, MISC, CRTC, CRTCEXT, the indexed DAC, the PLL and
+ * the palette, and sets MGA_CLKSEL_MGA in MISC -- a bit nothing here ever
+ * clears.  So at shutdown the console writes text into a card still timing a
+ * linear scanout somewhere else, and the screen stays black.  The two stock
+ * OPENSTEP drivers in the reference tree both reprogram the VGA core in
+ * their revert; X.Org's MGA driver saves this same set on entry.
+ *
+ * WHAT THIS IS NOT.  Nothing here restores anything yet.  This is the
+ * snapshot and the proof that the snapshot is sane, because the restore is
+ * the dangerous half: -revertToVGAMode runs BEFORE -enterLinearMode (this
+ * boot: enterLinear 1, revertVGA 1), so a restore that misbehaves does not
+ * merely break shutdown, it breaks the way into the desktop.
+ *
+ * WHAT IT COSTS.  Every indexed read writes an index register first -- that
+ * is how indexed registers are read -- and the attribute read clears the
+ * palette address source, which blanks the screen while it is clear.  The
+ * bit goes back before this returns, and the whole thing runs microseconds
+ * before the mode is reprogrammed, so the blank is inside a picture that is
+ * about to be replaced.  No mode-carrying register is written.
+ */
+static int osmgaVgaSaved;
+static unsigned char osmgaVgaMisc;
+static unsigned char osmgaVgaSeq[5];
+static unsigned char osmgaVgaCrtc[25];
+static unsigned char osmgaVgaGr[9];
+static unsigned char osmgaVgaAttr[21];
+static unsigned char osmgaVgaExt[6];      /* CRTCEXT 0..5 -- what this driver
+                                           * programs, and what X.Org saves */
+static unsigned char osmgaVgaDac[0x50];   /* the indexed DAC registers */
+static unsigned char osmgaVgaPal[768];
+static unsigned char osmgaVgaPixMask;
+
+static void
+osmgaVgaSnapshot(vm_address_t base)
+{
+    unsigned int i;
+
+    if (osmgaVgaSaved)
+        return;                            /* the console's, not ours */
+
+    osmgaVgaMisc = osmgaR8(base, MGA_MISC_READ);
+    for (i = 0U; i < 25U; i++)
+        osmgaVgaCrtc[i] = osmgaReadCrtc(base, (unsigned char)i);
+
+    /* palette address source clear while the attribute file is read, then
+     * set again -- see osmgaReadAttr */
+    (void)osmgaR8(base, MGA_INSTS1);
+    osmgaW8(base, MGA_ATTR_INDEX, 0x00);
+    for (i = 0U; i < 21U; i++)
+        osmgaVgaAttr[i] = osmgaReadAttr(base, (unsigned char)i);
+    (void)osmgaR8(base, MGA_INSTS1);
+    osmgaW8(base, MGA_ATTR_INDEX, 0x20);
+
+    for (i = 0U; i < 9U; i++)
+        osmgaVgaGr[i] = osmgaReadGr(base, (unsigned char)i);
+    /* SEQ 0 is the reset register; the generic VGA save skips it and so does
+     * this, for the same reason -- reading it says nothing and writing it
+     * would stop the sequencer. */
+    osmgaVgaSeq[0] = 0x03;
+    for (i = 1U; i < 5U; i++)
+        osmgaVgaSeq[i] = osmgaReadSeq(base, (unsigned char)i);
+
+    for (i = 0U; i < 6U; i++)
+        osmgaVgaExt[i] = osmgaReadCrtcExt(base, (unsigned char)i);
+
+    for (i = 0U; i < 0x50U; i++)
+        osmgaVgaDac[i] = osmgaInDac(base, (unsigned char)i);
+
+    /*
+     * The palette has its own protocol and its own address register: writes
+     * go through 0x00 and READS through 0x03, both auto-incrementing into
+     * the data port at 0x01.  Reading it through the write address, which
+     * is what a careless copy of the write path would do, returns nothing
+     * useful.
+     */
+    osmgaVgaPixMask = osmgaR8(base, MGA_DAC_INDEX + 2);
+    osmgaW8(base, MGA_DAC_INDEX + 3, 0x00);
+    for (i = 0U; i < 768U; i++)
+        osmgaVgaPal[i] = osmgaR8(base, MGA_DAC_INDEX + 1);
+
+    osmgaVgaSaved = 1;
+    IOLog("OpenStepMGA V1: saved the console's card -- misc %02x seq1 %02x "
+          "crtc0 %02x crtc9 %02x crtc17 %02x ext0 %02x ext3 %02x "
+          "dac[0] %02x dac[19] %02x mask %02x\n",
+          osmgaVgaMisc, osmgaVgaSeq[1], osmgaVgaCrtc[0], osmgaVgaCrtc[9],
+          osmgaVgaCrtc[23], osmgaVgaExt[0], osmgaVgaExt[3],
+          osmgaVgaDac[0], osmgaVgaDac[0x19], osmgaVgaPixMask);
 }
 
 /* ---- Storm 2D engine: bounded waits (never spin forever) ---- */
@@ -2861,6 +3009,13 @@ static IODisplayInfo osmgaModeTemplate = {
 
     osmgaComputeCRTC(r, f->bppShift, crtc, ext, &misc);
     IOLog("OpenStepMGAReplacementDisplay: mp %s %s begin\n", r->name, f->cspace);
+
+    /*
+     * Before the first write of the first mode program, and never again:
+     * what the console had.  After the guards above, because there is no
+     * point reading a card whose registers are not mapped.
+     */
+    osmgaVgaSnapshot(base);
 
     /* blank: SEQ async reset asserted + screen off (as MatroxMGA vgaProtect:1) */
     osmgaW8(base, MGA_SEQ_INDEX, 0x00);
