@@ -117,6 +117,15 @@ void OSMGAMesaHookBatchLimit(unsigned long limit);
 unsigned long OSMGAMesaHookReplayed(void);
 void OSMGAMesaHookFlushCounts(unsigned long out[4]);
 
+/*
+ * Test only: what the submissions cost, from this side of the ioctl.
+ * out[0] submissions (batches AND clears), out[1] microseconds in the ioctl,
+ * out[2] list dwords the kernel reported, out[3] summed completion-poll
+ * INDEX (reads are one more each), out[4] the largest such index seen,
+ * out[5] how many submissions polled more than once.
+ */
+void OSMGAMesaHookSubmitStats(unsigned long out[6]);
+
 unsigned long OSMGAMesaHookBatches(void);
 /* trapezoids submitted, which is what says a triangle split */
 unsigned long OSMGAMesaHookTraps(void);

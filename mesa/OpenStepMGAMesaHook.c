@@ -8,6 +8,7 @@
  */
 
 #include <math.h>
+#include <sys/time.h>   /* test-only submit timing; see osmgaMesaSubmitBatch */
 #include "glheader.h"
 #include "context.h"
 #include "types.h"
@@ -177,6 +178,40 @@ osmgaSnap(double v, double eps)
  * installed at a time, which makes a bare pointer right by accident, and
  * accidentally right is the thing this file keeps having to undo.
  */
+/*
+ * What a submission costs, seen from this side of the ioctl.  Test only.
+ *
+ * The kernel fills verdict, triangle, dwords and spins on EVERY submission,
+ * refused or not -- the ioctl writes them before it decides what to return
+ * -- but the helper below only hands the block to its caller on a refusal.
+ * So the accounting is done inside the helper, where the block is always
+ * valid, rather than at the call sites where it is not.
+ *
+ * spins is the driver's loop INDEX, so a poll that succeeded on its first
+ * read reports nought; the number of reads is one more than this.  It counts
+ * one of the five waits in the submit path -- the primary-DMA completion
+ * poll -- and says nothing about the other four.  What it can settle is
+ * whether the frame's kernel time is spent waiting there at all.
+ *
+ * Clears come through the same helper as triangles, so the count here is
+ * batches plus clears; the caller-side counters separate them.
+ */
+static unsigned long submitCount, submitUs, submitDwords;
+static unsigned long submitSpins, submitSpinMax, submitSpun;
+
+void
+OSMGAMesaHookSubmitStats(unsigned long out[6])
+{
+    if (out == 0)
+        return;
+    out[0] = submitCount;
+    out[1] = submitUs;
+    out[2] = submitDwords;
+    out[3] = submitSpins;
+    out[4] = submitSpinMax;
+    out[5] = submitSpun;
+}
+
 static GLcontext *savedTriangleCtx;
 static triangle_func savedTriangle;
 
@@ -485,21 +520,36 @@ osmgaMesaSubmitBatch(GLcontext *ctx, OSMGAHW3DBatch *batch,
         batch->state.scissorW = 0UL;
         batch->state.scissorH = 0UL;
     }
-    if (OSMGAMesaProbeSubmit(&res) != 0) {
-        hookDeclined++;
-        if (res.verdict < OSMGA_MESA_VERDICTS)
-            hookVerdictCount[res.verdict]++;
-        hookLastRefusal.status   = res.status;
-        hookLastRefusal.verdict  = res.verdict;
-        hookLastRefusal.triangle = res.triangle;
-        hookLastRefusal.triCount = batch->triCount;
-        hookLastRefusal.dstWidth  = batch->state.dstWidth;
-        hookLastRefusal.dstHeight = batch->state.dstHeight;
-        if (res.triangle < batch->triCount)
-            hookLastRefusal.tri = batch->tri[res.triangle];
+    {
+        struct timeval t0, t1;
+        int rc;
 
-        *out = res;
-        return 1;
+        gettimeofday(&t0, (struct timezone *)0);
+        rc = OSMGAMesaProbeSubmit(&res);
+        gettimeofday(&t1, (struct timezone *)0);
+        submitCount++;
+        submitUs += (unsigned long)((t1.tv_sec - t0.tv_sec) * 1000000L +
+                                    (t1.tv_usec - t0.tv_usec));
+        submitDwords += res.dwords;
+        submitSpins += res.spins;
+        if (res.spins > submitSpinMax) submitSpinMax = res.spins;
+        if (res.spins != 0UL) submitSpun++;
+        if (rc != 0) {
+            hookDeclined++;
+            if (res.verdict < OSMGA_MESA_VERDICTS)
+                hookVerdictCount[res.verdict]++;
+            hookLastRefusal.status   = res.status;
+            hookLastRefusal.verdict  = res.verdict;
+            hookLastRefusal.triangle = res.triangle;
+            hookLastRefusal.triCount = batch->triCount;
+            hookLastRefusal.dstWidth  = batch->state.dstWidth;
+            hookLastRefusal.dstHeight = batch->state.dstHeight;
+            if (res.triangle < batch->triCount)
+                hookLastRefusal.tri = batch->tri[res.triangle];
+
+            *out = res;
+            return 1;
+        }
     }
     return 0;
 }
