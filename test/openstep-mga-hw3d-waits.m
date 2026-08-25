@@ -20,6 +20,7 @@
 
 #define WAITS_PARAM  "OSMGAHW3DWaits"
 #define TUNE_PARAM   "OSMGAHW3DTune"
+#define SETTLE_PARAM "OSMGAHW3DSettle"
 #define INJECT_PARAM "OSMGAHW3DInject"
 #define WAITS_COUNT  23U
 
@@ -79,6 +80,29 @@ main(int argc, char **argv)
         }
         printf("inject: the next %u submission(s) will report a timeout "
                "they did not suffer\n", inj[0]);
+    }
+
+    /*
+     * The settling read, as a sixth argument.
+     *
+     * After a batch the driver may read one word of video memory through an
+     * UNCACHED alias, to give the engine's last writes somewhere to land
+     * before software looks.  That read is outside all five bounded waits,
+     * so if it is what a hang is made of, no give-up counter can see it --
+     * and it is the one such access with a live switch.  0 turns it off.
+     */
+    if (argc >= 6) {
+        unsigned st[1];
+
+        st[0] = (unsigned)atoi(argv[5]);
+        r = [master setIntValues:st forParameter:SETTLE_PARAM
+                    objectNumber:objNum count:1];
+        if (r != IO_R_SUCCESS) {
+            printf("settle refused (%d): 0 turns the read off\n", (int)r);
+            return 5;
+        }
+        printf("settle: the post-batch video-memory read is %s\n",
+               st[0] ? "on" : "OFF");
     }
 
     r = [master getIntValues:w forParameter:WAITS_PARAM

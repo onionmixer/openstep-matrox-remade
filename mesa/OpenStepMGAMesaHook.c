@@ -2506,15 +2506,20 @@ unsigned long OSMGAMesaHookSoftState(void) { return hookSoftState; }
 unsigned long OSMGAMesaHookTexPersp(void)  { return hookTexPersp; }
 unsigned long OSMGAMesaHookTexAbsent(void) { return hookTexAbsent; }
 void OSMGAMesaHookForceSoftware(int on)    { hookForcedSoftware = on; }
-/* 1 keeps the old meaning: all three.  Any other non-zero value is a mask of
- * OSMGA_MESA_INST_TIME, _DELTA and _MASK, so a test can turn on one at a
- * time and find which one a hang belongs to. */
+/*
+ * A mask of OSMGA_MESA_INST_TIME, _DELTA and _MASK.  Pass 7 for all of it.
+ *
+ * This used to translate 1 into all three, to keep the old switch's meaning
+ * -- and that quietly destroyed the experiment it was written for.  A run
+ * asking for the timing alone got all three, while the harness printed
+ * "timing ON, counting off"; the conclusion drawn from it, that the timing
+ * alone was enough to hang the machine, was never tested.  A value that
+ * means one thing to the caller and another to the callee is not a
+ * convenience.
+ */
 void OSMGAMesaHookInstrument(int on)
 {
-    hookInstrument = (on == 1) ? (OSMGA_MESA_INST_TIME |
-                                  OSMGA_MESA_INST_DELTA |
-                                  OSMGA_MESA_INST_MASK)
-                               : on;
+    hookInstrument = on;
 }
 unsigned long OSMGAMesaHookBatches(void)   { return hookBatches; }
 unsigned long OSMGAMesaHookTraps(void)     { return hookTraps; }

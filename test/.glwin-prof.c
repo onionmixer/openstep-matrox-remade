@@ -305,7 +305,7 @@ int main(int argc, char **argv)
      * and the parts cannot be told apart while they move together.
      */
     if (argc > 3 && strcmp(argv[3], "inst") == 0) {
-        OSMGAMesaHookInstrument(1);
+        OSMGAMesaHookInstrument(7);
         printf("instrumented: all of it (timing, counting, histogram)\n");
     } else if (argc > 3 && argv[3][0] == 'i' && argv[3][1] != '\0') {
         int m = atoi(argv[3] + 1);
@@ -316,7 +316,7 @@ int main(int argc, char **argv)
                (m & 1) ? "ON" : "off", (m & 2) ? "ON" : "off",
                ((m & 4) && (m & 2)) ? "ON" : "off");
     } else if (strcmp(mode, "submit") == 0 || strcmp(mode, "delta") == 0) {
-        OSMGAMesaHookInstrument(1);
+        OSMGAMesaHookInstrument(7);
         printf("instrumented: all of it (timing, counting, histogram)\n");
     }
     fflush(stdout);
