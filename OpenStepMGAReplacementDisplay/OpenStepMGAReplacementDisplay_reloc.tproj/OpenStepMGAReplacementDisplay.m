@@ -795,8 +795,10 @@
  */
 #define OSMGA_HW3D_INJECT_PARAM "OSMGAHW3DInject"
 
-/* Whether -revertToVGAMode puts the console's card back.  Off until it has
- * been shown to work on a machine somebody can walk over to. */
+/* Whether -revertToVGAMode puts the console's card back.  On: it was shown
+ * to work on the machine -- with it set, a reboot brought the low-resolution
+ * console back during shutdown, which had been black since this driver began
+ * programming the card in full. */
 #define OSMGA_VGA_RESTORE_PARAM "OSMGAVgaRestore"
 #define OSMGA_HW3D_CLIP_ROWS    120UL
 #define OSMGA_HW3D_CLIP_COLS    64UL
@@ -1314,7 +1316,7 @@ osmgaVgaSnapshot(vm_address_t base)
  *
  * Every loop here is a fixed count.  Nothing polls.
  */
-static unsigned long osmgaVgaRestoreOn;
+static unsigned long osmgaVgaRestoreOn = 1UL;
 
 static void
 osmgaVgaRestore(vm_address_t base)
@@ -2583,6 +2585,16 @@ static IODisplayInfo osmgaModeTemplate = {
 - (void)teardownMappings
 {
     /*
+     * The snapshot stops counting when the mapping it was read through goes.
+     *
+     * It is a file static and would otherwise outlive the instance that took
+     * it: a module that stayed resident across a teardown could hand the next
+     * initialisation a picture of a card nobody here owns any more.  The one
+     * bit is the whole guard, so it is cleared where its provenance ends.
+     */
+    osmgaVgaSaved = 0;
+
+    /*
      * Only the MMIO aperture is unmapped here (we mapped it with
      * IOMapPhysicalIntoIOTask).  The framebuffer was mapped with
      * mapFrameBufferAtPhysicalAddress:length:; like MatroxMGA, its unmapping is
@@ -3144,6 +3156,20 @@ static IODisplayInfo osmgaModeTemplate = {
           (unsigned int)mnp, locked);
     if (!locked) {
         IOLog("OpenStepMGAReplacementDisplay: mp PLL did NOT lock; revert to VGA\n");
+        /*
+         * The snapshot was taken a few lines above and the card is now half
+         * ours: blanked, on the MGA clock, with a PLL that would not lock.
+         * Walking away leaves it there, and this is the one failure that
+         * cannot rely on "the next entry rewrites everything" -- the next
+         * entry is what just failed.
+         *
+         * osmgaVgaRestore is called directly rather than through
+         * -revertToVGAMode because the engine is already claimed by the
+         * caller and claiming it twice is not what that method expects.
+         */
+        if (osmgaVgaRestoreOn && osmgaVgaSaved &&
+            (osmgaVgaAttr[0x10] & 0x01) != 0)
+            osmgaVgaRestore(base);
         [super revertToVGAMode];
         return NO;
     }
