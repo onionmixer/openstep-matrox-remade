@@ -1503,7 +1503,25 @@ static unsigned long osmgaSettleCode = OSMGA_HW3D_SETTLE_AUTO;
  * this is an eighth of the list -- and the list is what the engine is
  * ingesting at 29 MB/s while the kernel waits.
  */
-static unsigned long osmgaPollDelayUs;
+/*
+ * Four microseconds between the completion poll's reads, from the first
+ * submission after a boot.
+ *
+ * Measured twice across two reboots: the poll competes for the bus with the
+ * DMA it is waiting on, and slowing it down makes the wait SHORTER -- 17.92
+ * to 16.86 ms a frame with the tracker on, 19.27 to 17.80 without.  One
+ * microsecond is reproducibly worse than none and two is nearly as good as
+ * four; four is where the curve flattens.
+ *
+ * What kept this at nought until now was that the recovery poll, which is
+ * what a timeout falls into, had never executed.  It has now: seven injected
+ * timeouts, seven recoveries, no latch, and a fresh process fully
+ * accelerated afterwards.  And the timeout budget does not shrink, because
+ * the limit is divided by the delay and a slower poll needs proportionally
+ * fewer reads -- the largest index ever seen is 1.5% of the limit at four
+ * microseconds against 2.1% at nought.
+ */
+static unsigned long osmgaPollDelayUs = 4UL;
 /*
  * Packing defaults ON.  It was measured on this machine over the reboot that
  * introduced it -- 12.4% fewer dwords, 6% off the frame, the fourteen scene
@@ -1513,7 +1531,7 @@ static unsigned long osmgaPollDelayUs;
  * has been exercised on hardware.
  */
 static unsigned long osmgaPackExec = 1UL;
-static unsigned long osmgaPackExecNow;   /* snapshot the encoder reads */
+static unsigned long osmgaPackExecNow = 1UL;  /* see osmgaTrackStateNow */
 
 /*
  * osmgaTrackState: write a trapezoid's colour and alpha blocks only when
@@ -1533,8 +1551,28 @@ static unsigned long osmgaPackExecNow;   /* snapshot the encoder reads */
  * trapezoids and the two colour blocks on 62%.  The other four change every
  * time and are left alone.
  */
-static unsigned long osmgaTrackState;
-static unsigned long osmgaTrackStateNow;
+/*
+ * On from the first submission.  Its evidence is byte identity rather than a
+ * difference count: twenty scenes drawn twice on the engine, tracker off and
+ * on, dumps compared byte for byte -- including modg, which gives every
+ * corner its own colour so the blocks differ from trapezoid to trapezoid,
+ * and the textured, blended, perspective, tiled and seam scenes.  Nothing
+ * moved, and the frame went 19.97 to 17.92 ms.
+ */
+static unsigned long osmgaTrackState = 1UL;
+
+/*
+ * And the snapshots start where the settings do.
+ *
+ * The encoder reads these, not the settings, so that a value changed while a
+ * submission runs belongs to the next one.  They were left at nought, which
+ * was harmless while both settings defaulted to nought and stopped being so
+ * the moment one did not: the boot diagnostics call the encoder DIRECTLY,
+ * before any client has submitted anything, so they were validating an
+ * encoding this driver no longer produces.  Now they validate the one it
+ * does.
+ */
+static unsigned long osmgaTrackStateNow = 1UL;
 
 /*
  * A timeout the poll did not suffer, and what came of it.
