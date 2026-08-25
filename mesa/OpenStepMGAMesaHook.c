@@ -214,6 +214,7 @@ osmgaSnap(double v, double eps)
  */
 static unsigned long deltaTraps, deltaChanged, deltaBlocksNow, deltaBlocksMin;
 static unsigned long deltaBlockDirty[7];   /* how often each block changes */
+static unsigned long deltaRegDirty[25];    /* and how often each register does */
 
 void
 OSMGAMesaHookDeltaStats(unsigned long out[4])
@@ -224,6 +225,17 @@ OSMGAMesaHookDeltaStats(unsigned long out[4])
     out[1] = deltaChanged;
     out[2] = deltaBlocksNow;
     out[3] = deltaBlocksMin;
+}
+
+void
+OSMGAMesaHookDeltaRegs(unsigned long out[25])
+{
+    int k;
+
+    if (out == 0)
+        return;
+    for (k = 0; k < 25; k++)
+        out[k] = deltaRegDirty[k];
 }
 
 void
@@ -283,6 +295,7 @@ osmgaMesaCountDeltas(const OSMGAHW3DBatch *b)
         for (k = 0; k < 25; k++) {
             if (p == 0 || tv[k] != pv[k]) {
                 changed++;
+                deltaRegDirty[k]++;
                 blockDirty[blockOf[k]] = 1;
             }
         }

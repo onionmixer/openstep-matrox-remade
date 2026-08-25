@@ -14,7 +14,20 @@ PROJECTVERSION = 0.1
 LANGUAGE = English
 
 LOCAL_RESOURCES = Localizable.strings DisplayInspector.nib
-GLOBAL_RESOURCES = Default.table
+#
+# The instance table and the mode list are resources, not build products.
+#
+# They were left out, and the two sibling drivers in this workspace both list
+# their Instance0.table here -- which is why only this bundle could be built
+# and installed without one.  On 2026-08-25 that happened: an installer
+# removed the installed bundle and copied a freshly built one that had no
+# instance table, so the driver loaded, configured no instance, claimed no
+# card, and the console came up on VGA at 800x600 in four colours.
+#
+# With them here the BUILD produces a complete bundle, so a complete bundle
+# is what any route installs.
+#
+GLOBAL_RESOURCES = Default.table Instance0.table Display.modes
 
 CLASSES = OSMGADisplayInspector.m
 HFILES = OSMGADisplayInspector.h

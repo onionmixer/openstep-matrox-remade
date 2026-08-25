@@ -139,6 +139,13 @@ void OSMGAMesaHookDeltaStats(unsigned long out[4]);
  * 4 DR15/DR0/DR2/DR3, 5 alpha, 6 fxbndry+execute. */
 void OSMGAMesaHookDeltaBlocks(unsigned long out[7]);
 
+/* Per register, in the order the encoder writes them: dwgctl, ar0, ar1, ar2,
+ * ar4, ar5, ar6, sgn, DR4, DR6, DR7, DR8, DR10, DR11, DR12, DR14, DR15,
+ * z0(DR0), zdx(DR2), zdy(DR3), a0, adx, ady, alphactrl, fxbndry.
+ * Which of these the ENGINE itself moves as it draws is a separate question
+ * this cannot answer -- it only counts what the client rewrites. */
+void OSMGAMesaHookDeltaRegs(unsigned long out[25]);
+
 unsigned long OSMGAMesaHookBatches(void);
 /* trapezoids submitted, which is what says a triangle split */
 unsigned long OSMGAMesaHookTraps(void);
