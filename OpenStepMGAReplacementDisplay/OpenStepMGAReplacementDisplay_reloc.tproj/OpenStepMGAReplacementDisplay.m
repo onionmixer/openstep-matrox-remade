@@ -4650,13 +4650,18 @@ refuse2:
     OSMGAHW3DLimits lim;
     IODisplayInfo *di3;   /* read under the claim, never before it */
     const OSMGAFormat *f3 = &osmgaFmt[selectedFormatIndex];
-    unsigned long stride3, total3, tail3, listPhys3, spins3, status3;
+    /* spins3 starts at the limit -- the fail-safe reading -- because the
+     * compiler cannot see that every use is dominated by a loop that sets
+     * it, and a fresh path added later should inherit "timed out", not
+     * garbage. */
+    unsigned long stride3, total3, tail3, listPhys3, status3;
+    unsigned long spins3 = OSMGA_S1_SPIN_LIMIT;
     unsigned long epoch3, dstW3, dstH3, dstP3, avail3, settle3;
     int anyDepth3 = 0, overlap3 = 0;
     unsigned long *list3, listDwords3, badTri3 = 0UL;
     unsigned long delay3, limit3;
     OSMGAHW3DTexReach reach3;
-    int v3, rc3 = 0, preOK3 = 0, idleOK3 = 0, inject3 = 0;
+    int v3, rc3 = 0, preOK3 = 0, idleOK3 = 0, inject3 = 0, done3 = 0;
 
     /*
      * Clear the diagnostics first.  Several of the checks below return
@@ -5164,11 +5169,89 @@ refuse2:
                 osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
             osmgaHW3DLast[3] = (unsigned)spins3;
             osmgaWaitRecord(3, (spins3 < limit3) ? spins3 + 1UL : limit3);
+            done3 = (spins3 < limit3);
+            if (!done3) {
+                /*
+                 * The completion poll gave up.  That does NOT mean the engine
+                 * stopped, and letting go here is what made this dangerous:
+                 * the client treats a failure after the list was handed over
+                 * as unrecoverable and sends everything after it to the
+                 * software rasteriser -- into the same video memory an engine
+                 * that never finished may still be writing.
+                 *
+                 * So ask again, for the WHOLE completion condition and not a
+                 * piece of it.  Completion here is three things at once: the
+                 * trap at the end of the list has fired, the drawing engine
+                 * is idle, and the DMA read pointer has reached the end.  The
+                 * idle helper tests only the middle one, so a wait on it can
+                 * return while DMA is still fetching the list and about to
+                 * queue more drawing -- which would have made this recovery
+                 * report safety it had not established.
+                 *
+                 * And the trap is NOT acknowledged before asking.  It is one
+                 * of the three signals; clearing it first would throw away
+                 * the evidence the question needs.
+                 */
+                unsigned long rec3;
+
+                for (rec3 = 0UL; rec3 < OSMGA_S1_SPIN_LIMIT; rec3++) {
+                    status3 = osmgaR32(mmioBase, MGA_ENGSTATUS);
+                    if ((status3 & MGA_DMA_DONE_MASK) == MGA_DMA_DONE_VALUE)
+                        break;
+                }
+                if (rec3 < OSMGA_S1_SPIN_LIMIT) {
+                    osmgaRecoverySaved++;
+                    osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
+                    /*
+                     * And it is a COMPLETION.  The condition this poll
+                     * accepted is bit for bit the one the prompt poll
+                     * accepts -- trap fired, engine idle, DMA ended -- and
+                     * the only difference is how long it took to become
+                     * true.  Reporting it as a failure made userland treat
+                     * a drawn, finished submission as "the engine may have
+                     * some of it", revoke acceleration for good, and skip
+                     * the soil mark -- so the mirror could hand back a
+                     * surface missing what was provably drawn.  Success
+                     * cannot depend on which loop observed it: this arm now
+                     * joins the shared tail below.
+                     */
+                    done3 = 1;
+                    IOLog("OpenStepMGA M1-2b: the poll gave up but completion "
+                          "arrived during recovery (status %08lx, %lu more "
+                          "spins); the engine is quiescent and software may "
+                          "have the surface back\n", status3, rec3);
+                }
+                else {
+                    /*
+                     * It never completed.  The engine may still be writing,
+                     * so nothing may hand it another list -- the same latch
+                     * a blit that timed out after EXEC sets, for the same
+                     * reason and with the same permanence.
+                     *
+                     * Honest about what this does NOT fix: it stops the
+                     * KERNEL giving the engine more work.  It cannot stop a
+                     * client that already has the surface mapped from writing
+                     * it with the processor, and that race is what
+                     * REMAINING_WORK 3-15 is about.  Closing it needs a reset
+                     * or a quarantine, and this driver has neither.
+                     */
+                    osmgaRecoveryLatched++;
+                    stormBlitFailed = YES;
+                    IOLog("OpenStepMGA M1-2b: submission never completed "
+                          "(status %08lx); acceleration DISABLED permanently "
+                          "-- the engine may still be writing\n", status3);
+                }
+            }
             /* And the final idle wait, counted rather than hidden in a
              * chain -- the same reason the two admission waits above were
-             * written out. */
+             * written out.  It runs for BOTH completions -- prompt and
+             * recovered -- because from here the two are the same thing.
+             * (It used to be the recovery that ran here, in the else of
+             * this wait -- where, with the trap already acknowledged, its
+             * condition could never come true and a hundred thousand reads
+             * bought a latch.  That doomed loop is gone with the move.) */
             idleOK3 = 0;
-            if (spins3 < limit3) {
+            if (done3) {
                 idleOK3 = osmgaStormWaitIdle(mmioBase);
                 osmgaWaitRecord(4, osmgaStormLastReads);
                 if (!idleOK3) {
@@ -5218,64 +5301,6 @@ refuse2:
                          settle3 <= osmgaProbeWords)
                     (void)osmgaProbeAlias[settle3 - 1UL];
                 rc3 = 1;
-            }
-            else {
-                /*
-                 * The completion poll gave up.  That does NOT mean the engine
-                 * stopped, and letting go here is what made this dangerous:
-                 * the client treats a failure after the list was handed over
-                 * as unrecoverable and sends everything after it to the
-                 * software rasteriser -- into the same video memory an engine
-                 * that never finished may still be writing.
-                 *
-                 * So ask again, for the WHOLE completion condition and not a
-                 * piece of it.  Completion here is three things at once: the
-                 * trap at the end of the list has fired, the drawing engine
-                 * is idle, and the DMA read pointer has reached the end.  The
-                 * idle helper tests only the middle one, so a wait on it can
-                 * return while DMA is still fetching the list and about to
-                 * queue more drawing -- which would have made this recovery
-                 * report safety it had not established.
-                 *
-                 * And the trap is NOT acknowledged before asking.  It is one
-                 * of the three signals; clearing it first would throw away
-                 * the evidence the question needs.
-                 */
-                unsigned long rec3;
-
-                for (rec3 = 0UL; rec3 < OSMGA_S1_SPIN_LIMIT; rec3++) {
-                    status3 = osmgaR32(mmioBase, MGA_ENGSTATUS);
-                    if ((status3 & MGA_DMA_DONE_MASK) == MGA_DMA_DONE_VALUE)
-                        break;
-                }
-                if (rec3 < OSMGA_S1_SPIN_LIMIT) {
-                    osmgaRecoverySaved++;
-                    osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
-                    IOLog("OpenStepMGA M1-2b: the poll gave up but completion "
-                          "arrived during recovery (status %08lx, %lu more "
-                          "spins); the engine is quiescent and software may "
-                          "have the surface back\n", status3, rec3);
-                }
-                else {
-                    /*
-                     * It never completed.  The engine may still be writing,
-                     * so nothing may hand it another list -- the same latch
-                     * a blit that timed out after EXEC sets, for the same
-                     * reason and with the same permanence.
-                     *
-                     * Honest about what this does NOT fix: it stops the
-                     * KERNEL giving the engine more work.  It cannot stop a
-                     * client that already has the surface mapped from writing
-                     * it with the processor, and that race is what
-                     * REMAINING_WORK 3-15 is about.  Closing it needs a reset
-                     * or a quarantine, and this driver has neither.
-                     */
-                    osmgaRecoveryLatched++;
-                    stormBlitFailed = YES;
-                    IOLog("OpenStepMGA M1-2b: submission never completed "
-                          "(status %08lx); acceleration DISABLED permanently "
-                          "-- the engine may still be writing\n", status3);
-                }
             }
         }
     }
@@ -7375,6 +7400,16 @@ unmap:
         osmgaW32(base, MGA_DR15,   0UL);
         osmgaW32(base, MGA_DWGCTL, ziBase | cmp);
         osmgaW32(base, MGA_FXBNDRY, (OSMGA_S1_W << 16) | 0UL);
+        /* Sixteen registers stand written against a sixteen-slot ask; the
+         * FIFO holds sixteen, so a seventeenth ask would clamp and spin
+         * out.  One more slot for the execute -- which is what starts the
+         * engine, so nothing runs early for the pause.  On failure the
+         * origins go back, as the post-execute failure arm already does. */
+        if (!osmgaStormWaitFifo(base, 1U)) {
+            osmgaW32(base, MGA_DSTORG, 0UL);
+            osmgaW32(base, MGA_ZORG, 0UL);
+            goto unmap;
+        }
         osmgaW32(base, MGA_YDSTLEN + MGA_EXEC,
                  (y0 << 16) | OSMGA_D3_CMP_ROWS);
         if (!osmgaStormWaitIdle(base)) {
@@ -7460,12 +7495,21 @@ unmap:
 
 
 /* Program the texture unit for the identity 64x64 texture at OSMGA_D3_TEXORG
- * with the given per-pixel step, shared by every D3-4b band. */
-static void
+ * with the given per-pixel step, shared by every D3-4b band.
+ *
+ * SELF-GATING, and it returns whether it got in: twenty writes do not fit
+ * one sixteen-slot FIFO ask, and both callers were reserving twelve for a
+ * DSTORG plus all twenty of these -- nine past the reservation, which the
+ * card answers by stalling the bus, not by dropping the write.  Gating here
+ * fixes every caller at once; a caller that also reserved is unaffected,
+ * because the wait is a floor check and not a ledger. */
+static int
 osmgaTextureSetup(vm_address_t base, unsigned long dim, unsigned long log2dim,
                   unsigned long texPitch, unsigned long stepX,
                   unsigned long stepY)
 {
+    if (!osmgaStormWaitFifo(base, 16U))
+        return 0;
     osmgaW32(base, MGA_TEXORG,       OSMGA_D3_TEXORG);
     osmgaW32(base, MGA_TEXWIDTH,     ((dim - 1UL) << 18) |
                                      (((8UL - log2dim) & 63UL) << 9) | log2dim);
@@ -7488,10 +7532,13 @@ osmgaTextureSetup(vm_address_t base, unsigned long dim, unsigned long log2dim,
     osmgaW32(base, MGA_TMR0 + 8UL,   0UL);
     osmgaW32(base, MGA_TMR3,         stepY);
     osmgaW32(base, MGA_TMR0 + 16UL,  0UL);
+    if (!osmgaStormWaitFifo(base, 4U))
+        return 0;
     osmgaW32(base, MGA_TMR0 + 20UL,  0UL);
     osmgaW32(base, MGA_TMR0 + 24UL,  0UL);   /* TMR6 -- u origin */
     osmgaW32(base, MGA_TMR0 + 28UL,  0UL);   /* TMR7 -- v origin */
     osmgaW32(base, MGA_TMR8,         1UL << 16);
+    return 1;
 }
 
 /*
@@ -7736,7 +7783,8 @@ unmap:
                             y0 * stride, (y0 + band - 1UL) * stride);
         if (!osmgaStormWaitFifo(base, 12U)) goto fifo;
         osmgaW32(base, MGA_DSTORG, OSMGA_S1_VRAM_BLOCK);
-        osmgaTextureSetup(base, dim, OSMGA_D3_TEXLOG2, texPitch, sx, sx);
+        if (!osmgaTextureSetup(base, dim, OSMGA_D3_TEXLOG2, texPitch, sx, sx))
+            goto fifo;
 
         if (b < 2UL) {
             if (!osmgaStormWaitFifo(base, 4U)) goto fifo;
@@ -7936,7 +7984,8 @@ unmap:
                             clipTop * stride, (y0 + band - 1UL) * stride);
         if (!osmgaStormWaitFifo(base, 12U)) goto fifo;
         osmgaW32(base, MGA_DSTORG, OSMGA_S1_VRAM_BLOCK);
-        osmgaTextureSetup(base, dim, OSMGA_D3_TEXLOG2, texPitch, sx, sx);
+        if (!osmgaTextureSetup(base, dim, OSMGA_D3_TEXLOG2, texPitch, sx, sx))
+            goto fifo;
 
         if (i == 0UL) {
             if (!osmgaStormWaitFifo(base, 11U)) goto fifo;
