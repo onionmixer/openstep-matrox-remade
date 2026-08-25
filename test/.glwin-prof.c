@@ -304,6 +304,26 @@ int main(int argc, char **argv)
      * They are separable because a combination of them hangs this machine
      * and the parts cannot be told apart while they move together.
      */
+    /*
+     * FORBIDDEN COMBINATION.  Scissor plus instrumentation freezes this
+     * machine hard -- six times, probabilistically, within 40 frames, with
+     * nothing in any log.  Seven hypotheses were tested and rejected
+     * (REMAINING_WORK 3-62); the cause is unknown and each further attempt
+     * costs a hard freeze and a manual reboot.  Overriding this guard is a
+     * decision the machine's owner makes, not a default.
+     */
+    if (optScissor && argc > 3 && argv[3][0] == 'i'
+        && strcmp(argv[3], "iKNOWN-TO-FREEZE") != 0) {
+        printf("REFUSED: scissor + instrumentation has frozen this machine "
+               "six times\n        and the cause is unknown "
+               "(REMAINING_WORK 3-62).\n        Pass iKNOWN-TO-FREEZE to "
+               "run it anyway.\n");
+        return 2;
+    }
+    if (argc > 3 && strcmp(argv[3], "iKNOWN-TO-FREEZE") == 0) {
+        OSMGAMesaHookInstrument(7);
+        printf("instrumented DESPITE the freeze history: all three parts\n");
+    }
     if (argc > 3 && strcmp(argv[3], "inst") == 0) {
         OSMGAMesaHookInstrument(7);
         printf("instrumented: all of it (timing, counting, histogram)\n");

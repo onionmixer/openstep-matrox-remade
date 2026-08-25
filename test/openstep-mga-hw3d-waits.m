@@ -22,7 +22,7 @@
 #define TUNE_PARAM   "OSMGAHW3DTune"
 #define SETTLE_PARAM "OSMGAHW3DSettle"
 #define INJECT_PARAM "OSMGAHW3DInject"
-#define WAITS_COUNT  23U
+#define WAITS_COUNT  25U
 
 static const char *waitName[5] = {
     "pre-idle    ", "fifo admit  ", "quiescence  ",
@@ -126,6 +126,8 @@ main(int argc, char **argv)
     }
     printf("  recovery: %u saved, %u latched acceleration off\n",
            w[16], w[17]);
+    printf("  at entry: trap already set %u time(s), last status %05x\n",
+           w[23], w[24]);
     /*
      * "gave up" is the column that matters after a machine has frozen.  A
      * wait that reached its limit used to return in silence and let the next

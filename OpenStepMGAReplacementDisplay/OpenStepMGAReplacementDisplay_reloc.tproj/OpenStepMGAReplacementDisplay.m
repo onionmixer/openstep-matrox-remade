@@ -779,8 +779,8 @@
  * wait the fixed part is.  Count, summed reads and the largest, per wait.
  */
 #define OSMGA_HW3D_WAITS_PARAM  "OSMGAHW3DWaits"
-#define OSMGA_HW3D_WAITS_COUNT  23U
-#define OSMGA_HW3D_WAITS_VERSION 3UL
+#define OSMGA_HW3D_WAITS_COUNT  25U
+#define OSMGA_HW3D_WAITS_VERSION 4UL
 
 /* Tuning, two words: the completion poll's delay in microseconds, and
  * whether an untextured trapezoid's FXBNDRY rides in the execute block. */
@@ -1527,6 +1527,8 @@ osmgaStormInitState(vm_address_t base, unsigned long stridePixels,
                     unsigned long clipTopPixel, unsigned long clipBotPixel)
 {
     unsigned long opmode = osmgaR32(base, MGA_OPMODE);
+    unsigned long opwant = MGA_OPMODE_DMA_BLIT |
+                           (opmode & ~(unsigned long)MGA_OPMODE_BYTESWAP);
 
     osmgaW32(base, MGA_PITCH,   stridePixels);
     osmgaW32(base, MGA_YDSTORG, 0UL);
@@ -1534,8 +1536,19 @@ osmgaStormInitState(vm_address_t base, unsigned long stridePixels,
     osmgaW32(base, MGA_PLNWT,   0xffffffffUL);
     osmgaW32(base, MGA_FCOL,    0UL);
     osmgaW32(base, MGA_BCOL,    0UL);
-    osmgaW32(base, MGA_OPMODE,
-             MGA_OPMODE_DMA_BLIT | (opmode & ~(unsigned long)MGA_OPMODE_BYTESWAP));
+    /*
+     * Written only when it would change, which after the first submission
+     * is never.  OPMODE holds the DMA mode, and the references' rule is
+     * that the CPU writes it only after a full DMA quiescence: the DRM
+     * never writes it at all -- its state travels in the DMA stream -- and
+     * its DDX restores it from the CPU only behind a DRM quiescence
+     * operation (mga_dri.c:128-154).  This driver used to rewrite it on
+     * every submission, alone among the three; skipping the no-op write
+     * makes the steady state match the references while the read above
+     * still guarantees the value is right.
+     */
+    if (opwant != opmode)
+        osmgaW32(base, MGA_OPMODE, opwant);
     osmgaW32(base, MGA_CXBNDRY, (clipX1 << 16) | clipX0);  /* right inclusive */
     osmgaW32(base, MGA_YTOP,    clipTopPixel);             /* row start ptrs  */
     osmgaW32(base, MGA_YBOT,    clipBotPixel);
@@ -1938,6 +1951,13 @@ osmgaWaitRecord(int which, unsigned long reads)
 /* How often each of the five gave up.  Nought on a healthy machine, and the
  * only record that outlives a log the machine never got to write. */
 static unsigned long osmgaWaitGaveUp[5];
+
+/* What the engine said at submit ENTRY, before this submission touched
+ * anything: the last three-bit status seen, and how often the trap was
+ * already set there.  A set trap at entry means an earlier path timed out
+ * and left the engine unaccounted for; it is recorded, not assumed away. */
+static unsigned long osmgaEntryStatus;
+static unsigned long osmgaEntryTrapSet;
 
 /*
  * A wait in the submit path gave up.  Say which, say what the engine said,
@@ -4219,6 +4239,10 @@ unmap:
         /* and how often each wait gave up -- nought on a healthy machine */
         for (w = 0U; w < 5U; w++)
             parameterArray[18U + w] = (unsigned)osmgaWaitGaveUp[w];
+        /* what the engine said at submit entry, and how often the trap was
+         * already set there (should be never) */
+        parameterArray[23] = (unsigned)osmgaEntryTrapSet;
+        parameterArray[24] = (unsigned)osmgaEntryStatus;
         simple_unlock(&stormLock);
         *count = OSMGA_HW3D_WAITS_COUNT;
         return IO_R_SUCCESS;
@@ -4963,6 +4987,55 @@ refuse2:
             osmgaSubmitGaveUp(0, "pre-idle");
         }
         if (preOK3) {
+            /*
+             * FULL quiescence BEFORE any register traffic.
+             *
+             * This wait used to sit just before the doorbell, AFTER the
+             * twelve state writes and the trap acknowledge -- so between two
+             * DMA lists the CPU wrote a dozen engine registers, OPMODE among
+             * them, guarded only by the drawing-busy bit and a FIFO count.
+             * Nobody else does that.  The DRM, the only other driver that
+             * runs primary DMA, sends its state down the DMA stream itself
+             * (mga_state.c:73-94) where it cannot race the parser, and its
+             * companion DDX restores OPMODE from the CPU only after a full
+             * DRM quiescence operation (mga_dri.c:128-154).  The rule the
+             * references agree on is: no CPU writes beside a stream that has
+             * not proved itself quiet -- trap clear, drawing idle, DMA
+             * ended, the same three bits the DRM's mga_is_idle tests.
+             *
+             * Whether this is what froze the machine is NOT established.
+             * The freeze is probabilistic, scissor-plus-instrumentation
+             * only, and leaves nothing behind; this reordering is the
+             * smallest change that makes the submit path obey the
+             * references' protocol, and it is worth making on those grounds
+             * alone.
+             *
+             * The first read is kept raw, because a trap SET at entry would
+             * be a real finding: every normal path acknowledges its trap,
+             * so a set one here means an earlier path timed out and left
+             * the engine unaccounted for -- exactly what the give-up latch
+             * below is for.  It is recorded, not assumed impossible.
+             */
+            for (spins3 = 0UL; spins3 < OSMGA_S1_SPIN_LIMIT; spins3++) {
+                status3 = osmgaR32(mmioBase, MGA_ENGSTATUS);
+                if (spins3 == 0UL) {
+                    osmgaEntryStatus = status3 & MGA_DMA_DONE_MASK;
+                    if ((status3 & MGA_STATUS_SOFTRAPEN) != 0UL)
+                        osmgaEntryTrapSet++;
+                }
+                if ((status3 & MGA_DMA_DONE_MASK) ==
+                    MGA_STATUS_ENDPRDMASTS)
+                    break;
+            }
+            osmgaWaitRecord(2, (spins3 < OSMGA_S1_SPIN_LIMIT)
+                                ? spins3 + 1UL : OSMGA_S1_SPIN_LIMIT);
+            if (spins3 >= OSMGA_S1_SPIN_LIMIT) {
+                stormBlitFailed = YES;
+                osmgaSubmitGaveUp(2, "pre-DMA quiescence");
+                preOK3 = 0;
+            }
+        }
+        if (preOK3) {
             preOK3 = osmgaStormWaitFifo(mmioBase, 13U);
             osmgaWaitRecord(1, osmgaStormLastReads);
             if (!preOK3) {
@@ -5022,18 +5095,13 @@ refuse2:
             osmgaStormInitState(mmioBase, dstP3, cx0, cx1,
                                 cy0 * dstP3, cy1 * dstP3);
         }
+        /*
+         * Inert by construction: the quiescence check above only passes with
+         * the trap CLEAR, and nothing between there and here can set it.
+         * Kept because this reordering deliberately removes no write -- the
+         * value the engine holds at the doorbell must be what it always was.
+         */
         osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
-        for (spins3 = 0UL; spins3 < OSMGA_S1_SPIN_LIMIT; spins3++) {
-            status3 = osmgaR32(mmioBase, MGA_ENGSTATUS) &
-                      MGA_DMA_DONE_MASK;
-            if (status3 == MGA_STATUS_ENDPRDMASTS) break;
-        }
-        osmgaWaitRecord(2, (spins3 < OSMGA_S1_SPIN_LIMIT)
-                            ? spins3 + 1UL : OSMGA_S1_SPIN_LIMIT);
-        if (spins3 >= OSMGA_S1_SPIN_LIMIT) {
-            stormBlitFailed = YES;
-            osmgaSubmitGaveUp(2, "pre-DMA quiescence");
-        }
         if (spins3 < OSMGA_S1_SPIN_LIMIT) {
             unsigned long sum3 = 0UL, i3;
 
