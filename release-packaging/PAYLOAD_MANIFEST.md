@@ -40,6 +40,33 @@ driver package; the driver does not require this one.
 | `Documentation/OpenStep-MGA-Accel/PORT-NOTES.md` | written for the release | what was added, and that Mesa is not modified in place |
 | `Tools/OpenStepMGAAccel-Intel` | `packaging/openstep/installer-architecture-marker.c` | tiny i386 Mach-O so the BOM is i386-only |
 
+### 2b. The teapot demo, inside the acceleration package
+
+Shaped exactly as the Mesa port's Demos payload is -- source, build script
+and a target-built i386 executable under `Examples/<Name>/` -- because it is
+the same kind of thing.  It rides in the acceleration package rather than in
+the Mesa port's Demos package for the reason the whole split exists: it links
+`libGL_mga.a` and includes this project's headers, so putting it in the Mesa
+package would make that package depend on this driver, and Mesa would no
+longer be untouched.
+
+| Destination | Source | Note |
+| --- | --- | --- |
+| `Examples/MGATeapot/openstep-mga-mesa-teapot.c` | `test/openstep-mga-mesa-teapot.c` | copied, with its two `"../mesa/X.h"` includes rewritten to `<X.h>` so they resolve against `Headers/` |
+| `Examples/MGATeapot/build-teapot.csh` | `examples/build-teapot.csh` | |
+| `Examples/MGATeapot/README_teapot.md` | `examples/README_teapot.md` | |
+| `Examples/MGATeapot/teapot` | built on target | i386 Mach-O; running the demo needs no Mesa source tree |
+
+The staged source must contain no `../` include, and the verifier checks
+that -- a payload that still reaches outside itself would compile only in the
+repository it came from.
+
+**The geometry is not in the payload.**  `teapot-geometry.h` is cut out of a
+Mesa source tree at build time, because `tea.c` is GPL as a whole while the
+teapot inside it is Kilgard's under GLUT's terms.  The prebuilt binary is
+shipped so that RUNNING the demo needs no such tree; rebuilding it does, and
+`build-teapot.csh` says so and checks the cut before compiling.
+
 `post_install` reruns `ranlib` -- OPENSTEP's archive index records the
 pre-install pathname, so a relocated `.a` is unusable without it.  (The
 driver package needs no `post_install`: it contains executables, not
