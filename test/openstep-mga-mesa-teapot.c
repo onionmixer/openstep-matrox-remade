@@ -30,8 +30,39 @@
 #include <sys/time.h>
 #include <GL/gl.h>
 #include <GL/osmesa.h>
-#include "../mesa/OpenStepMGAMesaHook.h"
-#include "../mesa/OpenStepMGAMesaBuffer.h"
+/*
+ * BUILDS BOTH WAYS.
+ *
+ * Linked against this project's libGL_mga.a the program reports what the
+ * card did and can force the software path for comparison; linked against
+ * the stock Mesa libGL.a -- which has no hook, because the hook itself is
+ * compiled only under OPENSTEP_MESA_ACCEL_HOOK -- it draws exactly the same
+ * teapot with Mesa's own rasteriser and simply has no counters to show.
+ *
+ * The switch is a shim rather than an #ifdef at each of eighteen call
+ * sites: the body below stays the one program, and only these definitions
+ * differ.  Define OSMGA_TEAPOT_PLAIN to build the stock form.
+ */
+#ifndef OSMGA_TEAPOT_PLAIN
+#include "OpenStepMGAMesaHook.h"
+#include "OpenStepMGAMesaBuffer.h"
+#define OSMGA_TEAPOT_ACCELERATED 1
+#else
+#define OSMGA_TEAPOT_ACCELERATED 0
+/* Every one of these is a counter or a switch.  None of them draws, so the
+ * picture does not depend on any of them -- which is why the stock build can
+ * answer nought and still be the same program. */
+#define OSMGAMesaHookBatchLimit(n)     ((void)(n))
+#define OSMGAMesaHookInjectRefusal(n)  ((void)(n))
+#define OSMGAMesaHookForceSoftware(n)  ((void)(n))
+#define OSMGAMesaBufferOrigin()        0UL
+#define OSMGAMesaHookBatches()         0UL
+#define OSMGAMesaHookMirrors()         0UL
+#define OSMGAMesaHookDrawn()           0UL
+#define OSMGAMesaHookSoftware()        0UL
+#define OSMGAMesaHookUnsupported()     0UL
+#define OSMGAMesaHookReplayed()        0UL
+#endif
 
 /* patchdata, cpdata, tex and teapot(), cut from the Mesa tree at build time */
 #include "teapot-geometry.h"
@@ -198,8 +229,13 @@ main(int argc, char **argv)
 
     t1 = now();
     printf("the Utah teapot, through this driver\n\n");
+#if OSMGA_TEAPOT_ACCELERATED
     printf("   surface is the engine's : %s\n",
            (OSMGAMesaBufferOrigin() != 0UL) ? "yes" : "NO -- software only");
+#else
+    printf("   built against           : the stock Mesa library, so this is"
+           " Mesa's own rasteriser\n");
+#endif
 
     glViewport(0, 0, W, H);
     glMatrixMode(GL_PROJECTION);
@@ -261,6 +297,15 @@ main(int argc, char **argv)
     soft1  = OSMGAMesaHookSoftware();
     unsup1 = OSMGAMesaHookUnsupported();
 
+#if !OSMGA_TEAPOT_ACCELERATED
+    /* Saying "0 triangles drawn by the card" would be a lie of the kind a
+     * report is supposed to prevent: there is no card in this build, so
+     * there is nothing to count.  Say that instead. */
+    printf("   counters                : none -- the stock library has no"
+           " hook to count with\n");
+    (void)mir0; (void)mir1; (void)drawn0; (void)drawn1;
+    (void)soft0; (void)soft1; (void)unsup0; (void)unsup1; (void)batches0;
+#else
     printf("   surface walked back     : %lu times\n", mir1 - mir0);
     printf("   source triangles drawn  : %lu\n", drawn1 - drawn0);
     printf("   submissions             : %lu   (batching: %lu sources per"
@@ -274,6 +319,7 @@ main(int argc, char **argv)
         printf("   share drawn by the card : %lu%%\n",
                (drawn1 - drawn0) * 100UL /
                ((drawn1 - drawn0) + (soft1 - soft0)));
+#endif
     printf("\n");
     writeTiff(out, buf, W, H);
     t5 = now();

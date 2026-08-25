@@ -35,36 +35,49 @@ driver package; the driver does not require this one.
 | `Libraries/libGL_mga.a` | `build/mesa/libGL_mga.a` | a COMPLETE alternative libGL: stock `libGL.a` with `osmesa.o` replaced and `osmgaccel.o` added.  It sits BESIDE the stock library, never over it. |
 | `Headers/OpenStepMGAMesaHook.h` | `mesa/OpenStepMGAMesaHook.h` | the opt-in surface an application includes |
 | `Headers/OpenStepMGAMesaBuffer.h` | `mesa/OpenStepMGAMesaBuffer.h` | buffer/present API |
+| `Headers/OpenStepMGAHW3D.h` | `hw3d/OpenStepMGAHW3D.h` | **required**: `OpenStepMGAMesaHook.h` includes it for `OSMGAHW3DTri`.  Found by building the demo against a private prefix -- with only the first two headers the compile fails |
 | `Documentation/OpenStep-Mesa-3.4.2/COPYRIGHT` | Mesa port's `upstream/.../docs/COPYRIGHT` | byte-for-byte, release gate |
 | `Documentation/OpenStep-Mesa-3.4.2/COPYING` | Mesa port's `upstream/.../docs/COPYING` | byte-for-byte, release gate |
 | `Documentation/OpenStep-MGA-Accel/PORT-NOTES.md` | written for the release | what was added, and that Mesa is not modified in place |
 | `Tools/OpenStepMGAAccel-Intel` | `packaging/openstep/installer-architecture-marker.c` | tiny i386 Mach-O so the BOM is i386-only |
 
-### 2b. The teapot demo, inside the acceleration package
+### 2b. The teapot demo — in the MESA DEMOS package, twice
 
-Shaped exactly as the Mesa port's Demos payload is -- source, build script
-and a target-built i386 executable under `Examples/<Name>/` -- because it is
-the same kind of thing.  It rides in the acceleration package rather than in
-the Mesa port's Demos package for the reason the whole split exists: it links
-`libGL_mga.a` and includes this project's headers, so putting it in the Mesa
-package would make that package depend on this driver, and Mesa would no
-longer be untouched.
+The demo is built from ONE source into TWO binaries, and it goes into the
+Mesa port's Demos package rather than this project's, because the stock form
+carries no Matrox code at all:
 
-| Destination | Source | Note |
+| Destination (Mesa Demos payload) | Source | Note |
 | --- | --- | --- |
-| `Examples/MGATeapot/openstep-mga-mesa-teapot.c` | `test/openstep-mga-mesa-teapot.c` | copied, with its two `"../mesa/X.h"` includes rewritten to `<X.h>` so they resolve against `Headers/` |
-| `Examples/MGATeapot/build-teapot.csh` | `examples/build-teapot.csh` | |
-| `Examples/MGATeapot/README_teapot.md` | `examples/README_teapot.md` | |
-| `Examples/MGATeapot/teapot` | built on target | i386 Mach-O; running the demo needs no Mesa source tree |
+| `Examples/Mesa342/Teapot/openstep-mga-mesa-teapot.c` | `test/openstep-mga-mesa-teapot.c` | one source, both forms; `-DOSMGA_TEAPOT_PLAIN` selects the stock one |
+| `Examples/Mesa342/Teapot/build-teapot.csh` | `examples/build-teapot.csh` | `-sw`, `-hybrid`, or both |
+| `Examples/Mesa342/Teapot/README_teapot.md` | `examples/README_teapot.md` | |
+| `Examples/Mesa342/Teapot/teapot_sw` | built on target | stock Mesa only.  **No Matrox code.** |
+| `Examples/Mesa342/Teapot/teapot_hybrid` | built on target | links `libGL_mga.a`; runs with or without the driver |
 
-The staged source must contain no `../` include, and the verifier checks
-that -- a payload that still reaches outside itself would compile only in the
-repository it came from.
+**Why two binaries rather than one.**  Not because one would fail:
+`teapot_hybrid` runs perfectly well with no driver present -- the library is
+statically linked into it and the probe answers "no device", verified on the
+target to exit 0 and write a file byte-identical to `teapot_sw`'s.  The pair
+exists so the Mesa Demos package keeps a demo that is purely Mesa's, and so
+that running both separates a Mesa problem from a driver problem in one
+step.
+
+`teapot_hybrid` does mean the Mesa Demos package contains a binary built
+from this project's library.  That is a build-time input, not a change to
+Mesa: the Mesa LIBRARIES the package ships are still the stock ones, which
+is what the principle protects.
+
+**Verified on the target, all four paths:** stock build, hybrid on real
+hardware (16106 triangles, 100% on the card), hybrid forced to software, and
+hybrid with acceleration unavailable.  The three software paths are byte
+identical to each other; the hardware one differs in 429 bytes of 921740
+(0.05%), all at triangle edges.
 
 **The geometry is not in the payload.**  `teapot-geometry.h` is cut out of a
 Mesa source tree at build time, because `tea.c` is GPL as a whole while the
-teapot inside it is Kilgard's under GLUT's terms.  The prebuilt binary is
-shipped so that RUNNING the demo needs no such tree; rebuilding it does, and
+teapot inside it is Kilgard's under GLUT's terms.  Both prebuilt binaries
+are shipped so that RUNNING needs no such tree; rebuilding does, and
 `build-teapot.csh` says so and checks the cut before compiling.
 
 `post_install` reruns `ranlib` -- OPENSTEP's archive index records the

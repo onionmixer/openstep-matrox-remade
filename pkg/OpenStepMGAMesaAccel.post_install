@@ -1,0 +1,24 @@
+#!/bin/csh -f
+# OPENSTEP's archive index records the pathname the archive had when ranlib
+# last ran, so a relocated .a is unusable until the index is rebuilt where it
+# now lives.  The Mesa port's own libraries package does the same thing for
+# the same reason.
+
+if ($#argv != 2) then
+    echo "FAILED (unexpected Installer arguments)"
+    exit 1
+endif
+
+set prefix = "$argv[2]"
+if (! -r "$prefix/Libraries/libGL_mga.a") then
+    echo "OpenStepMGAMesaAccel: no libGL_mga.a at $prefix/Libraries"
+    exit 1
+endif
+
+ranlib "$prefix/Libraries/libGL_mga.a"
+if ($status != 0) then
+    echo "OpenStepMGAMesaAccel: could not refresh the archive index"
+    exit 1
+endif
+
+exit 0

@@ -1,0 +1,17 @@
+#!/bin/csh -f
+# The driver is i386 machine code and a G450 is a PCI card, so this package
+# has nothing to offer any other architecture.  Refuse rather than install
+# something that cannot run.
+
+if ($#argv != 2) then
+    echo "FAILED (unexpected Installer arguments)"
+    exit 1
+endif
+
+set cpu = `/usr/bin/arch`
+if ("$cpu" != "i386") then
+    echo "OpenStepMGAReplacementDisplay installs only on Intel i386/i486 computers."
+    exit 1
+endif
+
+exit 0
