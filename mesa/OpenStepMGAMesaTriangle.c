@@ -51,6 +51,24 @@ osmgaLog2Ceil(unsigned long n)
 
 /* Nearest long.  The coordinate registers are plain integers, not the
  * shifted fixed point the colour registers use. */
+/*
+ * The reciprocal, not the divisor.
+ *
+ * cc 2.7.2.1 does not strength-reduce a division by a power-of-two double
+ * constant: `x / 256.0` compiles to a real `fdivrl` (checked with -S on the
+ * machine), and this file did thirty-one of them per triangle.  Both forms
+ * are exact -- scaling by a power of two only changes the exponent -- so
+ * this is a speed change and not a numeric one.  The operands are coordinate
+ * differences of at least 1/256 in magnitude when they are not zero, so the
+ * one case where the two forms could differ, an underflow into the
+ * subnormals, cannot be reached from here.
+ */
+#define OSMGA_MESA_SUBINV  (1.0 / (double)OSMGA_MESA_SUBONE)
+
+/* Does this implementation shift a negative signed value arithmetically?  A
+ * constant expression, so the branches it guards fold away. */
+#define OSMGA_MESA_ARITH_SHIFT  (((-1L) >> 1) == -1L)
+
 static long
 osmgaRound(double v)
 {
@@ -244,11 +262,39 @@ osmgaEdgeRegs(const OSMGAMesaEdge *e, long r0, long s,
     long shift = OSMGA_MESA_SUBBITS - s;
     long step = 1L << shift;
     long M = 1L << s;
-    long XA = osmgaFloorDiv(e->xa, step);
-    long YA = osmgaFloorDiv(e->ya, step);
-    long DD = osmgaFloorDiv(e->dee, step);
-    long HH = osmgaFloorDiv(e->height, step);
+    long XA, YA, DD, HH;
     long Q2, P0, r, e2;
+
+    /*
+     * Both divisors here are powers of two, and the divisions were costing
+     * more than everything they compute.
+     *
+     * step is 1<<shift and M is 1<<s, with s bounded to 0..8: sub starts at
+     * OSMGA_MESA_SUBBITS and is only ever decremented while positive, and
+     * this function is static with no other caller.  Floor division by 2^k
+     * is an arithmetic right shift and ceiling division by 2^k is the
+     * negated shift of the negation -- checked exhaustively against the
+     * previous code for k of 0..8 over the whole coordinate range, not
+     * argued.
+     *
+     * C89 leaves the right shift of a negative signed value to the
+     * implementation, and these numerators go negative.  So the shift is
+     * taken only when the implementation is the one this was verified
+     * against; the test is a constant expression the compiler folds, and
+     * anything that shifts logically keeps the division and stays correct.
+     * cc 2.7.2.1 on this target emits sarl -- checked with -S.
+     */
+    if (OSMGA_MESA_ARITH_SHIFT) {
+        XA = e->xa     >> shift;
+        YA = e->ya     >> shift;
+        DD = e->dee    >> shift;
+        HH = e->height >> shift;
+    } else {
+        XA = osmgaFloorDiv(e->xa, step);
+        YA = osmgaFloorDiv(e->ya, step);
+        DD = osmgaFloorDiv(e->dee, step);
+        HH = osmgaFloorDiv(e->height, step);
+    }
 
     Q2 = 2L * M * HH;
     P0 = 2L * XA * HH - M * HH + ((2L * r0 + 1L) * M - 2L * YA) * DD;
@@ -257,7 +303,10 @@ osmgaEdgeRegs(const OSMGAMesaEdge *e, long r0, long s,
     e2 = (DD >= 0L) ? r : (-r - Q2 + 1L);
     *mag = 2L * ((DD >= 0L) ? DD : -DD);
     *dy = 2L * HH;
-    *err = osmgaCeilDiv(e2, M);
+    /* The same, for the one ceiling division whose divisor is 2^s.  e2 is
+     * bounded by Q2, so negating it cannot overflow; the other CeilDiv in
+     * this file divides by 2*M*HH, which is no power of two, and stays. */
+    *err = OSMGA_MESA_ARITH_SHIFT ? -((-e2) >> s) : osmgaCeilDiv(e2, M);
     *sgn = (DD >= 0L) ? 1L : -1L;
 }
 
@@ -563,8 +612,8 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
          * polygon, it flips comparisons at ties, and with the depth test on
          * it would move coverage.  It gets its own measurement.
          */
-        double ox = (double)left - (double)a->x / (double)OSMGA_MESA_SUBONE + 0.5;
-        double oy = (double)y    - (double)a->y / (double)OSMGA_MESA_SUBONE + 0.5;
+        double ox = (double)left - (double)a->x * OSMGA_MESA_SUBINV + 0.5;
+        double oy = (double)y    - (double)a->y * OSMGA_MESA_SUBINV + 0.5;
 
         t->a0  = osmgaStartFixed(aplane->at_a + aplane->dx * ox
                                  + aplane->dy * oy);
@@ -586,8 +635,8 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
          * a truncation of the same real number on both sides, the truncation
          * does not change the answer.
          */
-        double ox = (double)left - (double)a->x / (double)OSMGA_MESA_SUBONE + 0.5;
-        double oy = (double)y    - (double)a->y / (double)OSMGA_MESA_SUBONE + 0.5;
+        double ox = (double)left - (double)a->x * OSMGA_MESA_SUBINV + 0.5;
+        double oy = (double)y    - (double)a->y * OSMGA_MESA_SUBINV + 0.5;
 
         /*
          * TMR1 is s per Y and TMR2 is t per X, not the other way round.
@@ -698,8 +747,8 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
          * ill-conditioned wherever it is sampled.  A shape from the
          * introduced class is in the test, not just one from the removed.
          */
-        double ox = (double)left - (double)a->x / (double)OSMGA_MESA_SUBONE + 0.5;
-        double oy = (double)y    - (double)a->y / (double)OSMGA_MESA_SUBONE + 0.5;
+        double ox = (double)left - (double)a->x * OSMGA_MESA_SUBINV + 0.5;
+        double oy = (double)y    - (double)a->y * OSMGA_MESA_SUBINV + 0.5;
         double at = zplane->at_a + zplane->dx * ox + zplane->dy * oy;
 
         if (at < 0.0 || at > 65535.0)
@@ -756,8 +805,8 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
          * polygon, it flips comparisons at ties, and with the depth test on
          * it would move coverage.  It gets its own measurement.
          */
-        double ox = (double)left - (double)a->x / (double)OSMGA_MESA_SUBONE + 0.5;
-        double oy = (double)y    - (double)a->y / (double)OSMGA_MESA_SUBONE + 0.5;
+        double ox = (double)left - (double)a->x * OSMGA_MESA_SUBINV + 0.5;
+        double oy = (double)y    - (double)a->y * OSMGA_MESA_SUBINV + 0.5;
         int i;
 
         for (i = 0; i < 3; i++) {
@@ -789,6 +838,7 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
     OSMGAColourPlane zplane, aplane, uplane, vplane, qplane;
     const OSMGAMesaVertex *shade = flat;
     long span, sub, rT, rM, rL;
+    double x1, y1, x2, y2, den;
     double crossD;
     OSMGAMesaEdge longE;
     int n = 0;
@@ -807,6 +857,30 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
     if (!osmgaCoordOK(a) || !osmgaCoordOK(b) || !osmgaCoordOK(c))
         return OSMGA_MESA_TRI_UNSUPPORTED;
 
+    /*
+     * The two edge vectors and their determinant, once.
+     *
+     * They were written out five times -- for the area test, the depth
+     * plane, the texture planes, the alpha plane and the colour planes --
+     * and recomputed identically each time; a, b and c are never reassigned
+     * in this function, so the five copies could only ever have agreed.
+     *
+     * AFTER the guards above and not before: the null test has to have run
+     * before these dereference anything, and the coordinate test has to have
+     * run before these subtract, since it is what bounds the subtraction.
+     *
+     * The determinant carries no rounding at all, so hoisting it cannot move
+     * a pixel however the compiler assigns registers.  A coordinate
+     * difference is at most 2^22 in units of 1/256; each product is then an
+     * exact multiple of 2^-16 needing 45 bits, and their difference needs
+     * 46 -- inside binary64's 53 and inside the x87 stack's 64.
+     */
+    x1 = (double)(b->x - a->x) * OSMGA_MESA_SUBINV;
+    y1 = (double)(b->y - a->y) * OSMGA_MESA_SUBINV;
+    x2 = (double)(c->x - a->x) * OSMGA_MESA_SUBINV;
+    y2 = (double)(c->y - a->y) * OSMGA_MESA_SUBINV;
+    den = x1 * y2 - x2 * y1;
+
     {
         /*
          * Twice the signed area.  Zero means the three vertices are on one
@@ -814,12 +888,7 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
          * the two edges walk together and the engine draws the line itself,
          * which is a shape nobody asked for.
          */
-        double x1 = (double)(b->x - a->x) / (double)OSMGA_MESA_SUBONE;
-        double y1 = (double)(b->y - a->y) / (double)OSMGA_MESA_SUBONE;
-        double x2 = (double)(c->x - a->x) / (double)OSMGA_MESA_SUBONE;
-        double y2 = (double)(c->y - a->y) / (double)OSMGA_MESA_SUBONE;
-
-        if (x1 * y2 - x2 * y1 == 0.0)
+        if (den == 0.0)
             return 0;
     }
 
@@ -833,19 +902,14 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
     aplane.dx = aplane.dy = 0.0;
     aplane.at_a = 255.0;
     if (zmode != OSMGA_MESA_ZMODE_NONE) {
-        double x1 = (double)(b->x - a->x) / (double)OSMGA_MESA_SUBONE;
-        double y1 = (double)(b->y - a->y) / (double)OSMGA_MESA_SUBONE;
-        double x2 = (double)(c->x - a->x) / (double)OSMGA_MESA_SUBONE;
-        double y2 = (double)(c->y - a->y) / (double)OSMGA_MESA_SUBONE;
-        double den = x1 * y2 - x2 * y1;
-        double d1 = ((double)b->z - (double)a->z) / (double)OSMGA_MESA_SUBONE;
-        double d2 = ((double)c->z - (double)a->z) / (double)OSMGA_MESA_SUBONE;
+        double d1 = ((double)b->z - (double)a->z) * OSMGA_MESA_SUBINV;
+        double d2 = ((double)c->z - (double)a->z) * OSMGA_MESA_SUBINV;
 
         /* den is not zero: the caller above has already refused a triangle
          * with no area. */
         zplane.dx   = (d1 * y2 - d2 * y1) / den;
         zplane.dy   = (d2 * x1 - d1 * x2) / den;
-        zplane.at_a = (double)a->z / (double)OSMGA_MESA_SUBONE;
+        zplane.at_a = (double)a->z * OSMGA_MESA_SUBINV;
 
         /*
          * The same rule the software rasteriser uses for slivers: a slope
@@ -912,11 +976,6 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
      * independently, because the width and the height have their own fields.
      */
     if (tex != 0) {
-        double x1 = (double)(b->x - a->x) / (double)OSMGA_MESA_SUBONE;
-        double y1 = (double)(b->y - a->y) / (double)OSMGA_MESA_SUBONE;
-        double x2 = (double)(c->x - a->x) / (double)OSMGA_MESA_SUBONE;
-        double y2 = (double)(c->y - a->y) / (double)OSMGA_MESA_SUBONE;
-        double den = x1 * y2 - x2 * y1;
         double us = (double)tex->w * (double)(1L << (20L - osmgaLog2Ceil(tex->w)));
         double vs = (double)tex->h * (double)(1L << (20L - osmgaLog2Ceil(tex->h)));
         double ua = a->s * us, ub = b->s * us, uc = c->s * us;
@@ -1034,11 +1093,6 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
      * written either way, and it has to hold what the software path would
      * have put there. */
     {
-        double x1 = (double)(b->x - a->x) / (double)OSMGA_MESA_SUBONE;
-        double y1 = (double)(b->y - a->y) / (double)OSMGA_MESA_SUBONE;
-        double x2 = (double)(c->x - a->x) / (double)OSMGA_MESA_SUBONE;
-        double y2 = (double)(c->y - a->y) / (double)OSMGA_MESA_SUBONE;
-        double den = x1 * y2 - x2 * y1;
         double d1 = (double)b->a - (double)a->a;
         double d2 = (double)c->a - (double)a->a;
 
@@ -1053,11 +1107,6 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
          * denominator is twice the signed area, which the caller above has
          * already established is not zero.
          */
-        double x1 = (double)(b->x - a->x) / (double)OSMGA_MESA_SUBONE;
-        double y1 = (double)(b->y - a->y) / (double)OSMGA_MESA_SUBONE;
-        double x2 = (double)(c->x - a->x) / (double)OSMGA_MESA_SUBONE;
-        double y2 = (double)(c->y - a->y) / (double)OSMGA_MESA_SUBONE;
-        double denom = x1 * y2 - x2 * y1;
 
         {
             unsigned long ca[3], cb[3], cc[3];
@@ -1070,8 +1119,8 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
                 double d1 = (double)cb[i] - (double)ca[i];
                 double d2 = (double)cc[i] - (double)ca[i];
 
-                plane[i].dx   = (d1 * y2 - d2 * y1) / denom;
-                plane[i].dy   = (d2 * x1 - d1 * x2) / denom;
+                plane[i].dx   = (d1 * y2 - d2 * y1) / den;
+                plane[i].dy   = (d2 * x1 - d1 * x2) / den;
                 plane[i].at_a = (double)ca[i];
             }
         }
