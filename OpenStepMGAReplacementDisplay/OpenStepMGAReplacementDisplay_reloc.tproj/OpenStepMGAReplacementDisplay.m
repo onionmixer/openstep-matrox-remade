@@ -826,11 +826,19 @@ static OSMGAHW3DBatch osmgaHW3DSnapshot;
  */
 static OSMGAHW3DTexBand osmgaHW3DBands[OSMGA_HW3D_MAX_TRI];
 
+/*
+ * `track` is an argument rather than a global the encoder reaches for,
+ * because the boot self-test encodes the same batch both ways to prove the
+ * skip, and reaching into the submit path's snapshot to do that would
+ * defeat the reason the snapshot exists.  The submit path passes its own
+ * snapshot; a diagnostic passes what it means.
+ */
 static unsigned long osmgaHW3DEncode(unsigned long *list,
                                      unsigned long listDwords,
                                      const OSMGAHW3DBatch *b,
                                      const OSMGAHW3DTexBand *bands,
-                                     unsigned long *outTail);
+                                     unsigned long *outTail,
+                                     int track);
 
 #define MGA_DMA_GENERAL         0x00     /* PRIMADDRESS mode bits */
 #define MGA_PRIMNOSTART         0x01     /* PRIMEND bit0: do NOT start */
@@ -4504,7 +4512,8 @@ refuse2:
      * anything is read, there is one reading and it cannot go stale.
      */
     total3 = osmgaHW3DEncode(list3, listDwords3, &osmgaHW3DSnapshot,
-                             osmgaHW3DBands, &tail3);
+                             osmgaHW3DBands, &tail3,
+                             (osmgaTrackStateNow != 0UL));
     osmgaHW3DLast[2] = (unsigned)total3;
     /*
      * The two admission waits, each accounted for.  Written out rather than
@@ -7854,13 +7863,13 @@ osmgaHW3DLog2Ceil(unsigned long n)
 static unsigned long
 osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                 const OSMGAHW3DBatch *b, const OSMGAHW3DTexBand *bands,
-                unsigned long *outTail)
+                unsigned long *outTail, int track)
 {
     unsigned long pos = 0UL, i;
     unsigned long tds0 = 0UL, tds1 = 0UL, clampBits = 0UL, perspBits = 0UL;
     int anyDepth = 0, anyTex = 0;
     int ok = 1;
-    int track, have;                    /* skip unchanged blocks; anything held */
+    int have;                           /* is anything held from the last one */
     unsigned long prevC0[4], prevC1[4], prevA[4];
     /*
      * What to take off each coordinate.  The engine's addend depends on the
@@ -8089,7 +8098,6 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
      * diagnostic callers besides the live submit path, which is another
      * reason the state cannot be a file static.
      */
-    track = (osmgaTrackStateNow != 0UL);
     have = 0;
 
     for (i = 0UL; ok && i < b->triCount; i++) {
@@ -8965,8 +8973,28 @@ osmgaProbeVramExtent(unsigned long fbPhysical, unsigned long visibleEnd,
         t->dr[0] = 200UL << 15;
         t->dr[3] = 100UL << 15;
         t->dr[6] =  50UL << 15;
+        /*
+         * The same trapezoid, twice, so the encoder's state tracker has
+         * something to skip.
+         *
+         * One trapezoid could never show it: the tracker starts empty on
+         * every list, so the first one always writes its colour and alpha
+         * blocks whatever the setting is.  Two identical ones are the
+         * smallest batch where the skip can happen at all.
+         *
+         * Drawing it twice leaves the same pixels.  This primitive is
+         * opaque replace with no depth: DWGCTL is TRAP | ATYPE_I with zmode
+         * nought, ALPHACTRL weights the destination at zero, the plane mask
+         * the driver programs is all ones, and every gradient in the batch
+         * is zero -- so the second pass writes the same constant colour to
+         * the same covered pixels.  The comparison against the MMIO band
+         * below therefore still means what it meant.
+         */
+        batch->tri[1] = batch->tri[0];
+        batch->triCount = 2UL;
     }
 
+    /* After the duplication, so what is validated is what is encoded. */
     v = osmgaHW3DValidateReach(batch, &lim, &badTri, &reach,
                                osmgaHW3DBands);
     if (v != OSMGA_HW3D_OK) {
@@ -8974,8 +9002,49 @@ osmgaProbeVramExtent(unsigned long fbPhysical, unsigned long visibleEnd,
               v, badTri);
         goto unmap;
     }
+    /*
+     * Encode it both ways and check what the tracker took out.
+     *
+     * Three blocks can be skipped on a repeated trapezoid -- the two colour
+     * blocks and the alpha block -- and a block is five dwords.  The depth
+     * block goes out every time because the depth start changes on all but
+     * a thousandth of real trapezoids, so it has nothing to hold back.
+     *
+     * The number is computed from the block size rather than written as
+     * fifteen, so that changing the block layout changes the assertion
+     * instead of quietly invalidating it.
+     */
+    {
+        unsigned long offTail = 0UL, onTail = 0UL;
+        unsigned long totalOff, totalOn;
+        unsigned long want = 3UL * (unsigned long)OSMGA_DMA_BLOCK_DWORDS;
+
+        totalOff = osmgaHW3DEncode(list, listDwords, batch, osmgaHW3DBands,
+                                   &offTail, 0);
+        totalOn  = osmgaHW3DEncode(list, listDwords, batch, osmgaHW3DBands,
+                                   &onTail, 1);
+        if (totalOff == 0UL || totalOn == 0UL) {
+            IOLog("OpenStepMGA M1-2a: PROBLEM -- an encode failed "
+                  "(off %lu, on %lu)\n", totalOff, totalOn);
+            goto unmap;
+        }
+        if (totalOff < totalOn || totalOff - totalOn != want) {
+            IOLog("OpenStepMGA M1-2a: PROBLEM -- the tracker took out %ld "
+                  "dwords of a repeated trapezoid, wanted %lu (off %lu, "
+                  "on %lu, packing %s)\n",
+                  (long)totalOff - (long)totalOn, want, totalOff, totalOn,
+                  (osmgaPackExecNow != 0UL) ? "on" : "off");
+            goto unmap;
+        }
+        IOLog("OpenStepMGA M1-2a: two identical trapezoids encode to %lu "
+              "dwords untracked and %lu tracked -- the tracker took out the "
+              "%lu the second one repeats (packing %s)\n",
+              totalOff, totalOn, want,
+              (osmgaPackExecNow != 0UL) ? "on" : "off");
+    }
+
     total = osmgaHW3DEncode(list, listDwords, batch, osmgaHW3DBands,
-                            &tail);
+                            &tail, (osmgaTrackStateNow != 0UL));
     if (total == 0UL) {
         IOLog("OpenStepMGA M1-2a: encoding failed\n");
         goto unmap;
@@ -9237,7 +9306,7 @@ osmgaM1cTri(OSMGAHW3DTri *t, unsigned long y, unsigned long h,
             goto unmap;
         }
         total = osmgaHW3DEncode(list, listDwords, batch, osmgaHW3DBands,
-                            &tail);
+                            &tail, (osmgaTrackStateNow != 0UL));
         if (total == 0UL) {
             IOLog("OpenStepMGA M1-2c: encoding failed\n");
             goto unmap;
