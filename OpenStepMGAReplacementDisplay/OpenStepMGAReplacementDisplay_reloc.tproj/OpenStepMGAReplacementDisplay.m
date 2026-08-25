@@ -1210,6 +1210,12 @@ static unsigned char osmgaVgaExt[6];      /* CRTCEXT 0..5 -- what this driver
 static unsigned char osmgaVgaDac[0x50];   /* the indexed DAC registers */
 static unsigned char osmgaVgaPal[768];
 static unsigned char osmgaVgaPixMask;
+/*
+ * PAN_CTL lives at indexed DAC 0xa2, outside the 0..0x4f the loop above
+ * covers, and -programLinearMode writes it.  Saved on its own for the same
+ * reason X.Org saves the Gx50 pan control separately from its DAC block.
+ */
+static unsigned char osmgaVgaPanCtl;
 
 static void
 osmgaVgaSnapshot(vm_address_t base)
@@ -1254,18 +1260,33 @@ osmgaVgaSnapshot(vm_address_t base)
      * is what a careless copy of the write path would do, returns nothing
      * useful.
      */
+    osmgaVgaPanCtl = osmgaInDac(base, MGA_DAC_PAN_CTL);
     osmgaVgaPixMask = osmgaR8(base, MGA_DAC_INDEX + 2);
     osmgaW8(base, MGA_DAC_INDEX + 3, 0x00);
     for (i = 0U; i < 768U; i++)
         osmgaVgaPal[i] = osmgaR8(base, MGA_DAC_INDEX + 1);
 
     osmgaVgaSaved = 1;
+    /*
+     * ATTR 0x10 bit 0 is the one that decides scope, and it is the reason
+     * this line exists at all.
+     *
+     * It is the VGA attribute mode control, and its bottom bit says graphics
+     * rather than text.  X.Org's generic font save reads exactly this and
+     * returns immediately when it is set -- "if in graphics mode, don't save
+     * anything" -- so it, and not the CRTC's maximum scan line, is what says
+     * whether a restore has to put character generator planes back.  I had
+     * reasoned from the scan line, which is suggestive and is not the test.
+     */
     IOLog("OpenStepMGA V1: saved the console's card -- misc %02x seq1 %02x "
           "crtc0 %02x crtc9 %02x crtc17 %02x ext0 %02x ext3 %02x "
-          "dac[0] %02x dac[19] %02x mask %02x\n",
+          "attr10 %02x (%s) gr6 %02x dac[19] %02x panctl %02x mask %02x\n",
           osmgaVgaMisc, osmgaVgaSeq[1], osmgaVgaCrtc[0], osmgaVgaCrtc[9],
           osmgaVgaCrtc[23], osmgaVgaExt[0], osmgaVgaExt[3],
-          osmgaVgaDac[0], osmgaVgaDac[0x19], osmgaVgaPixMask);
+          osmgaVgaAttr[0x10],
+          (osmgaVgaAttr[0x10] & 0x01) ? "graphics" : "TEXT -- fonts needed",
+          osmgaVgaGr[6], osmgaVgaDac[0x19], osmgaVgaPanCtl,
+          osmgaVgaPixMask);
 }
 
 /* ---- Storm 2D engine: bounded waits (never spin forever) ---- */
