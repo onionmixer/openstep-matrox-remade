@@ -1,0 +1,61 @@
+/*
+ * The instance table a RELEASE installs, as against the one this project
+ * develops against.
+ *
+ * A configured InstanceN.table is what makes a driver a boot candidate, so
+ * the package ships one -- omitting it is what once booted the development
+ * machine into 800x600 four-colour VGA.  But the development instance turns
+ * on switches nobody else should inherit:
+ *
+ *   "Raster Test"       drives the drawing engine by MMIO at every boot.  It
+ *                       is an opt-in diagnostic and OFF here.
+ *   "VRAM Mmap"         publishes the offscreen VRAM window as a character
+ *                       device.  Once enabled the driver MUST NOT be
+ *                       unloaded, because client mappings outlive it.  A
+ *                       display-only installation should not carry that
+ *                       hazard, so it is OFF here and turned on by whoever
+ *                       installs the acceleration package.
+ *   "Mesa Acceleration" only reports a capability -- the library is what
+ *                       declines -- so it cannot break the display either
+ *                       way.  OFF here for the same reason: this package
+ *                       alone is a 2D display driver.
+ *
+ *   "Storm 2D Test", "DMA Ring Test", "WARP Test" are diagnostics and stay
+ *                       OFF, as they already are in Default.table.
+ *
+ * "MGA Memory Size" is NOT machine-specific: the driver is a fixed 16 MiB
+ * design and clamps any other value to 16 with a log line.  It is written
+ * out because Configure shows it.
+ *
+ * "Auto Detect IDs" 0x0525102B is shared by the G400 and the G450.  It is a
+ * CANDIDATE FILTER, not a support claim: the driver accepts revision 0x80
+ * and above (G450 class) and the G400 path is unimplemented, so a G400
+ * board is declined at probe.  See README and P1_PACKAGING_PRINCIPLE.md.
+ *
+ * "Display Mode" is the VESA DMT 1024x768 60 Hz profile, which is the
+ * safest of the five the driver offers; Configure changes it from
+ * Display.modes without editing this file.
+ */
+"Title" = "OpenStep MGA Replacement Display";
+"Family" = "Display";
+"Instance" = "0";
+"Driver Name" = "OpenStepMGAReplacementDisplay";
+"Class Names" = "OpenStepMGAReplacementDisplay";
+"Server Name" = "OpenStepMGAReplacementDisplay";
+"Bus Type" = "PCI";
+"Auto Detect IDs" = "0x0525102B";
+"Display Mode" = "Height: 768 Width: 1024 Refresh: 60Hz ColorSpace: RGB:888/32";
+"MGA Memory Size" = "16";
+"Storm 2D Test" = "No";
+"VRAM Mmap" = "No";
+"Mesa Acceleration" = "No";
+"DMA Ring Test" = "No";
+"WARP Test" = "No";
+"Raster Test" = "No";
+"FB Address" = "";
+"Memory Maps" = "";
+"VGA Memory Maps" = "0xa0000-0xbffff 0xc0000-0xcffff";
+"I/O Ports" = "";
+"DMA Channels" = "";
+"IRQ Levels" = "";
+"Location" = "";
