@@ -3,9 +3,12 @@
  * what it spends them on.
  *
  *   waits              print the counters
- *   waits <us> <pack>  set the completion-poll delay (0/1/2/4) and whether
- *                      an untextured trapezoid's FXBNDRY rides in its
- *                      execute block (0/1), then print the counters
+ *   waits <us> <pack> [track]
+ *                      set the completion-poll delay (0/1/2/4), whether an
+ *                      untextured trapezoid's FXBNDRY rides in its execute
+ *                      block (0/1), and whether the colour and alpha blocks
+ *                      are written only when they change (0/1), then print
+ *                      the counters
  *
  * The counters are cumulative since the driver loaded.  Read them before a
  * measured run and after it, and subtract; a raw total says nothing.
@@ -42,18 +45,25 @@ main(int argc, char **argv)
     }
 
     if (argc >= 3) {
-        unsigned t[2];
+        unsigned t[3];
+        unsigned n3 = (argc >= 4) ? 3U : 2U;
 
         t[0] = (unsigned)atoi(argv[1]);
         t[1] = (unsigned)atoi(argv[2]);
+        t[2] = (argc >= 4) ? (unsigned)atoi(argv[3]) : 0U;
         r = [master setIntValues:t forParameter:TUNE_PARAM
-                    objectNumber:objNum count:2];
+                    objectNumber:objNum count:n3];
         if (r != IO_R_SUCCESS) {
-            printf("tune refused (%d): delay must be 0, 1, 2 or 4 and pack "
-                   "0 or 1\n", (int)r);
+            printf("tune refused (%d): delay must be 0, 1, 2 or 4, pack and "
+                   "track 0 or 1\n", (int)r);
             return 2;
         }
-        printf("tune: completion poll delay %u us, pack %u\n", t[0], t[1]);
+        if (n3 == 3U)
+            printf("tune: delay %u us, pack %u, track %u\n",
+                   t[0], t[1], t[2]);
+        else
+            printf("tune: delay %u us, pack %u (track left alone)\n",
+                   t[0], t[1]);
     }
 
     r = [master getIntValues:w forParameter:WAITS_PARAM
