@@ -133,9 +133,14 @@ static float hookLastWin[3][3];
  * arrives as an exact multiple of 256.  Depth keeps the snap, since it is a
  * whole number to the engine and has its own, larger, noise.
  */
-static long
+static __inline__ long
 osmgaFix(double v)
 {
+    /* The call rounded the argument to 64 bits on the way in; inlined, the
+     * caller's expression could stay 80 in an x87 register.  See the note
+     * beside the leaves in OpenStepMGAMesaTriangle.c. */
+    volatile double vv = v;
+
     /*
      * The bound is the one the conversion below can actually take, not a
      * round number.  It used to be 1e30, which lets through everything the
@@ -144,9 +149,9 @@ osmgaFix(double v)
      * yields the indefinite integer, which the coordinate check downstream
      * happens to refuse, by luck rather than by design.
      */
-    if (!(v > -8.0e6) || !(v < 8.0e6))
+    if (!(vv > -8.0e6) || !(vv < 8.0e6))
         return 0L;
-    return (long)floor(v * (double)OSMGA_MESA_SUBONE + 0.5);
+    return (long)floor(vv * (double)OSMGA_MESA_SUBONE + 0.5);
 }
 
 static double
@@ -421,6 +426,16 @@ static unsigned long hookFlushOther, hookReplayed;
 /* The A/B knob: 1 reproduces the old one-triangle-per-submission behaviour
  * exactly, which is what the identical-image comparison runs against. */
 static unsigned long hookBatchLimit = OSMGA_HW3D_MAX_TRI;
+/*
+ * Test-only: run the submission instrumentation.
+ *
+ * Off by default because it is not free -- see the note at the submit site.
+ * A test that wants OSMGAMesaHookSubmitStats' microseconds, or any of the
+ * delta counts, has to turn it on and say so in what it reports, because a
+ * frame time measured with this set is not the frame time without it.
+ */
+static int hookInstrument;
+
 /* Test-only: corrupt the magic of every flushed batch so the kernel refuses
  * it (E_MAGIC, before anything is drawn) and the replay path runs for real.
  * Nothing sets this but the injection setter, and nothing should. */
@@ -706,13 +721,32 @@ osmgaMesaSubmitBatch(GLcontext *ctx, OSMGAHW3DBatch *batch,
         struct timeval t0, t1;
         int rc;
 
-        osmgaMesaCountDeltas(batch);
-        gettimeofday(&t0, (struct timezone *)0);
-        rc = OSMGAMesaProbeSubmit(&res);
-        gettimeofday(&t1, (struct timezone *)0);
+        /*
+         * The measuring costs more than some of what it measures.
+         *
+         * gettimeofday is a system call here and it was timed at 4.58 us --
+         * two of them on every submission, 33.5 submissions a frame, is
+         * 0.31 ms of a 17 ms frame, and it lands in system time where the
+         * submission's own cost is.  Counting which registers changed is
+         * another 0.45 ms of user time.  Together that is 4.4% of the frame
+         * spent watching the frame.
+         *
+         * So none of it runs unless a test asks for it.  What is lost by
+         * default is only the reporting: the submission itself, the
+         * refusal bookkeeping below, and every counter a correctness test
+         * reads are outside this switch.
+         */
+        if (hookInstrument) {
+            osmgaMesaCountDeltas(batch);
+            gettimeofday(&t0, (struct timezone *)0);
+            rc = OSMGAMesaProbeSubmit(&res);
+            gettimeofday(&t1, (struct timezone *)0);
+            submitUs += (unsigned long)((t1.tv_sec - t0.tv_sec) * 1000000L +
+                                        (t1.tv_usec - t0.tv_usec));
+        } else {
+            rc = OSMGAMesaProbeSubmit(&res);
+        }
         submitCount++;
-        submitUs += (unsigned long)((t1.tv_sec - t0.tv_sec) * 1000000L +
-                                    (t1.tv_usec - t0.tv_usec));
         submitDwords += res.dwords;
         submitSpins += res.spins;
         if (res.spins > submitSpinMax) submitSpinMax = res.spins;
@@ -2358,6 +2392,7 @@ unsigned long OSMGAMesaHookSoftState(void) { return hookSoftState; }
 unsigned long OSMGAMesaHookTexPersp(void)  { return hookTexPersp; }
 unsigned long OSMGAMesaHookTexAbsent(void) { return hookTexAbsent; }
 void OSMGAMesaHookForceSoftware(int on)    { hookForcedSoftware = on; }
+void OSMGAMesaHookInstrument(int on)      { hookInstrument = (on != 0); }
 unsigned long OSMGAMesaHookBatches(void)   { return hookBatches; }
 unsigned long OSMGAMesaHookTraps(void)     { return hookTraps; }
 unsigned long OSMGAMesaHookUnsupported(void) { return hookUnsupported; }

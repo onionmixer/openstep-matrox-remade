@@ -164,6 +164,8 @@ static void counters(const char *tag)
                    r->tri.y, r->tri.h, r->tri.ar0, r->tri.ar6, r->tri.sgn,
                    r->tri.fxbndry, r->tri.dwgctl);
     }
+    printf("%s: flushes -- bracket %lu, key %lu, full %lu, other %lu\n",
+           tag, fc[0], fc[1], fc[2], fc[3]);
     printf("%s: submits %lu, %lu us total (%.1f us each), %lu dwords "
            "(%.1f/submit), poll index sum %lu max %lu, %lu submits polled "
            "more than once\n",
@@ -269,6 +271,18 @@ int main(int argc, char **argv)
     glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 50.0f);
     glClearColor(0.06f, 0.08f, 0.14f, 1.0f);
 
+    /*
+     * The submission instrumentation is off in the driver by default -- it
+     * costs 0.76 ms a frame, which is more than several of the things it is
+     * used to measure.  Turn it on only for the modes that report it, and
+     * say so, because a frame time measured with it set is not the frame
+     * time without it.
+     */
+    if (strcmp(mode, "submit") == 0 || strcmp(mode, "delta") == 0) {
+        OSMGAMesaHookInstrument(1);
+        printf("instrumented: submit timing and delta counting are ON, "
+               "which costs about 0.76 ms a frame\n");
+    }
     if (strcmp(mode, "limit1") == 0) OSMGAMesaHookBatchLimit(1UL);
     if (strcmp(mode, "soft") == 0)   OSMGAMesaHookForceSoftware(1);
 

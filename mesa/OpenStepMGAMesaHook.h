@@ -113,6 +113,15 @@ void OSMGAMesaHookForceSoftware(int on);
  */
 void OSMGAMesaHookFlushPending(void);
 void OSMGAMesaHookInjectRefusal(int on);   /* test only: see the .c */
+/*
+ * Test only: run the submission instrumentation -- the per-submission
+ * timing and the register-change counting.  OFF by default: two
+ * gettimeofday calls a submission cost 0.31 ms a frame on this machine
+ * and the delta counting another 0.45 ms.  SubmitStats' microsecond
+ * field and every Delta* accessor read nought until this is set, and a
+ * frame time measured with it set is not the frame time without it.
+ */
+void OSMGAMesaHookInstrument(int on);
 void OSMGAMesaHookBatchLimit(unsigned long limit);
 unsigned long OSMGAMesaHookReplayed(void);
 void OSMGAMesaHookFlushCounts(unsigned long out[4]);
