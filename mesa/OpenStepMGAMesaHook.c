@@ -196,6 +196,111 @@ osmgaSnap(double v, double eps)
  * Clears come through the same helper as triangles, so the count here is
  * batches plus clears; the caller-side counters separate them.
  */
+/*
+ * How much of a trapezoid the kernel would not have to write, if it wrote
+ * only what changed.  Test only, and a MEASUREMENT rather than a change:
+ * the encoder is the kernel's and this only counts what it would skip.
+ *
+ * The kernel emits a fixed seven blocks a trapezoid (eight when textured),
+ * five dwords each, whatever the values are -- and the measurement that
+ * matters says the engine's wait tracks the dword count.  So before writing
+ * a change-tracking encoder it is worth knowing what a real frame's
+ * trapezoids actually have in common.  These count, over every trapezoid
+ * this library submits, how many of the twenty-five register values differ
+ * from the previous trapezoid in the same batch.
+ *
+ * The first trapezoid of a batch counts as all-changed: the kernel's state
+ * before it is the previous batch's, and nothing here may assume otherwise.
+ */
+static unsigned long deltaTraps, deltaChanged, deltaBlocksNow, deltaBlocksMin;
+static unsigned long deltaBlockDirty[7];   /* how often each block changes */
+
+void
+OSMGAMesaHookDeltaStats(unsigned long out[4])
+{
+    if (out == 0)
+        return;
+    out[0] = deltaTraps;
+    out[1] = deltaChanged;
+    out[2] = deltaBlocksNow;
+    out[3] = deltaBlocksMin;
+}
+
+void
+OSMGAMesaHookDeltaBlocks(unsigned long out[7])
+{
+    int k;
+
+    if (out == 0)
+        return;
+    for (k = 0; k < 7; k++)
+        out[k] = deltaBlockDirty[k];
+}
+
+/*
+ * The twenty-five values, in the order the kernel writes them, grouped as it
+ * groups them: a block goes out if any register in it changed.
+ */
+static void
+osmgaMesaCountDeltas(const OSMGAHW3DBatch *b)
+{
+    unsigned long i;
+
+    for (i = 0UL; i < b->triCount; i++) {
+        const OSMGAHW3DTri *t = &b->tri[i];
+        const OSMGAHW3DTri *p = (i > 0UL) ? &b->tri[i - 1UL] : 0;
+        int textured = ((t->dwgctl & 0xFUL) == OSMGA_HW3D_OPCODE_TEX);
+        int blocks = 0, changed = 0;
+        int k;
+        unsigned long tv[25], pv[25];
+        static const int blockOf[25] = {
+            0,0,0,0,   1,1,1,1,   2,2,2,2,   3,3,3,3,
+            4,4,4,4,   5,5,5,5,   6
+        };
+        int blockDirty[7];
+
+        tv[0]=t->dwgctl; tv[1]=(unsigned long)t->ar0;
+        tv[2]=(unsigned long)t->ar1; tv[3]=(unsigned long)t->ar2;
+        tv[4]=(unsigned long)t->ar4; tv[5]=(unsigned long)t->ar5;
+        tv[6]=(unsigned long)t->ar6; tv[7]=(unsigned long)t->sgn;
+        tv[8]=t->dr[0]; tv[9]=t->dr[1]; tv[10]=t->dr[2]; tv[11]=t->dr[3];
+        tv[12]=t->dr[4]; tv[13]=t->dr[5]; tv[14]=t->dr[6]; tv[15]=t->dr[7];
+        tv[16]=t->dr[8]; tv[17]=t->z0; tv[18]=t->zdx; tv[19]=t->zdy;
+        tv[20]=t->a0; tv[21]=t->adx; tv[22]=t->ady; tv[23]=t->alphactrl;
+        tv[24]=t->fxbndry;
+        if (p != 0) {
+            pv[0]=p->dwgctl; pv[1]=(unsigned long)p->ar0;
+            pv[2]=(unsigned long)p->ar1; pv[3]=(unsigned long)p->ar2;
+            pv[4]=(unsigned long)p->ar4; pv[5]=(unsigned long)p->ar5;
+            pv[6]=(unsigned long)p->ar6; pv[7]=(unsigned long)p->sgn;
+            pv[8]=p->dr[0]; pv[9]=p->dr[1]; pv[10]=p->dr[2]; pv[11]=p->dr[3];
+            pv[12]=p->dr[4]; pv[13]=p->dr[5]; pv[14]=p->dr[6]; pv[15]=p->dr[7];
+            pv[16]=p->dr[8]; pv[17]=p->z0; pv[18]=p->zdx; pv[19]=p->zdy;
+            pv[20]=p->a0; pv[21]=p->adx; pv[22]=p->ady; pv[23]=p->alphactrl;
+            pv[24]=p->fxbndry;
+        }
+        for (k = 0; k < 7; k++) blockDirty[k] = (p == 0) ? 1 : 0;
+        for (k = 0; k < 25; k++) {
+            if (p == 0 || tv[k] != pv[k]) {
+                changed++;
+                blockDirty[blockOf[k]] = 1;
+            }
+        }
+        /* YDSTLEN+EXEC always goes out: it is what starts the drawing, and
+         * y and h are the trapezoid's own.  It shares block 6 with FXBNDRY. */
+        blockDirty[6] = 1;
+        for (k = 0; k < 7; k++) {
+            blocks += blockDirty[k];
+            if (blockDirty[k]) deltaBlockDirty[k]++;
+        }
+        if (textured) blocks++;             /* the anchors, always */
+        deltaTraps++;
+        deltaChanged += (unsigned long)changed;
+        deltaBlocksNow += (unsigned long)(textured ? 8 : 7);
+        deltaBlocksMin += (unsigned long)blocks;
+    }
+}
+
 static unsigned long submitCount, submitUs, submitDwords;
 static unsigned long submitSpins, submitSpinMax, submitSpun;
 
@@ -524,6 +629,7 @@ osmgaMesaSubmitBatch(GLcontext *ctx, OSMGAHW3DBatch *batch,
         struct timeval t0, t1;
         int rc;
 
+        osmgaMesaCountDeltas(batch);
         gettimeofday(&t0, (struct timezone *)0);
         rc = OSMGAMesaProbeSubmit(&res);
         gettimeofday(&t1, (struct timezone *)0);

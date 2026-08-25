@@ -126,6 +126,19 @@ void OSMGAMesaHookFlushCounts(unsigned long out[4]);
  */
 void OSMGAMesaHookSubmitStats(unsigned long out[6]);
 
+/*
+ * Test only: how much of each trapezoid repeats the one before it.
+ * out[0] trapezoids counted, out[1] register values that differed,
+ * out[2] DMA blocks the kernel writes today, out[3] blocks it would write
+ * if it wrote only the blocks something in them changed.
+ */
+void OSMGAMesaHookDeltaStats(unsigned long out[4]);
+
+/* How often each of the seven blocks a trapezoid writes actually changes:
+ * 0 dwgctl+AR0..2, 1 AR4..6+SGN, 2 DR4/6/7/8, 3 DR10/11/12/14,
+ * 4 DR15/DR0/DR2/DR3, 5 alpha, 6 fxbndry+execute. */
+void OSMGAMesaHookDeltaBlocks(unsigned long out[7]);
+
 unsigned long OSMGAMesaHookBatches(void);
 /* trapezoids submitted, which is what says a triangle split */
 unsigned long OSMGAMesaHookTraps(void);
