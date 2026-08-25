@@ -21,7 +21,7 @@
 #define WAITS_PARAM  "OSMGAHW3DWaits"
 #define TUNE_PARAM   "OSMGAHW3DTune"
 #define INJECT_PARAM "OSMGAHW3DInject"
-#define WAITS_COUNT  18U
+#define WAITS_COUNT  23U
 
 static const char *waitName[5] = {
     "pre-idle    ", "fifo admit  ", "quiescence  ",
@@ -89,18 +89,32 @@ main(int argc, char **argv)
         return 3;
     }
     printf("waits telemetry version %u\n", w[0]);
-    printf("  %-12s %10s %12s %10s %10s\n",
-           "wait", "entered", "reads", "mean", "largest");
+    printf("  %-12s %10s %12s %10s %10s %10s\n",
+           "wait", "entered", "reads", "mean", "largest", "gave up");
     for (i = 0U; i < 5U; i++) {
         unsigned cnt = w[1U + i * 3U];
         unsigned sum = w[2U + i * 3U];
         unsigned mx  = w[3U + i * 3U];
 
-        printf("  %-12s %10u %12u %10.2f %10u\n",
+        printf("  %-12s %10u %12u %10.2f %10u %10u\n",
                waitName[i], cnt, sum,
-               cnt ? (double)sum / (double)cnt : 0.0, mx);
+               cnt ? (double)sum / (double)cnt : 0.0, mx, w[18U + i]);
     }
     printf("  recovery: %u saved, %u latched acceleration off\n",
            w[16], w[17]);
+    /*
+     * "gave up" is the column that matters after a machine has frozen.  A
+     * wait that reached its limit used to return in silence and let the next
+     * submission do it again; now it says so, turns acceleration off, and
+     * leaves this count behind even if the log did not survive.
+     */
+    {
+        unsigned k, any = 0U;
+
+        for (k = 0U; k < 5U; k++) any += w[18U + k];
+        if (any != 0U)
+            printf("  A WAIT GAVE UP.  Acceleration is off until the next "
+                   "boot; see /usr/adm/messages for 3-61.\n");
+    }
     return 0;
 }

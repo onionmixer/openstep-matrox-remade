@@ -779,8 +779,8 @@
  * wait the fixed part is.  Count, summed reads and the largest, per wait.
  */
 #define OSMGA_HW3D_WAITS_PARAM  "OSMGAHW3DWaits"
-#define OSMGA_HW3D_WAITS_COUNT  18U
-#define OSMGA_HW3D_WAITS_VERSION 2UL
+#define OSMGA_HW3D_WAITS_COUNT  23U
+#define OSMGA_HW3D_WAITS_VERSION 3UL
 
 /* Tuning, two words: the completion poll's delay in microseconds, and
  * whether an untextured trapezoid's FXBNDRY rides in the execute block. */
@@ -1933,6 +1933,61 @@ osmgaWaitRecord(int which, unsigned long reads)
     osmgaWaitStat[which][1] += reads;
     if (reads > osmgaWaitStat[which][2])
         osmgaWaitStat[which][2] = reads;
+}
+
+/* How often each of the five gave up.  Nought on a healthy machine, and the
+ * only record that outlives a log the machine never got to write. */
+static unsigned long osmgaWaitGaveUp[5];
+
+/*
+ * A wait in the submit path gave up.  Say which, say what the engine said,
+ * and stop accelerating.
+ *
+ * Four of the five said nothing at all.  Only the completion poll logged and
+ * latched; pre-idle, FIFO admission, pre-DMA quiescence and the final idle
+ * each ran a hundred thousand undelayed reads -- about 108 ms at the 1.08 us
+ * a read this driver measured -- and then returned as though nothing had
+ * happened, so the next submission did it again.  That is what turns a
+ * stalled engine into a machine that freezes with nothing in the log.
+ *
+ * The limits are NOT reduced.  What is unbounded here is not one wait but
+ * the repetition, and a shorter limit would trade a proven-safe bound for a
+ * guess: the largest any of these four has ever taken is ONE read over 3993
+ * submissions at full load, but nothing establishes what the longest honest
+ * wait would be -- a mode change deliberately proceeds after a second with
+ * the engine still busy, so the exceptional case is not even serialised.
+ *
+ * What this cannot do, said plainly: if a read itself never returns, the
+ * counter never advances and no limit is reached.  A freeze with no give-up
+ * line afterwards points there rather than here.
+ *
+ * The latch itself is set by the caller, because stormBlitFailed is an
+ * instance variable and this is a C function.  Every caller sets it FIRST,
+ * so nothing can slip in between the decision and the stop.
+ *
+ * AND IT TOUCHES NOTHING.  The first version of this read ENGSTATUS, to put
+ * the engine's own account of itself in the line -- which was exactly the
+ * wrong thing to do, because a wait gives up when the chip did not reach a
+ * state, and if the reason is that the chip has stopped answering then the
+ * first act of the handler was to read the chip that had stopped answering.
+ * A read that does not return takes the counter and the line with it, and
+ * then the absence of a line proves nothing about whether a wait timed out.
+ * That is not a hypothetical: it is why the machine's third freeze taught us
+ * less than it should have.
+ *
+ * So the counter goes up first, out of RAM, and the line carries only what
+ * is already known.  Which wait gave up is the thing worth knowing; the
+ * status can be read afterwards by whoever is still alive to ask.
+ */
+static void
+osmgaSubmitGaveUp(int which, const char *what)
+{
+    if (which >= 0 && which <= 4)
+        osmgaWaitGaveUp[which]++;
+    IOLog("OpenStepMGA 3-61: the %s wait gave up after %lu reads; "
+          "acceleration DISABLED -- the engine did not reach the state this "
+          "submission needed, and repeating it is what freezes the "
+          "machine\n", what, OSMGA_S1_SPIN_LIMIT);
 }
 /* How many times AUTO has decided to read.  Reported when the setter is
  * called, so that a destination which does not overlap can be shown to leave
@@ -4161,6 +4216,9 @@ unmap:
          * poll had given up on, against how often it could not */
         parameterArray[16] = (unsigned)osmgaRecoverySaved;
         parameterArray[17] = (unsigned)osmgaRecoveryLatched;
+        /* and how often each wait gave up -- nought on a healthy machine */
+        for (w = 0U; w < 5U; w++)
+            parameterArray[18U + w] = (unsigned)osmgaWaitGaveUp[w];
         simple_unlock(&stormLock);
         *count = OSMGA_HW3D_WAITS_COUNT;
         return IO_R_SUCCESS;
@@ -4900,9 +4958,17 @@ refuse2:
     if (total3 != 0UL) {
         preOK3 = osmgaStormWaitIdle(mmioBase);
         osmgaWaitRecord(0, osmgaStormLastReads);
+        if (!preOK3) {
+            stormBlitFailed = YES;
+            osmgaSubmitGaveUp(0, "pre-idle");
+        }
         if (preOK3) {
             preOK3 = osmgaStormWaitFifo(mmioBase, 13U);
             osmgaWaitRecord(1, osmgaStormLastReads);
+            if (!preOK3) {
+                stormBlitFailed = YES;
+                osmgaSubmitGaveUp(1, "FIFO admission");
+            }
         }
     }
     if (preOK3) {
@@ -4964,6 +5030,10 @@ refuse2:
         }
         osmgaWaitRecord(2, (spins3 < OSMGA_S1_SPIN_LIMIT)
                             ? spins3 + 1UL : OSMGA_S1_SPIN_LIMIT);
+        if (spins3 >= OSMGA_S1_SPIN_LIMIT) {
+            stormBlitFailed = YES;
+            osmgaSubmitGaveUp(2, "pre-DMA quiescence");
+        }
         if (spins3 < OSMGA_S1_SPIN_LIMIT) {
             unsigned long sum3 = 0UL, i3;
 
@@ -5033,6 +5103,10 @@ refuse2:
             if (spins3 < limit3) {
                 idleOK3 = osmgaStormWaitIdle(mmioBase);
                 osmgaWaitRecord(4, osmgaStormLastReads);
+                if (!idleOK3) {
+                    stormBlitFailed = YES;
+                    osmgaSubmitGaveUp(4, "final idle");
+                }
             }
             if (idleOK3) {
                 /*
