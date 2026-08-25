@@ -263,6 +263,23 @@ OSMGAMesaHookDeltaRegs(unsigned long out[25])
 }
 
 /*
+ * The three parts of it, separately.
+ *
+ * "Instrumented" turned on three unrelated things at once -- two
+ * gettimeofday calls around every submission, a pass over the batch counting
+ * which registers changed, and the change-pattern histogram -- and a
+ * combination that hangs the machine cannot be narrowed while they move
+ * together.  Bit 0 is the timing, bit 1 the counting, bit 2 the histogram;
+ * OSMGAMesaHookInstrument(1) sets all three, as it always did.
+ */
+#define OSMGA_MESA_INST_TIME   1
+#define OSMGA_MESA_INST_DELTA  2
+#define OSMGA_MESA_INST_MASK   4
+
+/* set by OSMGAMesaHookInstrument; see the note beside the submit site */
+static int hookInstrument;
+
+/*
  * Which registers change TOGETHER, not just how often each one changes.
  *
  * The blocks the kernel writes hold four registers each and go out whole if
@@ -399,7 +416,8 @@ osmgaMesaCountDeltas(const OSMGAHW3DBatch *b)
                     mask |= 1UL << k;
                 }
             }
-            osmgaMesaMaskRecord(mask);
+            if ((hookInstrument & OSMGA_MESA_INST_MASK) != 0)
+                osmgaMesaMaskRecord(mask);
         }
         /* YDSTLEN+EXEC always goes out: it is what starts the drawing, and
          * y and h are the trapezoid's own.  It shares block 6 with FXBNDRY. */
@@ -531,8 +549,6 @@ static unsigned long hookBatchLimit = OSMGA_HW3D_MAX_TRI;
  * delta counts, has to turn it on and say so in what it reports, because a
  * frame time measured with this set is not the frame time without it.
  */
-static int hookInstrument;
-
 /* Test-only: corrupt the magic of every flushed batch so the kernel refuses
  * it (E_MAGIC, before anything is drawn) and the replay path runs for real.
  * Nothing sets this but the injection setter, and nothing should. */
@@ -833,8 +849,9 @@ osmgaMesaSubmitBatch(GLcontext *ctx, OSMGAHW3DBatch *batch,
          * refusal bookkeeping below, and every counter a correctness test
          * reads are outside this switch.
          */
-        if (hookInstrument) {
+        if ((hookInstrument & OSMGA_MESA_INST_DELTA) != 0)
             osmgaMesaCountDeltas(batch);
+        if ((hookInstrument & OSMGA_MESA_INST_TIME) != 0) {
             gettimeofday(&t0, (struct timezone *)0);
             rc = OSMGAMesaProbeSubmit(&res);
             gettimeofday(&t1, (struct timezone *)0);
@@ -2489,7 +2506,16 @@ unsigned long OSMGAMesaHookSoftState(void) { return hookSoftState; }
 unsigned long OSMGAMesaHookTexPersp(void)  { return hookTexPersp; }
 unsigned long OSMGAMesaHookTexAbsent(void) { return hookTexAbsent; }
 void OSMGAMesaHookForceSoftware(int on)    { hookForcedSoftware = on; }
-void OSMGAMesaHookInstrument(int on)      { hookInstrument = (on != 0); }
+/* 1 keeps the old meaning: all three.  Any other non-zero value is a mask of
+ * OSMGA_MESA_INST_TIME, _DELTA and _MASK, so a test can turn on one at a
+ * time and find which one a hang belongs to. */
+void OSMGAMesaHookInstrument(int on)
+{
+    hookInstrument = (on == 1) ? (OSMGA_MESA_INST_TIME |
+                                  OSMGA_MESA_INST_DELTA |
+                                  OSMGA_MESA_INST_MASK)
+                               : on;
+}
 unsigned long OSMGAMesaHookBatches(void)   { return hookBatches; }
 unsigned long OSMGAMesaHookTraps(void)     { return hookTraps; }
 unsigned long OSMGAMesaHookUnsupported(void) { return hookUnsupported; }

@@ -292,12 +292,34 @@ int main(int argc, char **argv)
      * say so, because a frame time measured with it set is not the frame
      * time without it.
      */
-    if (strcmp(mode, "submit") == 0 || strcmp(mode, "delta") == 0
-        || (argc > 3 && strcmp(argv[3], "inst") == 0)) {
+    /*
+     * The instrumentation, in parts.
+     *
+     * "inst" is all of it, as before.  "i<n>" is a mask: 1 the two
+     * gettimeofday calls around each submission, 2 the register-change
+     * counting, 4 the change-pattern histogram.  4 on its own does nothing,
+     * because the histogram is written inside the counting -- so the
+     * meaningful ones are 1, 2, 3, 6 and 7.
+     *
+     * They are separable because a combination of them hangs this machine
+     * and the parts cannot be told apart while they move together.
+     */
+    if (argc > 3 && strcmp(argv[3], "inst") == 0) {
         OSMGAMesaHookInstrument(1);
-        printf("instrumented: submit timing and delta counting are ON, "
-               "which costs about 0.76 ms a frame\n");
+        printf("instrumented: all of it (timing, counting, histogram)\n");
+    } else if (argc > 3 && argv[3][0] == 'i' && argv[3][1] != '\0') {
+        int m = atoi(argv[3] + 1);
+
+        OSMGAMesaHookInstrument(m);
+        printf("instrumented: mask %d -- timing %s, counting %s, "
+               "histogram %s\n", m,
+               (m & 1) ? "ON" : "off", (m & 2) ? "ON" : "off",
+               ((m & 4) && (m & 2)) ? "ON" : "off");
+    } else if (strcmp(mode, "submit") == 0 || strcmp(mode, "delta") == 0) {
+        OSMGAMesaHookInstrument(1);
+        printf("instrumented: all of it (timing, counting, histogram)\n");
     }
+    fflush(stdout);
     if (strcmp(mode, "limit1") == 0) OSMGAMesaHookBatchLimit(1UL);
     if (strcmp(mode, "soft") == 0)   OSMGAMesaHookForceSoftware(1);
 
@@ -325,7 +347,19 @@ int main(int argc, char **argv)
     }
 
     u0 = userMs(); s0 = sysMs(); t0 = nowMs();
-    for (n = 1; n <= reps; n++) drawFrame(n);
+    /*
+     * Say where we are, every ten frames, and flush.
+     *
+     * When this machine freezes it freezes hard and writes nothing to the
+     * log, but whatever has already gone down the telnet connection has
+     * already been received.  So the last line printed is the one piece of
+     * evidence a hard freeze cannot take away: it says which frame the run
+     * reached.
+     */
+    for (n = 1; n <= reps; n++) {
+        if ((n % 10) == 1) { printf("  frame %d\n", n); fflush(stdout); }
+        drawFrame(n);
+    }
     t1 = nowMs(); u1 = userMs(); s1 = sysMs();
     printf("%-12s wall %7.2f = user %6.2f + sys %6.2f + idle %6.2f  ms/frame "
            "(%d frames)\n", mode, (t1 - t0) / (double)reps,
