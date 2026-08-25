@@ -779,12 +779,21 @@
  * wait the fixed part is.  Count, summed reads and the largest, per wait.
  */
 #define OSMGA_HW3D_WAITS_PARAM  "OSMGAHW3DWaits"
-#define OSMGA_HW3D_WAITS_COUNT  16U
-#define OSMGA_HW3D_WAITS_VERSION 1UL
+#define OSMGA_HW3D_WAITS_COUNT  18U
+#define OSMGA_HW3D_WAITS_VERSION 2UL
 
 /* Tuning, two words: the completion poll's delay in microseconds, and
  * whether an untextured trapezoid's FXBNDRY rides in the execute block. */
 #define OSMGA_HW3D_TUNE_PARAM   "OSMGAHW3DTune"
+
+/*
+ * Test only, and deliberately NOT part of the tuning parameter: how many of
+ * the next submissions are to report a completion timeout they did not
+ * suffer.  The recovery branch has never run on this machine -- the largest
+ * completion-poll index ever seen is 2025 against a limit of 100000 -- and a
+ * safety net nobody has landed in is a claim rather than a net.
+ */
+#define OSMGA_HW3D_INJECT_PARAM "OSMGAHW3DInject"
 #define OSMGA_HW3D_CLIP_ROWS    120UL
 #define OSMGA_HW3D_CLIP_COLS    64UL
 
@@ -1526,6 +1535,21 @@ static unsigned long osmgaPackExecNow;   /* snapshot the encoder reads */
  */
 static unsigned long osmgaTrackState;
 static unsigned long osmgaTrackStateNow;
+
+/*
+ * A timeout the poll did not suffer, and what came of it.
+ *
+ * The count is spent one submission at a time.  What it does is skip the
+ * completion poll entirely and declare it timed out -- the list has already
+ * been handed to the engine by then, so this is exactly the case the
+ * recovery exists for: still running, and the driver stopped looking.
+ *
+ * The two counters are what the test asserts on.  A log line proves a
+ * message was printed; a counter proves the branch ran.
+ */
+static unsigned long osmgaInjectTimeouts;
+static unsigned long osmgaRecoverySaved;    /* recovery saw completion */
+static unsigned long osmgaRecoveryLatched;  /* it did not; acceleration off */
 
 /* count, summed reads, largest -- for pre-idle, FIFO admission, pre-DMA
  * quiescence, primary completion, and the final engine idle. */
@@ -3733,6 +3757,10 @@ unmap:
             for (k = 0U; k < 3U; k++)
                 parameterArray[1U + w * 3U + k] =
                     (unsigned)osmgaWaitStat[w][k];
+        /* and how often the recovery poll saved a submission the completion
+         * poll had given up on, against how often it could not */
+        parameterArray[16] = (unsigned)osmgaRecoverySaved;
+        parameterArray[17] = (unsigned)osmgaRecoveryLatched;
         simple_unlock(&stormLock);
         *count = OSMGA_HW3D_WAITS_COUNT;
         return IO_R_SUCCESS;
@@ -3858,6 +3886,29 @@ unmap:
      * delay turns a bounded wait into a stall, and this poll is the one the
      * recovery path exists to back up.
      */
+    /*
+     * Test only.  One word: how many of the NEXT submissions report a
+     * completion timeout they did not suffer, so the recovery branch runs.
+     * Spent one submission at a time and refused above four, because what it
+     * exercises ends in the driver either recovering or latching
+     * acceleration off, and neither is something to ask for by accident.
+     */
+    if (osmgaTextEquals(parameterName, OSMGA_HW3D_INJECT_PARAM)) {
+        unsigned long n;
+
+        if (parameterArray == 0 || count != 1)
+            return IO_R_INVALID_ARG;
+        n = (unsigned long)parameterArray[0];
+        if (n > 4UL)
+            return IO_R_INVALID_ARG;
+        simple_lock(&stormLock);
+        osmgaInjectTimeouts = n;
+        simple_unlock(&stormLock);
+        IOLog("OpenStepMGA M1-2b: the next %lu submission(s) will report a "
+              "completion timeout they did not suffer\n", n);
+        return IO_R_SUCCESS;
+    }
+
     if (osmgaTextEquals(parameterName, OSMGA_HW3D_TUNE_PARAM)) {
         unsigned long d, pk, tr;
 
@@ -4102,7 +4153,7 @@ refuse2:
     unsigned long *list3, listDwords3, badTri3 = 0UL;
     unsigned long delay3, limit3;
     OSMGAHW3DTexReach reach3;
-    int v3, rc3 = 0, preOK3 = 0, idleOK3 = 0;
+    int v3, rc3 = 0, preOK3 = 0, idleOK3 = 0, inject3 = 0;
 
     /*
      * Clear the diagnostics first.  Several of the checks below return
@@ -4172,6 +4223,11 @@ refuse2:
     delay3 = osmgaPollDelayUs;
     osmgaPackExecNow = osmgaPackExec;
     osmgaTrackStateNow = osmgaTrackState;
+    inject3 = 0;
+    if (osmgaInjectTimeouts != 0UL) {
+        osmgaInjectTimeouts--;
+        inject3 = 1;
+    }
     simple_unlock(&stormLock);
     /* Divided so the wait's worst case in wall time does not grow with the
      * delay: a read costs about a microsecond by itself. */
@@ -4512,12 +4568,20 @@ refuse2:
              * what stands between software and an engine that may still be
              * writing, and it should be as prompt as it has always been.
              */
-            for (spins3 = 0UL; spins3 < limit3; spins3++) {
-                status3 = osmgaR32(mmioBase, MGA_ENGSTATUS);
-                if ((status3 & MGA_DMA_DONE_MASK) == MGA_DMA_DONE_VALUE)
-                    break;
-                if (delay3 != 0UL)
-                    IODelay((int)delay3);
+            if (inject3) {
+                /* Test only: do not look at all, and say the looking timed
+                 * out.  The list is running; the recovery poll below is
+                 * what has to notice that. */
+                spins3 = limit3;
+                status3 = 0UL;
+            } else {
+                for (spins3 = 0UL; spins3 < limit3; spins3++) {
+                    status3 = osmgaR32(mmioBase, MGA_ENGSTATUS);
+                    if ((status3 & MGA_DMA_DONE_MASK) == MGA_DMA_DONE_VALUE)
+                        break;
+                    if (delay3 != 0UL)
+                        IODelay((int)delay3);
+                }
             }
             /*
              * Acknowledge the trap ONLY when this poll saw the completion.
@@ -4621,6 +4685,7 @@ refuse2:
                         break;
                 }
                 if (rec3 < OSMGA_S1_SPIN_LIMIT) {
+                    osmgaRecoverySaved++;
                     osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
                     IOLog("OpenStepMGA M1-2b: the poll gave up but completion "
                           "arrived during recovery (status %08lx, %lu more "
@@ -4641,6 +4706,7 @@ refuse2:
                      * REMAINING_WORK 3-15 is about.  Closing it needs a reset
                      * or a quarantine, and this driver has neither.
                      */
+                    osmgaRecoveryLatched++;
                     stormBlitFailed = YES;
                     IOLog("OpenStepMGA M1-2b: submission never completed "
                           "(status %08lx); acceleration DISABLED permanently "

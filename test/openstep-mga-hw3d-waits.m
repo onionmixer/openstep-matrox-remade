@@ -20,7 +20,8 @@
 
 #define WAITS_PARAM  "OSMGAHW3DWaits"
 #define TUNE_PARAM   "OSMGAHW3DTune"
-#define WAITS_COUNT  16U
+#define INJECT_PARAM "OSMGAHW3DInject"
+#define WAITS_COUNT  18U
 
 static const char *waitName[5] = {
     "pre-idle    ", "fifo admit  ", "quiescence  ",
@@ -66,6 +67,20 @@ main(int argc, char **argv)
                    t[0], t[1]);
     }
 
+    if (argc >= 5) {
+        unsigned inj[1];
+
+        inj[0] = (unsigned)atoi(argv[4]);
+        r = [master setIntValues:inj forParameter:INJECT_PARAM
+                    objectNumber:objNum count:1];
+        if (r != IO_R_SUCCESS) {
+            printf("inject refused (%d): 0 to 4\n", (int)r);
+            return 4;
+        }
+        printf("inject: the next %u submission(s) will report a timeout "
+               "they did not suffer\n", inj[0]);
+    }
+
     r = [master getIntValues:w forParameter:WAITS_PARAM
                 objectNumber:objNum count:&n];
     if (r != IO_R_SUCCESS) {
@@ -85,5 +100,7 @@ main(int argc, char **argv)
                waitName[i], cnt, sum,
                cnt ? (double)sum / (double)cnt : 0.0, mx);
     }
+    printf("  recovery: %u saved, %u latched acceleration off\n",
+           w[16], w[17]);
     return 0;
 }
