@@ -527,6 +527,11 @@ static struct {
     GLvector4ub  *cptr;          /* VB->ColorPtr, front or back */
     GLvector1ui  *iptr;          /* VB->IndexPtr */
     GLubyte     (*spec)[4];      /* VB->Specular */
+    unsigned long firstTrap;     /* where its trapezoids begin in tri[] --
+                                    a source's trapezoids are contiguous:
+                                    every flush happens BEFORE the append,
+                                    and the append is one uninterrupted
+                                    loop */
 } pendSrc[OSMGA_HW3D_MAX_TRI];
 static GLcontext *pendCtx;
 static void *pendVB;
@@ -560,11 +565,81 @@ static void osmgaMesaBatchUntextured(OSMGAHW3DBatch *batch);
 static int osmgaMesaSoftly(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2,
                            GLuint pv);
 
+/* Refusals narrowed to one source instead of the whole batch, for the test
+ * that asserts the split. */
+static unsigned long hookNarrowed;
+
+/*
+ * Which refusals NAME a triangle.  The validator writes *badTri = i at the
+ * top of every per-triangle iteration (OpenStepMGAHW3D.c:461-465), so for
+ * the verdicts returned inside that loop the index is exact.  For the
+ * batch-level ones -- magic, version, count, the origins, the sizes, the
+ * pitch -- it is the default nought and means nothing, and a refusal that
+ * does not name a triangle cannot be narrowed to one.  The injection knob
+ * corrupts the MAGIC, which is deliberately in the second set: forcing the
+ * WHOLE replay is what that knob is for.
+ */
+static int
+osmgaMesaVerdictNamesTriangle(unsigned long v)
+{
+    return v == OSMGA_HW3D_E_DWGCTL   || v == OSMGA_HW3D_E_ALPHA
+        || v == OSMGA_HW3D_E_TRIROW   || v == OSMGA_HW3D_E_TRICOL
+        || v == OSMGA_HW3D_E_TRISLOPE || v == OSMGA_HW3D_E_EDGEDIV
+        || v == OSMGA_HW3D_E_TRISGN   || v == OSMGA_HW3D_E_TRICROSS
+        || v == OSMGA_HW3D_E_TEXCOORD || v == OSMGA_HW3D_E_TRIEMPTY;
+}
+
+/*
+ * One source triangle through Mesa's rasteriser, wearing its own state.
+ *
+ * The four installs are the replay contract's second half (see the pendSrc
+ * comment): Mesa hands a triangle part of its input through the context and
+ * moves it every callback, so a replay must bring the values that were live
+ * when the triangle was recorded.  The CALLER saves what the context held
+ * on the way in and puts it back when it is done replaying -- a flush can
+ * run inside a triangle callback that goes on to use these fields.
+ */
+static void
+osmgaMesaReplaySource(GLcontext *ctx, unsigned long i)
+{
+    ctx->PolygonZoffset = pendSrc[i].zoff;
+    ctx->VB->ColorPtr   = pendSrc[i].cptr;
+    ctx->VB->IndexPtr   = pendSrc[i].iptr;
+    ctx->VB->Specular   = pendSrc[i].spec;
+    (void)osmgaMesaSoftly(ctx, pendSrc[i].v0, pendSrc[i].v1,
+                          pendSrc[i].v2, pendSrc[i].pv);
+}
+
+/* A refusal happened; count it against the consecutive-refusal backstop.
+ * That backstop catches a driver refusing every attempted submission --
+ * the narrowing loop's own bound is separate and smaller. */
+static void
+osmgaMesaCountRefusal(void)
+{
+    if (++hookRefusedRun >= OSMGA_MESA_REFUSAL_LIMIT)
+        OSMGAMesaProbeRevoke("the driver kept refusing batches");
+}
+
+/* How many times one flush may narrow before the remainder just goes to
+ * software.  Each round consumes at least one source, so this only binds a
+ * batch with many bad triangles -- which is not a batch worth optimising. */
+#define OSMGA_MESA_NARROW_LIMIT 8UL
+
 /*
  * Ship whatever is pending.  Success soils the surface and counts the
- * sources as drawn; a validator refusal replays every source through
- * software (nothing was drawn); a failure after validation revokes, exactly
- * as the one-triangle path always has.
+ * sources as drawn; a refusal that names a triangle is narrowed -- the
+ * good prefix resubmitted to the engine, the named source replayed in
+ * software, the remainder gone around again -- so one bad sliver costs one
+ * software triangle instead of thirty; any other refusal replays everything
+ * left through software, exactly as the whole batch always did; a failure
+ * after validation revokes, exactly as the one-triangle path always has.
+ *
+ * ORDER IS THE SPINE.  Blending and equal-depth results depend on draw
+ * order, so the sequence is always prefix (engine), named source
+ * (software), remainder (recursively) -- the source order, exactly.  And
+ * the prefix ends at the named SOURCE's first trapezoid, not at the refused
+ * trapezoid, which may be the source's second: half a triangle drawn twice
+ * is not a narrowing.
  */
 static void
 osmgaMesaFlushPending(void)
@@ -592,10 +667,6 @@ osmgaMesaFlushPending(void)
         pendInFlush = 0;
         return;
     }
-    batch->magic = hookInjectRefusal ? (OSMGA_HW3D_MAGIC ^ 1UL)
-                                     : OSMGA_HW3D_MAGIC;
-    batch->version = OSMGA_HW3D_VERSION;
-    batch->triCount = ntraps;
     if (pendHasTex) {
         batch->state.texorg = pendTexOrg;
         batch->state.texW = pendTexW;
@@ -610,54 +681,130 @@ osmgaMesaFlushPending(void)
     } else {
         osmgaMesaBatchUntextured(batch);
     }
-    hookBatches++;
-    hookTraps += ntraps;
-    if (osmgaMesaSubmitBatch(ctx, batch, &res) != 0) {
-        if (res.verdict == OSMGA_HW3D_OK) {
-            /* Validation passed and the trouble came later: some of it may
-             * be on the screen, and drawing it again would double it. */
-            OSMGAMesaProbeRevoke("a batch failed after the engine had it");
-        } else {
-            /*
-             * Put each triangle's own state back before it is redrawn.
-             *
-             * What the context holds NOW is not what it held then.  By the
-             * time a bracket closes Mesa has zeroed the polygon offset
-             * (vbrender.c:324-328) and pointed the colour arrays back at the
-             * front face (vbrender.c:714-718), so replaying against the live
-             * context draws every offset triangle flat and every back face
-             * in the front face's colours.
-             *
-             * The saving and restoring is not tidiness either.  A flush can
-             * happen INSIDE a triangle callback -- the batch fills, or a new
-             * texture key arrives -- and that callback goes on to use these
-             * same fields afterwards.
-             */
-            GLfloat       zoffWas = ctx->PolygonZoffset;
-            GLvector4ub  *cptrWas = ctx->VB->ColorPtr;
-            GLvector1ui  *iptrWas = ctx->VB->IndexPtr;
-            GLubyte     (*specWas)[4] = ctx->VB->Specular;
+    {
+        unsigned long lo = 0UL;      /* first source not yet dealt with    */
+        unsigned long base = 0UL;    /* absolute trapezoid index at tri[0] */
+        unsigned long rounds = 0UL;
+        /*
+         * What the context holds NOW is not what it held when the sources
+         * were recorded (vbrender.c:324-328, 714-718), so each software
+         * replay installs its own recorded state -- and what was live on
+         * the way in goes back at the single exit below, because a flush
+         * can run inside a triangle callback that still uses these fields.
+         */
+        GLfloat       zoffWas = ctx->PolygonZoffset;
+        GLvector4ub  *cptrWas = ctx->VB->ColorPtr;
+        GLvector1ui  *iptrWas = ctx->VB->IndexPtr;
+        GLubyte     (*specWas)[4] = ctx->VB->Specular;
 
-            for (i = 0UL; i < nsrc; i++) {
-                ctx->PolygonZoffset = pendSrc[i].zoff;
-                ctx->VB->ColorPtr   = pendSrc[i].cptr;
-                ctx->VB->IndexPtr   = pendSrc[i].iptr;
-                ctx->VB->Specular   = pendSrc[i].spec;
-                (void)osmgaMesaSoftly(ctx, pendSrc[i].v0, pendSrc[i].v1,
-                                      pendSrc[i].v2, pendSrc[i].pv);
+        while (lo < nsrc) {
+            unsigned long s2, absBad, prefix, k;
+
+            batch->magic = hookInjectRefusal ? (OSMGA_HW3D_MAGIC ^ 1UL)
+                                             : OSMGA_HW3D_MAGIC;
+            batch->version = OSMGA_HW3D_VERSION;
+            batch->triCount = ntraps - base;
+            hookBatches++;
+            hookTraps += ntraps - base;
+            if (osmgaMesaSubmitBatch(ctx, batch, &res) == 0) {
+                hookRefusedRun = 0;
+                hookDrawn += nsrc - lo;
+                OSMGAMesaBufferSoiled();
+                break;
             }
-            ctx->PolygonZoffset = zoffWas;
-            ctx->VB->ColorPtr   = cptrWas;
-            ctx->VB->IndexPtr   = iptrWas;
-            ctx->VB->Specular   = specWas;
-            hookReplayed += nsrc;
-            if (++hookRefusedRun >= OSMGA_MESA_REFUSAL_LIMIT)
-                OSMGAMesaProbeRevoke("the driver kept refusing batches");
+            if (res.verdict == OSMGA_HW3D_OK) {
+                /* Validation passed and the trouble came later: some of it
+                 * may be on the screen, and drawing it again would double
+                 * it.  Nothing more is replayed, for the same reason. */
+                OSMGAMesaProbeRevoke("a batch failed after the engine had it");
+                break;
+            }
+            osmgaMesaCountRefusal();
+
+            /*
+             * Narrow, when the refusal names a triangle this map can place.
+             * The kernel validated the WHOLE batch before drawing anything,
+             * so everything before the named trapezoid is undrawn and known
+             * good.
+             */
+            s2 = nsrc;
+            if (osmgaMesaVerdictNamesTriangle(res.verdict)
+                && res.triangle < ntraps - base
+                && rounds < OSMGA_MESA_NARROW_LIMIT) {
+                absBad = base + res.triangle;
+                if (pendSrc[lo].firstTrap <= absBad) {
+                    for (s2 = lo; s2 + 1UL < nsrc; s2++)
+                        if (pendSrc[s2 + 1UL].firstTrap > absBad)
+                            break;
+                }
+            }
+            if (s2 >= nsrc) {
+                /* Batch-level verdict, an index the map cannot place, or
+                 * the narrowing bound: everything left goes to software,
+                 * exactly as the whole batch always did. */
+                for (i = lo; i < nsrc; i++)
+                    osmgaMesaReplaySource(ctx, i);
+                hookReplayed += nsrc - lo;
+                break;
+            }
+            hookNarrowed++;
+            rounds++;
+
+            /* The good prefix, on the engine, in order. */
+            prefix = pendSrc[s2].firstTrap - base;
+            if (prefix != 0UL) {
+                batch->triCount = prefix;
+                hookBatches++;
+                hookTraps += prefix;
+                if (osmgaMesaSubmitBatch(ctx, batch, &res) == 0) {
+                    hookRefusedRun = 0;
+                    hookDrawn += s2 - lo;
+                    OSMGAMesaBufferSoiled();
+                } else if (res.verdict == OSMGA_HW3D_OK) {
+                    OSMGAMesaProbeRevoke("a batch failed after the engine "
+                                         "had it");
+                    break;
+                } else {
+                    /* A prefix that validated moments ago refusing now is
+                     * nothing this map can reason about: software for it. */
+                    osmgaMesaCountRefusal();
+                    for (i = lo; i < s2; i++)
+                        osmgaMesaReplaySource(ctx, i);
+                    hookReplayed += s2 - lo;
+                }
+            }
+
+            /* The named source, in software, wearing its own state. */
+            osmgaMesaReplaySource(ctx, s2);
+            hookReplayed++;
+            lo = s2 + 1UL;
+            if (lo >= nsrc)
+                break;
+
+            /*
+             * Slide the remainder down and go around.  The pointer is
+             * reacquired because a replay may have revoked the probe, and
+             * revocation unmaps the window: a null here is the window gone
+             * with work pending, which drops the remainder exactly as the
+             * flush entry always has.
+             */
+            batch = OSMGAMesaProbeBatch();
+            if (batch == 0) {
+                hookFlushOther++;
+                break;
+            }
+            {
+                unsigned long nb = pendSrc[lo].firstTrap;
+
+                for (k = 0UL; k < ntraps - nb; k++)
+                    batch->tri[k] = batch->tri[(nb - base) + k];
+                base = nb;
+            }
         }
-    } else {
-        hookRefusedRun = 0;
-        hookDrawn += nsrc;
-        OSMGAMesaBufferSoiled();
+        ctx->PolygonZoffset = zoffWas;
+        ctx->VB->ColorPtr   = cptrWas;
+        ctx->VB->IndexPtr   = iptrWas;
+        ctx->VB->Specular   = specWas;
     }
     pendInFlush = 0;
 }
@@ -1368,6 +1515,7 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     pendSrc[pendSrcCount].cptr = VB->ColorPtr;
     pendSrc[pendSrcCount].iptr = VB->IndexPtr;
     pendSrc[pendSrcCount].spec = VB->Specular;
+    pendSrc[pendSrcCount].firstTrap = pendTraps - (unsigned long)n;
     pendSrcCount++;
 
     if (!batchable)
@@ -2486,6 +2634,7 @@ OpenStepMesaAccelClearPixel(void *ctx, unsigned long word)
 
 unsigned long OSMGAMesaHookUniformFills(void) { return hookUniformFills; }
 unsigned long OSMGAMesaHookReplayed(void)     { return hookReplayed; }
+unsigned long OSMGAMesaHookNarrowed(void)  { return hookNarrowed; }
 void
 OSMGAMesaHookFlushCounts(unsigned long out[4])
 {

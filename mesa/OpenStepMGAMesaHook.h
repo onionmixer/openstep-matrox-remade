@@ -124,6 +124,10 @@ void OSMGAMesaHookInjectRefusal(int on);   /* test only: see the .c */
 void OSMGAMesaHookInstrument(int on);
 void OSMGAMesaHookBatchLimit(unsigned long limit);
 unsigned long OSMGAMesaHookReplayed(void);
+/* Refusals narrowed to the named source instead of the whole batch: the
+ * good prefix went to the engine, one triangle went to software.  See the
+ * narrowing loop in the flush. */
+unsigned long OSMGAMesaHookNarrowed(void);
 void OSMGAMesaHookFlushCounts(unsigned long out[4]);
 
 /*
