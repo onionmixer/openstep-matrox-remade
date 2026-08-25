@@ -768,6 +768,23 @@
  * acted on.
  */
 #define OSMGA_HW3D_SETTLE_PARAM "OSMGAHW3DSettle"
+
+/*
+ * The submission's own waits, and the two settings that let a measurement
+ * turn one thing at a time on a running machine rather than on a reboot.
+ *
+ * Waits: five reads a submission can spend, and only one of them -- the
+ * primary-DMA completion poll -- was ever reported.  Userland measured a
+ * submission at 74 us fixed plus 5.52 us a trapezoid and could not say which
+ * wait the fixed part is.  Count, summed reads and the largest, per wait.
+ */
+#define OSMGA_HW3D_WAITS_PARAM  "OSMGAHW3DWaits"
+#define OSMGA_HW3D_WAITS_COUNT  16U
+#define OSMGA_HW3D_WAITS_VERSION 1UL
+
+/* Tuning, two words: the completion poll's delay in microseconds, and
+ * whether an untextured trapezoid's FXBNDRY rides in the execute block. */
+#define OSMGA_HW3D_TUNE_PARAM   "OSMGAHW3DTune"
 #define OSMGA_HW3D_CLIP_ROWS    120UL
 #define OSMGA_HW3D_CLIP_COLS    64UL
 
@@ -1091,15 +1108,34 @@ osmgaWriteAttr(vm_address_t base, unsigned char idx, unsigned char v)
 /* Wait until the drawing engine reports idle.  Returns 1 on idle, 0 on
  * timeout.  A timeout must abort the caller: never issue an EXEC, and never
  * try to "clean up" a possibly wedged FIFO. */
+/*
+ * How many reads the last wait took, for whoever wants to account for it.
+ *
+ * A file static rather than a counter inside the helpers because these two
+ * are called from everywhere -- the blit, the fill, the mode paths -- and
+ * only the submit path is being accounted for.  The caller reads it
+ * immediately after its own call, so nothing else can have run in between:
+ * the engine is claimed for the whole submission.
+ *
+ * It is a READ COUNT and not the loop index: a wait satisfied by its first
+ * read reports one.  The submit block's `spins` field, which predates this,
+ * is the index and reports nought for the same wait; they are one apart on
+ * purpose rather than by accident.
+ */
+static unsigned long osmgaStormLastReads;
+
 static int
 osmgaStormWaitIdle(vm_address_t base)
 {
     unsigned long spins;
 
     for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
-        if ((osmgaR8(base, MGA_ENGSTATUS + 2) & MGA_ENGBUSY_BIT) == 0)
+        if ((osmgaR8(base, MGA_ENGSTATUS + 2) & MGA_ENGBUSY_BIT) == 0) {
+            osmgaStormLastReads = spins + 1UL;
             return 1;
+        }
     }
+    osmgaStormLastReads = OSMGA_S1_SPIN_LIMIT;
     return 0;
 }
 
@@ -1126,9 +1162,12 @@ osmgaStormWaitFifo(vm_address_t base, unsigned int slots)
         slots = OSMGA_S1_FIFO_MAX;
     }
     for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
-        if ((unsigned int)osmgaR8(base, MGA_FIFOSTATUS) >= slots)
+        if ((unsigned int)osmgaR8(base, MGA_FIFOSTATUS) >= slots) {
+            osmgaStormLastReads = spins + 1UL;
             return 1;
+        }
     }
+    osmgaStormLastReads = OSMGA_S1_SPIN_LIMIT;
     return 0;
 }
 
@@ -1432,6 +1471,47 @@ static unsigned long osmgaProbeWords;
  * knowingly leave that stretch unprotected.
  */
 static unsigned long osmgaSettleCode = OSMGA_HW3D_SETTLE_AUTO;
+
+/*
+ * Two settings, both defaulting to exactly what this driver did before they
+ * existed, so an installed driver with neither touched is the driver that
+ * was measured.
+ *
+ * osmgaPollDelayUs: microseconds of IODelay between reads of the completion
+ * poll, from a short list of accepted values.  The poll reads ENGSTATUS
+ * about every 1.08 us -- five times per trapezoid -- over the same bus the
+ * engine is using to fetch the very list it is being waited on.  Whether
+ * that traffic slows the fetch is a question the machine can answer and the
+ * source cannot.  The loop limit is scaled with the delay so the wait's
+ * worst case in wall time does not grow.
+ *
+ * osmgaPackExec: put an untextured trapezoid's FXBNDRY in the same DMA
+ * block as its YDSTLEN+EXEC, which is where it lived until the per-
+ * trapezoid texture anchors had to be written between the two.  The anchors
+ * only exist for a textured trapezoid, so for every other one the two
+ * blocks have nothing between them and the pair fits in one: same registers,
+ * same order, five dwords instead of ten.  A trapezoid is forty dwords, so
+ * this is an eighth of the list -- and the list is what the engine is
+ * ingesting at 29 MB/s while the kernel waits.
+ */
+static unsigned long osmgaPollDelayUs;
+static unsigned long osmgaPackExec;
+static unsigned long osmgaPackExecNow;   /* snapshot the encoder reads */
+
+/* count, summed reads, largest -- for pre-idle, FIFO admission, pre-DMA
+ * quiescence, primary completion, and the final engine idle. */
+static unsigned long osmgaWaitStat[5][3];
+
+static void
+osmgaWaitRecord(int which, unsigned long reads)
+{
+    if (which < 0 || which > 4)
+        return;
+    osmgaWaitStat[which][0]++;
+    osmgaWaitStat[which][1] += reads;
+    if (reads > osmgaWaitStat[which][2])
+        osmgaWaitStat[which][2] = reads;
+}
 /* How many times AUTO has decided to read.  Reported when the setter is
  * called, so that a destination which does not overlap can be shown to leave
  * it alone -- otherwise "conditional" is a claim rather than a measurement. */
@@ -3602,6 +3682,33 @@ unmap:
         *count = OSMGA_HW3D_CAPS_COUNT;
         return IO_R_SUCCESS;
     }
+    /*
+     * The submission's waits, cumulative since load.  Sixteen words: a
+     * version, then count, summed READS and largest for each of pre-idle,
+     * FIFO admission, pre-DMA quiescence, primary completion and final idle.
+     *
+     * READS, not the loop index the submit block's `spins` field carries --
+     * a wait satisfied by its first read counts one here and nought there.
+     * The sums are cumulative and will wrap in a long enough run; a reader
+     * takes them before and after a measured run and subtracts.
+     */
+    if (osmgaTextEquals(parameterName, OSMGA_HW3D_WAITS_PARAM)) {
+        unsigned w, k;
+
+        if (parameterArray == 0 || count == 0 ||
+            *count != OSMGA_HW3D_WAITS_COUNT)
+            return IO_R_INVALID_ARG;
+        simple_lock(&stormLock);
+        parameterArray[0] = (unsigned)OSMGA_HW3D_WAITS_VERSION;
+        for (w = 0U; w < 5U; w++)
+            for (k = 0U; k < 3U; k++)
+                parameterArray[1U + w * 3U + k] =
+                    (unsigned)osmgaWaitStat[w][k];
+        simple_unlock(&stormLock);
+        *count = OSMGA_HW3D_WAITS_COUNT;
+        return IO_R_SUCCESS;
+    }
+
     if (osmgaTextEquals(parameterName, OSMGA_HW3D_STATUS_PARAM)) {
         unsigned i;
 
@@ -3714,6 +3821,35 @@ unmap:
      * it through would have the sweep quietly measure "off" while reporting
      * an offset, and a negative result read that way is worse than none.
      */
+    /*
+     * Two words: the completion poll's delay in microseconds, and whether an
+     * untextured trapezoid's FXBNDRY rides in its execute block.  Both
+     * default to what the driver did before either existed, and both are
+     * refused outside the values that were reasoned about -- an arbitrary
+     * delay turns a bounded wait into a stall, and this poll is the one the
+     * recovery path exists to back up.
+     */
+    if (osmgaTextEquals(parameterName, OSMGA_HW3D_TUNE_PARAM)) {
+        unsigned long d, pk;
+
+        if (parameterArray == 0 || count != 2)
+            return IO_R_INVALID_ARG;
+        d  = (unsigned long)parameterArray[0];
+        pk = (unsigned long)parameterArray[1];
+        if (d != 0UL && d != 1UL && d != 2UL && d != 4UL)
+            return IO_R_INVALID_ARG;
+        if (pk != 0UL && pk != 1UL)
+            return IO_R_INVALID_ARG;
+        simple_lock(&stormLock);
+        osmgaPollDelayUs = d;
+        osmgaPackExec = pk;
+        simple_unlock(&stormLock);
+        IOLog("OpenStepMGA 3-41: completion poll delay %lu us, "
+              "execute block %s\n", d,
+              (pk != 0UL) ? "carries FXBNDRY when untextured" : "as before");
+        return IO_R_SUCCESS;
+    }
+
     if (osmgaTextEquals(parameterName, OSMGA_HW3D_SETTLE_PARAM)) {
         unsigned long want, seen;
 
@@ -3927,8 +4063,9 @@ refuse2:
     unsigned long epoch3, dstW3, dstH3, dstP3, avail3, settle3;
     int anyDepth3 = 0, overlap3 = 0;
     unsigned long *list3, listDwords3, badTri3 = 0UL;
+    unsigned long delay3, limit3;
     OSMGAHW3DTexReach reach3;
-    int v3, rc3 = 0;
+    int v3, rc3 = 0, preOK3 = 0, idleOK3 = 0;
 
     /*
      * Clear the diagnostics first.  Several of the checks below return
@@ -3992,7 +4129,19 @@ refuse2:
      * setting changed while it runs belongs to the next one and not to this
      * one half-way through. */
     settle3 = osmgaSettleCode;
+    /* The tuning goes the same way and for the same reason: a value changed
+     * while this submission runs belongs to the next one.  The encoder reads
+     * its own copy, since it is handed no place to look. */
+    delay3 = osmgaPollDelayUs;
+    osmgaPackExecNow = osmgaPackExec;
     simple_unlock(&stormLock);
+    /* Divided so the wait's worst case in wall time does not grow with the
+     * delay: a read costs about a microsecond by itself. */
+    limit3 = (delay3 != 0UL)
+             ? (OSMGA_S1_SPIN_LIMIT / (delay3 + 1UL))
+             : OSMGA_S1_SPIN_LIMIT;
+    if (limit3 < 1000UL)
+        limit3 = 1000UL;
 
     /*
      * Everything about the display is read again HERE, now that nothing else
@@ -4225,9 +4374,22 @@ refuse2:
     total3 = osmgaHW3DEncode(list3, listDwords3, &osmgaHW3DSnapshot,
                              osmgaHW3DBands, &tail3);
     osmgaHW3DLast[2] = (unsigned)total3;
-    if (total3 != 0UL &&
-        osmgaStormWaitIdle(mmioBase) &&
-        osmgaStormWaitFifo(mmioBase, 13U)) {
+    /*
+     * The two admission waits, each accounted for.  Written out rather than
+     * left in the && chain because the second must not be attributed to the
+     * first, and a chain that short-circuits records nothing at all for the
+     * wait it skipped.
+     */
+    preOK3 = 0;
+    if (total3 != 0UL) {
+        preOK3 = osmgaStormWaitIdle(mmioBase);
+        osmgaWaitRecord(0, osmgaStormLastReads);
+        if (preOK3) {
+            preOK3 = osmgaStormWaitFifo(mmioBase, 13U);
+            osmgaWaitRecord(1, osmgaStormLastReads);
+        }
+    }
+    if (preOK3) {
         /*
          * The clip, which is the destination window narrowed by whatever
          * scissor the client asked for.
@@ -4284,6 +4446,8 @@ refuse2:
                       MGA_DMA_DONE_MASK;
             if (status3 == MGA_STATUS_ENDPRDMASTS) break;
         }
+        osmgaWaitRecord(2, (spins3 < OSMGA_S1_SPIN_LIMIT)
+                            ? spins3 + 1UL : OSMGA_S1_SPIN_LIMIT);
         if (spins3 < OSMGA_S1_SPIN_LIMIT) {
             unsigned long sum3 = 0UL, i3;
 
@@ -4295,15 +4459,40 @@ refuse2:
                      listPhys3 | MGA_DMA_GENERAL);
             osmgaW32(mmioBase, MGA_PRIMEND,
                      (listPhys3 + tail3 * 4UL) | MGA_DMA_GENERAL);
-            for (spins3 = 0UL; spins3 < OSMGA_S1_SPIN_LIMIT; spins3++) {
+            /*
+             * The completion poll, and the one place a delay may be put
+             * between its reads.
+             *
+             * The delay goes AFTER a read that did not see completion, so
+             * the read that does see it is never followed by one, and the
+             * first read is never preceded by one -- a submission that
+             * completes immediately pays nothing.  The limit is divided by
+             * the delay so the wait's worst case in wall time stays where it
+             * was: the reads themselves cost about 1.08 us each, measured.
+             *
+             * The recovery poll below is deliberately NOT delayed.  It is
+             * what stands between software and an engine that may still be
+             * writing, and it should be as prompt as it has always been.
+             */
+            for (spins3 = 0UL; spins3 < limit3; spins3++) {
                 status3 = osmgaR32(mmioBase, MGA_ENGSTATUS);
                 if ((status3 & MGA_DMA_DONE_MASK) == MGA_DMA_DONE_VALUE)
                     break;
+                if (delay3 != 0UL)
+                    IODelay((int)delay3);
             }
             osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
             osmgaHW3DLast[3] = (unsigned)spins3;
-            if (spins3 < OSMGA_S1_SPIN_LIMIT &&
-                osmgaStormWaitIdle(mmioBase)) {
+            osmgaWaitRecord(3, (spins3 < limit3) ? spins3 + 1UL : limit3);
+            /* And the final idle wait, counted rather than hidden in a
+             * chain -- the same reason the two admission waits above were
+             * written out. */
+            idleOK3 = 0;
+            if (spins3 < limit3) {
+                idleOK3 = osmgaStormWaitIdle(mmioBase);
+                osmgaWaitRecord(4, osmgaStormLastReads);
+            }
+            if (idleOK3) {
                 /*
                  * M1-3i: one read of video memory before saying it is done,
                  * at a word the caller chose.
@@ -7730,6 +7919,7 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
 
     for (i = 0UL; ok && i < b->triCount; i++) {
         const OSMGAHW3DTri *t = &b->tri[i];
+        int packed;
 
         /* The client supplies opcode, access type and z mode; every other
          * bit comes from here, so bits it never reasoned about are not
@@ -7766,10 +7956,30 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                                  MGA_ALPHAYINC,  t->ady,
                                  MGA_ALPHACTRL,
                                  t->alphactrl & OSMGA_HW3D_AC_CLIENT);
-        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
-                                 MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
-                                 MGA_FXBNDRY, t->fxbndry,
-                                 MGA_DMAPAD, 0UL);
+        /*
+         * FXBNDRY, and whether the execute rides with it.
+         *
+         * Until the per-trapezoid texture anchors had to be written between
+         * the two, FXBNDRY and YDSTLEN+EXEC shared one block -- that is what
+         * the note below means by "no longer shares".  The anchors exist
+         * only for a textured trapezoid, so for every other one there is
+         * still nothing between them, and the pair fits in the block it used
+         * to occupy: the same two registers, in the same order, in five
+         * dwords instead of ten.
+         *
+         * A trapezoid is forty dwords and the engine ingests them at about
+         * 29 MB/s while the kernel waits, so an eighth off the list is an
+         * eighth off the wait, if the wait is really the list.  That is the
+         * question this exists to ask, which is why it is a setting and not
+         * a rewrite; off, the two blocks go out exactly as before.
+         */
+        packed = (osmgaPackExecNow != 0UL) &&
+                 ((dwg & 0xFUL) != OSMGA_HW3D_OPCODE_TEX);
+        if (!packed)
+            ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                                     MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                                     MGA_FXBNDRY, t->fxbndry,
+                                     MGA_DMAPAD, 0UL);
 
         /*
          * This trapezoid's own texture anchors, and they must land BEFORE its
@@ -7798,12 +8008,20 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                          ? (unsigned long)t->tq0 : (1UL << 16),
                      MGA_DMAPAD, 0UL);
 
-        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
-                                 MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
-                                 MGA_DMAPAD, 0UL,
-                                 MGA_YDSTLEN + MGA_EXEC,
-                                 (((unsigned long)t->y) << 16) |
-                                 ((unsigned long)t->h));
+        if (packed)
+            ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                                     MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                                     MGA_FXBNDRY, t->fxbndry,
+                                     MGA_YDSTLEN + MGA_EXEC,
+                                     (((unsigned long)t->y) << 16) |
+                                     ((unsigned long)t->h));
+        else
+            ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                                     MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                                     MGA_DMAPAD, 0UL,
+                                     MGA_YDSTLEN + MGA_EXEC,
+                                     (((unsigned long)t->y) << 16) |
+                                     ((unsigned long)t->h));
     }
 
     /* Leave DWGCTL in a state nothing inherits by accident. */
