@@ -96,12 +96,52 @@ osmgaLog2Ceil(unsigned long n)
  *
  * The integer leaves need no barrier and get none.
  */
+/*
+ * Round-half-up without the libm call, for EVERY double and not just a
+ * proved range.
+ *
+ * When osmgaFix lost its floor this one kept its own, because its inputs --
+ * texture plane coefficients, which a sliver can make arbitrarily large --
+ * are bounded nowhere, and out of range the obvious replacement fails
+ * DIFFERENTLY from the original: floor-then-cast yields the FPU's
+ * indefinite integer either way, while truncate-and-fix turns a large
+ * negative into LONG_MAX by i386 wraparound.
+ *
+ * So instead of bounding the inputs, this matches the out-of-range
+ * behaviour.  Measured on the machine, cc -m486 -O: finite overflow in
+ * both directions, both infinities and three shapes of NaN all convert to
+ * 0x80000000 through (long)floor(t) and through (long)t alike -- and the
+ * run returning at all shows invalid-operation is masked here, which is
+ * the one environment this equivalence needs.  (Unmasked, the old form
+ * would fault where this returns; nothing in this program unmasks it.)
+ *
+ * The details that carry the proof:
+ *
+ *  - The SECOND volatile store.  The old code handed vv + 0.5 to floor,
+ *    and the call rounded it to 64 bits at the boundary; inlined, the sum
+ *    would stay at x87 width into the compare and the cast.  The store
+ *    makes this form's input bit-identical to what floor received.
+ *  - The lower bound is >= -2^31 exactly.  In (-2^31-1, -2^31) floor lands
+ *    on -2^31-1, whose cast is the indefinite integer, but the fixup's i-1
+ *    would wrap -- so that gap belongs to the out-of-range branch.
+ *  - NaN falls out of the guard because both comparisons are false on
+ *    unordered, the same idiom the texture-q validation already relies on.
+ *
+ * Checked over 500000 random doubles across 80 binades and the 21 boundary
+ * and special values, against floor with the measured indefinite rule:
+ * no disagreement.
+ */
 static __inline__ long
 osmgaRound(double v)
 {
     volatile double vv = v;
+    volatile double t = vv + 0.5;
+    long i;
 
-    return (long)floor(vv + 0.5);
+    if (!(t >= -2147483648.0 && t < 2147483648.0))
+        return -2147483647L - 1L;   /* what fistpl stores out of range */
+    i = (long)t;                    /* toward nought */
+    return (t < 0.0 && (double)i != t) ? i - 1L : i;
 }
 
 /* (component << 15), rounded, as the two's complement the engine reads.
