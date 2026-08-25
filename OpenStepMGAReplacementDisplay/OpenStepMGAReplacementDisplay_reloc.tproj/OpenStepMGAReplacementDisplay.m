@@ -1495,8 +1495,37 @@ static unsigned long osmgaSettleCode = OSMGA_HW3D_SETTLE_AUTO;
  * ingesting at 29 MB/s while the kernel waits.
  */
 static unsigned long osmgaPollDelayUs;
-static unsigned long osmgaPackExec;
+/*
+ * Packing defaults ON.  It was measured on this machine over the reboot that
+ * introduced it -- 12.4% fewer dwords, 6% off the frame, the fourteen scene
+ * baselines unchanged and the regression suite at zero -- and it does not
+ * touch the completion or recovery logic.  The poll delay is a separate
+ * question and stays off until the trap acknowledgement it interacts with
+ * has been exercised on hardware.
+ */
+static unsigned long osmgaPackExec = 1UL;
 static unsigned long osmgaPackExecNow;   /* snapshot the encoder reads */
+
+/*
+ * osmgaTrackState: write a trapezoid's colour and alpha blocks only when
+ * something in them changed since the previous trapezoid of the SAME list.
+ *
+ * Safe because those registers persist across the execute.  X.Org's MGA
+ * driver depends on it outright: MGASetupForCPUToScreenTexture writes
+ * DR4/6/7/8/10/11/12/14/15 and the three alpha registers once
+ * (mga_storm.c:419-431) and MGASubsequentCPUToScreenTexture, which runs for
+ * every primitive, writes only TMR6, TMR7, FXBNDRY and YDSTLEN|EXEC
+ * (mga_storm.c:549-565).  If the execute consumed or reset the interpolator
+ * state that code could not draw a second textured rectangle.
+ *
+ * Measured on a real frame before it was written: of a trapezoid's
+ * twenty-five register values 12.8 differ from the one before, and the whole
+ * saving sits in three blocks -- the alpha block changes on 1.8% of
+ * trapezoids and the two colour blocks on 62%.  The other four change every
+ * time and are left alone.
+ */
+static unsigned long osmgaTrackState;
+static unsigned long osmgaTrackStateNow;
 
 /* count, summed reads, largest -- for pre-idle, FIFO admission, pre-DMA
  * quiescence, primary completion, and the final engine idle. */
@@ -3830,23 +3859,31 @@ unmap:
      * recovery path exists to back up.
      */
     if (osmgaTextEquals(parameterName, OSMGA_HW3D_TUNE_PARAM)) {
-        unsigned long d, pk;
+        unsigned long d, pk, tr;
 
-        if (parameterArray == 0 || count != 2)
+        /* Two words is the shape this parameter had when it was introduced
+         * and it still answers to it, so a tool built against the old header
+         * keeps working and leaves the third setting alone. */
+        if (parameterArray == 0 || (count != 2 && count != 3))
             return IO_R_INVALID_ARG;
         d  = (unsigned long)parameterArray[0];
         pk = (unsigned long)parameterArray[1];
+        tr = (count == 3) ? (unsigned long)parameterArray[2] : osmgaTrackState;
         if (d != 0UL && d != 1UL && d != 2UL && d != 4UL)
             return IO_R_INVALID_ARG;
         if (pk != 0UL && pk != 1UL)
             return IO_R_INVALID_ARG;
+        if (tr != 0UL && tr != 1UL)
+            return IO_R_INVALID_ARG;
         simple_lock(&stormLock);
         osmgaPollDelayUs = d;
         osmgaPackExec = pk;
+        osmgaTrackState = tr;
         simple_unlock(&stormLock);
         IOLog("OpenStepMGA 3-41: completion poll delay %lu us, "
-              "execute block %s\n", d,
-              (pk != 0UL) ? "carries FXBNDRY when untextured" : "as before");
+              "execute block %s, colour and alpha blocks %s\n", d,
+              (pk != 0UL) ? "carries FXBNDRY when untextured" : "as before",
+              (tr != 0UL) ? "written only when they change" : "written always");
         return IO_R_SUCCESS;
     }
 
@@ -4134,6 +4171,7 @@ refuse2:
      * its own copy, since it is handed no place to look. */
     delay3 = osmgaPollDelayUs;
     osmgaPackExecNow = osmgaPackExec;
+    osmgaTrackStateNow = osmgaTrackState;
     simple_unlock(&stormLock);
     /* Divided so the wait's worst case in wall time does not grow with the
      * delay: a read costs about a microsecond by itself. */
@@ -4481,7 +4519,25 @@ refuse2:
                 if (delay3 != 0UL)
                     IODelay((int)delay3);
             }
-            osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
+            /*
+             * Acknowledge the trap ONLY when this poll saw the completion.
+             *
+             * Completion is SOFTRAPEN set together with ENDPRDMASTS -- the
+             * trap being SET is one of the three signals, not a leftover to
+             * tidy away.  Clearing it unconditionally, which is what stood
+             * here, threw that signal away on exactly the path that needs
+             * it: the recovery poll below asks the same question again, and
+             * with the trap already acknowledged it can never see it, so a
+             * list that finished a microsecond after the poll gave up was
+             * answered "never completed" and latched acceleration off for
+             * good.  The comment on the recovery poll already said the trap
+             * is not acknowledged before asking; now the code agrees.
+             *
+             * A timed-out poll therefore leaves the trap standing, and
+             * recovery clears it if and when it sees completion.
+             */
+            if (spins3 < limit3)
+                osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
             osmgaHW3DLast[3] = (unsigned)spins3;
             osmgaWaitRecord(3, (spins3 < limit3) ? spins3 + 1UL : limit3);
             /* And the final idle wait, counted rather than hidden in a
@@ -7700,6 +7756,8 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
     unsigned long tds0 = 0UL, tds1 = 0UL, clampBits = 0UL, perspBits = 0UL;
     int anyDepth = 0, anyTex = 0;
     int ok = 1;
+    int track, have;                    /* skip unchanged blocks; anything held */
+    unsigned long prevC0[4], prevC1[4], prevA[4];
     /*
      * What to take off each coordinate.  The engine's addend depends on the
      * band its NUMERATOR is in, and taking off the smallest one the batch can
@@ -7917,6 +7975,19 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                      ? (unsigned long)b->state.tmr[5] : 0UL);
     }
 
+    /*
+     * The tracker is per LIST, and it starts empty.
+     *
+     * What the engine holds before this list is the previous submission's,
+     * or a blit's, or a mode change that could not claim the engine and went
+     * ahead anyway -- so the first trapezoid of every list writes everything,
+     * and this function never carries state across a call.  It has
+     * diagnostic callers besides the live submit path, which is another
+     * reason the state cannot be a file static.
+     */
+    track = (osmgaTrackStateNow != 0UL);
+    have = 0;
+
     for (i = 0UL; ok && i < b->triCount; i++) {
         const OSMGAHW3DTri *t = &b->tri[i];
         int packed;
@@ -7939,23 +8010,43 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
                                  MGA_AR5, (unsigned long)t->ar5,
                                  MGA_AR6, (unsigned long)t->ar6,
                                  MGA_SGN, (unsigned long)t->sgn);
-        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
-                                 MGA_DR4,  t->dr[0], MGA_DR6,  t->dr[1],
-                                 MGA_DR7,  t->dr[2], MGA_DR8,  t->dr[3]);
-        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
-                                 MGA_DR10, t->dr[4], MGA_DR11, t->dr[5],
-                                 MGA_DR12, t->dr[6], MGA_DR14, t->dr[7]);
+        if (!track || !have ||
+            prevC0[0] != t->dr[0] || prevC0[1] != t->dr[1] ||
+            prevC0[2] != t->dr[2] || prevC0[3] != t->dr[3])
+            ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                                     MGA_DR4,  t->dr[0], MGA_DR6,  t->dr[1],
+                                     MGA_DR7,  t->dr[2], MGA_DR8,  t->dr[3]);
+        if (!track || !have ||
+            prevC1[0] != t->dr[4] || prevC1[1] != t->dr[5] ||
+            prevC1[2] != t->dr[6] || prevC1[3] != t->dr[7])
+            ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                                     MGA_DR10, t->dr[4], MGA_DR11, t->dr[5],
+                                     MGA_DR12, t->dr[6], MGA_DR14, t->dr[7]);
+        /* DR15 shares its block with the depth registers, and the depth
+         * start changes on all but a thousandth of trapezoids, so this one
+         * has nothing to hold back and goes out every time. */
         ok = ok && osmgaDmaBlock(list, listDwords, &pos,
                                  MGA_DR15, t->dr[8],
                                  MGA_DR0,  t->z0,
                                  MGA_DR2,  t->zdx,
                                  MGA_DR3,  t->zdy);
-        ok = ok && osmgaDmaBlock(list, listDwords, &pos,
-                                 MGA_ALPHASTART, t->a0,
-                                 MGA_ALPHAXINC,  t->adx,
-                                 MGA_ALPHAYINC,  t->ady,
-                                 MGA_ALPHACTRL,
-                                 t->alphactrl & OSMGA_HW3D_AC_CLIENT);
+        if (!track || !have ||
+            prevA[0] != t->a0 || prevA[1] != t->adx ||
+            prevA[2] != t->ady ||
+            prevA[3] != (t->alphactrl & OSMGA_HW3D_AC_CLIENT))
+            ok = ok && osmgaDmaBlock(list, listDwords, &pos,
+                                     MGA_ALPHASTART, t->a0,
+                                     MGA_ALPHAXINC,  t->adx,
+                                     MGA_ALPHAYINC,  t->ady,
+                                     MGA_ALPHACTRL,
+                                     t->alphactrl & OSMGA_HW3D_AC_CLIENT);
+        prevC0[0] = t->dr[0]; prevC0[1] = t->dr[1];
+        prevC0[2] = t->dr[2]; prevC0[3] = t->dr[3];
+        prevC1[0] = t->dr[4]; prevC1[1] = t->dr[5];
+        prevC1[2] = t->dr[6]; prevC1[3] = t->dr[7];
+        prevA[0] = t->a0; prevA[1] = t->adx; prevA[2] = t->ady;
+        prevA[3] = t->alphactrl & OSMGA_HW3D_AC_CLIENT;
+        have = 1;
         /*
          * FXBNDRY, and whether the execute rides with it.
          *
