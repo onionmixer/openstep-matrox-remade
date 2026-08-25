@@ -794,6 +794,10 @@
  * safety net nobody has landed in is a claim rather than a net.
  */
 #define OSMGA_HW3D_INJECT_PARAM "OSMGAHW3DInject"
+
+/* Whether -revertToVGAMode puts the console's card back.  Off until it has
+ * been shown to work on a machine somebody can walk over to. */
+#define OSMGA_VGA_RESTORE_PARAM "OSMGAVgaRestore"
 #define OSMGA_HW3D_CLIP_ROWS    120UL
 #define OSMGA_HW3D_CLIP_COLS    64UL
 
@@ -1287,6 +1291,94 @@ osmgaVgaSnapshot(vm_address_t base)
           (osmgaVgaAttr[0x10] & 0x01) ? "graphics" : "TEXT -- fonts needed",
           osmgaVgaGr[6], osmgaVgaDac[0x19], osmgaVgaPanCtl,
           osmgaVgaPixMask);
+}
+
+/*
+ * Putting it back.
+ *
+ * Off by default and reachable only through its own parameter, because this
+ * is the half that reprograms the display: it runs at shutdown, and the
+ * framework also runs a revert on the way IN, so getting it wrong would cost
+ * more than a black shutdown screen.
+ *
+ * The order is X.Org's for this card -- indexed DAC and the MGA extension
+ * first, then the generic VGA core, then the palette, then the extension's
+ * start address re-latched, and the blanking undone last.
+ *
+ * THE PLL IS NOT TOUCHED.  The snapshot's MISC selects clock 0, the VGA
+ * clock, so writing MISC back is what takes scanout off the MGA PLL; putting
+ * the PLL's own registers back as well would be a second way to get the same
+ * thing wrong.  The DAC subset is exactly what -programLinearMode writes,
+ * taken through the same osmgaDacSkip filter, so what we changed is what
+ * goes back and the PLL registers it skips are skipped here too.
+ *
+ * Every loop here is a fixed count.  Nothing polls.
+ */
+static unsigned long osmgaVgaRestoreOn;
+
+static void
+osmgaVgaRestore(vm_address_t base)
+{
+    unsigned int i;
+
+    /* protect: sequencer reset asserted, display off -- the same blanking
+     * the mode program uses, and undone in one place at the end */
+    osmgaW8(base, MGA_SEQ_INDEX, 0x00);
+    osmgaW8(base, MGA_SEQ_DATA, 0x01);
+    osmgaW8(base, MGA_SEQ_INDEX, 0x01);
+    osmgaW8(base, MGA_SEQ_DATA, (unsigned char)(osmgaVgaSeq[1] | 0x20));
+
+    for (i = 0U; i < 0x50U; i++)
+        if (!osmgaDacSkip(i))
+            osmgaOutDac(base, (unsigned char)i, osmgaVgaDac[i]);
+    osmgaOutDac(base, MGA_DAC_PAN_CTL, osmgaVgaPanCtl);
+
+    for (i = 0U; i < 6U; i++)
+        osmgaWriteCrtcExt(base, (unsigned char)i, osmgaVgaExt[i]);
+
+    osmgaW8(base, MGA_MISC_WRITE, osmgaVgaMisc);
+
+    for (i = 2U; i < 5U; i++) {
+        osmgaW8(base, MGA_SEQ_INDEX, (unsigned char)i);
+        osmgaW8(base, MGA_SEQ_DATA, osmgaVgaSeq[i]);
+    }
+
+    /* CRTC 0..7 are write protected by bit 7 of index 0x11; clear it, write
+     * the file, and the file itself puts the protection back. */
+    osmgaWriteCrtc(base, 0x11, (unsigned char)(osmgaVgaCrtc[0x11] & 0x7f));
+    for (i = 0U; i < 25U; i++)
+        osmgaWriteCrtc(base, (unsigned char)i, osmgaVgaCrtc[i]);
+
+    for (i = 0U; i < 9U; i++) {
+        osmgaW8(base, MGA_GR_INDEX, (unsigned char)i);
+        osmgaW8(base, MGA_GR_DATA, osmgaVgaGr[i]);
+    }
+
+    (void)osmgaR8(base, MGA_INSTS1);
+    osmgaW8(base, MGA_ATTR_INDEX, 0x00);       /* palette address source off */
+    for (i = 0U; i < 21U; i++)
+        osmgaWriteAttr(base, (unsigned char)i, osmgaVgaAttr[i]);
+
+    osmgaW8(base, MGA_DAC_INDEX + 2, 0xff);    /* mask open while loading */
+    osmgaW8(base, MGA_DAC_INDEX, 0x00);
+    for (i = 0U; i < 768U; i++)
+        osmgaW8(base, MGA_DAC_INDEX + 1, osmgaVgaPal[i]);
+    osmgaW8(base, MGA_DAC_INDEX + 2, osmgaVgaPixMask);
+
+    osmgaWriteCrtcExt(base, 0, osmgaVgaExt[0]);   /* re-latch the start */
+
+    /* the one cleanup tail: nothing above returns early, so the display
+     * cannot be left blanked and the sequencer cannot be left in reset */
+    osmgaW8(base, MGA_SEQ_INDEX, 0x01);
+    osmgaW8(base, MGA_SEQ_DATA, osmgaVgaSeq[1]);
+    osmgaW8(base, MGA_SEQ_INDEX, 0x00);
+    osmgaW8(base, MGA_SEQ_DATA, 0x03);
+    (void)osmgaR8(base, MGA_INSTS1);
+    osmgaW8(base, MGA_ATTR_INDEX, 0x20);          /* video back on */
+
+    IOLog("OpenStepMGA V2: put the console's card back -- misc %02x "
+          "ext0 %02x ext3 %02x attr10 %02x\n",
+          osmgaVgaMisc, osmgaVgaExt[0], osmgaVgaExt[3], osmgaVgaAttr[0x10]);
 }
 
 /* ---- Storm 2D engine: bounded waits (never spin forever) ---- */
@@ -4115,6 +4207,27 @@ unmap:
      * exercises ends in the driver either recovering or latching
      * acceleration off, and neither is something to ask for by accident.
      */
+    if (osmgaTextEquals(parameterName, OSMGA_VGA_RESTORE_PARAM)) {
+        unsigned long on;
+
+        if (parameterArray == 0 || count != 1)
+            return IO_R_INVALID_ARG;
+        on = (unsigned long)parameterArray[0];
+        if (on != 0UL && on != 1UL)
+            return IO_R_INVALID_ARG;
+        simple_lock(&stormLock);
+        osmgaVgaRestoreOn = on;
+        simple_unlock(&stormLock);
+        IOLog("OpenStepMGA V2: revertToVGAMode %s put the console's card "
+              "back (snapshot %s, console was %s)\n",
+              (on != 0UL) ? "will" : "will not",
+              osmgaVgaSaved ? "taken" : "NOT taken",
+              osmgaVgaSaved
+                  ? ((osmgaVgaAttr[0x10] & 0x01) ? "graphics" : "text")
+                  : "unknown");
+        return IO_R_SUCCESS;
+    }
+
     if (osmgaTextEquals(parameterName, OSMGA_HW3D_INJECT_PARAM)) {
         unsigned long n;
 
@@ -5246,8 +5359,35 @@ osmgaDmaBlock(unsigned long *ring, unsigned long ringDwords, unsigned long *pos,
     int claimed = [self claimEngineForMode];
 
     statRevertVGA++;
+    /*
+     * The lifecycle runs whatever happens to the hardware restore: the flag
+     * is cleared, the superclass is told, and the engine is released, on
+     * every path.  Only the register writes are conditional.
+     *
+     * They go AFTER the superclass, so that what this driver puts back is
+     * the last word on the card rather than something the superclass may
+     * then change.
+     *
+     * Three things must hold: a snapshot exists, the setting is on, and the
+     * console was in a GRAPHICS mode -- attribute mode control bit 0.  If it
+     * was a text mode the snapshot holds no character generator planes, and
+     * a restore built on it could bring the timing back and still show
+     * nothing readable, so it says so and does nothing instead.
+     */
     linearModeActive = NO;
     [super revertToVGAMode];
+    if (osmgaVgaRestoreOn && osmgaVgaSaved && mmioMapped) {
+        if ((osmgaVgaAttr[0x10] & 0x01) == 0) {
+            IOLog("OpenStepMGA V2: the console was in a TEXT mode (attr10 "
+                  "%02x) and no fonts were saved -- not restoring\n",
+                  osmgaVgaAttr[0x10]);
+        } else if (!claimed) {
+            IOLog("OpenStepMGA V2: could not claim the engine -- not "
+                  "restoring\n");
+        } else {
+            osmgaVgaRestore(mmioBase);
+        }
+    }
     [self releaseEngineAfterMode:claimed];
 }
 
