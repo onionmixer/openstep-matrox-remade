@@ -19,7 +19,7 @@ Three, and you do not need all of them.
 | --- | --- | --- |
 | `OpenStepMGAReplacementDisplay.pkg` | `/private/Drivers/i386`, not relocatable | the display driver.  Complete on its own |
 | `OpenStepMGAMesaAccel.pkg` | relocatable, normally `/LocalDeveloper` | `libGL_mga.a` and the opt-in headers |
-| `OpenStepMesa342DemosMGA.pkg` | relocatable, same prefix | the Mesa port's demos plus the teapot pair |
+| `OpenStepMesa342DemosMGA.pkg` | relocatable, same prefix | the Mesa port's demos plus two demo pairs of ours |
 
 Install order is driver first: the acceleration package needs the driver's
 device, and the driver needs nothing from it.  `INSTALL.md` in the driver
@@ -28,6 +28,20 @@ if activation goes wrong.  Read that part before activating.
 
 `OpenStepMesa342DemosMGA` is a VARIANT of the Mesa port's own
 `OpenStepMesa342Demos`.  Install one or the other, not both.
+
+It adds two directories.  `Examples/Mesa342/Teapot` draws the teapot offline
+and writes a TIFF; `Examples/Mesa342/GLWindow` spins one in an 800x600 window
+and puts the frame rate on the title bar.  Each is one source built into two
+binaries -- a `_sw` form linked against stock Mesa with no Matrox code in it,
+and a `_hybrid` form linked against `libGL_mga.a` -- and each ships its
+source, its build script and its own guide, so nothing about how the binaries
+were made is missing from the package.
+
+Measured at 800x600 on a G450: `glwin_hybrid` 47.6 frames a second against
+`glwin_sw`'s 12.8.  The margin is the delivery path rather than the drawing;
+`README_glwin.md` says so and shows the split.  Note that `glwin_hybrid`,
+unlike `teapot_hybrid`, needs the driver -- its picture reaches the screen by
+a kernel blit -- and without it the window opens, says so, and stays empty.
 
 ## The display driver
 
@@ -98,7 +112,7 @@ with the packages, and each was checked rather than assumed:
   under the MIT-style Main Mesa Copyright, (c) 1999-2001 Brian Paul.  No LGPL
   component is in the archive — the LGPL parts of Mesa are GLU and the 3Dfx,
   SVGA, DOS and GGI drivers, none of which this project ships or touches.
-- The **Utah teapot geometry** compiled into both demo binaries is
+- The **Utah teapot geometry** compiled into all four demo binaries is
   (c) 1993 Silicon Graphics, Inc., parts (c) Mark J. Kilgard 1994, under
   SGI's permissive grant.  It is cut from `tea.c` lines 581-730, which is
   inside that file's second copyright block; the GPL half of `tea.c` is
@@ -156,9 +170,10 @@ anything, and all three pass:
   against the stock archive's 0, both members i386.  The Installer
   architecture marker is checked separately, because the Installer does not
   look inside static archives.
-- **Demos variant** — the stock demos are still all present, the teapot pair
-  is present and i386, and `teapot_sw` is proven to carry no Matrox symbols
-  while `teapot_hybrid` carries 31.
+- **Demos variant** — the stock demos are still all present; both pairs are
+  present, i386, and owned by the BOM; each `_sw` binary is proven to carry no
+  Matrox symbols while each `_hybrid` carries them; and each binary is asked
+  for a string only its own build produces, so a renamed one cannot pass.
 
 One packaging hazard is worth naming because it is silent: OPENSTEP's
 `installer_tar` drops any path over 100 characters without failing.  The
