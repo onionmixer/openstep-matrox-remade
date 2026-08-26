@@ -17,7 +17,7 @@ Three questions it answers, and the answers:
 
 | Question | Answer |
 | --- | --- |
-| What happens when our driver is not used? | The ported Mesa is **untouched**, not restored.  A stronger guarantee than a fallback, because it does not depend on our fallback code being correct. |
+| What happens when our driver is not used? | The ported Mesa **library** is untouched, not restored.  A stronger guarantee than a fallback, because it does not depend on our fallback code being correct.  Precisely: the shipped `libGL.a` is the stock build, and the Mesa SOURCE tree does carry twelve dormant hook sites in `src/OSmesa/osmesa.c`, every one inside `#ifdef OPENSTEP_MESA_ACCEL_HOOK`, which the default build never defines.  Measured: 0 hook symbols in `libGL.a`, 31 in `libGL_mga.a`. |
 | What does our package do to the routing of OpenGL calls? | **Nothing.**  The port ships STATIC libraries, so there is no dynamic linkage to shadow and no interposition to arrange.  The choice is made when an application is built; binaries built earlier keep the copy already linked into them. |
 | Does the ported Mesa still render in software with neither our driver nor our package present? | Yes, unchanged. |
 
@@ -32,7 +32,7 @@ the library anyway, so one further line costs it nothing.
 
 | Package | Owner | Payload | Standalone? |
 | --- | --- | --- | --- |
-| `OpenStepMesa342*` | the Mesa port project | stock `libGL.a`, `libGLU.a`, headers, demos | already released; **this project does not touch it** |
+| `OpenStepMesa342*` | the Mesa port project | stock `libGL.a`, `libGLU.a`, headers, demos | already released; this project changes **no library and no header** of it.  See the amendment below for the one thing it does change. |
 | `OpenStepMGAReplacementDisplay` | this project | the kernel driver bundle into `/private/Drivers/i386` | yes -- a complete display driver on its own |
 | `OpenStepMGAMesaAccel` | this project | `libGL_mga.a` and the opt-in header, into `/LocalDeveloper` | no -- it is the driver's client half |
 
@@ -41,6 +41,39 @@ Absorbing it into the Mesa Libraries package would make it a replacement,
 and the guarantee "Mesa is untouched" would be gone.  (Cross-review proposed
 exactly that absorption on license-tidiness grounds; it is refused here on
 the principle.)
+
+## Amendment, 2026-08-26 -- what "does not touch it" now means
+
+The row above once read "this project does not touch it".  That was true
+when it was written and is no longer, because the operator directed the
+teapot demo into the Mesa DEMOS package -- and one of its two binaries,
+`teapot_hybrid`, is linked against `libGL_mga.a`.  Cross-review was right to
+call the old wording inconsistent with the plan, so the wording is amended
+rather than the instruction reinterpreted.
+
+What the principle actually protects is the **library**, and that is intact:
+
+- No library in any `OpenStepMesa342*` package changes.  `Libraries/libGL.a`
+  and `libGLU.a` stay the stock build, byte for byte.
+- No header changes.
+- Nothing is replaced, shadowed or interposed at run time.
+
+What changes is the DEMOS product only, and it changes as a **separately
+versioned variant**, never in place:
+
+- `build-split-packages.csh` builds the released Demos package exactly as
+  before when given no overlay.  That path is untouched and stays
+  reproducible.
+- Given an overlay produced by this project, it builds a Demos package with
+  a different `.info` -- different Version, and a Description that says the
+  teapot pair is in it.  Two artefacts with two names; neither overwrites
+  the other's identity.
+
+The dependency direction is worth being honest about.  Cross-review pointed
+out, correctly, that an overlay does NOT keep the dependency pointing from
+this project to Mesa: with an overlay, repo A's OUTPUT depends on repo B's
+BUILD.  That is accepted deliberately, and bounded -- it exists only for the
+variant artefact, and the released one still builds from repo A alone.
 
 ## What the accelerated library actually is, checked
 

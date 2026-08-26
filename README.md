@@ -12,12 +12,16 @@ OPENSTEP 4.2의 Matrox G400/G450 PCI VGA를 위한 새 DriverKit 기반
 구동한다:
 
 - **해상도** 5종(640×480 ~ 1600×1200, VESA DMT 타이밍)
-- **픽셀 포맷** 5종: RGB:888/32, RGB:555/16, RGB:256/8(PseudoColor,
-  `setTransferTable:count:`로 윈도서버 컬러맵 반영), BW:8/BW:4(grayscale,
-  8bpp 스캔아웃 위에 팔레트 양자화 — 진짜 2bpp linear는 G450 스캔아웃 엔진의
-  한계로 불가능함을 원본 바이너리로 확정)
-- Configure.app의 `Display.modes`로 25개 조합(5×5) 선택 가능,
-  config-table `Display Mode` 문자열로 부팅 시 반영
+- **픽셀 포맷** 4종: RGB:888/32, RGB:555/16, RGB:256/8(PseudoColor,
+  `setTransferTable:count:`로 윈도서버 컬러맵 반영), BW:8(grayscale)
+- **회색 단계**는 포맷이 아니라 별도 키 `Gray Levels` — 256/16/4/2.
+  네 값 모두 같은 8bpp 스캔아웃·같은 `IODisplayInfo`이고 DAC 램프만 다르다.
+  진짜 2bpp linear 프레임버퍼는 G450 스캔아웃 엔진의 한계로 불가능함을
+  원본 바이너리로 확정했다(순정 VGA의 `BW:2`는 `rowBytes = width/4`인
+  플래너 VGA 경로이지 리니어 스캔아웃이 아니다)
+- Configure.app의 `Display.modes`로 20개 조합(5×4) 선택 가능하고, 회색
+  단계는 같은 인스펙터의 라디오 매트릭스로 고른다.  config-table의
+  `Display Mode`/`Gray Levels` 문자열로 부팅 시 반영
 
 G450 PLL(픽셀 클럭 M/N/P 후보 탐색)과 15bpp RAMDAC 팔레트 인덱싱은 원본
 `MatroxMGA` 바이너리를 IDA로 완전 해독하고 codex와 교차검토해 충실히

@@ -54,14 +54,34 @@ viewer.
 software only` means something declined, and the demo still draws the
 teapot.  The usual causes, in order:
 
-1. **`OpenStepMGAReplacementDisplay` is not the active display driver.**
+1. **The display mode is not 32-bit colour.**  This is the most common one
+   and the least obvious.  The driver reports the 3D path as ready only at
+   `RGB:888/32`; at 16bpp, 8bpp and both greyscale modes it reports "not
+   ready" and everything falls back to software, with the driver and the
+   switches perfectly healthy.  Measured on a G450 running
+   `1600x1200 BW:8`:
+
+   ```
+   ENABLED yes  MMAP yes  CMD yes  READY NO
+   VERDICT: software (missing 00000008)
+   ```
+
+   Switch the display to 32-bit colour in `Configure.app` and reboot.
+2. **The display mode is 1600x1200 at 32-bit colour.**  There is no hardware
+   3D in that mode either, and no setting turns it on: the visible image
+   plus the driver's guard rows already fill the memory the offscreen window
+   would need, so the window is never published.  The system log says so:
+   `S4a: no usable offscreen window for this mode (start=9322496
+   end=7340032), device NOT registered`.  1024x768 at 32-bit colour is the
+   mode with the most room left over.
+3. **`OpenStepMGAReplacementDisplay` is not the active display driver.**
    Install it, add it to Active Drivers with `Configure.app`, reboot.
-2. **`VRAM Mmap` and `Mesa Acceleration` are `No`.**  They ship that way on
+4. **`VRAM Mmap` and `Mesa Acceleration` are `No`.**  They ship that way on
    purpose: a display-only installation should not carry acceleration's side
    effects, and once VRAM Mmap is on the driver must never be unloaded,
    because client mappings outlive it.  Set both to `Yes` in Configure and
    reboot.
-3. **`OSMGA_MESA_ACCEL=0` is set in your environment.**  That switch exists
+5. **`OSMGA_MESA_ACCEL=0` is set in your environment.**  That switch exists
    for exactly the comparison below.
 
 ### Arguments, all optional
@@ -184,11 +204,26 @@ in the environment works instead of the last argument.
 
 The teapot's control points and its evaluator loop come from `tea.c` in the
 Mesa source tree — the same code that implements `glutSolidTeapot`. That file
-is GPL as a whole, while the teapot inside it is Mark Kilgard's under GLUT's
-own terms. Rather than decide what a copied fragment would carry, this
-project never copies it: the build cuts the geometry out of a Mesa source
-tree at build time, and nothing of it is committed to the repository or
-placed in any package.
+has two owners, and which one applies depends on where in it you look. Lines
+1–529 are Thorsten Ohl's MesaWS widget demo, under GPL v2. From line 531 to
+the end of the file it reads `Copyright (c) Mark J. Kilgard, 1994` followed
+by `(c) Copyright 1993, Silicon Graphics, Inc.` and that company's grant —
+permission to use, copy, modify and distribute for any purpose and without
+fee, provided the copyright notice appears in all copies and both the
+copyright and permission notices appear in supporting documentation, and
+that the name of Silicon Graphics, Inc. is not used in advertising or
+publicity about distribution without written permission.
+
+The cut is lines **581–730**: `patchdata`, `cpdata` and `teapot()`, and
+nothing else. It is inside the second block, so the GPL half is never
+touched, and the excerpt — and both binaries that embody it — may be
+redistributed under SGI's terms. The full notice is in the `NOTICE` file
+beside this one, which is what those terms require.
+
+`teapot-geometry.h` itself is still not committed and not packaged. That is
+housekeeping, not a licence bar: it keeps copied upstream source out of the
+repository, and it is why rebuilding needs a Mesa source tree while running
+the shipped binaries does not.
 
 So to rebuild you need an unpacked **Mesa 3.4.2** source tree:
 

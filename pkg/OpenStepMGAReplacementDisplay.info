@@ -1,6 +1,6 @@
 Title OpenStepMGAReplacementDisplay
 Version 1.0
-Description OPENSTEP 4.2 (i386) DriverKit display driver for the Matrox G450 (PCI 102b:0525, revision 0x80 and above). Five resolutions from 640x480 to 1600x1200 and five pixel formats, with the Storm 2D engine. Installs the bundle into /private/Drivers/i386 and does NOT activate it: run Configure.app, add OpenStepMGAReplacementDisplay to Active Drivers in System.config, and reboot. Recovery: type config=Default at the boot: prompt to come back with the original display driver. The shared PCI ID also matches the G400, which this driver declines at probe -- G400 is not supported. 3D acceleration is a separate package.
+Description OPENSTEP 4.2 (i386) DriverKit display driver for the Matrox G450 (PCI 102b:0525, revision 0x80 and above). Five resolutions from 640x480 to 1600x1200 and four pixel formats, with the Storm 2D engine. The greyscale format additionally takes a Gray Levels setting of 256, 16, 4 or 2, which changes only the palette -- every value is the same 8bpp scanout. Installs the bundle into /private/Drivers/i386 and does NOT activate it: run Configure.app, add OpenStepMGAReplacementDisplay to Active Drivers in System.config, and reboot. Recovery: type config=Default at the boot: prompt to come back with the original display driver. The shared PCI ID also matches the G400, which this driver declines at probe -- G400 is not supported. 3D acceleration is a separate package.
 DefaultLocation /
 Application NO
 Relocatable NO

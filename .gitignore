@@ -29,3 +29,9 @@ build/mesa/
 scratch-cov/
 scratch-att/
 build/blend/
+
+# Release artefacts.  pkg/collect-release-pkgs.sh writes build/release-pkgs on
+# the target and pkg/make-release-assets.sh turns it into release-assets here;
+# both are rebuildable from the repository and the second is 4.4 MB of
+# binaries.  They belong on a release page, not in history.
+release-assets/

@@ -25,11 +25,15 @@
 # Matrox code at all -- and so that running both tells you at once whether a
 # problem is Mesa's or this driver's.
 #
-# THE GEOMETRY IS NOT SHIPPED.  tea.c is GPL as a whole while the teapot
-# inside it is Mark Kilgard's under GLUT's own terms, so rather than decide
-# what a copied fragment would carry, it is cut out of a Mesa source tree at
-# build time and nothing of it is committed or packaged.  The prebuilt
-# binaries beside this script need no such tree.
+# THE GEOMETRY FILE IS NOT SHIPPED, but the geometry itself is -- inside both
+# prebuilt binaries.  tea.c has two owners: lines 1-529 are Thorsten Ohl's
+# under GPL v2, and from line 531 to the end the file carries
+# "Copyright (c) Mark J. Kilgard, 1994" under SGI's 1993 permissive grant.
+# The cut below is 581-730, entirely inside the second block, so what it
+# takes is redistributable provided SGI's copyright and permission notices
+# travel with it; they are in NOTICE and in README_teapot.md.  The file is
+# cut fresh each build only to keep copied upstream source out of the
+# repository.  The prebuilt binaries beside this script need no Mesa tree.
 #
 set want = both
 set prefix = /LocalDeveloper
@@ -49,8 +53,15 @@ if ($#argv >= $argi) set prefix = "$argv[$argi]"
 if ($#argv >= $argi) set mesasrc = "$argv[$argi]"
 # csh evaluates both sides of &&, so an unset variable inside a compound
 # condition is an error rather than a false.  Test it on its own line.
+#
+# And the inner test needs the BLOCK form: on a one-line `if`, csh
+# substitutes the variables in the trailing command before it evaluates the
+# condition, so `if ($?MESASRC) set mesasrc = "$MESASRC"` dies with
+# "MESASRC: Undefined variable." precisely when MESASRC is unset.
 if ("$mesasrc" == "") then
-    if ($?MESASRC) set mesasrc = "$MESASRC"
+    if ($?MESASRC) then
+        set mesasrc = "$MESASRC"
+    endif
 endif
 
 if ("$mesasrc" == "" || ! -r "$mesasrc/widgets-mesa/demos/tea.c") then
