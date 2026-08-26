@@ -1,11 +1,15 @@
 # OpenStep Matrox MGA Remade
 
-OPENSTEP 4.2의 Matrox G400/G450 PCI VGA를 위한 새 DriverKit 기반
-가속 드라이버 연구 프로젝트다. 목표는 기존 바이너리 display driver를
-수정하는 것이 아니라, 공개 하드웨어 자료와 공개 MGA 구현을 근거로
-새로운 구현을 만드는 것이다.
+OPENSTEP 4.2의 Matrox G450 PCI VGA를 위한 새 DriverKit 디스플레이
+드라이버와, 그 위에 얹은 Mesa 3.4.2 하드웨어 3D 가속이다. 기존 바이너리
+display driver를 고친 것이 아니라, 공개 하드웨어 자료와 공개 MGA 구현을
+근거로 새로 만든 `IOFrameBufferDisplay` 서브클래스다.
 
-## 현재 상태 (2026-08-19)
+**v1.0 릴리스**: [releases/tag/v1.0](https://github.com/onionmixer/openstep-matrox-remade/releases/tag/v1.0)
+— 설치용 `.pkg` 세 개와 SHA256SUMS. 설치와 복구 절차는
+[release-packaging/INSTALL.md](release-packaging/INSTALL.md)에 있다.
+
+## 현재 상태 (2026-08-27)
 
 **`OpenStepMGAReplacementDisplay`가 실기에서 동작한다.** 기존 `MatroxMGA`를
 대체하는 완전한 `IOFrameBufferDisplay` 서브클래스로, G450을 다음 조합으로
@@ -33,13 +37,56 @@ G450 PLL(픽셀 클럭 M/N/P 후보 탐색)과 15bpp RAMDAC 팔레트 인덱싱�
 단색채우기·BITBLT(S1/S2), 유저스페이스→커널 RPC로 엔진 구동(S3a, self-test
 6/6), 계측 19종 + 커서 오버라이드(S3b-prep), 오프스크린 VRAM의 유저 태스크
 매핑(S4a). 그 과정에서 **`IODisplayDoBlit`은 OPENSTEP 4.2에서 사문화됐음**을
-측정으로 확정했다(WindowServer가 보내지 않는다). **3D/OpenGL 가속은 아직
-착수하지 않았고**, 실현 가능성 조사만
-[docs/S5_HW3D_DMA_FEASIBILITY.md](docs/S5_HW3D_DMA_FEASIBILITY.md)에 있다.
+측정으로 확정했다(WindowServer가 보내지 않는다).
 
-현재 사실의 정본은 [docs/TEST_STATUS.md](docs/TEST_STATUS.md), 인수인계는
+### 3D — Mesa 3.4.2가 카드에서 돈다
+
+OSMesa 백엔드(`libGL_mga.a`)가 삼각형을 G450 엔진으로 보내고, 표현할 수 없는
+것만 Mesa의 래스터라이저로 내려보낸다. 실기 측정:
+
+- **1600×1200×32 전체화면** — 오프스크린 창 20,037,632 바이트, teapot 삼각형
+  17,292 개 중 **97% 를 카드가 그리고 커널 거부 0**. 텍스처 아레나
+  8,511,488 바이트가 남고, 세 값 모두 python 계산과 바이트 단위로 일치한다.
+- **800×600 창에서 실시간** — 회전하는 teapot이 **47.6 fps**. 같은 소스를
+  stock Mesa로 링크한 쪽은 12.8 fps.
+
+그 3.7 배가 어디서 오는지는 짚어둘 값어치가 있다. **래스터화가 아니다** —
+stock 쪽 draw 단계가 8.58 ms 로 오히려 더 짧다. 차이는 전부 **화면 전달**이다:
+드라이버의 VRAM→VRAM blit 3.70 ms 대 AppKit 경로 65.90 ms.
+
+### VRAM 선언
+
+보드 메모리를 `MGA Memory Size` 로 **8 / 16 / 32** MiB 중에 고른다. 32 는 세
+가지 독립된 방법으로 실증했고(BAR sizing, 브리지 윈도우, 2,048 페이지 증명),
+8 도 실기에서 확인했다 — 1600×1200×32 에 8 을 선언하면 가시 프레임버퍼만
+7,680,000 바이트라 오프스크린 창이 들어갈 자리가 없고, 드라이버가 그걸
+알아채고 이유를 남기며 OpenGL 을 끈다. **8 을 선언하면 8 만 쓴다.**
+
+8 은 아직 없는 G400 지원을 내다본 것이다. 지금 `:3714` 는 G450 이 아니면
+모드 프로그래밍을 거부한다.
+
+### 데모
+
+Mesa Demos 변종 패키지가 데모 **두 쌍**을 싣는다. 각각 소스 하나를 두
+바이너리로 빌드하고, 소스·빌드 스크립트·자체 README 를 함께 넣어서 패키지만
+보고도 어떻게 만들어졌는지 알 수 있게 했다.
+
+| | |
+|---|---|
+| `Examples/Mesa342/Teapot` | `teapot_sw` / `teapot_hybrid` — 파일로 쓴다 |
+| `Examples/Mesa342/GLWindow` | `glwin_sw` / `glwin_hybrid` — 창에서 돌고 제목에 fps 를 찍는다 |
+
+각 쌍의 `_sw` 는 stock Mesa 만 링크해 Matrox 코드가 **하나도** 없고, 포장
+단계가 그걸 심볼로 확인한다. 다만 `glwin_hybrid` 는 `teapot_hybrid` 와 달리
+그리기가 아니라 **전달**에 드라이버가 필요해서, 드라이버가 없으면 창을 열고
+그렇다고 말한 뒤 비어 있는다.
+
+현재 사실의 정본은 [docs/REMAINING_WORK.md](docs/REMAINING_WORK.md)이고,
+초기 단계의 검증 이력은 [docs/TEST_STATUS.md](docs/TEST_STATUS.md), 인수인계는
 [HANDOFF.md](HANDOFF.md), 드라이버 사용법은
 [OpenStepMGAReplacementDisplay/README.md](OpenStepMGAReplacementDisplay/README.md)다.
+3D 착수 전의 실현 가능성 조사는
+[docs/S5_HW3D_DMA_FEASIBILITY.md](docs/S5_HW3D_DMA_FEASIBILITY.md)에 남아 있다.
 
 아래 "## 범위" 이후 문서 끝까지는 이 결과에 이르기 전, 2026-08-18
 기준으로 세운 **초기 설계 방향(폐기됨)** — `MatroxMGA`와 공존하는 별도
@@ -47,8 +94,10 @@ Mesa/3D sidecar 서비스 — 의 기록이다. 실제로는 H1 방법론 전환
 generic SVGA 단독 소유로 재부팅해 MGA native 자원을 무소유 상태로 만듦) 이후
 `MatroxMGA`를 완전히 대체하는 display driver 자체를 새로 만드는 방향으로
 바뀌었고, 그 결과가 위 "현재 상태"다. 아래 내용은 탐색 과정의 근거·결정 기록으로
-남겨두되, 현재 아키텍처를 나타내지는 않는다. Mesa/3D 가속 경로는 이 replacement
-driver 위에서 아직 다시 설계되지 않았다. 이후 문단들이 현재형으로 서술하는
+남겨두되, 현재 아키텍처를 나타내지는 않는다. Mesa/3D 가속 경로는 그 뒤 이
+replacement driver 위에서 다시 설계됐고, 위 "3D" 절이 그 결과다. 아래 문단들이
+현재형으로 서술하는 16 MiB cap 같은 값도 그때의 기록이지 지금 정책이 아니다.
+이후 문단들이 현재형으로 서술하는
 P1/P2 MiG control plane, lease, sidecar service는 **모두 폐기된 경로**이며
 현재 드라이버는 그 코드를 링크하지 않는다.
 
