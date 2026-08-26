@@ -82,8 +82,8 @@ Mesa Demos 변종 패키지가 데모 **두 쌍**을 싣는다. 각각 소스 �
 그렇다고 말한 뒤 비어 있는다.
 
 현재 사실의 정본은 [docs/REMAINING_WORK.md](docs/REMAINING_WORK.md)이고,
-초기 단계의 검증 이력은 [docs/TEST_STATUS.md](docs/TEST_STATUS.md), 인수인계는
-[HANDOFF.md](HANDOFF.md), 드라이버 사용법은
+초기 단계의 검증 이력은 [docs/TEST_STATUS.md](docs/TEST_STATUS.md), 드라이버
+사용법은
 [OpenStepMGAReplacementDisplay/README.md](OpenStepMGAReplacementDisplay/README.md)다.
 3D 착수 전의 실현 가능성 조사는
 [docs/S5_HW3D_DMA_FEASIBILITY.md](docs/S5_HW3D_DMA_FEASIBILITY.md)에 남아 있다.

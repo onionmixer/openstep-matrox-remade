@@ -1,3 +1,9 @@
+# Internal only.  HANDOFF.md carries the machine's real address and account
+# details, so it stays out of the repository -- the workspace .gitignore
+# already excludes it, but that file is not part of this project and a
+# standalone clone would start tracking it again.
+HANDOFF.md
+
 # Proprietary / third-party analysis inputs must never be committed.
 reference/original-binaries/*.i64
 reference/original-binaries/*.idb

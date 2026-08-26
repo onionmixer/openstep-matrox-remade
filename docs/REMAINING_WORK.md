@@ -4,8 +4,8 @@
 상태: 디스플레이 드라이버는 **실기에서 완성 동작**. 3D 는 **진행 중**이고,
 아래 §3 이 그 작업 목록이다.
 
-정본 참조: 현재 상태는 `TEST_STATUS.md`, 인수하기는 `../HANDOFF.md`,
-드라이버 사용법은 `../OpenStepMGAReplacementDisplay/README.md`.
+정본 참조: 현재 상태는 `TEST_STATUS.md`, 드라이버 사용법은
+`../OpenStepMGAReplacementDisplay/README.md`.
 
 > **이 문서를 읽을 때.** §1·§2 는 2026-08-19 에 쓰인 것으로 "3D 로 넘어가기
 > 전"의 시점을 담고 있다. 그 뒤로 3D 는 한참 진행됐으므로, **§1·§2 의 "지금
