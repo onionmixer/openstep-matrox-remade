@@ -16,10 +16,11 @@
  *    convertBaseToScreen:.  A view's frame origin lives in its SUPERVIEW's
  *    coordinates; the chain is the invariant, the shortcut only happens to
  *    work for a root content view.
- *  - The window is NONRETAINED, and from birth: we repaint its interior
- *    every frame ourselves, a buffered backing would let the window server
- *    repaint stale darkness over the live picture, and AppKit does not allow
- *    a nonretained window to change its backing later.
+ *  - The accelerated window is NONRETAINED, and from birth: we repaint its
+ *    interior every frame ourselves, a buffered backing would let the window
+ *    server repaint stale darkness over the live picture, and AppKit does
+ *    not allow a nonretained window to change its backing later.  The stock
+ *    Mesa build uses a buffered window because AppKit owns its delivery.
  *  - The timer runs at sixty hertz, not zero: a zero timer starves event
  *    dispatch and buys nothing past the refresh rate.  It is ALSO registered
  *    in NSEventTrackingRunLoopMode -- this machine's Foundation has
@@ -38,22 +39,62 @@
  * tearing.
  */
 #import <AppKit/AppKit.h>
+#ifdef OSMGA_GLWIN_PLAIN
+#import <AppKit/NSDPSContext.h>
+#else
 #import <AppKit/psopsNeXT.h>
+#endif
 #import <Foundation/Foundation.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <GL/gl.h>
 #include <GL/osmesa.h>
-#include "../mesa/OpenStepMGAMesaHook.h"
-#include "../mesa/OpenStepMGAMesaBuffer.h"
+#ifndef OSMGA_GLWIN_PLAIN
+/*
+ * By bare name, not by relative path, because this file ships.
+ *
+ * In the tree these three sit in ../mesa and ../hw3d and the build passes
+ * -I for both.  In the package they arrive together in Headers/ and the
+ * shipped build passes -I$prefix/Headers.  A path with ../mesa in it would
+ * work in exactly one of those two places.  The offline teapot demo already
+ * does it this way for the same reason.
+ */
+#include "OpenStepMGAMesaHook.h"
+#include "OpenStepMGAMesaBuffer.h"
 #include "OpenStepMGAHW3D.h"
+#endif
 
 /* The Utah teapot, cut from the Mesa tree at build time -- same arrangement
  * as the teapot renderer, same licence reasoning (nothing committed). */
 #include "teapot-geometry.h"
 
-#define GLW 640
-#define GLH 480
+/*
+ * The window, fixed at 800 by 600.
+ *
+ * Chosen against a 1600x1200 screen -- a quarter of its area, big enough to
+ * see the pot and small enough to leave the desktop around it.  Two things
+ * had to hold and both were checked before it moved:
+ *
+ *   The frustum below is 2.0 wide by 1.5 tall, so it wants 4:3.  640x480 and
+ *   800x600 are both exactly 4:3, so the pot does not stretch and the
+ *   projection needs no change.
+ *
+ *   The extra pixels are nearly free.  A frame's cost here is the geometry,
+ *   not the fill: covering a whole surface on the engine was measured at
+ *   5.53 ns per pixel, so the 172,800 pixels 800x600 adds over 640x480 cost
+ *   about 0.96 ms against a frame of roughly thirty -- three per cent.
+ *
+ * The mirror does not enter into it at all: PresentMode(1) stands it down,
+ * and it is the mirror, not the drawing, that makes the offline renderer
+ * scale with area (a whole-surface walk-back was measured at 749 ns per
+ * pixel -- a hundred and thirty times the engine's fill).
+ */
+#define GLW 800
+#define GLH 600
 
+#ifndef OSMGA_GLWIN_PLAIN
 @interface GLDarkView : NSView
 @end
 @implementation GLDarkView
@@ -65,11 +106,114 @@
     NSRectFill(r);
 }
 @end
+#endif
+
+#ifdef OSMGA_GLWIN_PLAIN
+/*
+ * Stock Mesa renders OSMESA_ARGB into caller memory.  On i386 that word's
+ * bytes are B,G,R,A, while the hardware-verified OPENSTEP bitmap presenter
+ * takes packed R,G,B.  Its non-NULL plane is referenced, not copied or
+ * freed, so rgb remains allocated until after rep is released.
+ */
+@interface GLBitmapView : NSView
+{
+    unsigned char *rgb;
+    NSBitmapImageRep *rep;
+}
+- (void)copyFromBGRA:(unsigned char *)source;
+- (void)drawBitmap;
+@end
+
+@implementation GLBitmapView
+- initWithFrame:(NSRect)frame
+{
+    int pitch;
+    unsigned char *planes[1];
+
+    [super initWithFrame:frame];
+    pitch = GLW * 3;
+    rgb = (unsigned char *)malloc((unsigned long)pitch * GLH);
+    if (rgb == NULL)
+        return nil;
+    memset(rgb, 0, (unsigned long)pitch * GLH);
+    planes[0] = rgb;
+    rep = [[NSBitmapImageRep alloc]
+              initWithBitmapDataPlanes:planes
+                            pixelsWide:GLW
+                            pixelsHigh:GLH
+                         bitsPerSample:8
+                       samplesPerPixel:3
+                              hasAlpha:NO
+                               isPlanar:NO
+                     colorSpaceName:NSCalibratedRGBColorSpace
+                        bytesPerRow:pitch
+                       bitsPerPixel:24];
+    if (rep == nil) {
+        free(rgb);
+        rgb = NULL;
+        return nil;
+    }
+    return self;
+}
+
+- (void)dealloc
+{
+    [rep release];
+    if (rgb != NULL)
+        free(rgb);
+    [super dealloc];
+}
+
+- (BOOL)isFlipped
+{
+    return YES;
+}
+
+- (void)copyFromBGRA:(unsigned char *)source
+{
+    unsigned char *src;
+    unsigned char *dst;
+    int x;
+    int y;
+
+    for (y = 0; y < GLH; ++y) {
+        src = source + (unsigned long)y * GLW * 4;
+        /* NSBitmapImageRep backing is bottom-up: source row zero is the
+         * visual top, so it belongs in the bitmap's last stored row. */
+        dst = rgb + (unsigned long)(GLH - 1 - y) * GLW * 3;
+        for (x = 0; x < GLW; ++x) {
+            dst[0] = src[2];
+            dst[1] = src[1];
+            dst[2] = src[0];
+            src += 4;
+            dst += 3;
+        }
+    }
+}
+
+- (void)drawBitmap
+{
+    NSRect target;
+
+    target = [self bounds];
+    [rep drawInRect:target];
+}
+
+- (void)drawRect:(NSRect)rect
+{
+    [self drawBitmap];
+}
+@end
+#endif
 
 @interface GLWinController : NSObject
 {
     NSWindow *win;
+#ifdef OSMGA_GLWIN_PLAIN
+    GLBitmapView *view;
+#else
     GLDarkView *view;
+#endif
     NSTimer *timer;
     OSMesaContext ctx;
     unsigned long *buf;
@@ -83,39 +227,82 @@
     unsigned long stillTicks;
     float mvX, mvY;
     int haveMv;
-    double sumMs, minMs, maxMs, lastReport;
+    double sumMs, minMs, maxMs, lastReport, wallStart;
     int presenting;
+#ifdef OSMGA_GLWIN_PLAIN
+    int waitingForServer;
+#endif
+    /*
+     * The rolling half-second, kept apart from the totals above.
+     *
+     * The totals are a mean since start-up, and after twenty-six thousand
+     * frames a mean like that barely moves -- useless for a number meant to
+     * answer "what is it doing NOW", and worse than useless if the two
+     * builds are to be told apart at a glance.  These values are emptied at
+     * every report.
+     */
+    unsigned long winFrames;
+    double winSumMs, winStart;
+    double winClrMs, winDrwMs, winPrsMs, winCvtMs, winAppMs, winWaitMs;
+    double totClrMs, totDrwMs, totPrsMs, totCvtMs, totAppMs, totWaitMs;
+    int forcedSoftware;         /* argv "soft": Mesa rasterises, we still present */
 }
 - (void)setup;
 - (void)tick:(NSTimer *)t;
+- (void)setForcedSoftware:(int)on;
 @end
 
 @implementation GLWinController
 
+- (void)setForcedSoftware:(int)on
+{
+    forcedSoftware = on;
+}
+
 - (void)setup
 {
     NSRect wr = NSMakeRect(192, 140, GLW, GLH);
+#ifndef OSMGA_GLWIN_PLAIN
     NSRect sf = [[NSScreen mainScreen] frame];
 
     screenW = sf.size.width;
     screenH = sf.size.height;
+#endif
 
     win = [[NSWindow alloc]
               initWithContentRect:wr
                         styleMask:(NSTitledWindowMask |
                                    NSClosableWindowMask |
                                    NSMiniaturizableWindowMask)
+#ifdef OSMGA_GLWIN_PLAIN
+                          backing:NSBackingStoreBuffered
+#else
                           backing:NSBackingStoreNonretained
+#endif
                             defer:NO];
     [win setTitle:@"OpenGL"];
     [win setDelegate:self];
+#ifdef OSMGA_GLWIN_PLAIN
+    view = [[GLBitmapView alloc] initWithFrame:
+               NSMakeRect(0, 0, GLW, GLH)];
+#else
     view = [[GLDarkView alloc] initWithFrame:
                NSMakeRect(0, 0, GLW, GLH)];
+#endif
     [view setAutoresizingMask:NSViewNotSizable];
     [win setContentView:view];
 
     buf = (unsigned long *)malloc((unsigned)(GLW * GLH) * sizeof *buf);
     ctx = OSMesaCreateContext(OSMESA_ARGB, NULL);
+#ifdef OSMGA_GLWIN_PLAIN
+    if (win == nil || view == nil || buf == 0 || ctx == 0 ||
+        !OSMesaMakeCurrent(ctx, buf, GL_UNSIGNED_BYTE, GLW, GLH)) {
+        [win setTitle:@"stock: no software surface"];
+        presenting = 0;
+    } else {
+        presenting = 1;
+    }
+#else
     if (buf == 0 || ctx == 0 ||
         !OSMesaMakeCurrent(ctx, buf, GL_UNSIGNED_BYTE, GLW, GLH) ||
         OSMGAMesaBufferOrigin() == 0UL) {
@@ -125,6 +312,30 @@
         OSMGAMesaBufferPresentMode(1);
         presenting = 1;
     }
+#endif
+
+    /*
+     * "soft" sends every triangle to Mesa's own rasteriser and makes the
+     * back end decline the engine clear, so the picture is drawn entirely in
+     * software -- and then delivered by exactly the same VRAM-to-VRAM blit.
+     *
+     * That is the point of doing it this way.  Only the rasteriser differs;
+     * the surface, the geometry, the lighting, the evaluators, the clear's
+     * coverage and the delivery are all identical, so the difference between
+     * the two titles is the rasteriser and nothing else.
+     *
+     * It is NOT the same thing as a stock-Mesa build.  Mesa is writing its
+     * spans into video memory here, not into system memory, and this file
+     * cannot say what that costs -- nobody has measured writes in that
+     * direction.  A stock build would write to system memory and then have
+     * to move the result to the screen itself, which this does not do.  So
+     * read the software figure as "Mesa rasterising into the surface the
+     * driver gave it", which is what it is.
+     */
+#ifndef OSMGA_GLWIN_PLAIN
+    if (forcedSoftware)
+        OSMGAMesaHookForceSoftware(1);
+#endif
 
     glViewport(0, 0, GLW, GLH);
     glMatrixMode(GL_PROJECTION);
@@ -169,6 +380,31 @@
 
     minMs = 1e9; maxMs = 0.0; sumMs = 0.0;
     lastReport = [NSDate timeIntervalSinceReferenceDate];
+    wallStart = lastReport;
+    winFrames = 0UL; winSumMs = 0.0; winStart = lastReport;
+    winClrMs = 0.0; winDrwMs = 0.0; winPrsMs = 0.0;
+    winCvtMs = 0.0; winAppMs = 0.0; winWaitMs = 0.0;
+    totClrMs = 0.0; totDrwMs = 0.0; totPrsMs = 0.0;
+    totCvtMs = 0.0; totAppMs = 0.0; totWaitMs = 0.0;
+#ifdef OSMGA_GLWIN_PLAIN
+    waitingForServer = 0;
+    [win setTitle:@"stock -- measuring"];
+#else
+    /*
+     * Only when there is something to measure.
+     *
+     * The setup above may already have put "no accelerated surface" in the
+     * title, which is the one thing a user without the driver needs to see,
+     * and an unconditional set here wiped it out and replaced it with
+     * "measuring" -- on a window that then draws nothing at all, because
+     * tick: returns immediately while `presenting` is false.  An empty
+     * window labelled as measuring hardware is worse than an empty window
+     * that says why it is empty.
+     */
+    if (presenting)
+        [win setTitle:(forcedSoftware ? @"teapot -- software -- measuring"
+                                      : @"teapot -- hardware -- measuring")];
+#endif
 
     timer = [NSTimer scheduledTimerWithTimeInterval:(1.0 / 60.0)
                                              target:self
@@ -186,6 +422,7 @@
      * right: the window has just been placed and nothing has moved it.
      * From here on the tick asks the server, not the cache.
      */
+#ifndef OSMGA_GLWIN_PLAIN
     {
         NSPoint c = [view convertPoint:NSMakePoint(0, 0) toView:nil];
         float bx, by, bw, bh;
@@ -198,6 +435,7 @@
                bx, by, bw, bh, srvOffX, srvOffY);
         fflush(stdout);
     }
+#endif
 }
 
 /*
@@ -209,21 +447,36 @@
  * is measured once at setup, while the window is provably where the cache
  * says it is.
  */
+#ifndef OSMGA_GLWIN_PLAIN
 - (NSPoint)serverOrigin
 {
     float bx, by, bw, bh;
     PScurrentwindowbounds([win windowNumber], &bx, &by, &bw, &bh);
     return NSMakePoint(bx + srvOffX, by + srvOffY);
 }
+#endif
 
 - (void)tick:(NSTimer *)t
 {
+#ifndef OSMGA_GLWIN_PLAIN
     NSPoint p;
     long dstX, dstY;
-    double t0, t1, ms, nowT;
     unsigned long verdict = 0UL;
     unsigned long srcX, srcY;
     long pw, ph;
+#endif
+    double t0, tC, tD, tP, tV, tS, t1, ms, nowT;
+#ifdef OSMGA_GLWIN_PLAIN
+    /*
+     * -[NSDPSContext wait] runs the run loop in its DPS waiting mode.  If
+     * that mode admits our timer, tick: can be called again before the
+     * outer frame returns.  The flag is set only around that nested run
+     * loop, so such a callback returns before drawing or touching counters;
+     * normal timer calls and every existing early-return path are unchanged.
+     */
+    if (waitingForServer)
+        return;
+#endif
     if (!presenting)
         return;
     /*
@@ -239,6 +492,7 @@
     if (![win isVisible] || [win isMiniaturized] || [NSApp isHidden] ||
         ![NSApp isActive])
         return;
+#ifndef OSMGA_GLWIN_PLAIN
     /*
      * ANYTHING WAITING IN THE EVENT QUEUE skips the frame.  The trail race
      * is the mouse-down that arrives while a frame is being drawn: the
@@ -328,9 +582,26 @@
         skips++;
         return;                 /* fully off-screen */
     }
+#endif
 
+    /*
+     * Three clocks, not one, and this is a correction rather than a nicety.
+     *
+     * The frame used to be one span, and working out what was inside it
+     * meant subtracting an estimated clear and an estimated present -- the
+     * latter scaled from a DIFFERENT programme at a DIFFERENT size.  Cross-
+     * review was right about that: an estimate subtracted from a measurement
+     * is not a measurement, and the bound it produced was even stated the
+     * wrong way round.  So each phase is timed where it happens.
+     *
+     * tC closes the clear, tD closes the drawing (glFinish is inside it, so
+     * the engine really is done), and tP opens the present.  What falls
+     * between tD and tP -- the event peek and the position recheck -- is in
+     * neither, and is the difference between the phases and the whole.
+     */
     t0 = [NSDate timeIntervalSinceReferenceDate];
     glClear((GLbitfield)(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
+    tC = [NSDate timeIntervalSinceReferenceDate];
     glPushMatrix();
     /*
      * The teapot data carries the demo's own idea of up, and the flipped
@@ -345,7 +616,9 @@
     teapot(4, 1.0, GL_FILL);
     glPopMatrix();
     glFinish();
+    tD = [NSDate timeIntervalSinceReferenceDate];
 
+#ifndef OSMGA_GLWIN_PLAIN
     /*
      * And once more AFTER the render: the teapot takes some thirty
      * milliseconds, ten times the window the old triangle left open, and a
@@ -372,6 +645,7 @@
         }
     }
 
+    tP = [NSDate timeIntervalSinceReferenceDate];
     if (OSMGAMesaBufferPresentRect(srcX, srcY, (unsigned long)pw,
                                    (unsigned long)ph,
                                    dstX, dstY, &verdict) != 0) {
@@ -381,20 +655,148 @@
         return;
     }
     t1 = [NSDate timeIntervalSinceReferenceDate];
+#else
+    [view copyFromBGRA:(unsigned char *)buf];
+    tV = [NSDate timeIntervalSinceReferenceDate];
+    /*
+     * Submission is exactly lock focus, draw the bitmap rep, unlock focus,
+     * and flush the window.  OPENSTEP 4.2's NSDPSContext.h then gives us the
+     * real per-call fence: -wait pings the server and waits for its reply.
+     * Keep the return from flushWindow as tS so submission and server wait
+     * remain separate measurements.
+     *
+     * Whatever the wait measures is stock system-memory-to-screen delivery;
+     * it is not Mesa rasterisation.  Mesa's draw phase was already completed
+     * separately while it wrote the system-memory OSMesa buffer.
+     */
+    [view lockFocus];
+    [view drawBitmap];
+    [view unlockFocus];
+    [win flushWindow];
+    tS = [NSDate timeIntervalSinceReferenceDate];
+    waitingForServer = 1;
+    [[NSDPSContext currentContext] wait];
+    waitingForServer = 0;
+    t1 = [NSDate timeIntervalSinceReferenceDate];
+#endif
 
     angle += 0.0261799;              /* one and a half degrees */
     ms = (t1 - t0) * 1000.0;
     frames++;
     sumMs += ms;
+    winClrMs += (tC - t0) * 1000.0;
+    winDrwMs += (tD - tC) * 1000.0;
+#ifndef OSMGA_GLWIN_PLAIN
+    winPrsMs += (t1 - tP) * 1000.0;
+#else
+    winCvtMs += (tV - tD) * 1000.0;
+    winAppMs += (tS - tV) * 1000.0;
+    winWaitMs += (t1 - tS) * 1000.0;
+#endif
+    totClrMs += (tC - t0) * 1000.0;
+    totDrwMs += (tD - tC) * 1000.0;
+#ifndef OSMGA_GLWIN_PLAIN
+    totPrsMs += (t1 - tP) * 1000.0;
+#else
+    totCvtMs += (tV - tD) * 1000.0;
+    totAppMs += (tS - tV) * 1000.0;
+    totWaitMs += (t1 - tS) * 1000.0;
+#endif
     if (ms < minMs) minMs = ms;
     if (ms > maxMs) maxMs = ms;
 
     nowT = t1;
+
+    /*
+     * The half-second title.
+     *
+     * Two numbers, and they are not the same measurement.  The rate is
+     * frames divided by WALL-CLOCK seconds, so everything is in it -- the
+     * timer's own gaps, the event peek, and setting this very title.  The
+     * milliseconds beside it are the mean of the timed span only (clear,
+     * draw, finish, and either accelerated present or stock conversion plus
+     * AppKit submission and the DPS server wait).  Where the two disagree,
+     * the difference is what the frame costs outside the measured work.
+     *
+     * Set AFTER t1 on purpose: a title set inside the timed span would put
+     * the window server's work into the figure the title reports.  It still
+     * costs wall-clock, which is exactly why the rate is measured that way
+     * and not as 1000/ms.
+     */
+    winFrames++;
+    winSumMs += ms;
+    if (nowT - winStart >= 0.5) {
+        double el;
+        double n;
+        double timedMs;
+        NSString *mode;
+
+        el = nowT - winStart;
+        n = (double)winFrames;
+        timedMs = winSumMs / n;
+#ifdef OSMGA_GLWIN_PLAIN
+        mode = @"stock";
+#else
+        mode = forcedSoftware ? @"SOFTWARE" : @"hardware";
+#endif
+
+        /*
+         * The rate is frames over WALL-CLOCK seconds, so the timer's gaps,
+         * the event peek and this very title are all in it.  The three
+         * phases beside it are means of their own measured spans.  The
+         * title calls the span "timed" so it cannot be read as 1000/rate.
+         * The terminal report prints both periods and their difference.
+         */
+#ifdef OSMGA_GLWIN_PLAIN
+        [win setTitle:[NSString stringWithFormat:
+            @"%@ wall %.1f fps -- timed %.2f ms -- clear %.2f draw %.2f convert %.2f appkit-submit %.2f server-wait %.2f",
+            mode, n / el, timedMs, winClrMs / n, winDrwMs / n,
+            winCvtMs / n, winAppMs / n, winWaitMs / n]];
+#else
+        [win setTitle:[NSString stringWithFormat:
+            @"%@ wall %.1f fps -- timed %.2f ms -- clear %.2f draw %.2f present %.2f",
+            mode, n / el, timedMs, winClrMs / n, winDrwMs / n,
+            winPrsMs / n]];
+#endif
+        winFrames = 0UL; winSumMs = 0.0; winStart = nowT;
+        winClrMs = 0.0; winDrwMs = 0.0; winPrsMs = 0.0;
+        winCvtMs = 0.0; winAppMs = 0.0; winWaitMs = 0.0;
+    }
+
     if (nowT - lastReport >= 5.0) {
-        printf("glwin: %lu frames, mean %.2f ms (min %.2f max %.2f), "
+        double wallElapsed;
+        double wallFps;
+        double wallMs;
+        double timedMs;
+        double unaccountedMs;
+
+        wallElapsed = nowT - wallStart;
+        wallFps = (double)frames / wallElapsed;
+        wallMs = 1000.0 / wallFps;
+        timedMs = sumMs / (double)frames;
+        unaccountedMs = wallMs - timedMs;
+#ifdef OSMGA_GLWIN_PLAIN
+        printf("glwin: stock %lu frames, wall %.2f fps / %.2f ms per frame, "
+               "timed span %.2f ms (clear %.2f draw %.2f convert %.2f "
+               "appkit-submit %.2f server-wait %.2f), unaccounted %.2f ms, "
+               "timed-span min %.2f max %.2f\n",
+               frames, wallFps, wallMs, timedMs,
+               totClrMs / (double)frames, totDrwMs / (double)frames,
+               totCvtMs / (double)frames, totAppMs / (double)frames,
+               totWaitMs / (double)frames,
+               unaccountedMs, minMs, maxMs);
+#else
+        printf("glwin: %s %lu frames, wall %.2f fps / %.2f ms per frame, "
+               "timed span %.2f ms (clear %.2f draw %.2f present %.2f), "
+               "unaccounted %.2f ms, timed-span min %.2f max %.2f, "
                "%lu offscreen, %lu while moving, %lu queue-peek\n",
-               frames, sumMs / (double)frames, minMs, maxMs, skips,
-               moveSkips, evSkips);
+               forcedSoftware ? "SOFTWARE" : "hardware",
+               frames, wallFps, wallMs, timedMs,
+               totClrMs / (double)frames, totDrwMs / (double)frames,
+               totPrsMs / (double)frames,
+               unaccountedMs, minMs, maxMs,
+               skips, moveSkips, evSkips);
+#endif
         fflush(stdout);
         lastReport = nowT;
     }
@@ -411,24 +813,34 @@
  */
 - (void)windowWillMove:(NSNotification *)n
 {
+#ifndef OSMGA_GLWIN_PLAIN
     moving = 1;
     stillTicks = 0UL;
     haveMv = 0;
+#endif
 }
 
 - (void)windowDidMove:(NSNotification *)n
 {
+#ifndef OSMGA_GLWIN_PLAIN
     moving = 0;
     havePos = 0;                /* re-learn the position before presenting */
+#endif
 }
 
 - (void)windowWillClose:(NSNotification *)n
 {
     if (timer) { [timer invalidate]; timer = nil; }
     presenting = 0;
+#ifndef OSMGA_GLWIN_PLAIN
     OSMGAMesaBufferPresentMode(0);
+#endif
     if (ctx) { OSMesaDestroyContext(ctx); ctx = 0; }
+#ifdef OSMGA_GLWIN_PLAIN
+    printf("glwin: stock closed after %lu frames\n", frames);
+#else
     printf("glwin: closed after %lu frames (%lu skipped)\n", frames, skips);
+#endif
     [NSApp terminate:nil];
 }
 
@@ -441,10 +853,31 @@ main(int argc, const char *argv[])
     NSApplication *app;
     GLWinController *ctrl;
 
-    (void)argc; (void)argv;
     pool = [[NSAutoreleasePool alloc] init];
     app = [NSApplication sharedApplication];
     ctrl = [[GLWinController alloc] init];
+#ifdef OSMGA_GLWIN_PLAIN
+    if (argc > 1) {
+        fprintf(stderr, "glwin_sw: this build takes no arguments\n");
+        return 2;
+    }
+#else
+    /*
+     * One argument, and it is read before setup because setup is where the
+     * back end is told.  Anything else is refused rather than ignored: a
+     * typo that silently gave the hardware path would be compared against
+     * the hardware path and called a result.
+     */
+    if (argc > 1) {
+        if (strcmp(argv[1], "soft") == 0) {
+            [ctrl setForcedSoftware:1];
+        } else {
+            fprintf(stderr, "glwin: unknown argument '%s' (only 'soft')\n",
+                    argv[1]);
+            return 2;
+        }
+    }
+#endif
     [ctrl setup];
     [app activateIgnoringOtherApps:YES];
     [app run];
