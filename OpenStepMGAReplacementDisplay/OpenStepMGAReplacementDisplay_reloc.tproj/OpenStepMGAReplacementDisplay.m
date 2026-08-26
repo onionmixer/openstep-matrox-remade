@@ -40,6 +40,8 @@
 #import "OpenStepMGAEDID.h"
 #import "OpenStepMGAWarpUcode.h"
 #import "OpenStepMGAHW3D.h"
+#import "OpenStepMGAWindowMath.h"
+#import "OpenStepMGAPciSurvey.h"
 
 #define PCI_CFG_ADDR            0x0CF8
 #define PCI_CFG_DATA            0x0CFC
@@ -968,7 +970,9 @@ static const OSMGARes osmgaRes[] = {
  * Pixel format (depth / colorspace).  bppShift feeds osmgaComputeCRTC; mulCtl
  * is the RAMDAC MUL_CTL (multiplexer/pixel format); isPseudo marks the 8bpp
  * color mode whose LUT is the window-server colormap (loaded via
- * setTransferTable:count:); grayscale and RGB modes use a fixed linear ramp.
+ * setTransferTable:count:); RGB modes use a fixed linear ramp, and greyscale
+ * uses the ramp the "Gray Levels" preset asks for -- which deliberately
+ * OVERRIDES what the window server sends to setTransferTable:count:.
  */
 typedef struct {
     const char *cspace;        /* config "ColorSpace" token to match */
@@ -979,31 +983,44 @@ typedef struct {
     IOColorSpace ioColorSpace;
     const char *pixelEncoding;
     int isPseudo;              /* 8bpp PseudoColor: use window-server palette */
-    int grayLevels;            /* >1: quantize the gray ramp to N output levels
-                                * (retro N-gray look on an 8bpp scanout; 0/1 =
-                                * full 256-level identity ramp) */
 } OSMGAFormat;
+
+/*
+ * How many output greys the DAC ramp is quantized to, for the one greyscale
+ * format.  Not a field of OSMGAFormat, because it is not a property of the
+ * pixel format: every value below produces the SAME 8bpp scanout, the same
+ * rowBytes and the same IODisplayInfo, and differs only in the palette.
+ *
+ * Set from the "Gray Levels" configuration key.  0 means the full 256-level
+ * identity ramp, which is what the driver did before the key existed.
+ */
+static unsigned int osmgaGrayLevels;
 
 /*
  * NOTE: the G450 scanout engine only does 8/16/24/32bpp packed pixels (original
  * MGAG200Init indexes MGABppShifts[bpp>>3] and rejects anything else with
  * "unsupported depth"), so a true 2bpp linear framebuffer is impossible on this
- * hardware.  "BW:4" is therefore an 8bpp grayscale scanout whose DAC LUT is
- * quantized to 4 output grays -- it reproduces the retro 4-gray MegaPixel *look*
- * while remaining a hardware-valid 8bpp mode (the window server still renders
- * 256-level gray; only the displayed palette is quantized).
+ * hardware.
+ *
+ * This table therefore holds ONE greyscale format, "BW:8", and the retro
+ * look is a palette preset on top of it ("Gray Levels").  There used to be a
+ * second row called "BW:4" that meant four greys, and it was a mislabel:
+ * OPENSTEP's BW:N names the PACKED DEPTH, not the number of visible greys.
+ * The stock CirrusLogicGD542X BW:2 mode proves it -- rowBytes is the pixel
+ * width over four and its pixelEncoding is "WW", two characters for two bits
+ * (CirrusLogicGD542X.m:107-121).  Ours is one byte per pixel with eight, so
+ * no BW:N below 8 can honestly name it.  "BW:4" is still ACCEPTED from an
+ * older configuration and translated; see -selectModeFromConfig:.
  */
 static const OSMGAFormat osmgaFmt[] = {
     { "RGB:888/32", 4, 0x07, 2, IO_24BitsPerPixel, IO_RGBColorSpace,
-      "--------RRRRRRRRGGGGGGGGBBBBBBBB", 0, 0 },
+      "--------RRRRRRRRGGGGGGGGBBBBBBBB", 0 },
     { "RGB:555/16", 2, 0x01, 1, IO_15BitsPerPixel, IO_RGBColorSpace,
-      "-RRRRRGGGGGBBBBB", 0, 0 },
+      "-RRRRRGGGGGBBBBB", 0 },
     { "RGB:256/8",  1, 0x00, 0, IO_8BitsPerPixel, IO_RGBColorSpace,
-      "PPPPPPPP", 1, 0 },
+      "PPPPPPPP", 1 },
     { "BW:8",       1, 0x00, 0, IO_8BitsPerPixel, IO_OneIsWhiteColorSpace,
-      "WWWWWWWW", 0, 0 },
-    { "BW:4",       1, 0x00, 0, IO_8BitsPerPixel, IO_OneIsWhiteColorSpace,
-      "WWWWWWWW", 0, 4 }
+      "WWWWWWWW", 0 }
 };
 #define OSMGA_FMT_COUNT ((int)(sizeof(osmgaFmt) / sizeof(osmgaFmt[0])))
 #define OSMGA_FMT_DEFAULT 0   /* RGB:888/32 */
@@ -1029,7 +1046,7 @@ static const OSMGAFormat osmgaFmt[] = {
  * scanout.
  *
  * Every width this driver publishes is a multiple of sixteen pixels and
- * every format is one, two or four bytes, so all twenty-five combinations
+ * every format is one, two or four bytes, so all twenty combinations
  * pass and this has never fired.  It is here because that is a property of
  * the numbers in two tables rather than of the code, and the next width
  * somebody adds is where it stops being true.
@@ -1073,6 +1090,70 @@ osmgaPciReadConfigLong(int bus, int device, int function, int reg)
 
     outl((IOEISAPortAddress)PCI_CFG_ADDR, address);
     return inl((IOEISAPortAddress)PCI_CFG_DATA);
+}
+
+/*
+ * R10 stage 1 -- what else on this bus decodes the aperture we mean to use.
+ *
+ * REPORT ONLY this stage: nothing depends on the answer, the ceiling stays
+ * where it is and the offscreen window keeps its size.  The point is to have
+ * the number, from the driver itself, before anything rests on it -- the same
+ * order the VRAM proof was introduced in.
+ *
+ * WHY NOT SIZE OUR OWN BAR.  The obvious way to learn the aperture is to
+ * write ones to BAR0 and read the mask back.  Cross-review stopped that and
+ * was right to: COMMAND.MEM gates legacy VGA decode as well as BAR0, the boot
+ * console is live here, and nothing establishes that no other agent touches
+ * the aperture during the window.  A read-only survey answers the question
+ * that actually matters -- is anything ELSE there -- with no write at all.
+ *
+ * The walk itself is in OpenStepMGAPciSurvey.c, driven by the callback below,
+ * so that it can be exercised on a host over a synthetic bus.  What is left
+ * here is the two things that genuinely need the kernel: the port access, and
+ * turning events into log lines.
+ */
+static unsigned long
+osmgaSurveyRead(void *ctx, int bus, int dev, int fn, int reg)
+{
+    (void)ctx;
+    return osmgaPciReadConfigLong(bus, dev, fn, reg);
+}
+
+static void
+osmgaSurveyLog(void *ctx, const OSMGAPciEvent *ev)
+{
+    (void)ctx;
+    switch (ev->kind) {
+    case OSMGA_PCI_EV_SELF:
+        IOLog("OpenStepMGA R10: survey %d:%02d.%d is us (%04x:%04x), "
+              "not judged\n", ev->bus, ev->dev, ev->fn,
+              (unsigned int)(ev->a & 0xffffUL),
+              (unsigned int)((ev->a >> 16) & 0xffffUL));
+        break;
+    case OSMGA_PCI_EV_BRIDGE:
+        IOLog("OpenStepMGA R10: survey %d:%02d.%d bridge sec=%lu sub=%lu%s\n",
+              ev->bus, ev->dev, ev->fn, ev->a, ev->b,
+              ev->isAncestor ? " (ours)" : "");
+        break;
+    case OSMGA_PCI_EV_BASE:
+        IOLog("OpenStepMGA R10: survey %d:%02d.%d base %08x <= %lu KiB%s\n",
+              ev->bus, ev->dev, ev->fn, (unsigned int)ev->a, ev->b / 1024UL,
+              ev->isSelf ? " (ours)" : "");
+        break;
+    case OSMGA_PCI_EV_WINDOW:
+        IOLog("OpenStepMGA R10: survey %d:%02d.%d window %08x..%08x%s\n",
+              ev->bus, ev->dev, ev->fn, (unsigned int)ev->a,
+              (unsigned int)ev->b, ev->isAncestor ? " (ours)" : "");
+        break;
+    case OSMGA_PCI_EV_UNKNOWN_HEADER:
+        IOLog("OpenStepMGA R10: survey %d:%02d.%d header %02x not "
+              "understood\n", ev->bus, ev->dev, ev->fn, (unsigned int)ev->a);
+        break;
+    default:
+        IOLog("OpenStepMGA R10: survey %d:%02d.%d malformed %08x\n",
+              ev->bus, ev->dev, ev->fn, (unsigned int)ev->a);
+        break;
+    }
 }
 
 static BOOL
@@ -1566,9 +1647,10 @@ osmgaStormInitState(vm_address_t base, unsigned long stridePixels,
  * programming while the screen is blanked. */
 static void osmgaProbeVramExtent(unsigned long fbPhysical,
                                  unsigned long visibleEnd,
-                                 vm_address_t mmio);
+                                 unsigned long limit, vm_address_t mmio);
 static int osmgaProveVramTo(unsigned long fbPhysical, unsigned long from,
-                            unsigned long to, vm_address_t mmio);
+                            unsigned long to, unsigned long limit,
+                            vm_address_t mmio);
 
 static IOReturn
 osmgaMapUncachedBlock(unsigned long fbPhysical, unsigned long byteStart,
@@ -1592,6 +1674,61 @@ osmgaMapUncachedBlock(unsigned long fbPhysical, unsigned long byteStart,
     *outMapLen = mapLen;
     *outPtr = (volatile unsigned long *)(alias + (byteStart - mapStart));
     return IO_R_SUCCESS;
+}
+
+/*
+ * R12: zero the window a client is about to be handed.
+ *
+ * WHEN IT IS NEEDED.  A proof that fails does not zero the range it failed on
+ * -- deliberately, because a failing range may be somebody else's memory and
+ * writing zeroes over it would repeat the mistake that failed.  But a range
+ * that ALIASES writes back down into video memory leaves its signatures in a
+ * region that did pass, which is our own and is about to be published.  On a
+ * 16 MiB board wrongly declared 32, python counts 796 of the second stage's
+ * writes landing inside the 1600x1200 window, and none of them are repaired
+ * by the visible clear because the whole window sits above the picture.
+ *
+ * IN PIECES, not one mapping.  At 640x480 a 28 MiB ceiling leaves a window of
+ * 27,475,968 bytes, which is larger than any mapping this driver has ever
+ * made -- the proof's biggest is sixteen megabytes.  Two megabytes at a time
+ * asks nothing new of the mapper.
+ *
+ * FAIL CLOSED.  If any piece cannot be mapped or written, the caller must
+ * leave the window shut: handing out memory that could not be cleaned is
+ * exactly what this is here to prevent.
+ */
+#define OSMGA_ZERO_CHUNK  (2UL * 1024UL * 1024UL)
+
+static int
+osmgaZeroWindow(unsigned long fbPhysical, unsigned long from, unsigned long to)
+{
+    unsigned long off = from;
+
+    if (from >= to)
+        return 0;
+    while (off < to) {
+        vm_address_t alias = 0;
+        unsigned long len = 0UL;
+        volatile unsigned long *p = 0;
+        unsigned long end = off + OSMGA_ZERO_CHUNK;
+        unsigned long words;
+        unsigned long i;
+
+        if (end > to || end < off)
+            end = to;
+        if (osmgaMapUncachedBlock(fbPhysical, off, end, &alias, &len, &p)
+                != IO_R_SUCCESS) {
+            IOLog("OpenStepMGA R12: could not map %lu..%lu to clean it; the "
+                  "window stays shut\n", off, end);
+            return 0;
+        }
+        words = (end - off) / sizeof(unsigned long);
+        for (i = 0UL; i < words; i++)
+            p[i] = 0UL;
+        IOUnmapPhysicalFromIOTask(alias, len);
+        off = end;
+    }
+    return 1;
 }
 
 /*
@@ -1760,6 +1897,81 @@ static void *osmgaMmapCmdVirt;
 
 static unsigned long osmgaMmapWindowStart;   /* byte offset into VRAM */
 static unsigned long osmgaMmapWindowEnd;     /* exclusive */
+
+/*
+ * Whether OpenStepMGAWindowMath's identity subset still describes THIS
+ * driver's mode tables.  Checked once at init and consulted by the capability
+ * predicate, which refuses when it is clear.
+ *
+ * Fail-closed rather than logged-and-ignored.  The shared file exists so that
+ * the Configure.app panel and this driver cannot give an operator different
+ * numbers; if the two tables have drifted, its arithmetic is describing a
+ * driver that is not this one, and accelerating on it would be worse than not
+ * accelerating.  A log line alone would leave the wrong answer in place.
+ */
+static int osmgaTablesAgree;
+
+/*
+ * Whether the offscreen window has been opened, and whether it ever will be.
+ *
+ * The device is registered with an EMPTY interval and opened once, after
+ * everything that writes into video memory has finished -- see
+ * OpenStepMGAWindowMath.h for why.  The state is explicit rather than
+ * inferred from the endpoints because a proof that fails at 1600x1200 leaves
+ * the end equal to the start, which is exactly what "not attempted" looks
+ * like.  FAILED is terminal: it is never retried, and never mistaken for a
+ * fresh start by a second mode set.
+ */
+static OSMGAWindowState osmgaWindowState;
+
+/*
+ * The three things stage 4 keeps apart, because collapsing them is how a
+ * survey result turns into a claim about capacity that nobody measured.
+ *
+ *   osmgaSurveyGate32   the PCI survey said nothing else claims the range and
+ *                       our own bridges forward it.  Permission to ATTEMPT.
+ *   osmgaDeclaredBytes  what "MGA Memory Size" asked for: 16 or 32 MiB.
+ *   osmgaAttemptLimit   the two combined -- the furthest this boot may try.
+ *   osmgaCeiling        that, less the top-of-VRAM margin, page aligned.
+ *
+ * What is actually there is decided by the proof and by nothing else.
+ */
+static int osmgaSurveyGate32;
+static unsigned long osmgaDeclaredBytes;
+static unsigned long osmgaAttemptLimit;
+static unsigned long osmgaCeiling;
+
+/*
+ * The configuration this driver was started with, COPIED rather than
+ * referenced.
+ *
+ * IOConfigTable's valueForStringKey: hands back a pointer into the table's
+ * own storage, and how long that storage lives is not written down anywhere
+ * this driver can check.  Every other use in this file reads it and derives a
+ * value immediately.  The verdict line is produced later, at mode set, so it
+ * keeps its own copies -- a dangling pointer read at mode set would be a hard
+ * fault in the kernel for the sake of a log line.
+ */
+static char osmgaCfgDisplayMode[128];
+static char osmgaCfgMemorySize[16];
+static int osmgaMmapSwitchOn;
+
+static void
+osmgaCopyConfigValue(char *dst, unsigned int cap, const char *src)
+{
+    unsigned int i = 0U;
+
+    if (dst == 0 || cap == 0U)
+        return;
+    dst[0] = '\0';
+    if (src == 0)
+        return;
+    while (src[i] != '\0' && i + 1U < cap) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
 static unsigned long osmgaMmapFbPhysical;
 static int osmgaMmapRegistered;              /* class-level, register once */
 static int osmgaMesaAccelEnabled;             /* M1-3a: Configure.app switch */
@@ -2091,10 +2303,24 @@ osmgaDevOpen(int dev, int flag, int devtype)
      * the case where it matters -- but a refused open has no close to match
      * it, so it must not be counted.
      */
-    if (OSMGA_DEV_MINOR(dev) != 0 || !osmgaMmapRegistered) {
+    /*
+     * Refused until the window is OPEN, not merely until the device is
+     * registered.
+     *
+     * The device now exists from init with an empty interval, so
+     * "registered" no longer implies "there is something here".  Refusing
+     * here rather than in the mmap handler is what makes the empty phase
+     * safe: with no descriptor there is nothing to map, and that covers the
+     * command batch as well -- the handler tries the batch FIRST and its
+     * branch does not look at the video-memory interval, so gating only the
+     * interval would have left the batch mappable while the proof ran.
+     */
+    if (OSMGA_DEV_MINOR(dev) != 0 || !osmgaMmapRegistered ||
+        osmgaWindowState != OSMGA_WINDOW_OPEN) {
         IOLog("OpenStepMGA S4a: open REFUSED dev=%04x minor=%d "
-              "registered=%d\n",
-              dev & 0xFFFF, OSMGA_DEV_MINOR(dev), osmgaMmapRegistered);
+              "registered=%d state=%d\n",
+              dev & 0xFFFF, OSMGA_DEV_MINOR(dev), osmgaMmapRegistered,
+              (int)osmgaWindowState);
         return ENXIO;
     }
     osmgaDevOpens++;
@@ -2786,7 +3012,6 @@ static IODisplayInfo osmgaModeTemplate = {
     statCursorWhileBusy = 0; statThin1px = 0;
     statPresentOk = 0;
     statEnterLinear = 0; statRevertVGA = 0; statTransferTable = 0;
-    configuredVideoMemoryBytes = 0;
 
     if (!osmgaFindMGAFunction(&bus, &dev, &fn, &vendorDevice, &revision)) {
         IOLog("OpenStepMGAReplacementDisplay: MGA absent after probe, abort\n");
@@ -2806,8 +3031,44 @@ static IODisplayInfo osmgaModeTemplate = {
           chipIsG450 ? "G450" : "pre-G450",
           (unsigned int)frameBufferPhysical, (unsigned int)mmioPhysical);
 
-    if (![self readManualMemoryConfiguration:[deviceDescription configTable]])
-        IOLog("OpenStepMGAReplacementDisplay: manual MGA Memory Size unavailable\n");
+    /*
+     * The drift alarm for the shared window arithmetic.
+     *
+     * osmgaRes/osmgaFmt hold ints; the shared file takes unsigned longs.
+     * Converted element by element into locals rather than cast, because a
+     * cast of the whole array would reinterpret the storage and "agree"
+     * would then be a statement about memory layout instead of about the
+     * numbers.
+     */
+    {
+        const char *rn[OSMGA_WIN_RES_COUNT];
+        unsigned long rw[OSMGA_WIN_RES_COUNT];
+        unsigned long rh[OSMGA_WIN_RES_COUNT];
+        const char *fn[OSMGA_WIN_FMT_COUNT];
+        unsigned long fb[OSMGA_WIN_FMT_COUNT];
+        unsigned int k;
+
+        osmgaTablesAgree = 0;
+        if ((unsigned int)OSMGA_RES_COUNT == OSMGA_WIN_RES_COUNT &&
+            (unsigned int)OSMGA_FMT_COUNT == OSMGA_WIN_FMT_COUNT) {
+            for (k = 0U; k < OSMGA_WIN_RES_COUNT; k++) {
+                rn[k] = osmgaRes[k].name;
+                rw[k] = (unsigned long)osmgaRes[k].width;
+                rh[k] = (unsigned long)osmgaRes[k].height;
+            }
+            for (k = 0U; k < OSMGA_WIN_FMT_COUNT; k++) {
+                fn[k] = osmgaFmt[k].cspace;
+                fb[k] = (unsigned long)osmgaFmt[k].bytesPerPixel;
+            }
+            osmgaTablesAgree =
+                OSMGAWindowMathTablesAgree(rn, rw, rh, OSMGA_WIN_RES_COUNT,
+                                           fn, fb, OSMGA_WIN_FMT_COUNT);
+        }
+        IOLog("OpenStepMGA R10: window arithmetic tables %s\n",
+              osmgaTablesAgree ? "agree"
+                               : "DISAGREE -- acceleration refused");
+    }
+
     [self selectModeFromConfig:[deviceDescription configTable]];
 
     /* Opt-in S1 engine liveness test; absent/anything-but-Yes means off. */
@@ -2865,6 +3126,81 @@ static IODisplayInfo osmgaModeTemplate = {
         return [super free];
     }
 
+    /*
+     * R10 stage 1.  Asked for the largest declaration this driver will ever
+     * offer (32 MB) rather than for the one configured, so that the log says
+     * what the machine could support and not merely what it was asked for.
+     * Nothing consumes the answer yet.
+     */
+    {
+        OSMGASurveyState survey;
+        unsigned long bound;
+
+        OSMGAPciSurveyRun(osmgaSurveyRead, 0, bus, dev, fn,
+                          frameBufferPhysical, 32UL * 1024UL * 1024UL,
+                          osmgaSurveyLog, 0, &survey);
+        bound = OSMGASurveyAlignmentBound(frameBufferPhysical);
+        IOLog("OpenStepMGA R10: survey of %08x..%08x over %lu claims: %s\n",
+              (unsigned int)frameBufferPhysical,
+              (unsigned int)(frameBufferPhysical + 32UL * 1024UL * 1024UL),
+              survey.claimsSeen,
+              OSMGASurveyVerdictString(survey.verdict));
+        if (!OSMGASurveyIsClear(&survey))
+            IOLog("OpenStepMGA R10: survey offender %08x\n",
+                  (unsigned int)survey.offender);
+        /*
+         * Alignment is a second, independent disproof: a base address
+         * register is naturally aligned to its size, so a base that is not
+         * aligned to 32 MiB cannot belong to a 32 MiB aperture.  Reported
+         * beside the survey because the two fail for different reasons.
+         */
+        IOLog("OpenStepMGA R10: base alignment allows up to %lu KiB\n",
+              bound / 1024UL);
+
+        /*
+         * The gate, and only the gate.  A clear survey means nothing else
+         * claims the range and our own bridges forward it -- NOT that the
+         * card decodes it, which a 16 MiB board behind a 32 MiB bridge
+         * window would also look like.  Alignment is a second, independent
+         * refusal: a base register is naturally aligned to its size, so a
+         * base that is not 32 MiB-aligned cannot belong to a 32 MiB BAR.
+         */
+        osmgaSurveyGate32 = (OSMGASurveyIsClear(&survey) &&
+                             bound >= 32UL * 1024UL * 1024UL) ? 1 : 0;
+    }
+
+    /*
+     * R12: what this boot is allowed to ATTEMPT.
+     *
+     * Read here, before the memory range list is declared below, because
+     * that declaration now depends on it.
+     */
+    {
+        IOConfigTable *ct0 = [deviceDescription configTable];
+        OSMGADeclStatus dstat = OSMGA_DECL_MISSING;
+
+        osmgaCopyConfigValue(osmgaCfgMemorySize,
+                             (unsigned int)sizeof(osmgaCfgMemorySize),
+                             (ct0 == nil) ? 0
+                             : (const char *)[ct0 valueForStringKey:
+                                                 "MGA Memory Size"]);
+        (void)OSMGAVramDeclaration(osmgaCfgMemorySize, &osmgaDeclaredBytes,
+                                   &dstat);
+        osmgaAttemptLimit = OSMGAAttemptLimit(osmgaDeclaredBytes,
+                                              osmgaSurveyGate32,
+                                              MGA_VRAM_16MB,
+                                              32UL * 1024UL * 1024UL);
+        osmgaCeiling = OSMGAWindowCeiling(osmgaAttemptLimit, osmgaAttemptLimit,
+                                          (unsigned long)PAGE_SIZE);
+        IOLog("OpenStepMGA R12: declaration %lu MiB (%s), gate %s -> may "
+              "attempt %lu MiB, ceiling %lu\n",
+              osmgaDeclaredBytes / (1024UL * 1024UL),
+              OSMGADeclStatusString(dstat),
+              osmgaSurveyGate32 ? "open" : "shut",
+              osmgaAttemptLimit / (1024UL * 1024UL), osmgaCeiling);
+    }
+
+
     /* publish selected mode geometry + pixel format */
     {
         const OSMGARes *r = &osmgaRes[selectedResIndex];
@@ -2921,7 +3257,30 @@ static IODisplayInfo osmgaModeTemplate = {
      * IOMapPhysicalIntoIOTask mapping made the boot window server hang.
      */
     ranges[0].start = frameBufferPhysical;
-    ranges[0].size = MGA_VRAM_16MB;
+    /*
+     * Sixteen megabytes unless the operator deliberately declared 32 AND the
+     * survey gate is open.
+     *
+     * It has to be declared at all because the character device hands out a
+     * page frame computed as fbPhysical + offset, with no reference to this
+     * list; above sixteen megabytes that frame would be outside every range
+     * the driver declared, and whether DriverKit permits that is not
+     * established anywhere.  Declaring the range removes the question --
+     * the survey has already shown nothing else claims that space.
+     *
+     * But the change is OPT-IN, and that is the point.  With the key absent
+     * or 16 this is byte for byte what has booted many times.  Only a
+     * deliberate 32 touches the unknown, and deleting the key is then a real
+     * rollback.  An earlier draft sourced this from the survey instead, so
+     * this machine would have declared 32 MiB while asking for 16 and
+     * removing the key would have changed nothing; cross-review caught it.
+     *
+     * The risk is not argued away: if the framebuffer map below fails, this
+     * driver frees itself and the display is gone until an
+     * "Active Drivers -> VGA" config-edit reboot.
+     */
+    ranges[0].size = (osmgaAttemptLimit > MGA_VRAM_16MB)
+                   ? osmgaAttemptLimit : MGA_VRAM_16MB;
     ranges[1].start = 0xa0000;
     ranges[1].size = 0x20000;
     ranges[2].start = 0xc0000;
@@ -2959,12 +3318,19 @@ static IODisplayInfo osmgaModeTemplate = {
             (accel != 0 && osmgaTextContains(accel, "Yes")) ? 1 : 0;
         IOLog("OpenStepMGA M1-3a: Mesa acceleration switch is %s\n",
               osmgaMesaAccelEnabled ? "Yes" : "No");
+        osmgaCopyConfigValue(osmgaCfgDisplayMode,
+                             (unsigned int)sizeof(osmgaCfgDisplayMode),
+                             (ct == nil) ? 0
+                             : (const char *)[ct valueForStringKey:
+                                                 "Display Mode"]);
     }
     {
         IOConfigTable *ct = [deviceDescription configTable];
         const char *flag = (ct == nil) ? 0
                          : (const char *)[ct valueForStringKey:"VRAM Mmap"];
-        if (flag != 0 && osmgaTextContains(flag, "Yes") && !osmgaMmapRegistered) {
+        osmgaMmapSwitchOn = (flag != 0 && osmgaTextContains(flag, "Yes"))
+                          ? 1 : 0;
+        if (osmgaMmapSwitchOn && !osmgaMmapRegistered) {
             const OSMGARes *wr = &osmgaRes[selectedResIndex];
             const OSMGAFormat *wf = &osmgaFmt[selectedFormatIndex];
             unsigned long visEnd =
@@ -2976,15 +3342,23 @@ static IODisplayInfo osmgaModeTemplate = {
             unsigned long start =
                 (visEnd + guard + (unsigned long)PAGE_SIZE - 1UL) &
                 ~((unsigned long)PAGE_SIZE - 1UL);
-            unsigned long end =
-                OSMGA_S1_VRAM_PROVEN & ~((unsigned long)PAGE_SIZE - 1UL);
+            /*
+             * Judged against the CEILING, not the conservative bound.
+             *
+             * The question at registration is whether this window can ever
+             * become non-empty, and the answer for 1600x1200 is yes -- its
+             * start is past the conservative bound but well below the
+             * ceiling the boot proof reaches.  Asking the old question here
+             * is what refused the device, which then stopped the proof from
+             * running, which then left the window that would have been fine.
+             */
+            unsigned long end = osmgaCeiling;
 
-            if (start >= end ||
-                end - start < (unsigned long)PAGE_SIZE ||
-                end > MGA_VRAM_16MB) {
-                IOLog("OpenStepMGA S4a: no usable offscreen window for this "
-                      "mode (start=%lu end=%lu), device NOT registered\n",
-                      start, end);
+            if (!OSMGAWindowMayRegister(start, end, osmgaAttemptLimit,
+                                        (unsigned long)PAGE_SIZE)) {
+                IOLog("OpenStepMGA S4a: no offscreen window could ever fit "
+                      "this mode (start=%lu ceiling=%lu), device NOT "
+                      "registered\n", start, end);
             } else {
                 /* Immutable state first, cdevsw entry published after.
                  * The ring is optional: without it the VRAM window still
@@ -3073,8 +3447,16 @@ static IODisplayInfo osmgaModeTemplate = {
                 osmgaMmapCmdBytes    = (ring != 0) ? OSMGA_HW3D_RING_OFFSET
                                                    : 0UL;
 
+                /*
+                 * EMPTY.  Nothing is mappable until the proving is over --
+                 * and that has to include the command batch, which the mmap
+                 * handler tries FIRST and which does not consult this
+                 * interval at all, so the guard that makes it true is
+                 * osmgaDevOpen refusing while the state is not OPEN.
+                 */
                 osmgaMmapWindowStart = start;
-                osmgaMmapWindowEnd   = end;
+                osmgaMmapWindowEnd   = start;
+                osmgaWindowState     = OSMGA_WINDOW_UNOPENED;
                 osmgaMmapFbPhysical  = frameBufferPhysical;
                 if ([[self class]
                         addToCdevswFromDescription:deviceDescription
@@ -3127,10 +3509,19 @@ static IODisplayInfo osmgaModeTemplate = {
                           (unsigned long)PAGE_SIZE, (unsigned long)PAGE_SHIFT,
                           osmgaMmapFbPhysical,
                           (osmgaMmapFbPhysical + start) >> PAGE_SHIFT);
-                    IOLog("OpenStepMGA S4a: VRAM window %lu..%lu (%lu KiB) "
-                          "as character major %d; the driver must NOT be "
-                          "unloaded while this is enabled (mappings outlive "
-                          "it)\n", start, end - 1UL, (end - start) / 1024UL,
+                    /*
+                     * What it MAY become, not what it is.  The interval
+                     * published here is empty and every open is refused
+                     * until the proof opens it; saying "VRAM window
+                     * 9322496..12582911" at this moment was true of the
+                     * ceiling and false of the device, which is the kind of
+                     * log line that costs somebody an afternoon.
+                     */
+                    IOLog("OpenStepMGA S4a: registered EMPTY at %lu, may "
+                          "reach %lu (%lu KiB) once proved; character major "
+                          "%d; the driver must NOT be unloaded while this is "
+                          "enabled (mappings outlive it)\n",
+                          start, end - 1UL, (end - start) / 1024UL,
                           [[self class] characterMajor]);
                 } else {
                     osmgaMmapWindowStart = 0;
@@ -3149,29 +3540,6 @@ static IODisplayInfo osmgaModeTemplate = {
     return self;
 }
 
-- (BOOL)readManualMemoryConfiguration:configTable
-{
-    OSMGAManualMemoryStatus status;
-
-    configuredVideoMemoryBytes = 0;
-    if (configTable == nil) {
-        IOLog("OpenStepMGAReplacementDisplay: no configuration table\n");
-        return NO;
-    }
-    if (!OSMGAParseManualMemoryMB([configTable valueForStringKey:"MGA Memory Size"],
-                                  &configuredVideoMemoryBytes, &status)) {
-        IOLog("OpenStepMGAReplacementDisplay: MGA Memory Size %s\n",
-              OSMGAManualMemoryStatusString(status));
-        configuredVideoMemoryBytes = 0;
-        return NO;
-    }
-    /* Fixed 16 MiB driver: only 16 is consistent with the mapped aperture. */
-    if (configuredVideoMemoryBytes != MGA_VRAM_16MB) {
-        IOLog("OpenStepMGAReplacementDisplay: MGA Memory Size != 16 MiB; clamping to 16\n");
-        configuredVideoMemoryBytes = (unsigned int)MGA_VRAM_16MB;
-    }
-    return YES;
-}
 
 /*
  * Choose the active mode from the config-table "Display Mode" string (set by
@@ -3183,6 +3551,7 @@ static IODisplayInfo osmgaModeTemplate = {
     OSMGAMode mode;
     const char *text;
     int i;
+    int grayKeyPresent = 0;
 
     selectedResIndex = OSMGA_RES_DEFAULT;
     selectedFormatIndex = OSMGA_FMT_DEFAULT;
@@ -3190,6 +3559,36 @@ static IODisplayInfo osmgaModeTemplate = {
      * Nested rather than returned from early, so that the check at the end
      * runs whatever was chosen -- including the default nothing chose.
      */
+    /*
+     * "Gray Levels" -- how many output greys BW:8 is quantized to.
+     *
+     * Exact matches only, and only the four the ramp divides evenly:
+     * 256/16/4/2 give 0,17,34..255 / 0,17,..255 / 0,85,170,255 / 0,255.
+     * Anything else is refused back to 256 with a line saying so, rather
+     * than accepted and silently rounded -- a preset nobody can predict is
+     * worse than the default.
+     */
+    osmgaGrayLevels = 0U;
+    {
+        const char *g = (configTable == nil) ? 0
+              : (const char *)[configTable valueForStringKey:"Gray Levels"];
+        if (g == 0) {
+            grayKeyPresent = 0;
+        } else if (osmgaTextEquals(g, "256")) {
+            grayKeyPresent = 1;
+        } else if (osmgaTextEquals(g, "16")) {
+            grayKeyPresent = 1; osmgaGrayLevels = 16U;
+        } else if (osmgaTextEquals(g, "4")) {
+            grayKeyPresent = 1; osmgaGrayLevels = 4U;
+        } else if (osmgaTextEquals(g, "2")) {
+            grayKeyPresent = 1; osmgaGrayLevels = 2U;
+        } else {
+            grayKeyPresent = 1;
+            IOLog("OpenStepMGAReplacementDisplay: Gray Levels \"%s\" is not "
+                  "256, 16, 4 or 2; using 256\n", g);
+        }
+    }
+
     text = (configTable == nil) ? 0
          : (const char *)[configTable valueForStringKey:"Display Mode"];
     if (text != 0) {
@@ -3208,6 +3607,29 @@ static IODisplayInfo osmgaModeTemplate = {
                 selectedFormatIndex = i;
                 break;
             }
+        /*
+         * "BW:4" is an older spelling of this driver's own, from before the
+         * grey count was separated from the pixel format.  It named four
+         * greys on an 8bpp scanout, which BW:N cannot honestly mean, so it is
+         * gone from the table and from Display.modes -- but a configuration
+         * that still says it must keep showing the SAME four greys rather
+         * than falling back to the default mode or quietly gaining levels.
+         * Someone chose that look; the driver does not get to overrule it.
+         *
+         * An explicit "Gray Levels" key wins, so a configuration can be
+         * migrated one key at a time.
+         */
+        if (osmgaTextContains(text, "BW:4")) {
+            for (i = 0; i < OSMGA_FMT_COUNT; i++)
+                if (osmgaTextEquals(osmgaFmt[i].cspace, "BW:8")) {
+                    selectedFormatIndex = i;
+                    break;
+                }
+            if (!grayKeyPresent)
+                osmgaGrayLevels = 4U;
+            IOLog("OpenStepMGAReplacementDisplay: \"BW:4\" is the old spelling "
+                  "of BW:8 with Gray Levels 4; using that\n");
+        }
     }
     /*
      * And the pair has to be one the CRTC can describe exactly.  Refused
@@ -3229,8 +3651,9 @@ static IODisplayInfo osmgaModeTemplate = {
                   "describe exactly either -- the mode tables disagree with "
                   "the CRTC and the picture will shear\n");
     }
-    IOLog("OpenStepMGAReplacementDisplay: config selected %s %s\n",
-          osmgaRes[selectedResIndex].name, osmgaFmt[selectedFormatIndex].cspace);
+    IOLog("OpenStepMGAReplacementDisplay: config selected %s %s, %u greys\n",
+          osmgaRes[selectedResIndex].name, osmgaFmt[selectedFormatIndex].cspace,
+          (osmgaGrayLevels > 1U) ? osmgaGrayLevels : 256U);
 }
 
 /*
@@ -3376,13 +3799,18 @@ static IODisplayInfo osmgaModeTemplate = {
         }
     } else {
         /* 8bpp/32bpp RGB per-channel gamma AND grayscale: 256-entry ramp.
-         * grayLevels>1 quantizes to N evenly spaced output grays (retro look). */
+         *
+         * The quantization is gated on the COLORSPACE, not merely on the
+         * preset being set: osmgaGrayLevels describes how many greys to show,
+         * and applying it to an RGB format would quantize a per-channel gamma
+         * ramp instead, which is a different and wrong thing.
+         */
         for (i = 0; i < 256U; i++) {
             unsigned char v;
-            if (f->grayLevels > 1) {
-                unsigned int lvl = (i * (unsigned int)f->grayLevels) / 256U;
-                v = (unsigned char)((lvl * 255U) /
-                                    (unsigned int)(f->grayLevels - 1));
+            if (f->ioColorSpace == IO_OneIsWhiteColorSpace &&
+                osmgaGrayLevels > 1U) {
+                unsigned int lvl = (i * osmgaGrayLevels) / 256U;
+                v = (unsigned char)((lvl * 255U) / (osmgaGrayLevels - 1U));
             } else {
                 v = (unsigned char)i;
             }
@@ -3394,17 +3822,29 @@ static IODisplayInfo osmgaModeTemplate = {
     IOLog("OpenStepMGAReplacementDisplay: mp palette loaded (%s)\n",
           (f->isPseudo && paletteValid) ? "colormap" :
           (f->ioBpp == IO_15BitsPerPixel) ? "15bpp-32step" :
-          (f->grayLevels > 1) ? "gray-quantized" : "linear");
+          (f->ioColorSpace == IO_OneIsWhiteColorSpace && osmgaGrayLevels > 1U)
+              ? "gray-quantized" : "linear");
 
     /*
      * The one moment this driver owns the aperture and nothing is scanned
      * out of it: the mode is programmed and the screen is still blanked.
      * Measures only -- see the note on the function.
+     *
+     * NOT while a window is open.  It writes at megabyte boundaries above the
+     * visible image and puts back what it found, and those boundaries fall
+     * INSIDE a window a client may be holding -- python: ten of its
+     * twenty-eight writes at 1024x768 BW:8, four of twenty-two at
+     * 1024x768 RGB:888/32.  Putting back a saved word is not harmless when
+     * somebody wrote there in between.  On the first mode set there is no
+     * open window by construction, which is the whole point of the ordering
+     * below; on a later one there may be, so it does not run again.
      */
-    osmgaProbeVramExtent(frameBufferPhysical,
-                         (unsigned long)r->width * (unsigned long)f->bytesPerPixel *
-                             (unsigned long)r->height,
-                         base);
+    if (osmgaWindowState != OSMGA_WINDOW_OPEN)
+        osmgaProbeVramExtent(frameBufferPhysical,
+                             (unsigned long)r->width *
+                                 (unsigned long)f->bytesPerPixel *
+                                 (unsigned long)r->height,
+                             osmgaAttemptLimit, base);
 
     /*
      * And the only place the offscreen window is ever widened.
@@ -3425,16 +3865,104 @@ static IODisplayInfo osmgaModeTemplate = {
      * was offered at -- so a second mode set cannot widen it twice or widen
      * one that was refused for some other reason.
      */
-    if (osmgaMmapRegistered &&
-        osmgaMmapWindowEnd == (OSMGA_S1_VRAM_PROVEN &
-                               ~((unsigned long)PAGE_SIZE - 1UL)) &&
-        osmgaMmapWindowEnd < OSMGA_S1_VRAM_CEILING &&
-        osmgaProveVramTo(frameBufferPhysical, osmgaMmapWindowEnd,
-                         OSMGA_S1_VRAM_CEILING, base)) {
-        osmgaMmapWindowEnd = OSMGA_S1_VRAM_CEILING;
-        IOLog("OpenStepMGA M1-4F1: offscreen window widened to %lu..%lu "
-              "(%lu KiB)\n", osmgaMmapWindowStart, osmgaMmapWindowEnd,
-              (osmgaMmapWindowEnd - osmgaMmapWindowStart) / 1024UL);
+    if (osmgaMmapRegistered && osmgaWindowState == OSMGA_WINDOW_UNOPENED) {
+        /*
+         * The floor is capped by the ceiling.
+         *
+         * OSMGA_S1_VRAM_PROVEN is seven megabytes and needs no proof --
+         * a 1600x1200x32 scanout works, so that much is there.  But it is a
+         * claim about a board of at least sixteen, and an operator who
+         * declares eight is asking for less than the claim.  Handing out
+         * seven megabytes of an eight-megabyte board would leave one where
+         * the design intends four, so the floor is min(proven, ceiling) and
+         * a small declaration really does mean less.
+         */
+        unsigned long proven =
+            OSMGA_S1_VRAM_PROVEN & ~((unsigned long)PAGE_SIZE - 1UL);
+        unsigned long stage1To;
+        unsigned long end = osmgaMmapWindowStart;
+        unsigned long reached;
+        OSMGAWindowState st = OSMGA_WINDOW_FAILED;
+        int anyFailed = 0;
+        int ok1;
+
+        if (proven > osmgaCeiling)
+            proven = osmgaCeiling;
+        reached = proven;
+        stage1To = (osmgaCeiling < OSMGA_S1_VRAM_CEILING)
+                 ? osmgaCeiling : OSMGA_S1_VRAM_CEILING;
+
+        /*
+         * TWO STAGES, AND STILL ONE OPENING.
+         *
+         * Cross-review settled the rule: every proof that may write BELOW the
+         * region it is testing has to finish before the first successful
+         * open.  The witnesses go underneath by design, and a stage that
+         * aliases writes its signatures down there too -- so a window opened
+         * between stages would be handed out and then written into.  Nothing
+         * is mappable here because osmgaDevOpen refuses until the state is
+         * OPEN, and that stays true until the last stage is done.
+         *
+         * The second stage is attempted only when the first passed: a board
+         * that disagrees below twelve megabytes has no business being asked
+         * about twenty-eight.
+         */
+        /*
+         * THREE OUTCOMES, not two.  A stage with nothing between its ends is
+         * not a stage that failed: at a small declaration the capped floor
+         * and the ceiling can be the same address, and treating that as a
+         * refusal set the failure flag, cleaned a window for no reason and
+         * logged a proof that never ran.  from > to would still be an
+         * invariant violation, and osmgaProveVramTo still refuses it.
+         */
+        if (proven >= stage1To) {
+            ok1 = 1;                    /* nothing to attempt */
+            reached = stage1To;
+        } else {
+            ok1 = osmgaProveVramTo(frameBufferPhysical, proven, stage1To,
+                                   osmgaAttemptLimit, base);
+            if (ok1)
+                reached = stage1To;
+            else
+                anyFailed = 1;
+        }
+
+        if (ok1 && osmgaCeiling > stage1To) {
+            if (osmgaProveVramTo(frameBufferPhysical, stage1To, osmgaCeiling,
+                                 osmgaAttemptLimit, base))
+                reached = osmgaCeiling;
+            else
+                anyFailed = 1;
+        }
+
+        OSMGAWindowOpenDecision(osmgaMmapWindowStart, 1, proven, reached,
+                                (unsigned long)PAGE_SIZE, &end, &st);
+
+        /*
+         * A stage that failed may have aliased into what an earlier stage
+         * proved, which is the region about to be published.  Clean it, and
+         * if it cannot be cleaned do not publish it.
+         */
+        if (st == OSMGA_WINDOW_OPEN && anyFailed &&
+            !osmgaZeroWindow(frameBufferPhysical, osmgaMmapWindowStart, end))
+            st = OSMGA_WINDOW_FAILED;
+
+        if (st == OSMGA_WINDOW_OPEN) {
+            osmgaMmapWindowEnd = end;
+            osmgaWindowState   = OSMGA_WINDOW_OPEN;
+            IOLog("OpenStepMGA M1-4F1: offscreen window OPENED %lu..%lu "
+                  "(%lu KiB); proved to %lu of a %lu ceiling%s\n",
+                  osmgaMmapWindowStart, osmgaMmapWindowEnd,
+                  (osmgaMmapWindowEnd - osmgaMmapWindowStart) / 1024UL,
+                  reached, osmgaCeiling,
+                  anyFailed ? ", cleaned after a failed stage" : "");
+        } else {
+            osmgaWindowState = OSMGA_WINDOW_FAILED;
+            IOLog("OpenStepMGA M1-4F1: no offscreen window for this mode "
+                  "(start %lu, proved to %lu); the device stays registered "
+                  "and every open is refused\n",
+                  osmgaMmapWindowStart, reached);
+        }
     }
 
     /* re-latch CRTCEXT0 (display start) */
@@ -3460,6 +3988,36 @@ static IODisplayInfo osmgaModeTemplate = {
     linearModeActive = YES;
     IOLog("OpenStepMGAReplacementDisplay: linear mode ACTIVE %s %s\n",
           r->name, f->cspace);
+
+    /*
+     * The same sentence the Configure.app panel will show, from the same
+     * function.
+     *
+     * That is the whole reason OpenStepMGAWindowMath exists: the panel cannot
+     * ask this driver anything, so if the two computed their own answers they
+     * would eventually give an operator different ones.  Here haveActual is
+     * set and the tense is present -- the window really was registered, or
+     * really was not.  The panel leaves it clear and says "would".
+     */
+    {
+        OSMGAVerdictIn vin;
+        OSMGAVerdictOut vout;
+
+        vin.displayMode = osmgaCfgDisplayMode;
+        vin.memorySizeValue = osmgaCfgMemorySize;
+        vin.mmapValue = osmgaMmapSwitchOn ? "Yes" : "No";
+        vin.mesaValue = osmgaMesaAccelEnabled ? "Yes" : "No";
+        vin.pageBytes = (unsigned long)PAGE_SIZE;
+        vin.haveActual = 1;
+        vin.apertureBytes = MGA_VRAM_16MB;
+        vin.windowStart = osmgaMmapWindowStart;
+        vin.windowEnd = osmgaMmapWindowEnd;
+        vin.hasWindow = osmgaMmapRegistered ? 1 : 0;
+        vin.hasCommandWindow =
+            (osmgaMmapCmdVirt != 0 && osmgaMmapCmdPhysical != 0UL) ? 1 : 0;
+        OSMGAAccelVerdict(&vin, &vout);
+        IOLog("OpenStepMGA R10: %s\n", vout.text);
+    }
     return YES;
 }
 
@@ -4142,13 +4700,56 @@ unmap:
      * passing its own gate and then racing a mode change while it programs
      * DMA, is older than this parameter; see REMAINING_WORK.)
      */
-    if (osmgaMmapRegistered)
+    /*
+     * A live interval, not merely a registered device.  Registration used to
+     * imply a non-empty window; since the window is published empty and
+     * opened after the proof, it no longer does, and MMAP is part of
+     * CAP_REQUIRED -- leaving it would tell a client the window is there
+     * while every mapping of it fails.
+     */
+    if (osmgaMmapRegistered && osmgaMmapWindowEnd > osmgaMmapWindowStart)
         flags |= OSMGA_HW3D_CAP_MMAP;
     if (osmgaMmapCmdVirt != 0 && osmgaMmapCmdPhysical != 0UL)
         flags |= OSMGA_HW3D_CAP_CMD;
-    if (mmioMapped && linearModeActive &&
-        osmgaFmt[selectedFormatIndex].bytesPerPixel == 4)
-        flags |= OSMGA_HW3D_CAP_READY;
+    /*
+     * READY used to mean "linear mode, four bytes a pixel", which is not the
+     * question a caller is asking.  At 1600x1200x32 it said yes while no
+     * offscreen device was registered at all -- the window would start at
+     * 9,322,496, past the bound the device is published from, so S4a refuses
+     * it and there is nowhere to put a batch.  MMAP was what stopped the
+     * caller; READY was simply wrong, and the Configure panel added by this
+     * work would have repeated it.
+     *
+     * It now means: there is a usable acceleration surface here.  The floor
+     * is 320x240, which is Mesa's own small case and costs 464,896 bytes --
+     * NOT a full-screen surface.  An 800x600 buffer on a 1600x1200 screen
+     * fits in the 3,260,416-byte window where a full-screen pair does not,
+     * and refusing work that demonstrably succeeds would be a worse answer
+     * than a modest one.
+     *
+     * Only this bit moves.  The 2D, present and submit gates are left exactly
+     * as they were: narrowing a capability can only make a caller fall back
+     * to software, whereas narrowing a gate would refuse work that is
+     * running today.  The predicate itself lives in the shared file, where a
+     * host test enumerates all 240 combinations of its inputs.
+     */
+    {
+        OSMGAReadyIn ready;
+
+        ready.mmioMapped = mmioMapped ? 1 : 0;
+        ready.linearModeActive = linearModeActive ? 1 : 0;
+        ready.windowRegistered = osmgaMmapRegistered ? 1 : 0;
+        ready.tablesAgree = osmgaTablesAgree;
+        ready.bytesPerPixel =
+            (unsigned long)osmgaFmt[selectedFormatIndex].bytesPerPixel;
+        ready.strideCapPixels =
+            (unsigned long)[self displayInfo]->rowBytes / 4UL;
+        ready.windowStart = osmgaMmapWindowStart;
+        ready.windowEnd = osmgaMmapWindowEnd;
+        ready.pageBytes = (unsigned long)PAGE_SIZE;
+        if (OSMGAAccelReadyBits(&ready))
+            flags |= OSMGA_HW3D_CAP_READY;
+    }
     if (osmgaMesaAccelEnabled)
         flags |= OSMGA_HW3D_CAP_ENABLED;
 
@@ -5558,10 +6159,18 @@ osmgaDmaBlock(unsigned long *ring, unsigned long ringDwords, unsigned long *pos,
  * for IO_OneIsWhiteColorSpace (grayscale).  We cache it in paletteRed/Green/
  * Blue[] and, for 8bpp PseudoColor (RGB:256/8) where the DAC LUT *is* the
  * colormap, push it into the RAMDAC live if the display is already active.
- * TrueColor (RGB:888/32, RGB:555/16) and grayscale (BW:8) keep the fixed linear
- * ramp loaded by programLinearMode, so their transfer table is cached but not
- * applied -- this is the deliberate deviation from the original (which stubbed
+ * TrueColor (RGB:888/32, RGB:555/16) and grayscale (BW:8) keep the ramp
+ * programLinearMode loaded, so their transfer table is cached but not applied
+ * -- this is the deliberate deviation from the original (which stubbed
  * setTransferTable entirely).
+ *
+ * For greyscale that is now a VISIBLE contract rather than an internal
+ * detail: the driver advertises IO_DISPLAY_HAS_TRANSFER_TABLE for every
+ * format, and the window server duly sends 256 entries, but a "Gray Levels"
+ * preset of 16, 4 or 2 deliberately OVERRIDES them.  Someone who selects
+ * four greys is asking for four greys, not for whatever gamma the server
+ * would otherwise install.  At 256 the two agree anyway, since both are the
+ * identity ramp.
  */
 - setTransferTable:(const unsigned int *)table count:(int)count
 {
@@ -5671,7 +6280,6 @@ osmgaDmaBlock(unsigned long *ring, unsigned long ringDwords, unsigned long *pos,
         osmgaCapsInstance = nil;
     [self teardownMappings];
     linearModeActive = NO;
-    configuredVideoMemoryBytes = 0;
     return [super free];
 }
 
@@ -8982,7 +9590,7 @@ osmgaCheckWitnesses(unsigned long fbPhysical, const unsigned long *off,
  */
 static int
 osmgaProveVramTo(unsigned long fbPhysical, unsigned long from, unsigned long to,
-                 vm_address_t mmio)
+                 unsigned long limit, vm_address_t mmio)
 {
     vm_address_t alias = 0;
     unsigned long len = 0UL;
@@ -8997,8 +9605,21 @@ osmgaProveVramTo(unsigned long fbPhysical, unsigned long from, unsigned long to,
 
     if (from >= to || (from % page) != 0UL || (to % page) != 0UL)
         return 0;
-    if (to > MGA_VRAM_16MB)
+    /*
+     * The far bound is the CALLER's, not a constant.
+     *
+     * It used to be MGA_VRAM_16MB, which was right while sixteen megabytes
+     * was the only thing the driver would ever admit -- and it silently
+     * refused anything past it, so a second stage asking about 28 MiB would
+     * have returned "did not prove" with no line saying why.  The caller now
+     * states what the declaration and the survey gate between them allow,
+     * and the refusal says so.
+     */
+    if (to > limit) {
+        IOLog("OpenStepMGA M1-4F1: %lu..%lu is past the limit %lu this boot "
+              "may attempt; not proved\n", from, to, limit);
         return 0;
+    }
 
     /*
      * WITNESSES ACROSS EVERYTHING BELOW, not one word under the region.
@@ -9108,19 +9729,31 @@ osmgaProveVramTo(unsigned long fbPhysical, unsigned long from, unsigned long to,
 
 static void
 osmgaProbeVramExtent(unsigned long fbPhysical, unsigned long visibleEnd,
-                     vm_address_t mmio)
+                     unsigned long limit, vm_address_t mmio)
 {
     unsigned long off[OSMGA_VRAM_PROBE_MAX];
     unsigned long saved[OSMGA_VRAM_PROBE_MAX];
     unsigned long got[OSMGA_VRAM_PROBE_MAX];
     int held[OSMGA_VRAM_PROBE_MAX];
-    unsigned long n = 0UL, i, mb, firstMb, highest;
+    unsigned long n = 0UL, i, mb, firstMb, lastMb, highest;
     unsigned long meg = 1024UL * 1024UL;
 
     /* Start a whole megabyte above anything the mode can display, so that a
      * mistake cannot land on the picture even though it is blanked. */
     firstMb = (visibleEnd / meg) + 2UL;
-    for (mb = firstMb; mb < 16UL && n + 2UL <= OSMGA_VRAM_PROBE_MAX; mb++) {
+    /*
+     * Stops at what was DECLARED, not at a literal sixteen.
+     *
+     * This runs before anything is proved and it writes -- two words at every
+     * megabyte boundary.  With the bound hardcoded it would write past an
+     * eight-megabyte board on the first mode set, before the declaration had
+     * been consulted at all.  Cross-review found it; nothing here may reach
+     * further than the operator said the board goes.
+     */
+    lastMb = limit / meg;
+    if (lastMb > 16UL)
+        lastMb = 16UL;
+    for (mb = firstMb; mb < lastMb && n + 2UL <= OSMGA_VRAM_PROBE_MAX; mb++) {
         off[n++] = mb * meg;                    /* first word of the MiB */
         off[n++] = (mb + 1UL) * meg - 4UL;      /* and its last */
     }

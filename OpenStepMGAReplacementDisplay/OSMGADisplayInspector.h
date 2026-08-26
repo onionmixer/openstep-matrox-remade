@@ -16,10 +16,30 @@
  * ships its own copy; C1-0 confirmed on hardware that Configure loads
  * ours.
  *
- * The two flags are read once, when the driver initialises, so the
- * switches write the config table and nothing else -- there is no live
- * path to push them into the running driver, and the panel says so.
+ * All three controls are read once, when the driver initialises, so they
+ * write the config table and nothing else -- there is no live path to push
+ * them into the running driver, and the panel says so.
  * See docs/C1_CONFIGURE_INSPECTOR_PLAN.md.
+ *
+ * TWO STATUS ROWS, NOT ONE.  The driver's one-line answer is 430 px of
+ * Helvetica 12 and the field is 340, so it cannot be shown; and dropping the
+ * mode to make it fit would hide the one thing this panel cannot do.  It
+ * reads the mode in -setTable: and nothing tells it when the stock resolution
+ * picker changes -- that picker is not ours -- so the line can be stale.  A
+ * line that NAMES the mode it is talking about is visibly stale; the same
+ * line without the mode is silently wrong.  Hence a row for the mode and a
+ * row for the verdict.
+ *
+ * Both come from OSMGAAccelVerdict, the same function that writes the
+ * driver's log line, so the panel and the driver cannot come to disagree
+ * about the arithmetic.  What the panel cannot know it does not claim: it
+ * passes haveActual = 0 and every sentence it produces says "would".
+ *
+ * "Gray Levels" is a matrix rather than a switch because it has four values,
+ * and it is a separate control rather than part of the mode list because it
+ * is not part of the mode: 256, 16, 4 and 2 greys are the same 8bpp scanout
+ * with the same IODisplayInfo and differ only in the DAC ramp.  It applies
+ * only when the selected ColorSpace is BW:8.
  */
 #ifndef OSMGA_DISPLAY_INSPECTOR_H
 #define OSMGA_DISPLAY_INSPECTOR_H
@@ -31,11 +51,17 @@
 {
     id stormSwitch;    /* "Storm 2D Test" */
     id mmapSwitch;     /* "VRAM Mmap" */
+    id grayMatrix;     /* "Gray Levels": tags 0..3 = 256, 16, 4, 2 */
+    id vramMatrix;     /* "MGA Memory Size": tags 0..1 = 16, 32 */
+    id statusMode;     /* which mode the line below is talking about */
+    id statusBrief;    /* what that mode WOULD get */
 }
 
 - setTable:(NXStringTable *)instance;
 - toggleStorm:sender;
 - toggleMmap:sender;
+- grayChanged:sender;
+- vramChanged:sender;
 
 @end
 

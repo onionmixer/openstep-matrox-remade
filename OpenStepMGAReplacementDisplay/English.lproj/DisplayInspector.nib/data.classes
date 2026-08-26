@@ -44,12 +44,18 @@ IODisplayInspector = {
 };
 OSMGADisplayInspector = {
     ACTIONS = {
+	"grayChanged:" = "grayChanged:"; 
 	"toggleMmap:" = "toggleMmap:"; 
 	"toggleStorm:" = "toggleStorm:"; 
+	"vramChanged:" = "vramChanged:"; 
     }; 
     OUTLETS = {
+	grayMatrix = grayMatrix; 
 	mmapSwitch = mmapSwitch; 
+	statusBrief = statusBrief; 
+	statusMode = statusMode; 
 	stormSwitch = stormSwitch; 
+	vramMatrix = vramMatrix; 
     }; 
     SUPERCLASS = IODisplayInspector; 
 };

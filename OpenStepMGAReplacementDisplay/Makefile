@@ -30,7 +30,24 @@ LOCAL_RESOURCES = Localizable.strings DisplayInspector.nib
 GLOBAL_RESOURCES = Default.table Instance0.table Display.modes
 
 CLASSES = OSMGADisplayInspector.m
-HFILES = OSMGADisplayInspector.h
+#
+# The inspector computes the same answer the driver computes, from the same
+# sources, so the panel and the kernel cannot come to disagree about the
+# arithmetic.  These three are copied in beside it by
+# tools/build-matrox-driver.sh -- they live in the reloc subproject and in
+# ../edid, and a build product is the only place both targets can see them.
+#
+# Compiling them twice, once into this bundle and once into the reloc
+# executable, is intended: the two are separate link products with separate
+# object directories, every exported symbol is OSMGA-prefixed, and the
+# alternative -- a second copy of the arithmetic -- is what this arrangement
+# exists to prevent.
+#
+CFILES = OpenStepMGAWindowMath.c \
+         OpenStepMGAManualConfig.c \
+         OpenStepMGAEDID.c
+HFILES = OSMGADisplayInspector.h OpenStepMGAWindowMath.h \
+         OpenStepMGAManualConfig.h OpenStepMGAEDID.h
 TOOLS = OpenStepMGAReplacementDisplay_reloc.tproj
 
 OTHERSRCS = Makefile Makefile.preamble Makefile.postamble README.md compat

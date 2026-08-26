@@ -18,10 +18,14 @@ CLASSES = OpenStepMGAReplacementDisplay.m
 # OpenStepMGAReplacementDisplay.m and does not link them.
 #
 CFILES = OpenStepMGAManualConfig.c \
+         OpenStepMGAWindowMath.c \
+         OpenStepMGAPciSurvey.c \
          OpenStepMGAEDID.c \
          OpenStepMGAWarpUcode.c \
          OpenStepMGAHW3D.c
 HFILES = OpenStepMGAReplacementDisplay.h OpenStepMGAManualConfig.h \
+         OpenStepMGAWindowMath.h \
+         OpenStepMGAPciSurvey.h \
          OpenStepMGAEDID.h \
          OpenStepMGAWarpUcode.h \
          OpenStepMGAHW3D.h

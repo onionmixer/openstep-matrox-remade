@@ -1,0 +1,49 @@
+#!/bin/bash
+# Rebuild the driver's DisplayInspector.nib on the HOST.
+#
+#   bash .../tools/rebuild-inspector-nib.sh
+#
+# nibmaker's nib2xml/xml2nib are host binaries, so this does not run on the
+# target.  It needs three inputs, and only one of them lives outside this
+# workspace-of-projects:
+#
+#   stock nib   Configure.app's own DisplayInspector.nib, fetched from the
+#               target once into build/stocknib (see below)
+#   switch tmpl openstep-spacesaver2ps2/ref/nibtemplates/PS2MouseInspector.xml
+#   radio tmpl  openstep-spacesaver2ps2/ref/nibtemplates/
+#               radio-template-BusLogicIntrInspector.xml
+#
+# To refresh the stock nib, ON THE TARGET:
+#
+#   cd /NextAdmin/Configure.app/English.lproj \
+#     && tar cf - DisplayInspector.nib > /ndrv/openstep-matrox-remade/build/stock-nib.tar
+#
+# then here: rm -rf build/stocknib && mkdir build/stocknib \
+#              && tar xf build/stock-nib.tar -C build/stocknib
+#
+# A tar rather than a copy because the export refuses to create the stock
+# nib's mode-444 files and then write into them.
+set -euo pipefail
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ws=$(CDPATH= cd -- "$root/.." && pwd)
+stock="$root/build/stocknib/DisplayInspector.nib"
+out="$root/build/nibout"
+
+[[ -r "$stock/data.nib" ]] || {
+    echo "rebuild-inspector-nib: no stock nib at $stock" >&2
+    echo "rebuild-inspector-nib: see the header of this script for how to fetch it" >&2
+    exit 1
+}
+rm -rf "$out"; mkdir -p "$out"
+python3 "$root/OpenStepMGAReplacementDisplay/nib-src/build-inspector-nib.py" \
+    "$ws/openstep-nibmaker" \
+    "$stock" \
+    "$ws/openstep-spacesaver2ps2/ref/nibtemplates/PS2MouseInspector.xml" \
+    "$ws/openstep-spacesaver2ps2/ref/nibtemplates/radio-template-BusLogicIntrInspector.xml" \
+    "$out"
+
+# The three files the bundle ships.  data.classes and data.dependency come
+# from the stock nib unchanged -- only data.nib is rebuilt.
+dst="$root/OpenStepMGAReplacementDisplay/English.lproj/DisplayInspector.nib"
+cp "$out/data.nib" "$dst/data.nib"
+echo "rebuild-inspector-nib: PASS $(stat -c%s "$dst/data.nib") bytes -> $dst"

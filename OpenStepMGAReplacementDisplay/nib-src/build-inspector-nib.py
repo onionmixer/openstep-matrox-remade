@@ -6,7 +6,18 @@ with only the File's Owner class renamed to OSMGADisplayInspector.  Onto
 that we graft two switches for the driver's development flags.
 
     python3 nib-src/build-inspector-nib.py <nibmaker-dir> <stock-nib-dir> \\
-            <switch-template.xml> <out-dir>
+            <switch-template.xml> <radio-template.xml> <out-dir>
+
+The two templates are decoded stock nibs kept in a sibling project:
+
+    switch-template.xml = openstep-spacesaver2ps2/ref/nibtemplates/
+                          PS2MouseInspector.xml        (Button 12, label 23)
+    radio-template.xml  = openstep-spacesaver2ps2/ref/nibtemplates/
+                          radio-template-BusLogicIntrInspector.xml  (Matrix 12)
+
+and the stock nib is Configure.app's own:
+
+    /NextAdmin/Configure.app/English.lproj/DisplayInspector.nib
 
 The stock inspection view (NeXT coordinates, y up):
 
@@ -37,7 +48,7 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
-NIBMAKER, STOCK, SWITCH_TEMPLATE, OUT = sys.argv[1:5]
+NIBMAKER, STOCK, SWITCH_TEMPLATE, RADIO_TEMPLATE, OUT = sys.argv[1:6]
 sys.path.insert(0, os.path.join(NIBMAKER, 'tools'))
 from nibgraft import Nib  # noqa: E402
 
@@ -54,8 +65,33 @@ SWITCH_FONT = '10'       # Helvetica 12 there
 LABEL_SRC = '23'         # a plain borderless TextField label ("Slow")
 LABEL_SUPERVIEW = '2'    # its superview there
 
-GROW = 70            # extra height for our two switches and the caption
+# Extra height inside box 48, and the layout that fills it.  y counts UP, so
+# y=6 is the bottom line and the status rows are at the top.
+#
+# The headroom is NOT `GROW - top`.  The stock nib puts the box's original
+# children at y=9 and this script lifts them to y + GROW, so the gap above our
+# rows is (9 + GROW) - top.  Today: 9 + 95 - 81 = 23.  With two status rows
+# topping out at 140, GROW = 154 gives 9 + 154 - 140 = 23 again -- the same
+# spacing the panel already has, rather than an invented figure.  GROW = 138
+# would leave 7, which is not the same panel.
+GROW = 154
 SW_W, SW_H = 340, 15
+#
+# The two switch constants were NAMED the wrong way round: Y_STORM held the
+# mmap row's y and Y_MMAP the Storm row's.  The panel was right and the names
+# were wrong, which is the sort of thing that puts the next row in the wrong
+# place.  Renamed to what they are.
+#
+Y_CAPTION, Y_MMAP, Y_STORM, Y_GRAY = 6, 24, 44, 66
+Y_VRAM, Y_STATUS_MODE, Y_STATUS_BRIEF = 88, 110, 126
+VRAM_LABEL_X, VRAM_LABEL_W = 12, 96
+VRAM_MATRIX_X = 112
+VRAM_TITLES = ('8', '16', '32')
+STATUS_X, STATUS_W, STATUS_H = 12, 340, 14
+GRAY_LABEL_X, GRAY_LABEL_W = 12, 96
+GRAY_MATRIX_X = 112
+GRAY_CELL_W, GRAY_CELL_H, GRAY_GAP = 54, 15, 4
+GRAY_TITLES = ('256', '16', '4', '2')
 
 # ---------------------------------------------------------------- base
 stock_xml = os.path.join(OUT, 'stock.xml')
@@ -131,18 +167,100 @@ def add_switch(label, y, outlet, action):
     return sw
 
 
-add_switch('Run Storm 2D engine self-test at boot', 44,
+# Same rows on screen as before -- only the constant names moved.
+add_switch('Run Storm 2D engine self-test at boot', Y_STORM,
            'stormSwitch', 'toggleStorm:')
-add_switch('Publish offscreen VRAM as a character device', 24,
+add_switch('Publish offscreen VRAM as a character device', Y_MMAP,
            'mmapSwitch', 'toggleMmap:')
 
-# Both flags are read once, when the driver initialises, so say so: a
-# switch that looks live but is not would be the worst of the three.
-lbl = n.graft_from(tmpl, LABEL_SRC, obj_map=dict(LABEL_MAP))
-n.reindex()
-n.set_cstring(cell_of(lbl), 'Both take effect after the next reboot.')
-n.add_subview(MODE_VIEW, lbl, 14, 6, SW_W, 14)
-n.reindex()
+# ------------------------------------------------------- radio matrices
+# The template's matrix has two cells laid out vertically; extra cells are
+# cloned from the second and the whole thing re-laid as one row, which is what
+# the SpaceSaver2Mouse inspector does with the same template (its build
+# script, "middle button").
+#
+# Written once and called twice.  The grey preset and the VRAM declaration are
+# the same object with different titles, and a second hand-written copy is how
+# two matrices come to differ in ways nobody meant.
+def add_matrix(titles, x, y, cell_w, cell_h, gap, outlet, action):
+    radio = Nib(RADIO_TEMPLATE)
+    rmatrix = [o for o in radio.objs.values() if o.get('cls') == 'Matrix'][0]
+    rsuper = [c for c in radio.groups(rmatrix)[0]][0].get('oid')
+    mat = n.graft_from(radio, rmatrix.get('oid'),
+                       obj_map={'10': OURS_HELVETICA_12, rsuper: MODE_VIEW})
+    n.reindex()
+    n.add_subview(MODE_VIEW, mat, x, y,
+                  len(titles) * cell_w + (len(titles) - 1) * gap, cell_h)
+    n.reindex()
+
+    cells_group = n.group(mat, '@:@iiii')
+    cells_list = [c for c in cells_group][0]
+    assert cells_list.get('cls') == 'List', 'matrix cell list not where expected'
+    first_cells = list(n.list_items(cells_list))
+    assert len(first_cells) == 2, 'the template matrix should have two cells'
+    cells = first_cells[:]
+    for _ in range(len(titles) - len(first_cells)):
+        c = n.clone(first_cells[1].get('oid'))
+        n.list_append(cells_list, c)
+        n.reindex()
+        cells.append(c)
+    for tag, (c, title) in enumerate(zip(cells, titles)):
+        n.set_cstring(c, title)
+        set_ints(n.group(c, 'i:'), (tag,))
+
+    # selected cell -> the first, and one row of len(titles) columns
+    sel = [c for c in cells_group][2]
+    sel.set('oid', cells[0].get('oid'))
+    sel.set('ref', '0')
+    set_ints(cells_group, (0, 0, 1, len(titles)))
+    set_ints(n.group(mat, 'ff', 0), (cell_w, cell_h))
+    set_ints(n.group(mat, 'ff', 1), (gap, 0))
+    n.add_connector('IBOutletConnector', OWNER, mat.get('oid'), outlet)
+    n.add_connector('IBControlConnector', mat.get('oid'), OWNER, action)
+    n.reindex()
+    return mat
+
+
+def add_label(text, x, y, w, outlet=None):
+    lb = n.graft_from(tmpl, LABEL_SRC, obj_map=dict(LABEL_MAP))
+    n.reindex()
+    n.set_cstring(cell_of(lb), text)
+    n.add_subview(MODE_VIEW, lb, x, y, w, 14)
+    n.reindex()
+    if outlet:
+        n.add_connector('IBOutletConnector', OWNER, lb.get('oid'), outlet)
+        n.reindex()
+    return lb
+
+
+add_label('Gray levels:', GRAY_LABEL_X, Y_GRAY, GRAY_LABEL_W)
+add_matrix(GRAY_TITLES, GRAY_MATRIX_X, Y_GRAY,
+           GRAY_CELL_W, GRAY_CELL_H, GRAY_GAP, 'grayMatrix', 'grayChanged:')
+
+# The declaration.  Three cells: 8 is here for the G400 boards that shipped
+# with it -- the driver refuses to program a mode on anything but a G450, so
+# this is the memory side of that work arriving early, not G400 support.
+# 4 MB is deliberately absent: 4 MiB less the 4 MiB top-of-VRAM margin is a
+# zero ceiling, which would mean "never any acceleration".
+add_label('VRAM size (MB):', VRAM_LABEL_X, Y_VRAM, VRAM_LABEL_W)
+add_matrix(VRAM_TITLES, VRAM_MATRIX_X, Y_VRAM,
+           GRAY_CELL_W, GRAY_CELL_H, GRAY_GAP, 'vramMatrix', 'vramChanged:')
+
+# What that mode WOULD get, on two rows.
+#
+# The driver's one-line answer is 430 px of Helvetica 12 and this field is
+# 340, so it cannot be shown.  Dropping the mode to make it fit would be
+# worse: the panel reads the mode in -setTable: and nothing tells it when the
+# stock resolution picker changes, so the line can be stale -- and a line that
+# names its mode is visibly stale where the same line without it is silently
+# wrong.  Both strings come from OSMGAAccelVerdict, the function that also
+# writes the driver's log line.
+add_label('', STATUS_X, Y_STATUS_MODE, STATUS_W, 'statusMode')
+add_label('', STATUS_X, Y_STATUS_BRIEF, STATUS_W, 'statusBrief')
+
+# All three are read once, when the driver initialises, so say so: a control
+# that looks live but is not would be the worst of the options.
+add_label('These take effect after the next reboot.', 14, Y_CAPTION, SW_W)
 
 # ------------------------------------------------------- write & verify
 n.fix_class_order()

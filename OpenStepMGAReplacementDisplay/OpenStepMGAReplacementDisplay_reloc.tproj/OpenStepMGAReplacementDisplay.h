@@ -23,8 +23,6 @@
 
 @interface OpenStepMGAReplacementDisplay : IOFrameBufferDisplay
 {
-    /* manual configuration ("MGA Memory Size") */
-    unsigned int configuredVideoMemoryBytes;
 
     /* chip classification (from PCI revision) */
     BOOL chipIsG450;
@@ -108,7 +106,6 @@
 
 + (BOOL)probe:deviceDescription;
 - initFromDeviceDescription:deviceDescription;
-- (BOOL)readManualMemoryConfiguration:configTable;
 - (void)selectModeFromConfig:configTable;
 - (void)runStormLivenessTest;
 - (void)runStormBlitTest;
