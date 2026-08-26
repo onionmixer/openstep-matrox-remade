@@ -112,7 +112,52 @@ void OSMGAMesaHookForceSoftware(int on);
  * other).
  */
 void OSMGAMesaHookFlushPending(void);
-void OSMGAMesaHookInjectRefusal(int on);   /* test only: see the .c */
+/*
+ * FAULT INJECTION.  Both of these make the kernel refuse work that is
+ * perfectly valid, so the refusal, narrowing and replay paths can be driven
+ * on purpose.  Neither can damage anything: the picture stays correct because
+ * everything falls back to Mesa's own rasteriser.  What they cost is the
+ * caller's acceleration -- enough refusals reach the backstop and the probe
+ * revokes for the life of the process.
+ *
+ * They are NOT alike in status, and the difference is deliberate:
+ *
+ *   InjectRefusal is a documented feature of the shipped demo (the teapot's
+ *   `inject` argument, and five paragraphs of examples/README_teapot.md that
+ *   turn on it).  It stays in the release library.  Refusing every batch and
+ *   getting a byte-identical picture back out is the clearest demonstration
+ *   this project has that the fallback is exact, and a user who runs it
+ *   loses nothing but speed, in one process, on purpose.
+ *
+ *   InjectNamed spoils ONE named trapezoid mid-batch so the narrowing and
+ *   the revocation-during-flush paths can be reached from a harness.  It is
+ *   pure test machinery, was never offered to anyone, and it is compiled and
+ *   declared only under OSMGA_MESA_TESTHOOKS.  The build refuses a release
+ *   archive in which its symbols appear, and refuses a test archive in which
+ *   they do not.
+ */
+void OSMGAMesaHookInjectRefusal(int on);
+
+#ifdef OSMGA_MESA_TESTHOOKS
+/*
+ * Test only.  Makes the kernel refuse the next `submits` batches with a
+ * verdict that NAMES a trapezoid, so the narrowing loop runs for real -- the
+ * one above cannot, because a corrupt magic is judged before any triangle is
+ * looked at.  See the .c for why the distinction matters.
+ */
+/* `trap` selects WHICH trapezoid of the batch to spoil.  Zero names the
+ * first source in the remainder, which makes the narrowing prefix nought and
+ * skips the flush's prefix write; a later one is how that write is reached. */
+void OSMGAMesaHookInjectNamed(unsigned long submits, unsigned long trap);
+unsigned long OSMGAMesaHookInjectedNamed(void);
+#endif /* OSMGA_MESA_TESTHOOKS */
+/*
+ * Work the engine could not take, split by what became of it: redrawn in
+ * software because the destination was still there, or lost because it was
+ * not.  They were one counter and the difference is the whole question.
+ */
+unsigned long OSMGAMesaHookRescued(void);
+unsigned long OSMGAMesaHookDropped(void);
 /*
  * Test only: run the submission instrumentation -- the per-submission
  * timing and the register-change counting.  OFF by default: two

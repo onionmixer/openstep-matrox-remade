@@ -114,6 +114,14 @@ main(void)
     askAt(512, 384);
     askAt(800, 600);
     askAt(1024, 768);
+    /*
+     * The two the widened window made possible.  1024x768 was the display's
+     * own size when this was written; at 1600x1200 the question is whether a
+     * surface the size of the SCREEN binds at all -- which is the whole point
+     * of a 32 MB declaration, and which no test asked before.
+     */
+    askAt(1280, 1024);
+    askAt(1600, 1200);
     printf("\n");
     bad = insist();
     printf("   %d failed\n", bad);

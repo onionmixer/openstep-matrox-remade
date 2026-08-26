@@ -62,7 +62,7 @@ set mesa_src  = "$MESA_STAGE_PARENT/OpenStepMesa342/src/Mesa-3.4.2"
 if (! $?MOUNTPT) setenv MOUNTPT /ndrv
 set mga_src   = $MOUNTPT/openstep-matrox-remade
 set port_src  = $MOUNTPT/opennstep-mesa342/upstream/Mesa-3.4.2
-set out       = "$MGA_OUT_PARENT/OpenStepMesaMGA"
+set out       = "$MGA_OUT_PARENT/OpenStepMesaMGA"   # -test appends a suffix, below
 
 # Enforced, not only asked for in the comment above: the two must be separate
 # places, or clearing one destroys what the other is read from.
@@ -71,6 +71,36 @@ if ("$out" == "$MESA_STAGE_PARENT/OpenStepMesa342") then
     exit 2
 endif
 set accel     = -DOPENSTEP_MESA_ACCEL_HOOK
+
+#
+# Two first-class outputs, not one path written twice.
+#
+# The fault injectors exist to drive the refusal, narrowing and revocation
+# paths on purpose, and they must never reach a release.  A flag that wrote
+# the SAME archive would make the shippable artefact depend on which build
+# ran last, and a rule like that gets forgotten -- twice in one afternoon, in
+# this project's own history.  So the test flavour has its own directory, the
+# packaging step accepts only the release path, and it refuses an archive in
+# which the injectors' symbols appear.
+#
+#   csh -f build-matrox-mesa.csh          -> build/mesa      (shippable)
+#   csh -f build-matrox-mesa.csh -test    -> build/mesa-test (injectors in)
+#
+# $#argv, not "$1": with no arguments at all csh does not give an empty
+# string for $1, it stops with "Subscript out of range" -- and every existing
+# caller of this script passes nothing.
+set testhooks = ""
+set outleaf   = mesa
+if ($#argv > 0) then
+    if ("$argv[1]" == "-test") then
+        set testhooks = -DOSMGA_MESA_TESTHOOKS
+        set outleaf   = mesa-test
+        set out       = "${out}-test"
+    else
+        echo "build-matrox-mesa: unknown argument '$argv[1]' (only -test)"
+        exit 2
+    endif
+endif
 
 if (! -r $mesa_src/Make-config) then
     echo "build-matrox-mesa: stage and build the Mesa port first"
@@ -100,7 +130,7 @@ cc -m486 -O -c $accel -I$mesa_src/src -I$mesa_src/include \
 if ($status != 0) exit 1
 
 foreach f (OpenStepMGAMesaHook OpenStepMGAMesaProbe OpenStepMGAMesaTriangle OpenStepMGAMesaBuffer OpenStepMGAMesaTexArena OpenStepMGAMesaTexture)
-    cc -m486 -O -c $accel -I$mesa_src/src -I$mesa_src/include -I$mga_src/hw3d \
+    cc -m486 -O -c $accel $testhooks -I$mesa_src/src -I$mesa_src/include -I$mga_src/hw3d \
        -o $out/$f.o $mga_src/mesa/$f.c
     if ($status != 0) exit 1
 end
@@ -121,7 +151,7 @@ if ($status != 0) exit 1
 
 # Every symbol the back end must supply has to be present, or the library
 # links and simply never accelerates.
-foreach sym (OpenStepMesaAccelUpdateState OpenStepMesaAccelBuffer OpenStepMesaAccelDepthBuffer OpenStepMesaAccelReleaseBuffer OSMGAMesaProbeRun OSMGAMesaBuildTriangle OSMGAMesaProbeSubmit)
+foreach sym (OpenStepMesaAccelUpdateState OpenStepMesaAccelBuffer OpenStepMesaAccelDepthBuffer OpenStepMesaAccelReleaseBuffer OSMGAMesaProbeRun OSMGAMesaBuildTriangle OSMGAMesaProbeSubmit OSMGAMesaHookInjectRefusal)
     nm $out/osmgaccel.o | grep "T _$sym" > /dev/null
     if ($status != 0) then
         echo "build-matrox-mesa: $sym is missing from the back end"
@@ -129,11 +159,40 @@ foreach sym (OpenStepMesaAccelUpdateState OpenStepMesaAccelBuffer OpenStepMesaAc
     endif
 end
 
+# The named injector, checked in whichever direction this flavour calls for.
+#
+# Only the NAMED one.  OSMGAMesaHookInjectRefusal is a documented feature of
+# the shipped teapot demo -- five paragraphs of examples/README_teapot.md
+# turn on it -- and it has been in the library since the batching commit, so
+# it belongs in the release and is asserted PRESENT above with the rest of
+# the back end.  What must never ship is the mid-batch trapezoid spoiler,
+# which exists only so a harness can reach the revoke-during-flush path.
+#
+# Absence alone would be a weak test -- a build that failed early and left a
+# stale object would also show nothing -- so the test flavour asserts these
+# are PRESENT under the same two names.  One check, both directions, and no
+# way for a silent build failure to read as a clean release.
+foreach sym (OSMGAMesaHookInjectNamed OSMGAMesaHookInjectedNamed)
+    nm $out/osmgaccel.o | grep "T _$sym" > /dev/null
+    set injseen = $status
+    if ("$outleaf" == "mesa") then
+        if ($injseen == 0) then
+            echo "build-matrox-mesa: $sym is in the RELEASE library"
+            exit 1
+        endif
+    else
+        if ($injseen != 0) then
+            echo "build-matrox-mesa: $sym is missing from the TEST library"
+            exit 1
+        endif
+    endif
+end
+
 # Keep the result somewhere a reboot does not erase.  Staging lives in /tmp,
 # which is cleared at every boot, and rebuilding Mesa from source to run one
 # test costs about a quarter of an hour -- on a machine whose reboots are
 # already the scarcest thing in this project.
-set keep = $mga_src/build/mesa
+set keep = $mga_src/build/$outleaf
 if (! -d $mga_src/build) mkdir $mga_src/build
 if (! -d $keep) mkdir $keep
 cp $out/libGL_mga.a $keep/
@@ -145,4 +204,4 @@ ranlib $keep/libGL_mga.a
 ranlib $keep/libGL.a
 echo "build-matrox-mesa: kept a copy in $keep"
 
-echo "build-matrox-mesa: PASS $out/libGL_mga.a"
+echo "build-matrox-mesa: PASS $out/libGL_mga.a ($outleaf flavour)"

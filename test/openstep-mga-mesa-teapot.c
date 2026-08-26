@@ -67,8 +67,49 @@
 /* patchdata, cpdata, tex and teapot(), cut from the Mesa tree at build time */
 #include "teapot-geometry.h"
 
-#define W 640
-#define H 480
+/*
+ * The default size.  Overridable from argv[6] as WIDTHxHEIGHT -- see main.
+ *
+ * 640x480 stays the default so that every existing invocation, and every
+ * recorded comparison against them, means what it meant before.
+ */
+#define OSMGA_TEAPOT_W 640
+#define OSMGA_TEAPOT_H 480
+#define OSMGA_TEAPOT_MAX 2048     /* Mesa's compiled MAX_WIDTH/MAX_HEIGHT */
+
+/*
+ * WIDTHxHEIGHT, strictly.  Nothing is guessed: a missing argument keeps the
+ * default, and anything that is not two positive decimal numbers separated
+ * by an 'x' is refused rather than half-read.  atoi would have taken "1600"
+ * out of "1600by1200" and drawn something nobody asked for.
+ */
+static int
+parseSize(const char *text, int *w, int *h)
+{
+    long a = 0L, b = 0L;
+    int digits = 0;
+
+    if (text == 0 || *text == '\0')
+        return 0;
+    while (*text >= '0' && *text <= '9') {
+        a = a * 10L + (*text - '0');
+        if (a > OSMGA_TEAPOT_MAX) return 0;
+        text++; digits++;
+    }
+    if (!digits || *text != 'x') return 0;
+    text++;
+    digits = 0;
+    while (*text >= '0' && *text <= '9') {
+        b = b * 10L + (*text - '0');
+        if (b > OSMGA_TEAPOT_MAX) return 0;
+        text++; digits++;
+    }
+    if (!digits || *text != '\0') return 0;
+    if (a <= 0L || b <= 0L) return 0;
+    *w = (int)a;
+    *h = (int)b;
+    return 1;
+}
 
 static void
 lights(void)
@@ -206,11 +247,19 @@ main(int argc, char **argv)
     unsigned long mir0, mir1;
     const char *out = (argc > 1) ? argv[1] : "/tmp/teapot.tiff";
     int forceSoft = (argc > 2 && strcmp(argv[2], "soft") == 0);
-    int grid = (argc > 3) ? atoi(argv[3]) : 12;
+    /*
+     * An EMPTY argument keeps the default.  Reaching a later slot in a
+     * positional scheme means passing placeholders for the earlier ones, and
+     * atoi("") is nought -- which would have silently drawn a teapot with no
+     * tessellation instead of the one that was asked for.
+     */
+    int grid = (argc > 3 && argv[3][0] != '\0') ? atoi(argv[3]) : 12;
+    int W = OSMGA_TEAPOT_W;
+    int H = OSMGA_TEAPOT_H;
     /* argv[4]: the batch limit.  1 reproduces the pre-batching behaviour
      * exactly, so two runs (limit 1 and no argument) must write identical
      * files -- that is the batching identity gate, compared on the host. */
-    if (argc > 4)
+    if (argc > 4 && argv[4][0] != '\0')
         OSMGAMesaHookBatchLimit((unsigned long)atoi(argv[4]));
     /* argv[5] "inject": refuse every flushed batch in the kernel so the
      * software replay draws the whole scene -- the resulting file must be
@@ -218,6 +267,17 @@ main(int argc, char **argv)
      * must equal the source count. */
     if (argc > 5 && strcmp(argv[5], "inject") == 0)
         OSMGAMesaHookInjectRefusal(1);
+    /*
+     * argv[6]: the render size, appended so every existing invocation is
+     * untouched.  Refused loudly rather than fallen back on -- somebody who
+     * asks for a size and silently gets 640x480 would compare the wrong
+     * picture against the right one.
+     */
+    if (argc > 6 && argv[6][0] != '\0' && !parseSize(argv[6], &W, &H)) {
+        printf("size must be WIDTHxHEIGHT, both 1..%d\n", OSMGA_TEAPOT_MAX);
+        return 2;
+    }
+    printf("rendering at %dx%d\n", W, H);
 
     t0 = now();
     buf = (unsigned long *)malloc((unsigned)(W * H) * sizeof *buf);
@@ -315,6 +375,13 @@ main(int argc, char **argv)
     printf("   triangles left to Mesa  : %lu\n", soft1 - soft0);
     printf("   refused as unsupported  : %lu\n", unsup1 - unsup0);
     printf("   replayed after refusal  : %lu\n", OSMGAMesaHookReplayed());
+    /*
+     * Printed because the A/B turns on them, and because a process that
+     * crashes never reaches this line -- so a run that DOES reach it is
+     * itself part of the record.
+     */
+    printf("   tail rescued / dropped  : %lu / %lu\n",
+           OSMGAMesaHookRescued(), OSMGAMesaHookDropped());
     if ((drawn1 - drawn0) + (soft1 - soft0) > 0UL)
         printf("   share drawn by the card : %lu%%\n",
                (drawn1 - drawn0) * 100UL /
