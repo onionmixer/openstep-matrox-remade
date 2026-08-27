@@ -1,2 +1,18 @@
 MAKEFILEDIR = /NextDeveloper/Makefiles/driverkit
 MAKEFILE = Makefile.main_driver
+
+#
+# Measurement builds only, and never a shipping one.
+#
+# tools/build-matrox-driver.sh exports OSMGA_XFLAGS when given a named switch
+# ("fence" or "dry").  It reaches the compiler through the ENVIRONMENT rather
+# than a make command-line assignment, because a command-line OTHER_CFLAGS
+# would REPLACE the one the bundle's own preamble sets for the inspector --
+# which is exactly what it did the first time, and the inspector stopped
+# finding appkit/appkit.h.
+#
+# The parent Makefile also records that common.make does not pass OTHER_CFLAGS
+# down into this subproject, so setting it up there would not arrive here at
+# all.  The environment is the one channel that does.
+#
+OTHER_CFLAGS += $(OSMGA_XFLAGS)

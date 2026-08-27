@@ -19,6 +19,8 @@
 #import <stdlib.h>
 
 #define WAITS_PARAM  "OSMGAHW3DWaits"
+#define FENCE_PARAM  "OSMGAHW3DFence"
+#define FENCE_COUNT  8U
 #define TUNE_PARAM   "OSMGAHW3DTune"
 #define SETTLE_PARAM "OSMGAHW3DSettle"
 #define INJECT_PARAM "OSMGAHW3DInject"
@@ -142,5 +144,31 @@ main(int argc, char **argv)
             printf("  A WAIT GAVE UP.  Acceleration is off until the next "
                    "boot; see /usr/adm/messages for 3-61.\n");
     }
-    return 0;
+        /*
+     * W4 A0.  Absent on a driver built without OSMGA_HW3D_FENCE_OBSERVE, and
+     * that is the normal case -- a shipped driver does not carry the observer.
+     * So a refusal here is reported as "not built in", not as an error.
+     */
+    {
+        unsigned f[FENCE_COUNT], fn = FENCE_COUNT;
+
+        if ([master getIntValues:f forParameter:FENCE_PARAM
+                    objectNumber:objNum count:&fn] != IO_R_SUCCESS) {
+            printf("\nfence observer: not built in (no OSMGA_HW3D_FENCE_OBSERVE)\n");
+        } else {
+            printf("\nfence observer version %u\n", f[0]);
+            printf("  observed   %10u\n", f[1]);
+            printf("  head == published end %10u\n", f[2]);
+            printf("  head past  %10u\n", f[3]);
+            printf("  head short %10u\n", f[4]);
+            printf("  skipped (scissor present) %10u\n", f[5]);
+            if (f[3] != 0U || f[4] != 0U)
+                printf("  FIRST DISAGREEMENT head 0x%08x end 0x%08x\n",
+                       f[6], f[7]);
+            else
+                printf("  no disagreement recorded\n");
+        }
+    }
+
+return 0;
 }

@@ -781,6 +781,15 @@
  * wait the fixed part is.  Count, summed reads and the largest, per wait.
  */
 #define OSMGA_HW3D_WAITS_PARAM  "OSMGAHW3DWaits"
+/*
+ * W4 A0's own parameter rather than four more words on the waits one.  The
+ * waits ABI is version 4 with an exact count of 25 that both ends check, and
+ * a reader built before this change must keep working unaltered -- that is
+ * the whole reason the count is exact.
+ */
+#define OSMGA_HW3D_FENCE_PARAM  "OSMGAHW3DFence"
+#define OSMGA_HW3D_FENCE_COUNT  8U
+#define OSMGA_HW3D_FENCE_VERSION 1UL
 #define OSMGA_HW3D_WAITS_COUNT  25U
 #define OSMGA_HW3D_WAITS_VERSION 4UL
 
@@ -2148,6 +2157,45 @@ static unsigned long osmgaRecoveryLatched;  /* it did not; acceleration off */
 /* count, summed reads, largest -- for pre-idle, FIFO admission, pre-DMA
  * quiescence, primary completion, and the final engine idle. */
 static unsigned long osmgaWaitStat[5][3];
+
+/*
+ * W4 STAGE A0 -- an OBSERVER, and nothing else.
+ *
+ * The question, and only this one: under continuous load, when the STATUS
+ * predicate says the list is done, does PRIMADDRESS always read back equal to
+ * the end we published?  D1-2 answered it ONCE at rest on this same G450
+ * (0 -> 0x20064, equal to the published tail, docs/D1_PRIMARY_DMA_RING_PLAN.md
+ * section 7).  Whether it holds across tens of thousands of submissions under
+ * load is a different question and is the only thing A0 adds.
+ *
+ * WHAT THIS DELIBERATELY DOES NOT DO, and why each one matters:
+ *
+ *   It does not read inside the completion loop.  Sampling every iteration is
+ *   what would answer monotonicity and early retirement, and by measurement
+ *   that is +94.7% on wait-loop MMIO traffic -- which lands squarely in the
+ *   bus-arbitration candidate REMAINING_WORK 3-62 could not close.  One read
+ *   after the predicate has already succeeded is +1.3%.
+ *
+ *   It does not change the completion decision.  Not one branch downstream
+ *   reads these counters.
+ *
+ *   It does not observe when the batch carries a SCISSOR.  That is the
+ *   freeze combination -- scissor plus instrumentation -- written as code
+ *   rather than as a promise in a plan, because a promise in a plan is what
+ *   failed on 2026-08-28.
+ *
+ * Read BEFORE the trap acknowledge, which is the order mga_irq.c:73 uses:
+ * it reads PRIMADDRESS and PRIMEND, then writes ICLEAR.
+ */
+#ifdef OSMGA_HW3D_FENCE_OBSERVE
+static unsigned long osmgaFenceObs;      /* observations actually made */
+static unsigned long osmgaFenceMatch;    /* head == published end */
+static unsigned long osmgaFenceAhead;    /* head past it */
+static unsigned long osmgaFenceBehind;   /* head short of it */
+static unsigned long osmgaFenceSkipped;  /* not observed: scissor present */
+static unsigned long osmgaFenceFirstHead;/* the first disagreement, kept whole */
+static unsigned long osmgaFenceFirstEnd;
+#endif
 
 static void
 osmgaWaitRecord(int which, unsigned long reads)
@@ -4852,6 +4900,34 @@ unmap:
      * The sums are cumulative and will wrap in a long enough run; a reader
      * takes them before and after a measured run and subtracts.
      */
+#ifdef OSMGA_HW3D_FENCE_OBSERVE
+    /*
+     * W4 A0.  Cumulative since load; a reader takes it before and after a
+     * measured run and subtracts, as with the waits parameter.
+     *
+     * "skipped" is not a failure -- it counts submissions carrying a scissor,
+     * which this deliberately refuses to observe.  A run with a nonzero
+     * skipped count observed fewer submissions than it made, and the reader
+     * should say so rather than dividing by the wrong denominator.
+     */
+    if (osmgaTextEquals(parameterName, OSMGA_HW3D_FENCE_PARAM)) {
+        if (parameterArray == 0 || count == 0 ||
+            *count != OSMGA_HW3D_FENCE_COUNT)
+            return IO_R_INVALID_ARG;
+        simple_lock(&stormLock);
+        parameterArray[0] = (unsigned)OSMGA_HW3D_FENCE_VERSION;
+        parameterArray[1] = (unsigned)osmgaFenceObs;
+        parameterArray[2] = (unsigned)osmgaFenceMatch;
+        parameterArray[3] = (unsigned)osmgaFenceAhead;
+        parameterArray[4] = (unsigned)osmgaFenceBehind;
+        parameterArray[5] = (unsigned)osmgaFenceSkipped;
+        parameterArray[6] = (unsigned)osmgaFenceFirstHead;
+        parameterArray[7] = (unsigned)osmgaFenceFirstEnd;
+        simple_unlock(&stormLock);
+        *count = OSMGA_HW3D_FENCE_COUNT;
+        return IO_R_SUCCESS;
+    }
+#endif
     if (osmgaTextEquals(parameterName, OSMGA_HW3D_WAITS_PARAM)) {
         unsigned w, k;
 
@@ -5830,6 +5906,31 @@ refuse2:
              * A timed-out poll therefore leaves the trap standing, and
              * recovery clears it if and when it sees completion.
              */
+#ifdef OSMGA_HW3D_FENCE_OBSERVE
+            /* W4 A0.  One read, only on success, before the acknowledge. */
+            if (spins3 < limit3) {
+                if (osmgaHW3DSnapshot.state.scissorOn != 0UL) {
+                    osmgaFenceSkipped++;
+                } else {
+                    unsigned long head3 =
+                        osmgaR32(mmioBase, MGA_PRIMADDRESS) & ~3UL;
+                    unsigned long pend3 =
+                        (listPhys3 + tail3 * 4UL) & ~3UL;
+
+                    osmgaFenceObs++;
+                    if (head3 == pend3) {
+                        osmgaFenceMatch++;
+                    } else {
+                        if (head3 > pend3) osmgaFenceAhead++;
+                        else               osmgaFenceBehind++;
+                        if (osmgaFenceFirstEnd == 0UL) {
+                            osmgaFenceFirstHead = head3;
+                            osmgaFenceFirstEnd  = pend3;
+                        }
+                    }
+                }
+            }
+#endif
             if (spins3 < limit3)
                 osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
             osmgaHW3DLast[3] = (unsigned)spins3;
