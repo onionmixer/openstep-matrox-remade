@@ -951,6 +951,20 @@ typedef struct {
 #define OSMGA_PRESENT_E_MODE    7UL   /* mode changed under the request, or
                                        * no window is offered */
 
+/*
+ * MEASUREMENT ONLY.  Same block, same batch, same validation -- but the
+ * driver returns after encoding instead of ringing the doorbell.  It exists
+ * to separate the kernel's per-trapezoid work from the engine's, which no
+ * sweep from the outside can do because both scale with the same count.
+ *
+ * A NEW COMMAND rather than a field in the batch, deliberately: no struct
+ * moves, so OSMGA_HW3D_VERSION does not change and the probe's exact-match
+ * gate does not fire.  An older driver simply refuses the command.
+ */
+#define OSMGA_IOC_SUBMIT_DRY ((unsigned long)(OSMGA_IOC_OUT_BIT | \
+    ((sizeof(OSMGAHW3DSubmitBlock) & OSMGA_IOC_PARM_MASK) << 16) | \
+    ((unsigned long)OSMGA_IOC_GROUP << 8) | 4UL))
+
 #define OSMGA_IOC_PRESENT   ((unsigned long)(OSMGA_IOC_OUT_BIT | \
     OSMGA_IOC_IN_BIT | \
     ((sizeof(OSMGAHW3DPresentBlock) & OSMGA_IOC_PARM_MASK) << 16) | \

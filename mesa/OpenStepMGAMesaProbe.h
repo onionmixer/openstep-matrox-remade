@@ -94,6 +94,13 @@ OSMGAHW3DBatch *OSMGAMesaProbeBatch(void);
  */
 int OSMGAMesaProbeSubmit(OSMGAHW3DSubmitBlock *result);
 
+/*
+ * MEASUREMENT ONLY.  Same batch, same validation, same encoding -- and then
+ * the driver returns instead of ringing the doorbell.  It exists to separate
+ * the kernel's per-trapezoid work from the engine's.
+ */
+int OSMGAMesaProbeSubmitDry(OSMGAHW3DSubmitBlock *result);
+
 const char *OSMGAMesaProbeVerdictString(OSMGAProbeVerdict v);
 
 #endif /* OPENSTEP_MGA_MESA_PROBE_H */

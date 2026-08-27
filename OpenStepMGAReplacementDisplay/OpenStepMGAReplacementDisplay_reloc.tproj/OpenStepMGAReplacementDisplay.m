@@ -2394,9 +2394,22 @@ osmgaDevIoctl(int dev, int cmd, caddr_t data, int flag)
         return 0;
     }
 
+    if ((unsigned long)cmd == OSMGA_IOC_SUBMIT_DRY) {
+        /* measurement only; see -runHW3DSubmitDry: */
+        OSMGAHW3DSubmitBlock *sub = (OSMGAHW3DSubmitBlock *)data;
+        IOReturn rc = [osmgaCapsInstance runHW3DSubmitDry:1];
+
+        sub->status  = (rc == IO_R_SUCCESS) ? 0U : (unsigned)EIO;
+        sub->verdict = (unsigned)osmgaHW3DLast[0];
+        sub->triangle= (unsigned)osmgaHW3DLast[1];
+        sub->dwords  = (unsigned)osmgaHW3DLast[2];
+        sub->spins   = 0U;
+        return IO_R_SUCCESS;
+    }
+
     if ((unsigned long)cmd == OSMGA_IOC_SUBMIT) {
         OSMGAHW3DSubmitBlock *sub = (OSMGAHW3DSubmitBlock *)data;
-        IOReturn rc = [osmgaCapsInstance runHW3DSubmit];
+        IOReturn rc = [osmgaCapsInstance runHW3DSubmitDry:0];
 
         /*
          * The four words come from the same place the status parameter
@@ -4942,7 +4955,7 @@ unmap:
     if (osmgaTextEquals(parameterName, OSMGA_HW3D_SUBMIT_PARAM)) {
         (void)parameterArray;
         (void)count;
-        return [self runHW3DSubmit];
+        return [self runHW3DSubmitDry:0];
     }
 
     /*
@@ -5245,7 +5258,20 @@ refuse2:
     return IO_R_INVALID_ARG;
 }
 
-- (IOReturn)runHW3DSubmit
+/*
+ * MEASUREMENT ONLY -- see docs/W2_WARP_RENDER_PATH_PLAN.md section 3.
+ *
+ * dry != 0 does everything a real submission does -- claim, snapshot,
+ * validate, encode -- and then RETURNS instead of ringing the doorbell.  It
+ * is the arm that separates the kernel's per-trapezoid work from the
+ * engine's, which nothing else can do: both scale with the trapezoid count,
+ * so no sweep on the outside can tell them apart.
+ *
+ * It is reached only through its own ioctl, so an ordinary submission cannot
+ * take this path by accident, and the shipped ABI is unchanged -- no struct
+ * moves, so the version gate does not fire.
+ */
+- (IOReturn)runHW3DSubmitDry:(int)dry
 {
     OSMGAHW3DBatch *batch;
     OSMGAHW3DLimits lim;
@@ -5584,6 +5610,19 @@ refuse2:
      * first, and a chain that short-circuits records nothing at all for the
      * wait it skipped.
      */
+    /*
+     * The dry arm stops HERE: after the encoder, before the first admission
+     * wait.  Everything above is what the kernel does per trapezoid; every-
+     * thing below is entry, state, the doorbell and the engine.
+     *
+     * It reports success, because it did what it was asked.  A failure would
+     * send the caller into the refusal, replay and revocation machinery and
+     * the arm would measure a software renderer instead.
+     */
+    if (dry) {
+        rc3 = 1;
+        goto submitDone;
+    }
     preOK3 = 0;
     if (total3 != 0UL) {
         preOK3 = osmgaStormWaitIdle(mmioBase);
@@ -5905,6 +5944,14 @@ refuse2:
             }
         }
     }
+submitDone:
+    /*
+     * The dry arm jumps here, so the release must be INSIDE the label, not
+     * above it.  It was above it once: the first dry submission left
+     * stormBusy set, every later one was refused with IO_R_BUSY, and the
+     * demo sat at nought CPU drawing nothing.  Measured, not reasoned --
+     * that is exactly what the machine did.
+     */
     simple_lock(&stormLock);
     stormBusy = NO;
     /*

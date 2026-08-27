@@ -314,8 +314,12 @@ OSMGAMesaProbeBatch(void)
     return probeBatch;
 }
 
-int
-OSMGAMesaProbeSubmit(OSMGAHW3DSubmitBlock *result)
+/*
+ * The two share everything but the command, so they share the body.  A dry
+ * submission validates and encodes and then stops; see OSMGA_IOC_SUBMIT_DRY.
+ */
+static int
+osmgaMesaProbeSubmitCmd(OSMGAHW3DSubmitBlock *result, unsigned long cmd)
 {
     OSMGAHW3DSubmitBlock scratch;
 
@@ -331,7 +335,7 @@ OSMGAMesaProbeSubmit(OSMGAHW3DSubmitBlock *result)
         result->status = ENXIO;
         return ENXIO;
     }
-    if (ioctl(probeFd, (long)OSMGA_IOC_SUBMIT, result) < 0) {
+    if (ioctl(probeFd, (long)cmd, result) < 0) {
         /*
          * The driver never attempted it, so the block was not copied back
          * and holds nothing.  Reported as -1 rather than as the errno,
@@ -343,6 +347,19 @@ OSMGAMesaProbeSubmit(OSMGAHW3DSubmitBlock *result)
         return -1;
     }
     return (int)result->status;
+}
+
+int
+OSMGAMesaProbeSubmit(OSMGAHW3DSubmitBlock *result)
+{
+    return osmgaMesaProbeSubmitCmd(result, OSMGA_IOC_SUBMIT);
+}
+
+/* MEASUREMENT ONLY.  Validates and encodes; never reaches the engine. */
+int
+OSMGAMesaProbeSubmitDry(OSMGAHW3DSubmitBlock *result)
+{
+    return osmgaMesaProbeSubmitCmd(result, OSMGA_IOC_SUBMIT_DRY);
 }
 
 const char *

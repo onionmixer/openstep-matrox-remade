@@ -246,10 +246,17 @@
     double winClrMs, winDrwMs, winPrsMs, winCvtMs, winAppMs, winWaitMs;
     double totClrMs, totDrwMs, totPrsMs, totCvtMs, totAppMs, totWaitMs;
     int forcedSoftware;         /* argv "soft": Mesa rasterises, we still present */
+    int measureArm;             /* argv "armC"/"armD": see OSMGAMesaHookMeasureArm */
+    int toldRefusal;            /* one-shot diagnostic latch */
+    int grid;                   /* teapot tessellation; 4 is what it has always drawn */
+    double potScale;            /* teapot size; 1.0 is what it has always drawn */
 }
 - (void)setup;
 - (void)tick:(NSTimer *)t;
 - (void)setForcedSoftware:(int)on;
+- (void)setMeasureArm:(int)arm;
+- (void)setGrid:(int)g;
+- (void)setPotScale:(double)v;
 @end
 
 @implementation GLWinController
@@ -257,6 +264,35 @@
 - (void)setForcedSoftware:(int)on
 {
     forcedSoftware = on;
+}
+
+/*
+ * The measurement arm.  1 and 2 draw NOTHING on the screen by design -- they
+ * exist to time the frame with one stage removed, not to show a picture.
+ */
+- (void)setMeasureArm:(int)arm
+{
+    measureArm = arm;
+}
+
+/*
+ * Tessellation.  Triangles go as the SQUARE of this while the pot covers the
+ * same pixels, which is what lets a sweep separate per-triangle cost from
+ * per-pixel cost.
+ */
+- (void)setGrid:(int)g
+{
+    grid = g;
+}
+
+/*
+ * Size.  The triangle COUNT does not change with this, only the pixels they
+ * cover -- which is what lets a sweep measure the per-pixel cost on its own,
+ * instead of backing it out of a clear.
+ */
+- (void)setPotScale:(double)v
+{
+    potScale = v;
 }
 
 - (void)setup
@@ -335,6 +371,8 @@
 #ifndef OSMGA_GLWIN_PLAIN
     if (forcedSoftware)
         OSMGAMesaHookForceSoftware(1);
+    if (measureArm != 0)
+        OSMGAMesaHookMeasureArm(measureArm);
 #endif
 
     glViewport(0, 0, GLW, GLH);
@@ -378,6 +416,8 @@
     }
     glClearColor(0.06f, 0.08f, 0.14f, 1.0f);
 
+    if (grid <= 0) grid = 4;
+    if (potScale <= 0.0) potScale = 1.0;
     minMs = 1e9; maxMs = 0.0; sumMs = 0.0;
     lastReport = [NSDate timeIntervalSinceReferenceDate];
     wallStart = lastReport;
@@ -613,7 +653,7 @@
      */
     glRotatef(180.0f, 1.0f, 0.0f, 0.0f);
     glRotatef((float)(angle * 57.29578), 0.0f, 1.0f, 0.0f);
-    teapot(4, 1.0, GL_FILL);
+    teapot(grid, potScale, GL_FILL);
     glPopMatrix();
     glFinish();
     tD = [NSDate timeIntervalSinceReferenceDate];
@@ -725,6 +765,18 @@
      */
     winFrames++;
     winSumMs += ms;
+#ifndef OSMGA_GLWIN_PLAIN
+    /* one-shot diagnostic: what did the very first submissions come back as? */
+    if (measureArm == 3 && !toldRefusal && frames == 60UL) {
+        /* Arm B has to be checked POSITIVELY: a dry submission that the
+         * kernel refused would time a validation that never happened. */
+        toldRefusal = 1;
+        printf("glwin: arm B check: %lu dry submissions, last status %lu "
+               "(0 = the kernel validated and encoded)\n",
+               OSMGAMesaHookDryCount(), OSMGAMesaHookDryStatus());
+        fflush(stdout);
+    }
+#endif
     if (nowT - winStart >= 0.5) {
         double el;
         double n;
@@ -796,6 +848,37 @@
                totPrsMs / (double)frames,
                unaccountedMs, minMs, maxMs,
                skips, moveSkips, evSkips);
+        {
+            const OSMGAMesaRefusal *r = OSMGAMesaHookLastRefusal();
+            if (r != 0 && (r->status != 0UL || r->verdict != 0UL))
+                printf("glwin: last refusal: status %lu verdict %lu tri %lu of %lu\n",
+                       r->status, r->verdict, r->triangle, r->triCount);
+        }
+        printf("glwin: grid %d scale %.2f, per frame: drawn %.1f traps %.1f batches %.1f\n",
+               grid, potScale,
+               (double)OSMGAMesaHookDrawn()   / (double)frames,
+               (double)OSMGAMesaHookTraps()   / (double)frames,
+               (double)OSMGAMesaHookBatches() / (double)frames);
+        {
+            /*
+             * The kernel answers every submission -- dry ones too -- with the
+             * length of the list it encoded and the number of times it spun
+             * waiting for the engine.  Both come back through the same block,
+             * so arm B reports the real encoded size while running no engine
+             * at all.  That is what separates the barrier read (host work,
+             * proportional to dwords) from the wait (engine time, spins).
+             */
+            unsigned long st[6];
+            OSMGAMesaHookSubmitStats(st);
+            printf("glwin: per frame: dwords %.0f (%.1f per trap), "
+                   "spins %.0f (max %lu, %.0f of %.0f submits spun)\n",
+                   (double)st[2] / (double)frames,
+                   OSMGAMesaHookTraps() ? (double)st[2] /
+                                          (double)OSMGAMesaHookTraps() : 0.0,
+                   (double)st[3] / (double)frames, st[4],
+                   (double)st[5] / (double)frames,
+                   (double)st[0] / (double)frames);
+        }
 #endif
         fflush(stdout);
         lastReport = nowT;
@@ -871,11 +954,28 @@ main(int argc, const char *argv[])
     if (argc > 1) {
         if (strcmp(argv[1], "soft") == 0) {
             [ctrl setForcedSoftware:1];
+        } else if (strcmp(argv[1], "armC") == 0) {
+            /* build trapezoids, never submit -- the picture stays blank */
+            [ctrl setMeasureArm:1];
+        } else if (strcmp(argv[1], "armB") == 0) {
+            /* the kernel validates and encodes, then stops -- needs a driver
+             * that answers OSMGA_IOC_SUBMIT_DRY */
+            [ctrl setMeasureArm:3];
+        } else if (strcmp(argv[1], "armD") == 0) {
+            /* return before the builder -- blank too */
+            [ctrl setMeasureArm:2];
+        } else if (argv[1][0] >= '1' && argv[1][0] <= '9') {
+            [ctrl setGrid:atoi(argv[1])];
         } else {
-            fprintf(stderr, "glwin: unknown argument '%s' (only 'soft')\n",
-                    argv[1]);
+            fprintf(stderr, "glwin: soft | armB | armC | armD | <grid> [<scale%%>]\n");
             return 2;
         }
+        if (argc > 2 && argv[2][0] >= '1' && argv[2][0] <= '9')
+            [ctrl setGrid:atoi(argv[2])];
+        /* an optional trailing scale, as a percentage so the shell need not
+         * carry a decimal point through csh and sh alike */
+        if (argc > 3)
+            [ctrl setPotScale:atof(argv[3]) / 100.0];
     }
 #endif
     [ctrl setup];

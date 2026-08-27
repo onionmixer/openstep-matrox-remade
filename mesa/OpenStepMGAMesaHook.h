@@ -102,6 +102,25 @@ unsigned long OSMGAMesaHookTexAbsent(void);
 void OSMGAMesaHookForceSoftware(int on);
 
 /*
+ * MEASUREMENT ARMS -- test only, and they make the picture wrong on purpose.
+ *   0  normal
+ *   1  arm C: build and accumulate trapezoids, then discard instead of
+ *      submitting.  Everything up to but not including the ioctl.
+ *   3  arm B: the kernel validates and encodes, then returns without
+ *      ringing the doorbell.  Needs the driver; the others do not.
+ *   2  arm D: return before the trapezoid builder.  Mesa's evaluators,
+ *      transform and lighting have already run by then, so what remains is
+ *      that geometry plus this hook's entry and state checks.
+ * C minus D is the CPU trapezoid build -- the part WARP would take away on
+ * the host side.  Neither needs a kernel change or a reboot.
+ */
+void OSMGAMesaHookMeasureArm(int arm);
+/* arm B only: what the kernel answered, and how many were asked.  A run whose
+ * status is not 0 measured something other than what it meant to. */
+unsigned long OSMGAMesaHookDryStatus(void);
+unsigned long OSMGAMesaHookDryCount(void);
+
+/*
  * The pending batch (M1-6).  Triangles accumulate and ship together; these
  * exist for the paths and tests that need to force or observe the boundary.
  * FlushPending ships whatever is accumulated (safe to call empty);
