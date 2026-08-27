@@ -183,6 +183,11 @@ present 만             17.4%  ->  22.0%
 모른다" 고 쓴 것은 틀렸다. 다만 그것은 **이 작업의 선행 조건**이지 곁다리가
 아니다.
 
+> **§15 에서 이 문단을 다시 정정했다. 카드에는 하드웨어 커서가 있고,
+> DriverKit 이 그것을 서브클래스에 주지 않는다** — 커서 비트맵은
+> `IOFrameBufferDisplay` 의 불투명한 `priv` 안에 있고 프로토콜은 색인만
+> 넘긴다. **완화책은 결국 없다.**
+
 `statCursorWhileBusy` 는 **오프스크린 3D 와의 무해한 겹침까지 세므로** 실제
 충돌을 분리하지 못한다. **재는 것은 완화가 아니다.**
 
@@ -276,7 +281,7 @@ $ grep interruptOccurred|IOScheduleFunc|timeoutOccurred|attachInterrupt  -> 없�
 | FETCHED 재사용 불가 — 카드가 PRIMEND 를 넘어 읽는다 | **우리 인코더 주석 `:9611`** 과 DRM `mga_dma.c:132`(G400 매뉴얼 4-16) 확인 | ✅ **채택.** 설계 중심을 RETIRED 로 바꿈. **실기 실험 하나가 없어졌다** |
 | RETIRED 진입 대기가 오늘 같은 값을 준다 | python: 둘 다 8.81 ms (`RETIRED 4.37 < H 6.48`) | ✅ **채택** |
 | duty cycle 논증이 무효 | python 재계산: **65.4% → 82.2%**. 내 95.8% 는 claim 안 되는 기하·빌드를 세었다 | ✅ **채택. 내가 두 번 틀렸다** |
-| G450 에 하드웨어 커서가 있다 | X.Org `mga_driver.c:2548`, `mga_dacG.c:1944`·`:1959` 확인 — RAMDAC, 엔진 무관 | ✅ **채택.** "완화책을 모른다" 가 틀렸다 — **구현하면 된다** |
+| G450 에 하드웨어 커서가 있다 | X.Org `mga_driver.c:2548`, `mga_dacG.c:1944`·`:1959` 확인 — RAMDAC, 엔진 무관 | ⚖️ **부분채택 → §15 에서 축소.** 카드에는 있으나 **DriverKit 이 서브클래스에 비트맵을 안 준다.** codex 도 나도 하드웨어만 보고 OS 계약을 안 봤다 |
 | drain 목록이 불완전 | 열 갈래 전부 파일:줄로 확인 | ✅ **채택** |
 | 직접 VRAM 매핑에는 drain 을 끼울 수 없다 | `:2305`, `:2514` 확인 | ✅ **채택.** 설계 불가 영역 |
 | `BufferFill` 은 표면을 안 쓴다 | `bufApp` 만 씀 확인 | ✅ **채택.** 내가 잘못 셈 |
@@ -292,7 +297,9 @@ $ grep interruptOccurred|IOScheduleFunc|timeoutOccurred|attachInterrupt  -> 없�
 1. **FETCHED 를 재사용 경계로 삼았다.** 반증이 **내 파일 안 주석**에 있었다.
 2. **duty cycle 을 두 번 틀렸다.** 초안은 과장, "정정" 은 반대로 틀림.
 3. **drain 을 절반만 셌고**, 하나는 잘못 셌다.
-4. **"커서 완화책을 모른다"** — 하드웨어 커서가 있다.
+4. **"커서 완화책을 모른다"** — 하드웨어에는 있다. 그러나 §15 에서 확인했듯
+   **OS 가 주지 않으므로 결국 완화책은 없다.** 두 번 고쳐서 원점 근처로
+   돌아온 항목이고, 그 경위를 지우지 않고 남긴다.
 5. **완료를 알아차릴 주체를 아예 생각하지 않았다.**
 
 ## 13. 다음 작업 — CPU 빌드 프로파일의 조건
@@ -394,3 +401,94 @@ us/삼각형 = 1.114 + 1.024 x (삼각형당 사다리꼴)     R2 0.841
 
 **다음 작업은 W5 §11 의 2 번, 하드웨어 커서다.** 비동기를 하든 안 하든 옳고,
 CPU 가 프레임버퍼에 커서를 그리는 것을 없앤다.
+
+---
+
+## 15. 하드웨어 커서 — 조사 결과 **불가**, 그리고 이유는 카드가 아니라 OS 다
+
+§11 이 다음 작업으로 지목한 것이다. **코드를 쓰기 전에 API 부터 확인했고,
+쓸 수 없다는 답이 나왔다.**
+
+### 15.1 카드는 문제가 아니다
+
+G450 에 하드웨어 커서가 있다는 §6 의 확인은 그대로 유효하다. X.Org 는 G450 급에
+기본으로 켜고(`mga_driver.c:2548`), 전용 버퍼에 CPU 로 이미지를 싣고
+(`mga_dacG.c:1944`), RAMDAC 레지스터로 보이기·숨기기·이동을 한다
+(`:1959`, `:1983`, `:2258`). **그리기 엔진과 무관하다.**
+
+### 15.2 막는 것은 DriverKit 이다
+
+`IOScreenEvents` 가 서브클래스에 주는 것은 셋뿐이고, **이미지가 없다**:
+
+```objc
+- hideCursor:(int)token;
+- moveCursor:(Point *)cursorLoc frame:(int)frame token:(int)t;
+- showCursor:(Point *)cursorLoc frame:(int)frame token:(int)t;
+```
+
+`eventProtocols.h:171` 이 `frame` 을 설명한다:
+
+> *"The frame field is an integer index into **the driver's private array of
+> cursor bitmaps**."*
+
+그리고 그 배열은 `IOFrameBufferDisplay` 의 **`void *priv`** 안에 있다
+(`IOFrameBufferDisplay.h:26`). 서브클래스에 노출되는 커서 관련 것은
+**프레임버퍼에 커서를 그릴 때 쓰는 색 변환표 넷**뿐이다 — 즉 API 가 노출하는
+것은 "소프트웨어로 그리는 데 필요한 것" 이지 비트맵이 아니다.
+
+**그리고 `ev_types.h:112` 가 이 갈림을 명시적으로 적는다:**
+
+> *"These routines are public, for the purpose of writing frame buffer device
+> drivers **which handle their own cursors**. Certain architectures define a
+> generic display class which handles cursor drawing and is subclassed by
+> driver writers. **These drivers need not be concerned with the following
+> types and definitions.**"*
+
+**두 갈래가 있고 우리는 두 번째에 있다.** 자기 커서를 다루는 드라이버는
+`IOFrameBufferDisplay` 를 상속하지 **않는** 쪽이다.
+
+보강 근거: `displayDefs.h:133` 은 `moveCursor:frame:token:` 을 재정의하는
+**문서화된 이유를 "패닝" 하나로 적는다.** 커서 그리기가 아니다.
+
+### 15.3 그래서 비용은 얼마인가
+
+하드웨어 커서를 얻으려면 `IOFrameBufferDisplay` 를 **떠나야** 한다. 지금
+드라이버는 그 위에 지어져 있다:
+
+```
+@interface OpenStepMGAReplacementDisplay : IOFrameBufferDisplay
+[super ...] 호출 15 회, 서로 다른 메서드 9 개
+  free 6 · revertToVGAMode 2 · probe · initFromDeviceDescription
+  · hideCursor · moveCursor · showCursor · getIntValues · setIntValues
+```
+
+그리고 상속받아 **안 쓰는** 것이 더 크다 — 모드 선택, 화면 등록, 이벤트
+배관, 전달표. 그것을 전부 다시 써야 한다. **커서 하나를 위해 드라이버의
+토대를 바꾸는 것이고, 이 프로젝트가 감당할 크기가 아니다.**
+
+### 15.4 그러면 §6 의 커서 위험은 어떻게 되는가
+
+W5 §6 은 하드웨어 커서를 **비동기의 선행 조건**으로 걸었다. 그 선행 조건이
+**충족 불가**이므로:
+
+- **비동기(Stage B)는 커서 쪽으로도 막힌다.** §11 의 "짓지 않는다" 판정이
+  이 조사로 **더 굳어졌다** — 완화책이 있다고 적었던 것이 실은 없다.
+- §6 의 *"완화책이 있다: 하드웨어 커서를 구현하는 것"* 을 **정정한다.**
+  카드에는 있고 **OS 가 주지 않는다.**
+
+**이것은 §12 판정표에 적은 "codex 채택" 항목 하나를 되돌리는 것이다.** codex 도
+나도 "G450 에 하드웨어 커서가 있으니 구현하면 된다" 까지만 보고 **DriverKit 이
+그것을 서브클래스에 주는지는 둘 다 확인하지 않았다.** 하드웨어를 확인하고
+소프트웨어 계약을 확인하지 않은 것이다.
+
+### 15.5 남는 것
+
+| 항목 | 상태 |
+| --- | --- |
+| CPU 빌드 프로파일 (§14) | **완료.** 뚜렷한 공짜 이득 없음 |
+| 하드웨어 커서 (§15) | **불가.** DriverKit 이 비트맵을 안 준다 |
+| 비동기 제출 (§11) | **짓지 않음.** 커서 선행 조건까지 불가로 확인 |
+| WARP (W2 §22) | 상한 1.43 배, 패킹 미측정, 안전 blocker 그대로 |
+
+**성능 쪽으로 값싸게 열려 있는 문이 지금은 없다.** 그것이 이번 조사들의
+결론이고, 억지로 여는 것보다 그렇게 적어 두는 편이 낫다.
