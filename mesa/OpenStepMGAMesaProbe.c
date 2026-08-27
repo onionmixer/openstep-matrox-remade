@@ -355,12 +355,20 @@ OSMGAMesaProbeSubmit(OSMGAHW3DSubmitBlock *result)
     return osmgaMesaProbeSubmitCmd(result, OSMGA_IOC_SUBMIT);
 }
 
-/* MEASUREMENT ONLY.  Validates and encodes; never reaches the engine. */
+/*
+ * MEASUREMENT ONLY.  Validates and encodes; never reaches the engine.
+ *
+ * Gated because the ioctl it sends is gated: a shipped driver does not answer
+ * OSMGA_IOC_SUBMIT_DRY at all, so a release library that could still ask
+ * would only be able to fail.
+ */
+#ifdef OSMGA_HW3D_SUBMIT_DRY
 int
 OSMGAMesaProbeSubmitDry(OSMGAHW3DSubmitBlock *result)
 {
     return osmgaMesaProbeSubmitCmd(result, OSMGA_IOC_SUBMIT_DRY);
 }
+#endif /* OSMGA_HW3D_SUBMIT_DRY */
 
 const char *
 OSMGAMesaProbeVerdictString(OSMGAProbeVerdict v)

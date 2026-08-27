@@ -99,7 +99,12 @@ int OSMGAMesaProbeSubmit(OSMGAHW3DSubmitBlock *result);
  * the driver returns instead of ringing the doorbell.  It exists to separate
  * the kernel's per-trapezoid work from the engine's.
  */
+/* Compiled only where the ioctl itself is: OSMGA_HW3D_SUBMIT_DRY gates the
+ * command in OpenStepMGAHW3D.h and the handler in the driver, and a wrapper
+ * that could name a command nothing answers would only be able to fail. */
+#ifdef OSMGA_HW3D_SUBMIT_DRY
 int OSMGAMesaProbeSubmitDry(OSMGAHW3DSubmitBlock *result);
+#endif
 
 const char *OSMGAMesaProbeVerdictString(OSMGAProbeVerdict v);
 

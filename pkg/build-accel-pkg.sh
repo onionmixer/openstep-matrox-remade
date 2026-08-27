@@ -79,7 +79,14 @@ fi
 #
 # OSMGAMesaHookInjectRefusal is deliberately NOT in this list: it is a
 # documented feature of the shipped teapot demo and belongs in the release.
-for sym in OSMGAMesaHookInjectNamed OSMGAMesaHookInjectedNamed; do
+#
+# The four measurement symbols were added on 2026-08-28.  MeasureArm selects
+# arms B/C/D, each of which removes a stage of the submission and so draws
+# the wrong thing or nothing; SubmitDry sends an ioctl a shipped driver no
+# longer answers at all.  None of it is a feature.
+for sym in OSMGAMesaHookInjectNamed OSMGAMesaHookInjectedNamed \
+           OSMGAMesaHookMeasureArm OSMGAMesaHookDryStatus \
+           OSMGAMesaHookDryCount OSMGAMesaProbeSubmitDry; do
     if nm "$LIB" | grep "T _$sym\$" > /dev/null; then
         echo "build-accel-pkg: $LIB defines $sym -- that is the TEST" >&2
         echo "build-accel-pkg: flavour.  Build build/mesa without -test." >&2

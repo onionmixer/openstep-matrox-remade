@@ -2394,8 +2394,25 @@ osmgaDevIoctl(int dev, int cmd, caddr_t data, int flag)
         return 0;
     }
 
+    /*
+     * MEASUREMENT ONLY, AND NOT IN A SHIPPED DRIVER.
+     *
+     * This command asks the kernel to validate and encode a batch and then
+     * return without handing it to the engine.  It answered the question it
+     * was built for -- see docs/W2_WARP_RENDER_PATH_PLAN.md section 19 -- and
+     * it is gated rather than deleted so the arm can be rebuilt if the
+     * question comes back.
+     *
+     * Gating the SYMBOL would not be enough here and that is the whole point.
+     * An ioctl is not a symbol: it is a number any process on the machine can
+     * send.  Left compiled in, any userland could drive the submission path
+     * through validation and encoding -- taking the engine lock, writing the
+     * shared snapshot -- with no library involved at all.  So the handler
+     * itself goes, and an ungated driver answers this command the way it
+     * answers any other it does not know.
+     */
+#ifdef OSMGA_HW3D_SUBMIT_DRY
     if ((unsigned long)cmd == OSMGA_IOC_SUBMIT_DRY) {
-        /* measurement only; see -runHW3DSubmitDry: */
         OSMGAHW3DSubmitBlock *sub = (OSMGAHW3DSubmitBlock *)data;
         IOReturn rc = [osmgaCapsInstance runHW3DSubmitDry:1];
 
@@ -2406,6 +2423,7 @@ osmgaDevIoctl(int dev, int cmd, caddr_t data, int flag)
         sub->spins   = 0U;
         return IO_R_SUCCESS;
     }
+#endif /* OSMGA_HW3D_SUBMIT_DRY */
 
     if ((unsigned long)cmd == OSMGA_IOC_SUBMIT) {
         OSMGAHW3DSubmitBlock *sub = (OSMGAHW3DSubmitBlock *)data;
@@ -5619,10 +5637,17 @@ refuse2:
      * send the caller into the refusal, replay and revocation machinery and
      * the arm would measure a software renderer instead.
      */
+#ifdef OSMGA_HW3D_SUBMIT_DRY
     if (dry) {
         rc3 = 1;
         goto submitDone;
     }
+#else
+    /* Nothing can ask for a dry run when the command is not compiled in, so
+     * the parameter is inert.  Kept in the signature rather than removed
+     * because every caller passes 0 and the arm is meant to be recoverable. */
+    (void)dry;
+#endif
     preOK3 = 0;
     if (total3 != 0UL) {
         preOK3 = osmgaStormWaitIdle(mmioBase);

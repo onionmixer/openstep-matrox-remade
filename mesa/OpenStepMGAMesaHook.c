@@ -66,9 +66,28 @@ static int hookForcedSoftware;
  * are DIFFERENT FUNCTIONS -- which is why arms C and D need no kernel change,
  * no ABI change and no reboot.  Only the dry-run arm (B) does.
  */
+/*
+ * THE MEASUREMENT ARMS ARE TEST MACHINERY AND DO NOT SHIP.
+ *
+ * Arms B, C and D each remove one stage of the submission so the frame can
+ * be timed with it gone; the whole point is that they draw the wrong thing,
+ * or nothing.  A release library must not be able to be talked into any of
+ * them, so the selector does not exist there at all -- OSMGA_ARM() is the
+ * constant 0 and every test on it is compiled away.  That is stronger than
+ * leaving a variable nothing sets: there is nothing to set.
+ *
+ * The build enforces it from both ends (tools/build-matrox-mesa.csh), as it
+ * already does for InjectNamed: the release archive is refused if these
+ * symbols appear and the test archive is refused if they do not.
+ */
+#ifdef OSMGA_MESA_TESTHOOKS
 static int hookMeasureArm;
 static unsigned long hookDryStatus;   /* what the last dry submission answered */
 static unsigned long hookDryCount;    /* how many were made */
+#define OSMGA_ARM(n)  (hookMeasureArm == (n))
+#else
+#define OSMGA_ARM(n)  0
+#endif
 /*
  *   3  arm B: the ioctl runs and the kernel validates and encodes, then
  *      returns without ringing the doorbell.  B minus C is the kernel's
@@ -470,6 +489,45 @@ OSMGAMesaHookSubmitStats(unsigned long out[6])
     out[5] = submitSpun;
 }
 
+/*
+ * Arm B, and the reason it needs a function of its own.
+ *
+ * A dry submission is the THIRD OUTCOME: it did what it was asked -- validate
+ * and encode -- and then stopped before the engine.  It is neither a success
+ * (nothing was drawn) nor a refusal.  Left to the ordinary rc handling it
+ * reads as a refusal, the backstop counts eight and revokes, and the arm
+ * times a software renderer instead.  That is not hypothetical: it is what
+ * happened the first time it was run.
+ *
+ * dryStatus keeps what the kernel actually said so a run can be checked
+ * rather than assumed -- though the stronger check turned out to be the
+ * encoded dword count, which arm B reports identical to a normal submission.
+ *
+ * Returns 1 when an arm handled the submission and set *rc.  In a release
+ * build it is not compiled at all, because there is no arm to select.
+ *
+ * TWO switches, not one, and the pair is the honest statement of what arm B
+ * needs.  OSMGA_MESA_TESTHOOKS says this library has arms; OSMGA_HW3D_SUBMIT_DRY
+ * says the ioctl exists at all -- it gates the command in OpenStepMGAHW3D.h and
+ * the handler in the driver.  Arms C and D need only the first.  Arm B needs
+ * both, because a library built with arms against a SHIPPED driver would send
+ * a command that driver does not answer.
+ */
+#if defined(OSMGA_MESA_TESTHOOKS) && defined(OSMGA_HW3D_SUBMIT_DRY)
+static int
+osmgaMesaArmSubmit(OSMGAHW3DSubmitBlock *res, int *rc)
+{
+    if (hookMeasureArm != 3)
+        return 0;
+    hookDryStatus = (unsigned long)OSMGAMesaProbeSubmitDry(res);
+    hookDryCount++;
+    *rc = 0;
+    return 1;
+}
+#else
+#define osmgaMesaArmSubmit(res, rc)  0
+#endif
+
 static GLcontext *savedTriangleCtx;
 static triangle_func savedTriangle;
 
@@ -851,7 +909,7 @@ osmgaMesaFlushPending(void)
 #endif
             hookBatches++;
             hookTraps += ntraps - base;
-            if (hookMeasureArm == 1) {
+            if (OSMGA_ARM(1)) {
                 /* arm C: built and accumulated, then thrown away rather than
                  * handed to the kernel.  The counters above still move, so a
                  * run can be checked for having built what it meant to. */
@@ -1252,50 +1310,14 @@ osmgaMesaSubmitBatch(GLcontext *ctx, OSMGAHW3DBatch *batch,
             osmgaMesaCountDeltas(batch);
         if ((hookInstrument & OSMGA_MESA_INST_TIME) != 0) {
             gettimeofday(&t0, (struct timezone *)0);
-            if (hookMeasureArm == 3) {
-                /*
-                 * Arm B is the THIRD OUTCOME the plan asks for, and it has to
-                 * be one here as well.  A dry submission did what it was
-                 * asked -- validate and encode -- and then stopped, so it is
-                 * neither a success (nothing was drawn) nor a refusal.  Left
-                 * to the ordinary rc handling it reads as a refusal, the
-                 * backstop counts eight of them and revokes, and the arm
-                 * measures a software renderer.  Measured: that is exactly
-                 * what happened the first time.
-                 *
-                 * dryStatus keeps what the kernel actually said, so a run can
-                 * still be checked rather than assumed.
-                 */
-                hookDryStatus = (unsigned long)OSMGAMesaProbeSubmitDry(&res);
-                hookDryCount++;
-                rc = 0;
-            } else {
+            if (!osmgaMesaArmSubmit(&res, &rc))
                 rc = OSMGAMesaProbeSubmit(&res);
-            }
             gettimeofday(&t1, (struct timezone *)0);
             submitUs += (unsigned long)((t1.tv_sec - t0.tv_sec) * 1000000L +
                                         (t1.tv_usec - t0.tv_usec));
         } else {
-            if (hookMeasureArm == 3) {
-                /*
-                 * Arm B is the THIRD OUTCOME the plan asks for, and it has to
-                 * be one here as well.  A dry submission did what it was
-                 * asked -- validate and encode -- and then stopped, so it is
-                 * neither a success (nothing was drawn) nor a refusal.  Left
-                 * to the ordinary rc handling it reads as a refusal, the
-                 * backstop counts eight of them and revokes, and the arm
-                 * measures a software renderer.  Measured: that is exactly
-                 * what happened the first time.
-                 *
-                 * dryStatus keeps what the kernel actually said, so a run can
-                 * still be checked rather than assumed.
-                 */
-                hookDryStatus = (unsigned long)OSMGAMesaProbeSubmitDry(&res);
-                hookDryCount++;
-                rc = 0;
-            } else {
+            if (!osmgaMesaArmSubmit(&res, &rc))
                 rc = OSMGAMesaProbeSubmit(&res);
-            }
         }
         submitCount++;
         submitDwords += res.dwords;
@@ -1674,13 +1696,13 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
          * the two things a caller can ask for.
          */
         a.a = b.a = c.a = prov.a;
-        if (hookMeasureArm == 2) return;        /* arm D */
+        if (OSMGA_ARM(2)) return;                /* arm D */
         n = OSMGAMesaBuildTriangleTex(&a, &b, &c, &prov, zmode,
                                       ctx->Depth.Mask == GL_TRUE, blend,
                                       texOn ? &tex : (const OSMGAMesaTex *)0,
                                       zoffset, built, tmr);
     } else {
-        if (hookMeasureArm == 2) return;        /* arm D */
+        if (OSMGA_ARM(2)) return;                /* arm D */
         n = OSMGAMesaBuildTriangleTex(&a, &b, &c, (const OSMGAMesaVertex *)0,
                                       zmode, ctx->Depth.Mask == GL_TRUE, blend,
                                       texOn ? &tex : (const OSMGAMesaTex *)0,
@@ -3030,6 +3052,7 @@ void OSMGAMesaHookForceSoftware(int on)    { hookForcedSoftware = on; }
  * The measurement arm.  Flushes first, so a batch left half built by the
  * previous arm cannot be charged to this one.
  */
+#ifdef OSMGA_MESA_TESTHOOKS
 unsigned long OSMGAMesaHookDryStatus(void) { return hookDryStatus; }
 unsigned long OSMGAMesaHookDryCount(void)  { return hookDryCount; }
 
@@ -3038,6 +3061,7 @@ void OSMGAMesaHookMeasureArm(int arm)
     osmgaMesaFlushPending();
     hookMeasureArm = arm;
 }
+#endif /* OSMGA_MESA_TESTHOOKS */
 /*
  * A mask of OSMGA_MESA_INST_TIME, _DELTA and _MASK.  Pass 7 for all of it.
  *

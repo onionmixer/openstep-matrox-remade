@@ -93,7 +93,12 @@ set testhooks = ""
 set outleaf   = mesa
 if ($#argv > 0) then
     if ("$argv[1]" == "-test") then
-        set testhooks = -DOSMGA_MESA_TESTHOOKS
+        # Both switches.  TESTHOOKS gives the library its arms; SUBMIT_DRY
+        # gives arm B the ioctl it sends, which is gated in
+        # OpenStepMGAHW3D.h and in the driver.  A test library without the
+        # second would still build -- arm B would simply not be compiled --
+        # and that silence is exactly what this pair avoids.
+        set testhooks = "-DOSMGA_MESA_TESTHOOKS -DOSMGA_HW3D_SUBMIT_DRY"
         set outleaf   = mesa-test
         set out       = "${out}-test"
     else
@@ -172,7 +177,13 @@ end
 # stale object would also show nothing -- so the test flavour asserts these
 # are PRESENT under the same two names.  One check, both directions, and no
 # way for a silent build failure to read as a clean release.
-foreach sym (OSMGAMesaHookInjectNamed OSMGAMesaHookInjectedNamed)
+# The measurement arms joined this list on 2026-08-28.  They are exactly the
+# same kind of thing as the spoiler: machinery that makes the library draw the
+# wrong thing on purpose so a harness can time it.  Arm B additionally sends
+# an ioctl that a shipped driver no longer answers.
+foreach sym (OSMGAMesaHookInjectNamed OSMGAMesaHookInjectedNamed \
+             OSMGAMesaHookMeasureArm OSMGAMesaHookDryStatus \
+             OSMGAMesaHookDryCount OSMGAMesaProbeSubmitDry)
     nm $out/osmgaccel.o | grep "T _$sym" > /dev/null
     set injseen = $status
     if ("$outleaf" == "mesa") then

@@ -112,13 +112,23 @@ void OSMGAMesaHookForceSoftware(int on);
  *      transform and lighting have already run by then, so what remains is
  *      that geometry plus this hook's entry and state checks.
  * C minus D is the CPU trapezoid build -- the part WARP would take away on
- * the host side.  Neither needs a kernel change or a reboot.
+ * the host side.  Arms C and D need no kernel change; arm B needs a driver
+ * built with OSMGA_HW3D_SUBMIT_DRY, which a shipped one is not.
+ *
+ * TEST ONLY, and declared only under OSMGA_MESA_TESTHOOKS for the same reason
+ * InjectNamed is: every arm draws the wrong thing or nothing, so a release
+ * library must not be able to be talked into one.  The build refuses a
+ * release archive carrying these symbols and a test archive missing them.
  */
+#ifdef OSMGA_MESA_TESTHOOKS
 void OSMGAMesaHookMeasureArm(int arm);
 /* arm B only: what the kernel answered, and how many were asked.  A run whose
- * status is not 0 measured something other than what it meant to. */
+ * status is not 0 measured something other than what it meant to -- though
+ * the stronger check is the encoded dword count, which arm B reports the same
+ * as a normal submission. */
 unsigned long OSMGAMesaHookDryStatus(void);
 unsigned long OSMGAMesaHookDryCount(void);
+#endif /* OSMGA_MESA_TESTHOOKS */
 
 /*
  * The pending batch (M1-6).  Triangles accumulate and ship together; these

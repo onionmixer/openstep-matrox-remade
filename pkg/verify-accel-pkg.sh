@@ -74,7 +74,13 @@ else bad "only $n hook symbols -- osmesa.o was built without the hook macro"; fi
 # check a .pkg that already exists, including one built somewhere else or by
 # an older copy of the builder.  A check that lived only in the builder would
 # pass every package it had never seen.
-for sym in OSMGAMesaHookInjectNamed OSMGAMesaHookInjectedNamed; do
+# The four measurement symbols were added on 2026-08-28: MeasureArm selects
+# arms B/C/D, each of which removes a stage of the submission and so draws
+# the wrong thing or nothing, and SubmitDry sends an ioctl a shipped driver
+# no longer answers at all.  None of it is a feature.
+for sym in OSMGAMesaHookInjectNamed OSMGAMesaHookInjectedNamed \
+           OSMGAMesaHookMeasureArm OSMGAMesaHookDryStatus \
+           OSMGAMesaHookDryCount OSMGAMesaProbeSubmitDry; do
     if nm "$A" | grep "T _$sym\$" > /dev/null; then
         bad "$sym is defined -- this is the TEST flavour of the library"
     else

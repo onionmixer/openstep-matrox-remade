@@ -371,8 +371,10 @@
 #ifndef OSMGA_GLWIN_PLAIN
     if (forcedSoftware)
         OSMGAMesaHookForceSoftware(1);
+#ifdef OSMGA_MESA_TESTHOOKS
     if (measureArm != 0)
         OSMGAMesaHookMeasureArm(measureArm);
+#endif
 #endif
 
     glViewport(0, 0, GLW, GLH);
@@ -767,6 +769,7 @@
     winSumMs += ms;
 #ifndef OSMGA_GLWIN_PLAIN
     /* one-shot diagnostic: what did the very first submissions come back as? */
+#ifdef OSMGA_MESA_TESTHOOKS
     if (measureArm == 3 && !toldRefusal && frames == 60UL) {
         /* Arm B has to be checked POSITIVELY: a dry submission that the
          * kernel refused would time a validation that never happened. */
@@ -776,6 +779,7 @@
                OSMGAMesaHookDryCount(), OSMGAMesaHookDryStatus());
         fflush(stdout);
     }
+#endif /* OSMGA_MESA_TESTHOOKS */
 #endif
     if (nowT - winStart >= 0.5) {
         double el;
@@ -954,6 +958,7 @@ main(int argc, const char *argv[])
     if (argc > 1) {
         if (strcmp(argv[1], "soft") == 0) {
             [ctrl setForcedSoftware:1];
+#ifdef OSMGA_MESA_TESTHOOKS
         } else if (strcmp(argv[1], "armC") == 0) {
             /* build trapezoids, never submit -- the picture stays blank */
             [ctrl setMeasureArm:1];
@@ -964,10 +969,22 @@ main(int argc, const char *argv[])
         } else if (strcmp(argv[1], "armD") == 0) {
             /* return before the builder -- blank too */
             [ctrl setMeasureArm:2];
+#endif /* OSMGA_MESA_TESTHOOKS */
         } else if (argv[1][0] >= '1' && argv[1][0] <= '9') {
             [ctrl setGrid:atoi(argv[1])];
         } else {
-            fprintf(stderr, "glwin: soft | armB | armC | armD | <grid> [<scale%%>]\n");
+            /*
+              * The arms are named here only when they exist.  A release
+              * build of this demo links the release library, which has no
+              * selector to set -- so offering "armB" in the usage of a
+              * binary that would reject it is worse than not offering it.
+              */
+#ifdef OSMGA_MESA_TESTHOOKS
+            fprintf(stderr, "glwin: soft | armB | armC | armD | "
+                            "<grid> [<scale%%>]\n");
+#else
+            fprintf(stderr, "glwin: soft | <grid> [<scale%%>]\n");
+#endif
             return 2;
         }
         if (argc > 2 && argv[2][0] >= '1' && argv[2][0] <= '9')

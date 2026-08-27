@@ -961,9 +961,17 @@ typedef struct {
  * moves, so OSMGA_HW3D_VERSION does not change and the probe's exact-match
  * gate does not fire.  An older driver simply refuses the command.
  */
+/*
+ * Gated with the driver's handler.  A shipped driver does not answer this
+ * command, so a client that could still name the number would only be able to
+ * fail; the number stays reserved either way, since removing it would let a
+ * later command reuse 4 and mean something else to an old client.
+ */
+#ifdef OSMGA_HW3D_SUBMIT_DRY
 #define OSMGA_IOC_SUBMIT_DRY ((unsigned long)(OSMGA_IOC_OUT_BIT | \
     ((sizeof(OSMGAHW3DSubmitBlock) & OSMGA_IOC_PARM_MASK) << 16) | \
     ((unsigned long)OSMGA_IOC_GROUP << 8) | 4UL))
+#endif /* OSMGA_HW3D_SUBMIT_DRY */
 
 #define OSMGA_IOC_PRESENT   ((unsigned long)(OSMGA_IOC_OUT_BIT | \
     OSMGA_IOC_IN_BIT | \
