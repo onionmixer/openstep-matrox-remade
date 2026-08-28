@@ -144,13 +144,44 @@ VRAM 에 남기는 방법도 같은 이유로 신뢰할 수 없고, 전원 재�
 
 ### T0 — 준비 (freeze 위험 없음, 전부 read-only)
 
-- T0.1 레지스터 스냅샷 수집기: `DEVCTRL`, `RST`, `OPTION`, `STATUS`,
-  `ENGSTATUS`, CRTC/DAC 계열, `PRIMADDRESS/PRIMEND`, `SECADDRESS/SECEND`,
-  `WIADDR*` 를 한 번에 읽어 breadcrumb 파일로 내보낸다.
+- T0.1 레지스터 스냅샷 수집기 (`test/openstep-mga-regsnap.m`,
+  드라이버 파라미터 `OSMGARegSnapshot`).
 - T0.2 `DEVCTRL.recmastab<29>` / `rectargab<28>` 의 **현재 값**을 기록한다.
   둘 다 sticky 이므로 시험 전 0 임을 확인해야 T2 의 관측이 의미를 갖는다.
 - T0.3 breadcrumb 하네스 왕복 예행: `nxbreadcrumb` 가 `ok` / `LOSS` 를
   올바로 찍는지, 파일이 리눅스에서 완전한지.
+
+> ### 이 목록의 초안이 틀렸다 — 그리고 그것이 T0 의 첫 산출물이다
+>
+> 처음 여기 적었던 것은 *"`DEVCTRL`, `RST`, `OPTION`, `STATUS`, `ENGSTATUS`,
+> **CRTC/DAC 계열**, `PRIMADDRESS/PRIMEND`, `SECADDRESS/SECEND`,
+> **`WIADDR*`**"* 였다. 사양서의 레지스터 색인표와 대조하니:
+>
+> - **`DWGCTL`·`WIADDR2`·`WIADDRNB2`·`MACCESS`·`WVRTXSZ`·`WFLAG` 는 전부
+>   `WO`(write-only)다.** 읽을 것이 아니다.
+> - **CRTC/DAC 계열은 인덱스 방식이라 "읽기" 에도 인덱스 **쓰기**가 필요하다.**
+>   살아 있는 콘솔에서 윈도서버와 인덱스를 다투게 된다. **넣지 않는다.**
+> - 색인표 **217 개 중 읽을 수 있는 것은 56 개뿐**이다. 이름이 유용해 보인다고
+>   읽으면 대부분 틀린다.
+>
+> 그래서 실제로 읽는 것은 **전부 `R/W` 또는 `RO` 로 확인된 것들만**이다:
+>
+> | | |
+> | --- | --- |
+> | MMIO | `FIFOSTATUS 1e10`, `STATUS 1e14`, `IEN 1e1c`, **`VCOUNT 1e20`**, `RST 1e40`, `MEMRDBK 1e44`, `PRIMPTR 1e50`, `OPMODE 1e54`, `PRIMADDRESS 1e58`, `PRIMEND 1e5c`, `WIADDRNB 1e60`, `WFLAGNB 1e64`, `WCODEADDR 1e6c`, `WMISC 1e70`, `SECADDRESS 2c40`, `SECEND 2c44`, `SOFTRAP 2c48`, `DWGSYNC 2c4c`, `SETUPADDRESS 2cd0`, `SETUPEND 2cd4` |
+> | PCI 설정공간 | `DEVCTRL 04h`, `OPTION 40h` |
+>
+> 2 차·setup 레지스터를 **읽는 것**은 사양서가 명시적으로 허용한다 (4-12):
+> *"accessible only by a primary DMA transfer for writes, and **through the
+> drawing register base addresses for reads**"*.
+>
+> ### `VCOUNT` — 래스터 자신이 증인이다
+>
+> `VCOUNT`(RO, 1E20h, Vertical Count)는 스캔 중이면 계속 변한다. 그래서
+> 스냅샷은 이것을 **한 번 읽고, 값이 바뀔 때까지 유계로 다시 읽는다**(상한
+> 2000 회, 한 줄이 약 14 µs 이므로 보통 수십 회). **정지한 래스터와 죽은
+> 래스터는 한 번의 표본으로는 구분되지 않고**, T1 뒤에 가장 알고 싶은 것이
+> 바로 "화면이 아직 주사 중인가" 다. 유계 루프이고 `RO` 레지스터를 읽는다.
 
 ### T1 — soft reset 을 **살아 있는 콘솔에서** 한다 ★ 가장 중요
 

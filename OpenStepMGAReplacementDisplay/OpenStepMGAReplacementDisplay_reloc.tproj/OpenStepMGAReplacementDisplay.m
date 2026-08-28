@@ -255,6 +255,30 @@
 #define MGA_SETUPEND            0x2cd4
 #define MGA_SOFTRAP             0x2c48
 #define MGA_DMAPAD              0x1c54
+
+/*
+ * T0.1's snapshot set.  Every one of these is R/W or RO in the G400
+ * specification's register index, which matters more than it looks: of the
+ * 217 registers that index lists, 161 are WRITE-ONLY.  Reading a register
+ * because its name sounds informative is how this goes wrong, and the first
+ * draft of the test design did exactly that -- it named DWGCTL, WIADDR2 and
+ * WIADDRNB2, all three of them WO.
+ *
+ * The secondary and setup registers are readable here even though they can
+ * only be WRITTEN by a primary DMA transfer, and the manual says so in as
+ * many words (4-12): "accessible only by a primary DMA transfer for writes,
+ * and through the drawing register base addresses for reads".
+ */
+#define MGA_IEN                 0x1e1c   /* R/W */
+#define MGA_VCOUNT              0x1e20   /* RO  -- the raster's own witness */
+#define MGA_RST                 0x1e40   /* R/W -- bit 0 is softreset */
+#define MGA_MEMRDBK             0x1e44   /* R/W */
+#define MGA_WIADDRNB            0x1e60   /* R/W (WIADDRNB2 at 0x1e00 is WO) */
+#define MGA_WFLAGNB             0x1e64   /* R/W */
+#define MGA_WCODEADDR           0x1e6c   /* RO  */
+#define MGA_DWGSYNC             0x2c4c   /* R/W */
+#define MGA_CFG_DEVCTRL         0x04     /* PCI configuration space */
+#define MGA_CFG_OPTION          0x40     /* PCI configuration space */
 #define MGA_ICLEAR              0x1e18
 #define MGA_SOFTRAPICLR         0x00000001UL
 #define MGA_STATUS_SOFTRAPEN    0x00000001UL   /* STATUS bit0  */
@@ -764,6 +788,23 @@
  */
 #define OSMGA_HW3D_SUBMIT_PARAM "OSMGAHW3DSubmit"
 #define OSMGA_HW3D_STATUS_PARAM "OSMGAHW3DStatus"
+
+/*
+ * T0.1: one read-only look at the registers that a soft reset might
+ * disturb, so T1 has a PRE and a POST to subtract.  The specification says
+ * a soft reset returns "some register bits to their soft-reset values (see
+ * individual registers)" -- and that phrase occurs exactly once in 690
+ * pages, with no individual register documenting such a value.  What comes
+ * back changed is therefore not readable anywhere; it has to be measured,
+ * and this is the instrument.
+ *
+ * Reads only, and only registers the index lists as R/W or RO.  No write
+ * reaches the card through this path, configuration space included.
+ */
+#define OSMGA_REGSNAP_PARAM     "OSMGARegSnapshot"
+#define OSMGA_REGSNAP_COUNT     25U
+#define OSMGA_REGSNAP_VERSION   1U
+#define OSMGA_REGSNAP_VSPIN     2000UL   /* ~2 ms bound; a line is ~14 us */
 /*
  * M1-3i: which word of the uncached alias to read once a submission has
  * finished, or zero for none.  Development only -- see the note where it is
@@ -2275,6 +2316,16 @@ osmgaSubmitGaveUp(int which, const char *what)
 static unsigned long osmgaSettleAutoCount;
 
 /*
+ * Where we are on the bus, remembered at probe so a later read-only
+ * snapshot can reach configuration space without walking it again.
+ * -1 means the probe has not run, and the snapshot reports that rather
+ * than reading function 0 of bus 0 and calling it ours.
+ */
+static int osmgaSelfBus = -1;
+static int osmgaSelfDev = -1;
+static int osmgaSelfFn  = -1;
+
+/*
  * REMAINING_WORK 3-10.  The submit path claims stormBusy, but mode changes
  * never did, so nothing stopped a mode from being reprogrammed while a batch
  * was setting up DMA -- the two would have been writing engine registers at
@@ -3096,6 +3147,13 @@ static IODisplayInfo osmgaModeTemplate = {
         IOLog("OpenStepMGAReplacementDisplay: MGA absent after probe, abort\n");
         return [super free];
     }
+
+    /* Remembered for the read-only register snapshot (T0.1); nothing else
+     * uses it, and nothing writes configuration space anywhere. */
+    osmgaSelfBus = bus;
+    osmgaSelfDev = dev;
+    osmgaSelfFn  = fn;
+
     chipIsG450 = (revision >= MGA_G450_MIN_REVISION) ? YES : NO;
     /* Read BAR0 (framebuffer) and BAR1 (MMIO) from PCI config, like the
      * production MatroxMGA (empty Memory Maps / I/O Ports -> no resource
@@ -4966,6 +5024,70 @@ unmap:
         for (i = 0U; i < 4U; i++)
             parameterArray[i] = osmgaHW3DLast[i];
         *count = 4U;
+        return IO_R_SUCCESS;
+    }
+
+    if (osmgaTextEquals(parameterName, OSMGA_REGSNAP_PARAM)) {
+        unsigned long v0, v1, k;
+
+        if (parameterArray == 0 || count == 0 ||
+            *count != OSMGA_REGSNAP_COUNT)
+            return IO_R_INVALID_ARG;
+        if (mmioBase == 0)
+            return IO_R_NO_DEVICE;
+
+        /*
+         * VCOUNT first, and then read it until it moves.  A still raster
+         * and a dead one look identical in a single sample, and after a
+         * soft reset "is the display still scanning?" is the question that
+         * matters most.  The loop is bounded and reads an RO register.
+         */
+        v0 = osmgaR32(mmioBase, MGA_VCOUNT);
+        v1 = v0;
+        for (k = 0UL; k < OSMGA_REGSNAP_VSPIN; k++) {
+            v1 = osmgaR32(mmioBase, MGA_VCOUNT);
+            if (v1 != v0)
+                break;
+        }
+
+        parameterArray[0]  = OSMGA_REGSNAP_VERSION;
+        parameterArray[1]  = (unsigned)v0;
+        parameterArray[2]  = (unsigned)v1;
+        parameterArray[3]  = (k < OSMGA_REGSNAP_VSPIN) ? (unsigned)(k + 1UL) : 0U;
+        parameterArray[4]  = (unsigned)osmgaR32(mmioBase, MGA_FIFOSTATUS);
+        parameterArray[5]  = (unsigned)osmgaR32(mmioBase, MGA_ENGSTATUS);
+        parameterArray[6]  = (unsigned)osmgaR32(mmioBase, MGA_IEN);
+        parameterArray[7]  = (unsigned)osmgaR32(mmioBase, MGA_RST);
+        parameterArray[8]  = (unsigned)osmgaR32(mmioBase, MGA_MEMRDBK);
+        parameterArray[9]  = (unsigned)osmgaR32(mmioBase, MGA_PRIMPTR);
+        parameterArray[10] = (unsigned)osmgaR32(mmioBase, MGA_OPMODE);
+        parameterArray[11] = (unsigned)osmgaR32(mmioBase, MGA_PRIMADDRESS);
+        parameterArray[12] = (unsigned)osmgaR32(mmioBase, MGA_PRIMEND);
+        parameterArray[13] = (unsigned)osmgaR32(mmioBase, MGA_WIADDRNB);
+        parameterArray[14] = (unsigned)osmgaR32(mmioBase, MGA_WFLAGNB);
+        parameterArray[15] = (unsigned)osmgaR32(mmioBase, MGA_WCODEADDR);
+        parameterArray[16] = (unsigned)osmgaR32(mmioBase, MGA_WMISC);
+        parameterArray[17] = (unsigned)osmgaR32(mmioBase, MGA_SECADDRESS);
+        parameterArray[18] = (unsigned)osmgaR32(mmioBase, MGA_SECEND);
+        parameterArray[19] = (unsigned)osmgaR32(mmioBase, MGA_SOFTRAP);
+        parameterArray[20] = (unsigned)osmgaR32(mmioBase, MGA_DWGSYNC);
+        parameterArray[21] = (unsigned)osmgaR32(mmioBase, MGA_SETUPADDRESS);
+        parameterArray[22] = (unsigned)osmgaR32(mmioBase, MGA_SETUPEND);
+
+        /* Configuration space.  0xFFFFFFFF is also what an absent function
+         * reads as, so the caller is told which it is by whether the probe
+         * recorded where we live. */
+        if (osmgaSelfBus < 0) {
+            parameterArray[23] = 0xFFFFFFFFU;
+            parameterArray[24] = 0xFFFFFFFFU;
+        } else {
+            parameterArray[23] = (unsigned)osmgaPciReadConfigLong(
+                osmgaSelfBus, osmgaSelfDev, osmgaSelfFn, MGA_CFG_DEVCTRL);
+            parameterArray[24] = (unsigned)osmgaPciReadConfigLong(
+                osmgaSelfBus, osmgaSelfDev, osmgaSelfFn, MGA_CFG_OPTION);
+        }
+
+        *count = OSMGA_REGSNAP_COUNT;
         return IO_R_SUCCESS;
     }
 
