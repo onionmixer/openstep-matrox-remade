@@ -9012,6 +9012,48 @@ static void osmgaStormTrap(vm_address_t base, unsigned long dwgctl,
  * a constant z cannot distinguish normalisation from offset from slope,
  * and it certainly cannot show whether rhw divided it.
  */
+/*
+ * T3's texture.  Address-coded so that a wrong fetch decodes to a wrong
+ * ADDRESS rather than to a plausible colour: 4096 unique values for a
+ * 64x64 texture, and the sentinel is not among them.
+ *
+ * The working window is texels 8..55, eight clear of both edges, so that
+ * a low-edge clamp cannot hide a negative offset.
+ *
+ * FOUR PHASE BANDS.  A single mapping that lands every sample exactly on a
+ * texel boundary would pass even if WARP's anchor were half a texel out --
+ * the error would never cross a floor boundary, and the test would prove
+ * nothing about the one thing it exists to measure.  Checked in python:
+ * with an exact anchor all four phases choose the same texel; with a half
+ * texel error they split two and two.
+ *
+ * The physical guard halo T5 needs -- an allocation larger than the
+ * declared size, so an unclamped coordinate lands outside it -- is NOT
+ * here.  Texels 48..63 are inside the declared texture and reading them
+ * exercises nothing.  That layout belongs to T5.
+ */
+#define OSMGA_M3_TEXORG       (13UL * 1024UL * 1024UL)
+#define OSMGA_M3_TEXDIM         64UL
+#define OSMGA_M3_TEXLOG2         6UL
+#define OSMGA_M3_TEXBASE         8UL      /* first texel the triangle uses */
+#define OSMGA_M3_PHASES          4UL      /* base + {0, 1/4, 1/2, 3/4} */
+
+/* tu at the right-angle vertex for each phase: (8 + k/4)/64.  All exact in
+ * binary, so none of these is a rounded value. */
+static const unsigned long osmgaM3PhaseTu[OSMGA_M3_PHASES] = {
+    0x3E000000UL,   /* 0.12500000 */
+    0x3E040000UL,   /* 0.12890625 */
+    0x3E080000UL,   /* 0.13281250 */
+    0x3E0C0000UL    /* 0.13671875 */
+};
+/* and at the far vertices: (8 + 48 + k/4)/64 */
+static const unsigned long osmgaM3PhaseTuFar[OSMGA_M3_PHASES] = {
+    0x3F600000UL,   /* 0.87500000 */
+    0x3F610000UL,
+    0x3F620000UL,
+    0x3F630000UL
+};
+
 #define OSMGA_M3_F32_QUARTER  0x3E800000UL  /* 0.25f */
 #define OSMGA_M3_F32_HALF     0x3F000000UL  /* 0.5f  */
 #define OSMGA_M3_F32_3Q       0x3F400000UL  /* 0.75f */
@@ -9191,6 +9233,117 @@ static const OSMGAM3Probe osmgaM3Probes[OSMGA_M3_PROBES] = {
     { 32UL,  6UL, 16UL, OSMGA_M3_F32_QUARTER, 1UL }   /* control, same as [0] */
 };
 
+/*
+ * Fill the texture so every texel names its own address.  The repository's
+ * proven form (:11103): a wrong fetch then decodes to a wrong address
+ * instead of to some other valid colour.  0x40 in the low byte is the tag
+ * that says "this is one of ours" -- the sentinel 0x5A5A5A is not in the
+ * set, and neither is anything with a different low byte.
+ */
+static void
+osmgaM3FillTexture(volatile unsigned long *tex, unsigned long pitch,
+                   unsigned long dim)
+{
+    unsigned long x, y;
+
+    for (y = 0UL; y < dim; y++)
+        for (x = 0UL; x < dim; x++)
+            tex[y * pitch + x] = (x << 16) | (y << 8) | 0x40UL;
+}
+
+/*
+ * One textured WARP triangle.  `tuNear` is the coordinate at the right
+ * angle and `tuFar` at the two far vertices, both already IEEE patterns --
+ * the phase bands differ only in these two words.
+ */
+static void
+osmgaM3BuildTexTri(unsigned long *v, unsigned long row, unsigned long col,
+                   unsigned long leg, unsigned long tuNear,
+                   unsigned long tuFar, unsigned long z, unsigned long colour)
+{
+    unsigned long i, p = 0UL;
+    unsigned long xs[3], ys[3], us[3], vs[3];
+
+    xs[0] = col;        ys[0] = row;        us[0] = tuNear; vs[0] = tuNear;
+    xs[1] = col + leg;  ys[1] = row;        us[1] = tuFar;  vs[1] = tuNear;
+    xs[2] = col;        ys[2] = row + leg;  us[2] = tuNear; vs[2] = tuFar;
+
+    for (i = 0UL; i < 3UL; i++) {
+        v[p++] = osmgaF32FromUInt(xs[i]);
+        v[p++] = osmgaF32FromUInt(ys[i]);
+        v[p++] = z;
+        v[p++] = OSMGA_D2C_F32_ONE;     /* rhw = 1; T4 varies this */
+        v[p++] = colour;
+        v[p++] = 0UL;
+        v[p++] = us[i];
+        v[p++] = vs[i];
+    }
+}
+
+/*
+ * Decode what each pixel fetched and report the residual against what it
+ * should have fetched.
+ *
+ * Not a match count.  A uniform offset and a scattered one are different
+ * findings -- the first is a convention to compensate, the second a
+ * gradient or setup defect -- and a count cannot tell them apart.  U and V
+ * are reported separately for the same reason.
+ */
+static unsigned long
+osmgaM3ReportTexture(volatile unsigned long *blk, unsigned long stride,
+                     const char *label)
+{
+    unsigned long row, col;
+    unsigned long exact = 0UL, wrongAddr = 0UL, malformed = 0UL, seen = 0UL;
+    long duMin = 127L, duMax = -127L, dvMin = 127L, dvMax = -127L;
+    unsigned long badRow = 0UL, badCol = 0UL, badVal = 0UL;
+
+    for (row = 0UL; row < OSMGA_M3_BLK; row++) {
+        for (col = 0UL; col < OSMGA_M3_BLK; col++) {
+            unsigned long v, tx, ty;
+            long du, dv;
+
+            if (!osmgaM3Inside(row, col))
+                continue;
+            v = blk[row * stride + col] & OSMGA_D2E_RGB;
+            seen++;
+            if ((v & 0xFFUL) != 0x40UL) {
+                if (malformed == 0UL) {
+                    badRow = row; badCol = col; badVal = v;
+                }
+                malformed++;
+                continue;
+            }
+            tx = (v >> 16) & 0xFFUL;
+            ty = (v >>  8) & 0xFFUL;
+            du = (long)tx - (long)(OSMGA_M3_TEXBASE + (col - OSMGA_M3_TRI_LO));
+            dv = (long)ty - (long)(OSMGA_M3_TEXBASE + (row - OSMGA_M3_TRI_LO));
+            if (du == 0L && dv == 0L) {
+                exact++;
+            } else {
+                wrongAddr++;
+                if (du < duMin) duMin = du;
+                if (du > duMax) duMax = du;
+                if (dv < dvMin) dvMin = dv;
+                if (dv > dvMax) dvMax = dv;
+            }
+        }
+    }
+
+    IOLog("OpenStepMGA M3/%s: %lu px -- %lu exact, %lu wrong address, %lu "
+          "malformed\n", label, seen, exact, wrongAddr, malformed);
+    osmgaD2Settle();
+    if (wrongAddr != 0UL)
+        IOLog("OpenStepMGA M3/%s: du %ld..%ld, dv %ld..%ld (uniform means "
+              "one anchor convention; varying means a gradient)\n",
+              label, duMin, duMax, dvMin, dvMax);
+    else if (malformed != 0UL)
+        IOLog("OpenStepMGA M3/%s: first malformed at row %lu col %lu = "
+              "%06lx\n", label, badRow, badCol, badVal);
+    osmgaD2Settle();
+    return wrongAddr + malformed;
+}
+
 /* Pixels of `colour` inside one T1 probe's triangle. */
 static unsigned long
 osmgaM3CountProbe(volatile unsigned long *blk, unsigned long stride,
@@ -9250,7 +9403,8 @@ osmgaM3StateRun(vm_address_t base, unsigned long *ring,
                 unsigned long ringDwords, unsigned ringPhys,
                 unsigned long pipePhys, unsigned long stride,
                 unsigned long dwgctl, unsigned long dstorg,
-                unsigned long zorg, const char *label)
+                unsigned long zorg, const OSMGAM3Tex *tex,
+                const char *label)
 {
     unsigned long tailDwords = 0UL, totalDwords = 0UL;
     unsigned long listEnd, spins, status, sum = 0UL, i;
@@ -9260,8 +9414,7 @@ osmgaM3StateRun(vm_address_t base, unsigned long *ring,
                                    OSMGA_M3_CLIP_LO, OSMGA_M3_CLIP_HI,
                                    OSMGA_M3_CLIP_LO * stride,
                                    OSMGA_M3_CLIP_HI * stride,
-                                   dwgctl, dstorg, zorg,
-                                   (const OSMGAM3Tex *)0,
+                                   dwgctl, dstorg, zorg, tex,
                                    &tailDwords, &totalDwords))
         return 0;
     listEnd = (unsigned long)ringPhys + tailDwords * 4UL;
@@ -9996,8 +10149,11 @@ releaseAndReturn:
     unsigned long *ring, *vtx;
     void *ringVirt;
     unsigned ringPhys = 0;
-    vm_address_t aOr = 0, aWa = 0, aZ = 0;
-    unsigned long lOr = 0UL, lWa = 0UL, lZ = 0UL;
+    vm_address_t aOr = 0, aWa = 0, aZ = 0, aT = 0;
+    unsigned long lOr = 0UL, lWa = 0UL, lZ = 0UL, lT = 0UL;
+    unsigned long ph, texBad;
+    OSMGAM3Tex m3tex;
+    volatile unsigned long *blkT = 0;
     volatile unsigned long *blkOr = 0, *blkWa = 0;
     volatile unsigned long *blkZ = 0;
     IOReturn r;
@@ -10054,6 +10210,10 @@ releaseAndReturn:
                               OSMGA_M3_ZORG + OSMGA_M3_BLK * stride * 2UL,
                               &aZ, &lZ, &blkZ);
     if (r != IO_R_SUCCESS) { IOLog("OpenStepMGA M3: depth map r=%d\n",(int)r); goto unmapWa; }
+    r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_M3_TEXORG,
+                              OSMGA_M3_TEXORG + OSMGA_M3_TEXDIM *
+                              OSMGA_M3_TEXDIM * 4UL, &aT, &lT, &blkT);
+    if (r != IO_R_SUCCESS) { IOLog("OpenStepMGA M3: texture map r=%d\n",(int)r); goto unmapZ; }
 
     if (!osmgaWarpUcodeResident) {
         if (!osmgaWarpPlaceUcode(pipePhys, pipeOff, &osmgaWarpUcodeVirt,
@@ -10118,10 +10278,11 @@ releaseAndReturn:
     osmgaD2Settle();
     if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
                          osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
-                         dwgctlFlat, OSMGA_M3_WARP, OSMGA_M3_ZORG, "T0")) {
+                         dwgctlFlat, OSMGA_M3_WARP, OSMGA_M3_ZORG,
+                         (const OSMGAM3Tex *)0, "T0")) {
         IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
               "REQUIRED ***\n");
-        goto unmapZ;
+        goto unmapT;
     }
 
     osmgaM3BuildTri(vtx, OSMGA_M3_TRI_LO, OSMGA_M3_TRI_LO,
@@ -10131,7 +10292,7 @@ releaseAndReturn:
                              1, "T0-warp", 0)) {
         IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
               "REQUIRED ***\n");
-        goto unmapZ;
+        goto unmapT;
     }
     wrong  = osmgaM3CheckShape(blkWa, stride, OSMGA_M3_COLOUR, "T0-warp");
     differ = osmgaM3CompareSurfaces(blkOr, blkWa, stride, "T0");
@@ -10160,10 +10321,11 @@ releaseAndReturn:
         if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
                              osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
                              dwgctlFlat | MGA_DWGCTL_ZLT,
-                             OSMGA_M3_WARP, OSMGA_M3_ZORG, "T1")) {
+                             OSMGA_M3_WARP, OSMGA_M3_ZORG,
+                             (const OSMGAM3Tex *)0, "T1")) {
             IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
                   "REQUIRED ***\n");
-            goto unmapZ;
+            goto unmapT;
         }
         for (i = 0UL; i < OSMGA_M3_PROBES; i++)
             osmgaM3BuildTri(vtx + i * OSMGA_D2C_VTX_DWORDS,
@@ -10175,7 +10337,7 @@ releaseAndReturn:
                                  1, "T1", 0)) {
             IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
                   "REQUIRED ***\n");
-            goto unmapZ;
+            goto unmapT;
         }
         for (i = 0UL; i < OSMGA_M3_PROBES; i++)
             drew[i] = osmgaM3CountProbe(blkWa, stride, &osmgaM3Probes[i],
@@ -10198,10 +10360,11 @@ releaseAndReturn:
                              osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
                              (dwgctlFlat & ~MGA_DWGCTL_ATYPE_I) |
                                  MGA_DWGCTL_ATYPE_ZI | MGA_DWGCTL_NOZCMP,
-                             OSMGA_M3_WARP, OSMGA_M3_ZORG, "T2")) {
+                             OSMGA_M3_WARP, OSMGA_M3_ZORG,
+                             (const OSMGAM3Tex *)0, "T2")) {
             IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
                   "REQUIRED ***\n");
-            goto unmapZ;
+            goto unmapT;
         }
         osmgaM3BuildTri(vtx, osmgaM3Probes[0].row, osmgaM3Probes[0].col,
                         osmgaM3Probes[0].leg, OSMGA_M3_F32_3Q,
@@ -10210,11 +10373,64 @@ releaseAndReturn:
                                  1, "T2", 0)) {
             IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
                   "REQUIRED ***\n");
-            goto unmapZ;
+            goto unmapT;
         }
         osmgaM3ReportDepth(blkZ, stride, osmgaM3Probes[0].row,
                            osmgaM3Probes[0].col, osmgaM3Probes[0].leg,
                            OSMGA_M3_Z_3Q, 0UL, "T2");
+
+        /* ---- T3: nearest, clamped, address-coded, four phase bands ----
+         *
+         * The state is emitted once; only the two texture coordinates in
+         * the vertices change between phases.  With an exact anchor all
+         * four choose the same texel; with a half-texel error they split
+         * two and two, which is the whole reason there are four.
+         */
+        osmgaM3FillTexture(blkT, OSMGA_M3_TEXDIM, OSMGA_M3_TEXDIM);
+        m3tex.enable  = 1UL;
+        m3tex.org     = OSMGA_M3_TEXORG;
+        m3tex.dim     = OSMGA_M3_TEXDIM;
+        m3tex.log2dim = OSMGA_M3_TEXLOG2;
+        m3tex.pitch   = OSMGA_M3_TEXDIM;
+        /* nearest both ways -- the min and mag fields are zero -- with
+         * uvoffseten left clear, which spec 3-217 calls OpenGL sampling. */
+        m3tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21);
+
+        if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
+                             osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
+                             (dwgctlFlat & ~MGA_DWGCTL_OPCODE_MASK) |
+                                 MGA_DWGCTL_TEXTURE_TRAP,
+                             OSMGA_M3_WARP, OSMGA_M3_ZORG, &m3tex, "T3")) {
+            IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
+                  "REQUIRED ***\n");
+            goto unmapT;
+        }
+        for (ph = 0UL; ph < OSMGA_M3_PHASES; ph++) {
+            for (row = 0UL; row < OSMGA_M3_BLK; row++)
+                for (col = 0UL; col < OSMGA_M3_BLK; col++)
+                    blkWa[row * stride + col] = OSMGA_S1_SENTINEL;
+            osmgaM3BuildTexTri(vtx, OSMGA_M3_TRI_LO, OSMGA_M3_TRI_LO,
+                               OSMGA_M3_TRI_HI - OSMGA_M3_TRI_LO,
+                               osmgaM3PhaseTu[ph], osmgaM3PhaseTuFar[ph],
+                               OSMGA_M3_F32_HALF, OSMGA_M3_COLOUR);
+            if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys,
+                                     OSMGA_D2C_VTX_DWORDS, 1, "T3", 0)) {
+                IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** "
+                      "REBOOT REQUIRED ***\n");
+                goto unmapT;
+            }
+            texBad = osmgaM3ReportTexture(blkWa, stride,
+                                          (ph == 0UL) ? "T3-phase0" :
+                                          (ph == 1UL) ? "T3-phase1" :
+                                          (ph == 2UL) ? "T3-phase2"
+                                                      : "T3-phase3");
+            if (texBad != 0UL && ph == 0UL) {
+                IOLog("OpenStepMGA M3: T3 phase 0 already disagrees; the "
+                      "remaining phases still run, because which of them "
+                      "disagree is the measurement\n");
+                osmgaD2Settle();
+            }
+        }
     } else {
         IOLog("OpenStepMGA M3: T0 did not pass -- T1 and T2 are not run\n");
         osmgaD2Settle();
@@ -10240,6 +10456,8 @@ releaseAll:
     simple_unlock(&stormLock);
 freeRing:
     IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
+unmapT:
+    IOUnmapPhysicalFromIOTask(aT, lT);
 unmapZ:
     IOUnmapPhysicalFromIOTask(aZ, lZ);
 unmapWa:
