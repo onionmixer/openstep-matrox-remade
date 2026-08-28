@@ -325,3 +325,120 @@ codex 의 요약을 그대로 받는다:
 **§2 의 제목 "abort 를 구조적으로 불가능하게" 는 유지하되, §2.3 의 "기계는
 계속 쓸 수 있다" 는 삭제한다.** 이 설계가 주장할 수 있는 것은 **abort 를
 막는 것**이지 **엔진이 물렸을 때 기계가 무사한 것**이 아니다.
+
+---
+
+## 8. 두 번째 교차검토 (`gpt-5.6-sol`) — **NO-GO**, 그리고 현재 코드의 구멍
+
+두 번째 회신은 더 가혹하고 **§7 이 놓친 것을 또 찾았다.** 그중 하나는
+**W11 의 문제가 아니라 지금 출하 중인 3D 경로의 문제다.**
+
+### 8.1 ★★ 원점 검증 구멍 — **현재 코드의 실재하는 결함**
+
+사양서 `DSTORG` (3-129):
+
+```
+dstmap  <0>     1 = 목적지가 시스템 메모리
+dstacc  <1>     AGP / PCI
+Reserved<5:2>   "must be set to '0'"
+dstorg  <31:6>  "corresponds to a 64-byte address in memory"
+```
+
+**바이트 오프셋을 그대로 쓰면 하위 6 비트가 맵·접근·예약 비트가 된다.**
+
+검증기가 `dstorg` 에 하는 검사는 **전수로 하나뿐이다**:
+
+```c
+/* hw3d/OpenStepMGAHW3D.c:358 -- 이것이 전부다 */
+if (!osmgaHW3DReach(b->state.dstorg, rows, lim->pitchBytes,
+                    lim->colourStart, lim->colourEnd))
+    return OSMGA_HW3D_E_DSTORG;
+```
+
+그리고 `osmgaHW3DReach` 는 **수치 범위만** 본다 — 정렬도, 마스크도, 맵비트도
+보지 않는다. 인코더는 그 값을 **그대로** 쓴다(`:9698`, `:9746`).
+
+**계산 (python, 1600×1200 RGB:888/32)**:
+
+```
+컬러 표면 [0, 7680000)
+  64 바이트 정렬(안전)          120,000 / 7,680,000 =  1.56%
+  하위 6 비트가 0 이 아님(위험) 7,560,000 / 7,680,000 = 98.44%
+  홀수 -> dstmap=1(시스템 메모리) 3,840,000 / 7,680,000 = 50.0%
+```
+
+**검증을 통과하는 값의 98.4% 가 예약/맵 비트를 오염시키고, 그 절반은 목적지를
+시스템 메모리로 돌린다.** `zorg`·`texorg` 도 같은 구조다(3-286, 3-221).
+
+> **지금 터지지 않는 이유는 Mesa 가 정렬된 값만 보내기 때문이지 드라이버가
+> 막고 있기 때문이 아니다.** 잠복 결함이고, **2 차 DMA 보다 먼저 고쳐야
+> 한다** — WARP 는 이 원점들을 그대로 쓴다.
+>
+> **고칠 것**: `(org & 0x3F) == 0` 강제(그리고 `zorg`·`texorg` 는 각자의
+> 정렬), 예약 비트 0 확인, `PW24` 면 64 바이트의 3 배수(3-129 주). 범위
+> 검사만으로는 부족하다.
+
+### 8.2 ★ 내 계획은 **기존 보호를 버릴 뻔했다**
+
+현재 드라이버는 클라이언트 배치를 **엔진을 잡은 채 복사한 뒤** 검증한다
+(`:5838`):
+
+> *"The snapshot is one global. (…) so the batch that was proved and the
+> batch that was drawn were not the same batch, **which is the whole thing
+> the snapshot was introduced to prevent**."*
+
+**W11 §2.2 는 2 차 페이로드를 클라이언트 매핑에서 카드가 직접 읽게 했다.**
+그러면 클라이언트가 **검증 뒤·읽기 중에** 정점을 바꿀 수 있다. 지금 있는
+보호를 정확히 되돌리는 것이다.
+
+> **정정**: **2 차 페이로드도 드라이버 전용 영역으로 스테이징한다.** 링의
+> `[24576, 65536)` 이 클라이언트 매핑 **밖**이므로 그곳에 복사한다. "값일
+> 뿐이다" 는 변경 가능성에 대한 답이 아니다.
+
+### 8.3 ✅ `SECEND` 의 패킷 위치
+
+4-13 단계 9: 2 차가 끝나면 1 차가 재개되고 **general 모드가 재시작**되어
+*"the first dword fetch will be interpreted as a set of four register
+indexes"*.
+
+**따라서 `SECEND` 를 쓰는 블록 뒤의 1 차 dword 가 의도된 새 인덱스 워드여야
+한다.** 아니면 값 하나가 인덱스 블록으로 해석된다. `SECEND` 는 블록의
+**마지막 값 슬롯**에 두는 것이 안전하다.
+
+### 8.4 ✅ `PRIMPTR` 은 확인이 아니라 **0 을 쓴다**
+
+§7.1 은 "쓰기 전에 `PRIMPTR<1:0> == 0` 을 확인한다" 였다. sol 이 옳다 —
+**`PRIMPTR` 은 `R/W` 이므로 정지 상태에서 0 을 쓴다.** 확인만 하면 안전이
+부팅 잔재에 의존한다.
+
+### 8.5 ⚖️ 그 밖에 채택
+
+- **`WVRTXSZ` 는 `WO`** 라 검증기가 살아 있는 값을 알 수 없다. **드라이버가
+  쓴 상수와 대조해야 한다** — 현재 `0x1807`(정점당 8 dword, `primsz=24`).
+  `wvrtxsz+1` 의 배수는 **부분 정점**을 막지만 **부분 프리미티브**는 못 막는다.
+- **target-abort 는 여전히 회수 불가**다 (4-14): *"There is no way to change
+  the Matrox G400 or its programming to prevent a target-abort."* **§2 는
+  master-abort 만 다룬다.** 정직하게 적는다.
+- **`OSMGAAccelRearm` 은 출하 안전 논거에 넣지 않는다.** 엔진을 재초기화하지
+  않은 채 래치만 푸는 것은 회수가 아니다. **개발 도구로만 남긴다.**
+- **링의 물리 연속성**은 첫 페이지만 확인돼 있다(`:3686`). 전제로 명시하거나
+  전 페이지를 확인한다.
+
+### 8.6 판정 — **이 계획으로는 착수하지 않는다**
+
+sol 의 요약을 받는다:
+
+> *"Use a driver-only, immutable, validated secondary vertex buffer;
+> explicitly force every bus transaction type and every framebuffer /
+> system-memory selector; disable PRIMPTR; prove primary-parser packet
+> boundaries; and treat any post-doorbell timeout as **'hardware and
+> affected surfaces unusable until reboot'**, with no snapshot, mode
+> programming, software reuse, or rearm."*
+
+**§2 의 제목도 고친다**: "abort 를 구조적으로 불가능하게" → **"master-abort
+를 구조적으로 불가능하게"**. target-abort 는 막을 수 없다.
+
+### 8.7 그래서 다음 작업은 2 차 DMA 가 아니다
+
+**§8.1 이 먼저다.** 원점 검증 구멍은 2 차 DMA 와 무관하게 **지금 존재하고**,
+WARP 는 같은 원점을 쓴다. **구멍을 열어 둔 채 그 위에 WARP 를 얹지 않는다.**
