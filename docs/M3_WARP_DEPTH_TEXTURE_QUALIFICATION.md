@@ -131,3 +131,57 @@ T6  층 전환       WARP -> 사다리꼴 -> WARP, 사이에 펜스
 5. T5 의 카나리 배치가 필터 footprint 를 실제로 잡나.
 6. WARP 가 깊이를 쓸 때 `MACCESS.zwidth` 와 `ZORG` 정렬(128)이 어떻게 걸리나.
 7. 빠진 것.
+
+---
+
+## 9. codex 판정 (2026-08-28) — **NO-GO. 그리고 첫 질문에 정직하게 답했다: 또 일어났다**
+
+| codex 주장 | 검증 | 결과 |
+| --- | --- | --- |
+| **§1 의 "Y 를 뒤집는다" 가 이 백엔드에서 틀렸다** | `mesa/OpenStepMGAMesaBuffer.c:905` — *"Nothing is flipped either — **OSMesa puts GL row y at base + y \* pitch by default** and the engine draws its rows from the origin the same way"*. `Hook.c:1415` 도 `(dst).y = osmgaFix(Win.data[idx][1])` 로 **그대로** 넘긴다 | ✅**채택 — 내가 틀렸다.** 참조의 뒤집기는 X/DRI 쪽 사정이지 하드웨어가 아니다 |
+| `MACCESS = PW32` 가 이미 16 비트 깊이다 | `:543` — *"MACCESS bits 3-4 are a depth-specific width whose **zero value is MA_zwidth_16**, and we only ever write the pixel-width field"* | ✅확인 — 이미 답이 있었다 |
+| 큰 오프스크린 Y 는 깊이에 못 쓴다 | `:463` — *"That cannot work for depth: ... at y=1024 the depth access lands 4 MiB above ZORG"* | ✅채택 — T1 기하를 바꿔야 한다 |
+| 밉맵은 이미 거절되고, 층 위치는 미측정 | `Hook.c:1993` — *"the four mipmap filters are still refused — where their levels live has not been measured"* | ✅확인 — §7 의 "범위 밖" 이 맞다 |
+| **T5 의 카나리가 틀렸다 — 읽어도 안 바뀐다** | 자명하게 참이다. **가져오기를 잡으려면 출력에 주소가 드러나야** 한다. 저장소에 이미 더 나은 기법이 있다(`M1_4D9_MIPMAP_PLAN.md:109` 의 주소 부호화 텍셀) | ✅**채택 — 설계 오류** |
+| 4×4 텍스처는 규격 위반 | 사양서가 `twmask/thmask >= 7` 로 **최소 8×8** 을 요구한다 | ✅채택 |
+| T1 이 T3~T5 를 gate 하면 안 된다 | 깊이 규약 실패는 깊이 시험만 무효화한다. **의존 분기**로 | ✅채택 |
+| **T1 전에 T0(커버리지·서브픽셀)이 필요하다** | D2 는 **정수 좌표 삼각형**만 증명했다. 사다리꼴과의 정확 비교는 부분 커버리지 동등성을 전제한다 | ✅채택 |
+| T6 전에 WARP↔사다리꼴을 번갈아 쓰면 안 된다 | 내 T1 이 *"WARP 로 그리고 사다리꼴로도"* 라 이미 전환을 섞는다. **신탁 스냅샷을 먼저 전부 뜨고**, 그 다음 WARP 를 끊김 없이 | ✅채택 — 내 설계 결함 |
+| T1 은 **여러 z 와 기울어진 z 평면**이 필요하다 | 한 z 의 삼각형 하나로는 정규화·오프셋·기울기·`rhw` 나눗셈을 구별 못 한다 | ✅채택 |
+| T4 는 `rhw` 변화와 **z 변화를 함께** 봐야 한다 | 그것이 *"z 가 원근으로 안 나뉜다"* 의 직접 시험이다 | ✅채택 |
+| min/mag 필터를 따로 봐야 한다 | `HW3D.h:433` 에 **이 저장소가 정확히 그 버그를 겪은 기록**이 있다 | ✅채택 |
+| `zmode`/`ZI`/`I`/`CLAMPUV` 는 엔진 성질이라는 §0 전제 | 사양서 3-133·3-34·3-212 로 확인. 다만 *"WARP 는 셋업 계산만 바꾼다"* 는 **불완전** — 엣지·서브픽셀·컬링·기울기도 만든다 | ⚖️부분 |
+
+### 9.1 네 번째다
+
+M2 에서 세 번, 여기서 **네 번째**다 — `Buffer.c:905` 는 *"Nothing is flipped"* 라고
+**대문자로 적어 놓은** 것을 내가 참조 구현을 보고 뒤집겠다고 썼다.
+저장소를 먼저 훑었는데도 **`TEST_STATUS.md` 만 보고 `mesa/` 의 주석은 안 봤다.**
+grep 대상이 좁았다.
+
+### 9.2 개정된 순서
+
+```
+호스트 전용 사전점검
+T0  커버리지·서브픽셀 동등성          <- 정확 비교의 전제
+    (신탁 스냅샷을 여기서 전부 뜬다)
+T1  깊이 읽기 — 여러 z, 기울어진 평면
+T2  깊이 쓰기 (ZI)
+T3  nearest clamp 텍스처 (>= 8x8, 주소 부호화)
+T4  qw 와 tq 를 독립적으로, z 변화와 함께
+T5  bilinear min/mag 각각 + 가드 텍셀로 fetch 주소 확인
+T6  전환: 펜스 -> suspend -> quiesce -> 사다리꼴 -> 전체 재발행 -> 재시작
+```
+
+**T5 는 카나리가 아니라 가드 텍셀이다** — 텍스처 앞뒤와 행 패딩에 주소가
+디코드되는 값을 넣고, 출력에서 그것이 섞여 나오는지 본다. 안 바뀐 메모리는
+읽히지 않았음을 증명하지 않는다.
+
+### 9.3 §1 정정
+
+```
+z   = depth_scale * win[2],  depth_scale = 1/(2^bits − 1)      ✅ 유지
+tu0 = s, tv0 = t  (정규화)                                      ✅ 유지
+원근: rhw = qw*tq, tu0 = s/tq, tv0 = t/tq                      ✅ 유지
+y   = 그대로                                                    ← 뒤집지 않는다
+```
