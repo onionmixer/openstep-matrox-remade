@@ -355,6 +355,21 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
     if ((b->state.dstPitch % OSMGA_HW3D_PITCH_ALIGN) != 0UL)
         return OSMGA_HW3D_E_DSTPITCH;
 
+    /*
+     * Alignment before reach, because an unaligned origin is not an address
+     * at all -- its low bits are the memory-space and access selectors --
+     * and measuring the reach of a value that is partly a mode field would
+     * be bounding the wrong number.
+     *
+     * Inside this function only.  The submit path range-checks dstorg
+     * against the window before ever calling here, so an origin that is
+     * both outside the window and unaligned still reports E_DSTORG from
+     * there.  The precedence is local, not global, and saying otherwise
+     * would be a promise this file cannot keep.
+     */
+    if ((b->state.dstorg & (OSMGA_HW3D_DSTORG_ALIGN - 1UL)) != 0UL)
+        return OSMGA_HW3D_E_DSTORGAL;
+
     if (!osmgaHW3DReach(b->state.dstorg, rows, lim->pitchBytes,
                         lim->colourStart, lim->colourEnd))
         return OSMGA_HW3D_E_DSTORG;
@@ -381,6 +396,12 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
 
     if (anyDepth) {
         unsigned long zstride = (lim->pitchBytes / 4UL) * OSMGA_HW3D_DEPTH_BYTES;
+
+        /* Conditional, like the reach check beside it: when nothing in the
+         * batch addresses depth the field is ignored, and refusing a stale
+         * value nobody is going to use would reject working batches. */
+        if ((b->state.zorg & (OSMGA_HW3D_ZORG_ALIGN - 1UL)) != 0UL)
+            return OSMGA_HW3D_E_ZORGAL;
 
         if (!osmgaHW3DReach(b->state.zorg, rows, zstride,
                             lim->depthStart, lim->depthEnd))
@@ -448,6 +469,10 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
              * address this driver has not worked out yet.  Reading beyond the
              * texture would be reading VRAM nobody proved.
              */
+            /* Conditional for the same reason as zorg above. */
+            if ((b->state.texorg & (OSMGA_HW3D_TEXORG_ALIGN - 1UL)) != 0UL)
+                return OSMGA_HW3D_E_TEXORGAL;
+
             if (!osmgaHW3DReach(b->state.texorg, (mm != 0UL) ? h * 2UL : h,
                                 pitch * 4UL, lim->texStart, lim->texEnd))
                 return OSMGA_HW3D_E_TEXORG;

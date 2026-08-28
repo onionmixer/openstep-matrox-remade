@@ -473,6 +473,19 @@
 #define MGA_DR2                 0x1cc8         /* Z x increment */
 #define MGA_DR3                 0x1ccc         /* Z y increment */
 #define OSMGA_D3_ZORG           (5UL * 1024UL * 1024UL)
+
+/*
+ * The depth origin the encoder substitutes when nothing in a batch addresses
+ * depth.  It is a driver-computed value, so the validator never sees it and
+ * the client cannot be blamed if it is wrong -- and ZORG's low seven bits
+ * are zorgmap, zorgacc and reserved, so an unaligned constant here would
+ * point the depth buffer at system memory on every untextured batch.
+ *
+ * Checked at compile time rather than trusted: a negative array size is the
+ * only assertion this compiler has.
+ */
+typedef int OSMGAD3ZorgAligned[
+    ((OSMGA_D3_ZORG % OSMGA_HW3D_ZORG_ALIGN) == 0UL) ? 1 : -1];
 #define OSMGA_D3_ZCLEAR         0x80008000UL
 
 /*
@@ -892,7 +905,37 @@
 #define OSMGA_HW3D_CLIP_ROWS    120UL
 #define OSMGA_HW3D_CLIP_COLS    64UL
 
-static unsigned osmgaHW3DLast[4];   /* verdict, bad triangle, dwords, spins */
+static unsigned osmgaHW3DLast[4];
+
+/*
+ * One log line per distinct verdict, for the life of the load.  Twenty-three
+ * codes fit in a long; a bit set means that verdict has already been
+ * reported.  Nothing here can be made to allocate or to repeat.
+ */
+static unsigned long osmgaHW3DVerdictSeen;
+
+static void
+osmgaHW3DLogVerdictOnce(unsigned verdict, const OSMGAHW3DBatch *b)
+{
+    unsigned long bit;
+
+    if (verdict == 0U || verdict > 31U)
+        return;
+    bit = 1UL << verdict;
+    if ((osmgaHW3DVerdictSeen & bit) != 0UL)
+        return;
+    osmgaHW3DVerdictSeen |= bit;
+
+    if (verdict == (unsigned)OSMGA_HW3D_E_DSTORGAL ||
+        verdict == (unsigned)OSMGA_HW3D_E_ZORGAL ||
+        verdict == (unsigned)OSMGA_HW3D_E_TEXORGAL)
+        IOLog("OpenStepMGA W12: batch refused %u -- an origin's low bits are "
+              "not an address (dstorg %08lx zorg %08lx texorg %08lx); "
+              "reported once\n", verdict,
+              b->state.dstorg, b->state.zorg, b->state.texorg);
+    else
+        IOLog("OpenStepMGA W12: batch refused %u; reported once\n", verdict);
+}   /* verdict, bad triangle, dwords, spins */
 
 /*
  * The batch the kernel actually trusts.
@@ -3760,6 +3803,25 @@ static IODisplayInfo osmgaModeTemplate = {
                  * interval at all, so the guard that makes it true is
                  * osmgaDevOpen refusing while the state is not OPEN.
                  */
+                /*
+                 * Every origin a client can name is an offset from this
+                 * base, and the allocator above it rounds allocation SIZES
+                 * but never this.  So if the base itself is not aligned,
+                 * every surface derived from it is unaligned, the new
+                 * alignment checks refuse every batch, and 3D falls back to
+                 * software for the life of the load with no explanation.
+                 *
+                 * 128 covers all three: ZORG needs it, DSTORG needs 64 and
+                 * TEXORG 32, and both divide it.  It holds today -- the
+                 * measured base is 9322496 -- but it holds by arithmetic
+                 * nobody arranged, so it is checked rather than assumed.
+                 */
+                if ((start % OSMGA_HW3D_ZORG_ALIGN) != 0UL)
+                    IOLog("OpenStepMGA W12: VRAM window base %lu is not a "
+                          "multiple of %lu -- every client origin derived "
+                          "from it will be refused\n",
+                          start, OSMGA_HW3D_ZORG_ALIGN);
+
                 osmgaMmapWindowStart = start;
                 osmgaMmapWindowEnd   = start;
                 osmgaWindowState     = OSMGA_WINDOW_UNOPENED;
@@ -6031,6 +6093,20 @@ refuse2:
     osmgaHW3DLast[2] = 0U;
     osmgaHW3DLast[3] = 0U;
     if (v3 != OSMGA_HW3D_OK) {
+        /*
+         * Say WHAT was refused, once per verdict and never again.
+         *
+         * Once, because this ioctl is reachable by a client and a line per
+         * refusal is a way to fill the kernel log from userland.  And here
+         * rather than inside the validator, which is portable code the host
+         * tests link and which has no business logging.
+         *
+         * It earns its place on the alignment verdicts in particular: if
+         * those never appear, that is the first measurement of the thing
+         * this driver has only ever assumed -- that its clients send
+         * origins whose low bits are not mode selectors.
+         */
+        osmgaHW3DLogVerdictOnce((unsigned)v3, &osmgaHW3DSnapshot);
         simple_lock(&stormLock);
         stormBusy = NO;
         simple_unlock(&stormLock);

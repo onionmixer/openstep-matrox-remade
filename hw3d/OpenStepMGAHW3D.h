@@ -118,6 +118,15 @@
 #define OSMGA_HW3D_E_TRICROSS  17   /* the two edges cross partway down, or
                                            one leaves the clip rectangle */
 
+/* Appended, never renumbered: the verdict is observable to clients that
+ * already know 1..19, and reusing a number would tell an old client the
+ * wrong thing.  An origin whose low bits are not zero is refused here
+ * rather than by the reach checks, because those bits are not part of the
+ * address -- see the alignment note below. */
+#define OSMGA_HW3D_E_DSTORGAL  20
+#define OSMGA_HW3D_E_ZORGAL    21
+#define OSMGA_HW3D_E_TEXORGAL  22
+
 /*
  * What a client may say in DWGCTL, and what the kernel says for it.
  *
@@ -153,6 +162,30 @@
  * only at four bytes a pixel.
  */
 #define OSMGA_HW3D_PITCH_ALIGN  32UL
+
+/*
+ * The origins are not plain byte offsets.  Each of these registers keeps a
+ * memory-space bit in bit 0 (1 selects SYSTEM memory), an access bit in bit
+ * 1, and the actual origin in a high field -- DSTORG <31:6>, ZORG <31:2>
+ * with a note requiring multiples of 128, TEXORG <31:5>.  So an offset whose
+ * low bits are not zero does not merely land somewhere slightly different:
+ * it can move the destination, the depth buffer or the texture out of the
+ * frame buffer entirely.
+ *
+ * The validator bounded these numerically and nothing else, which let every
+ * unaligned value through.  It never fired because the only producer is an
+ * allocator that returns aligned bases, not because anything stopped it.
+ *
+ *   DSTORG  64  (3-129)   ZORG  128  (3-286, "the seven LSBs = 0")
+ *   TEXORG  32  (3-221)
+ *
+ * DSTORG has a further rule in PW24 -- a multiple of three 64-byte units --
+ * which does not apply here because this path programs PW32.  It would have
+ * to come back if a 24-bit mode ever did.
+ */
+#define OSMGA_HW3D_DSTORG_ALIGN 64UL
+#define OSMGA_HW3D_ZORG_ALIGN   128UL
+#define OSMGA_HW3D_TEXORG_ALIGN 32UL
 
 #define OSMGA_HW3D_DWG_CLIENT   0x0000077FUL
 #define OSMGA_HW3D_DWG_FIXED    0x000C4000UL   /* bop/trans, SHIFTZERO */

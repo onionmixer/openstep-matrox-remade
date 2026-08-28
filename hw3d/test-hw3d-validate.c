@@ -134,10 +134,28 @@ main(void)
     printf("colour origin -- reach is origin + %lu rows * %lu bytes\n", rows, pitch);
     reset(); b.state.dstorg = lim.colourEnd - rows * pitch;
                                                 expect("dstorg at the last fitting origin", OSMGA_HW3D_OK);
+    /* One byte past is now an ALIGNMENT verdict, not a reach one: the low
+     * six bits of DSTORG are the memory-space and access selectors, so a
+     * value ending in 1 is refused before its reach is ever measured.  The
+     * reach bound is exercised separately, one ALIGNED step past. */
     reset(); b.state.dstorg = lim.colourEnd - rows * pitch + 1;
-                                                expect("dstorg one byte past that", OSMGA_HW3D_E_DSTORG);
+                                                expect("dstorg one byte past that (unaligned)", OSMGA_HW3D_E_DSTORGAL);
+    reset(); b.state.dstorg = lim.colourEnd - rows * pitch + OSMGA_HW3D_DSTORG_ALIGN;
+                                                expect("dstorg one aligned step past that", OSMGA_HW3D_E_DSTORG);
     reset(); b.state.dstorg = lim.colourStart - 1;
-                                                expect("dstorg one byte below the window", OSMGA_HW3D_E_DSTORG);
+                                                expect("dstorg one byte below the window (unaligned)", OSMGA_HW3D_E_DSTORGAL);
+    reset(); b.state.dstorg = lim.colourStart - OSMGA_HW3D_DSTORG_ALIGN;
+                                                expect("dstorg one aligned step below the window", OSMGA_HW3D_E_DSTORG);
+
+    printf("colour origin -- the low bits are not an address\n");
+    reset(); b.state.dstorg = lim.colourStart + 1;
+                                                expect("dstorg with dstmap set (system memory)", OSMGA_HW3D_E_DSTORGAL);
+    reset(); b.state.dstorg = lim.colourStart + 2;
+                                                expect("dstorg with dstacc set (AGP)", OSMGA_HW3D_E_DSTORGAL);
+    reset(); b.state.dstorg = lim.colourStart + 32;
+                                                expect("dstorg inside a reserved bit", OSMGA_HW3D_E_DSTORGAL);
+    reset(); b.state.dstorg = lim.colourStart + OSMGA_HW3D_DSTORG_ALIGN;
+                                                expect("dstorg one aligned step in", OSMGA_HW3D_OK);
     reset(); b.state.dstorg = 0;                expect("dstorg at the visible framebuffer", OSMGA_HW3D_E_DSTORG);
     reset(); b.state.dstorg = lim.colourEnd;    expect("dstorg at the window end", OSMGA_HW3D_E_DSTORG);
     reset(); b.state.dstorg = 0xFFFFF000UL;     expect("dstorg near the 32-bit ceiling", OSMGA_HW3D_E_DSTORG);
@@ -198,7 +216,24 @@ main(void)
                                                 expect("zorg at the last fitting origin", OSMGA_HW3D_OK);
     reset(); b.tri[0].dwgctl = 0x0004UL | 0x0030UL;
              b.state.zorg = lim.depthEnd - rows * (pitch / 4) * 2 + 1;
-                                                expect("zorg one byte past that", OSMGA_HW3D_E_ZORG);
+                                                expect("zorg one byte past that (unaligned)", OSMGA_HW3D_E_ZORGAL);
+    reset(); b.tri[0].dwgctl = 0x0004UL | 0x0030UL;
+             b.state.zorg = lim.depthEnd - rows * (pitch / 4) * 2 + OSMGA_HW3D_ZORG_ALIGN;
+                                                expect("zorg one aligned step past that", OSMGA_HW3D_E_ZORG);
+
+    printf("depth origin -- alignment, and only when depth is addressed\n");
+    reset(); b.tri[0].dwgctl = 0x0004UL | 0x0030UL;
+             b.state.zorg = lim.depthStart + 1;
+                                                expect("zorg with zorgmap set", OSMGA_HW3D_E_ZORGAL);
+    reset(); b.tri[0].dwgctl = 0x0004UL | 0x0030UL;
+             b.state.zorg = lim.depthStart + 64;
+                                                expect("zorg 64-aligned but not 128", OSMGA_HW3D_E_ZORGAL);
+    /* The field is ignored when nothing addresses depth, and the checks
+     * beside it are conditional for that reason.  An unaligned value left
+     * over in a batch that never touches depth must NOT be refused --
+     * refusing it would reject working batches. */
+    reset(); b.state.zorg = lim.depthStart + 1;
+                                                expect("unaligned zorg, no triangle addresses depth", OSMGA_HW3D_OK);
     reset(); b.tri[0].dwgctl = 0x0004UL | 0x0030UL;
              b.state.zorg = 0;                  expect("zorg at the visible framebuffer", OSMGA_HW3D_E_ZORG);
 
@@ -208,7 +243,20 @@ main(void)
                                                 expect("texorg at the last fitting origin", OSMGA_HW3D_OK);
     reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
              b.state.texorg = lim.texEnd - 64 * 64 * 4 + 1;
-                                                expect("texorg one byte past that", OSMGA_HW3D_E_TEXORG);
+                                                expect("texorg one byte past that (unaligned)", OSMGA_HW3D_E_TEXORGAL);
+    reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+             b.state.texorg = lim.texEnd - 64 * 64 * 4 + OSMGA_HW3D_TEXORG_ALIGN;
+                                                expect("texorg one aligned step past that", OSMGA_HW3D_E_TEXORG);
+
+    printf("texture origin -- alignment, and only when a triangle is textured\n");
+    reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+             b.state.texorg = lim.texStart + 1;
+                                                expect("texorg with texorgmap set", OSMGA_HW3D_E_TEXORGAL);
+    reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
+             b.state.texorg = lim.texStart + 16;
+                                                expect("texorg inside a reserved bit", OSMGA_HW3D_E_TEXORGAL);
+    reset(); b.state.texorg = lim.texStart + 1;
+                                                expect("unaligned texorg, no triangle is textured", OSMGA_HW3D_OK);
     reset(); b.tri[0].dwgctl = 0x0006UL | 0x0070UL;
              b.state.texPitch = 128;
              b.state.texorg = lim.texEnd - 64 * 128 * 4;
