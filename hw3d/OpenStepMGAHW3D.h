@@ -807,9 +807,64 @@ typedef int OSMGAHW3DWordCheck[(sizeof(unsigned long) == 4) ? 1 : -1];
  * how the kernel allocates -- but the two must agree, and the driver checks
  * at init that they do.
  */
+/*
+ * The tail of the ring is no longer all list.
+ *
+ * A secondary DMA payload has to live somewhere the card owns and the
+ * client cannot map, and the only such place is this same region.  Parking
+ * it in "the space left over" reserves nothing: the encoder is handed the
+ * whole region, and how much of it a batch uses is a function of how many
+ * triangles the client sent.  So the region is split, and the list's bound
+ * is stated against its own half.
+ *
+ * The numbers, since guessing them is how the last attempt went wrong:
+ *
+ *   region                40960 B
+ *   encoder worst case    32640 B   ((8 + 4) + 180 * 9) * 5 dwords
+ *   secondary region       4080 B   204 general packets exactly
+ *   list gets             36880 B   leaving 4240 B of margin
+ *
+ * About a page rather than the whole 8320 B of slack, so the list keeps
+ * real headroom instead of exactly none.
+ */
+/*
+ * A whole number of general-mode packets, not a round number of bytes.
+ * 4096 would leave sixteen bytes at the end that are neither a packet nor
+ * anything else, and the point of this region is that every byte of it is
+ * a complete DMAPAD packet -- a partial one at the end is exactly what the
+ * guard exists to prevent being read.
+ *
+ *   4080 = 204 packets * 20 bytes, remainder 0
+ */
+#define OSMGA_HW3D_SEC_BYTES    4080UL
+#define OSMGA_HW3D_LIST_BYTES \
+    ((64UL * 1024UL - OSMGA_HW3D_RING_OFFSET) - OSMGA_HW3D_SEC_BYTES)
+/* Offset from the ring base, not from RING_OFFSET. */
+#define OSMGA_HW3D_SEC_OFF \
+    (OSMGA_HW3D_RING_OFFSET + OSMGA_HW3D_LIST_BYTES)
+
+/* One general-mode packet: an index dword and four values. */
+#define OSMGA_HW3D_SEC_PACKET   20UL
+
+/*
+ * Is [secStart, secEnd) a legal secondary DMA range?
+ *
+ * The values are ADDRESSES.  SECADDRESS keeps secmod in bits 1:0 and SECEND
+ * keeps SAGPXFER in bit 1, so the register words are built by OR-ing the
+ * mode in AFTER this returns.  Validating the raw words instead would
+ * either reject every legal submission or invite somebody to "fix" it by
+ * masking after the check, which is the same thing as not checking.
+ *
+ * Returns 1 when legal.  Portable; the host tests link it.
+ */
+int osmgaHW3DSecRange(unsigned long ringPhys,
+                      unsigned long secStart, unsigned long secEnd);
+
 typedef int OSMGAHW3DListCheck[
-    ((OSMGA_HW3D_ENC_DWORDS * 4UL) <=
-     (64UL * 1024UL - OSMGA_HW3D_RING_OFFSET)) ? 1 : -1];
+    ((OSMGA_HW3D_ENC_DWORDS * 4UL) <= OSMGA_HW3D_LIST_BYTES) ? 1 : -1];
+/* And the split itself has to land inside the ring. */
+typedef int OSMGAHW3DSplitCheck[
+    ((OSMGA_HW3D_SEC_OFF + OSMGA_HW3D_SEC_BYTES) == 64UL * 1024UL) ? 1 : -1];
 
 /*
  * M1-3a: the capability parameter the Mesa backend probes.

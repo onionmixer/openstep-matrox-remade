@@ -11,6 +11,47 @@
 
 #define OSMGA_HW3D_DEPTH_BYTES  2UL    /* MACCESS leaves depth 16-bit */
 
+/*
+ * The secondary DMA range check.  See the header.
+ *
+ * Every bound is a subtraction.  An earlier draft of this said in its own
+ * comment that it wrote them that way and then wrote
+ * `ringPhys + SEC_OFF + SEC_BYTES`, which is the exact form the sentence
+ * claimed to avoid -- on a 32-bit target that sum is not a proof of
+ * anything.  So: no expression here adds two values that could carry.
+ */
+int
+osmgaHW3DSecRange(unsigned long ringPhys,
+                  unsigned long secStart, unsigned long secEnd)
+{
+    unsigned long base, len, into;
+
+    /* The region base itself must not wrap. */
+    if (ringPhys > 0xFFFFFFFFUL - OSMGA_HW3D_SEC_OFF)
+        return 0;
+    base = ringPhys + OSMGA_HW3D_SEC_OFF;
+
+    if (secEnd <= secStart)          return 0;   /* 4-13: length 0 forbidden */
+    if (secStart < base)             return 0;
+
+    len  = secEnd - secStart;
+    into = secStart - base;
+
+    if (len > OSMGA_HW3D_SEC_BYTES)  return 0;
+    if (into > OSMGA_HW3D_SEC_BYTES - len)
+        return 0;                                /* subtraction, not a sum */
+
+    /* Whole packets only.  A length that is dword-aligned but not a
+     * multiple of twenty leaves the channel ending partway through one,
+     * and the parser resumes at "the last Pseudo-DMA location" (4-16). */
+    if (len < OSMGA_HW3D_SEC_PACKET) return 0;
+    if ((len % OSMGA_HW3D_SEC_PACKET) != 0UL) return 0;
+
+    if ((secStart & 3UL) != 0UL)     return 0;
+    if ((secEnd   & 3UL) != 0UL)     return 0;
+    return 1;
+}
+
 /* Does [org, org + rows*stride) fit inside [lo, hi)? */
 static int
 osmgaHW3DReach(unsigned long org, unsigned long rows, unsigned long stride,

@@ -820,7 +820,13 @@ typedef int OSMGAD3ZorgAligned[
  */
 #define OSMGA_REGSNAP_PARAM     "OSMGARegSnapshot"
 #define OSMGA_REGSNAP_COUNT     25U
-#define OSMGA_REGSNAP_VERSION   1U
+/*
+ * Two, not one: two slots can now come back as OSMGA_REGSNAP_NOTREAD
+ * instead of a register value, and a reader that assumed every slot was a
+ * register would report the marker as one.
+ */
+#define OSMGA_REGSNAP_VERSION   2U
+#define OSMGA_REGSNAP_NOTREAD   0xFFFFFFFEU  /* slot deliberately not read */
 #define OSMGA_REGSNAP_VSPIN     2000UL   /* ~2 ms bound; a line is ~14 us */
 
 /*
@@ -912,6 +918,25 @@ static unsigned osmgaHW3DLast[4];
  * codes fit in a long; a bit set means that verdict has already been
  * reported.  Nothing here can be made to allocate or to repeat.
  */
+/*
+ * W14 step 3.  Whether the secondary DMA channel may be in use.
+ *
+ * 4-13 step 8: SECADDRESS and SECEND "cannot be accessed while they are
+ * being used by the secondary DMA channel.  This will produce unpredictable
+ * results."  Accessed, not merely written -- and the register snapshot
+ * reads both.
+ *
+ * secActive covers a transfer that is under way.  secUnknown latches when
+ * one did not prove completion and never clears, because after that nothing
+ * knows what the channel is doing and no read of those two registers can be
+ * called safe again.
+ *
+ * Both are set today by nothing: no secondary transfer is ever started.
+ * They exist now so the snapshot is already correct when one is.
+ */
+static int osmgaSecActive;
+static int osmgaSecUnknown;
+
 static unsigned long osmgaHW3DVerdictSeen;
 
 static void
@@ -2450,8 +2475,20 @@ osmgaCaptureRegs(vm_address_t base, unsigned *out, int withRaster)
     out[14] = (unsigned)osmgaR32(base, MGA_WFLAGNB);
     out[15] = (unsigned)osmgaR32(base, MGA_WCODEADDR);
     out[16] = (unsigned)osmgaR32(base, MGA_WMISC);
-    out[17] = (unsigned)osmgaR32(base, MGA_SECADDRESS);
-    out[18] = (unsigned)osmgaR32(base, MGA_SECEND);
+    /*
+     * The two the specification forbids touching while the channel is
+     * using them.  Skipped rather than the whole snapshot refused: the
+     * other twenty-three values are still worth having, and a caller that
+     * cannot tell a skipped slot from a register value is the reason the
+     * version below went up.
+     */
+    if (osmgaSecActive || osmgaSecUnknown) {
+        out[17] = OSMGA_REGSNAP_NOTREAD;
+        out[18] = OSMGA_REGSNAP_NOTREAD;
+    } else {
+        out[17] = (unsigned)osmgaR32(base, MGA_SECADDRESS);
+        out[18] = (unsigned)osmgaR32(base, MGA_SECEND);
+    }
     out[19] = (unsigned)osmgaR32(base, MGA_SOFTRAP);
     out[20] = (unsigned)osmgaR32(base, MGA_DWGSYNC);
     out[21] = (unsigned)osmgaR32(base, MGA_SETUPADDRESS);
@@ -3747,6 +3784,143 @@ static IODisplayInfo osmgaModeTemplate = {
                 } else {
                     IOLog("OpenStepMGA M1-0: IOMallocLow failed, command "
                           "window not offered\n");
+                }
+
+                /*
+                 * W14 step 1: the ring the CARD reads has never been proved
+                 * physically contiguous.
+                 *
+                 * The allocation above translates its base address and
+                 * checks page alignment, and that is all.  There IS a
+                 * page-by-page walk in this driver -- runDmaRingAllocTest --
+                 * but it makes its OWN temporary IOMallocLow, walks that,
+                 * and frees it.  So the evidence is about a different
+                 * allocation than the one the card is handed, and the whole
+                 * containment argument ("the card only reads our ring")
+                 * rests on 64 KiB being one physical run.
+                 *
+                 * Walk the real one.  Fail closed: an unpublished ring costs
+                 * hardware 3D for the boot and says why, which is the cheap
+                 * side of this trade.
+                 */
+                if (ring != 0) {
+                    unsigned long off;
+                    int broke = 0;
+
+                    for (off = (unsigned long)PAGE_SIZE;
+                         off < OSMGA_DMA_RING_BYTES;
+                         off += (unsigned long)PAGE_SIZE) {
+                        unsigned int want = (unsigned int)(ringPhys + off);
+                        IOPhysicalAddress got = 0;
+                        IOReturn pr = IOPhysicalFromVirtual(IOVmTaskSelf(),
+                                          (vm_address_t)((char *)ring + off),
+                                          &got);
+
+                        if (pr != IO_R_SUCCESS ||
+                            (unsigned int)got != want) {
+                            IOLog("OpenStepMGA W14: ring DISCONTIGUOUS at "
+                                  "+%lu -- wanted %08x, got %08x (r=%d); "
+                                  "command window not offered\n",
+                                  off, want, (unsigned int)got, (int)pr);
+                            broke = 1;
+                            break;
+                        }
+                    }
+                    if (broke) {
+                        IOFreeLow(ring, (int)OSMGA_DMA_RING_BYTES);
+                        ring = 0;
+                        ringPhys = 0UL;
+                    } else {
+                        IOLog("OpenStepMGA W14: ring contiguous over %lu "
+                              "bytes from %08lx (%lu pages)\n",
+                              (unsigned long)OSMGA_DMA_RING_BYTES, ringPhys,
+                              (unsigned long)OSMGA_DMA_RING_BYTES /
+                                  (unsigned long)PAGE_SIZE);
+                    }
+                }
+
+                /*
+                 * W14 step 5: fill the reserved secondary region with
+                 * complete DMAPAD packets, once, before anything can point
+                 * the card at it.
+                 *
+                 * Not zeros.  Index 00h is DWGCTL, so a zero-filled region
+                 * is four DWGCTL writes per packet; DMAPAD is the register
+                 * the vendor defines as having no effect on the drawing
+                 * engine.  An earlier draft in this project made exactly
+                 * that mistake and was corrected for exactly this reason.
+                 *
+                 * Here rather than at submission time because the ring is
+                 * permanent and DMA-visible: rewriting it later would be
+                 * changing memory the card may be reading.
+                 */
+                if (ring != 0) {
+                    unsigned long *sec = (unsigned long *)
+                        ((char *)ring + OSMGA_HW3D_SEC_OFF);
+                    unsigned long secDwords = OSMGA_HW3D_SEC_BYTES / 4UL;
+                    unsigned long pos = 0UL;
+                    int ok = 1;
+
+                    /* Through osmgaDmaBlock, not by hand: it owns the index
+                     * encoding, and a second copy of that encoding here
+                     * would be free to drift from the one the card is
+                     * actually fed everywhere else. */
+                    while (ok && pos < secDwords)
+                        ok = osmgaDmaBlock(sec, secDwords, &pos,
+                                           MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                                           MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL);
+
+                    if (!ok || pos != secDwords) {
+                        IOLog("OpenStepMGA W14: secondary region fill short "
+                              "(%lu of %lu dwords); command window not "
+                              "offered\n", pos, secDwords);
+                        IOFreeLow(ring, (int)OSMGA_DMA_RING_BYTES);
+                        ring = 0;
+                        ringPhys = 0UL;
+                    } else {
+                        IOLog("OpenStepMGA W14: secondary region +%lu, %lu "
+                              "bytes, %lu DMAPAD packets\n",
+                              (unsigned long)OSMGA_HW3D_SEC_OFF,
+                              (unsigned long)OSMGA_HW3D_SEC_BYTES,
+                              pos / OSMGA_DMA_BLOCK_DWORDS);
+                    }
+                }
+
+                /*
+                 * W14 step 2: PRIMPTR to a known zero.
+                 *
+                 * primptren0 makes the card write a double-qword of status
+                 * to system memory at primptr EVERY time SOFTRAP, SECEND or
+                 * SETUPEND is written; primptren1 does the same whenever
+                 * DWGSYNC updates (3-166).  This driver has never written
+                 * the register, so it holds whatever the firmware left --
+                 * measured on this board, 0xfffffbf0, a pointer near 4 GiB
+                 * one bit away from being armed.
+                 *
+                 * Zero clears both enables, satisfies the reserved-bit rule
+                 * and makes the pointer deterministic.  It does not make a
+                 * future accidental enable safe -- that would become a write
+                 * to physical zero -- so the property being maintained is
+                 * that nothing else ever writes this register.  Nothing
+                 * can: 0x1e50 is outside both DMA index groups, so the
+                 * encoder cannot name it.
+                 *
+                 * Done here, at init, with no DMA of ours ever started and
+                 * before the command window is published.
+                 */
+                if (mmioMapped) {
+                    unsigned long before = osmgaR32(mmioBase, MGA_PRIMPTR);
+                    unsigned long after;
+
+                    osmgaW32(mmioBase, MGA_PRIMPTR, 0UL);
+                    after = osmgaR32(mmioBase, MGA_PRIMPTR);
+                    IOLog("OpenStepMGA W14: PRIMPTR %08lx -> %08lx "
+                          "(primptren %lu%lu -> %lu%lu)\n",
+                          before, after, (before >> 1) & 1UL, before & 1UL,
+                          (after >> 1) & 1UL, after & 1UL);
+                    if (after != 0UL)
+                        IOLog("OpenStepMGA W14: PRIMPTR did not take zero -- "
+                              "the status-write path is NOT known clear\n");
                 }
                 /*
                  * The split has to be a whole number of pages, or the last
@@ -5972,7 +6146,16 @@ refuse2:
     batch = (OSMGAHW3DBatch *)osmgaMmapCmdVirt;
     list3 = (unsigned long *)((char *)osmgaMmapCmdVirt +
                               OSMGA_HW3D_RING_OFFSET);
-    listDwords3 = (OSMGA_DMA_RING_BYTES - OSMGA_HW3D_RING_OFFSET) / 4UL;
+    /*
+     * The list's half of the region, not the whole of it.
+     *
+     * The tail is reserved for a secondary DMA payload the client cannot
+     * map, and reserving it only here would reserve nothing -- the boot
+     * batch test and the containment test encode into the same permanent
+     * ring, so all three had to change together or the two that did not
+     * would write across the reservation.
+     */
+    listDwords3 = OSMGA_HW3D_LIST_BYTES / 4UL;
     listPhys3 = osmgaMmapCmdPhysical + OSMGA_HW3D_RING_OFFSET;
 
     /* Every one of these comes from the kernel.  Nothing a client can
@@ -10768,7 +10951,7 @@ osmgaProbeVramExtent(unsigned long fbPhysical, unsigned long visibleEnd,
     batch = (OSMGAHW3DBatch *)osmgaMmapCmdVirt;
     list = (unsigned long *)((char *)osmgaMmapCmdVirt +
                              OSMGA_HW3D_RING_OFFSET);
-    listDwords = (OSMGA_DMA_RING_BYTES - OSMGA_HW3D_RING_OFFSET) / 4UL;
+    listDwords = OSMGA_HW3D_LIST_BYTES / 4UL;
     listPhys = osmgaMmapCmdPhysical + OSMGA_HW3D_RING_OFFSET;
 
     r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_S1_VRAM_BLOCK,
@@ -11148,7 +11331,7 @@ osmgaM1cTri(OSMGAHW3DTri *t, unsigned long y, unsigned long h,
     batch = (OSMGAHW3DBatch *)osmgaMmapCmdVirt;
     list = (unsigned long *)((char *)osmgaMmapCmdVirt +
                              OSMGA_HW3D_RING_OFFSET);
-    listDwords = (OSMGA_DMA_RING_BYTES - OSMGA_HW3D_RING_OFFSET) / 4UL;
+    listDwords = OSMGA_HW3D_LIST_BYTES / 4UL;
     listPhys = osmgaMmapCmdPhysical + OSMGA_HW3D_RING_OFFSET;
 
     r = osmgaMapUncachedBlock(frameBufferPhysical, lo, hi, &aWin, &lWin, &win);
