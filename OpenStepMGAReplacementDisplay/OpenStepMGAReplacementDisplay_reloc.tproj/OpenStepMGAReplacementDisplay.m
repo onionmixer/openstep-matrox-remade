@@ -8358,6 +8358,49 @@ osmgaF32FromUInt(unsigned long n)
 }
 
 /*
+ * TEXWIDTH/TEXHEIGHT for WARP.  NOT the trapezoid path's encoding.
+ *
+ * osmgaTextureSetup builds those words as ((dim-1)<<18) | ((8-log2)<<9) |
+ * log2, which is hardware-verified -- for the CPU-fed coordinate matrix.
+ * Mesa builds a different pair under a comment reading "warp texture
+ * registers" (mgatex.c:395):
+ *
+ *      ofs  = G200 ? 28 : 11
+ *      rfw  = (10 - log2 - 8) & 63          i.e. (2 - log2)
+ *      tw   = (log2 + ofs) | 0x40
+ *
+ * For an 8x8 texture that is rfw 63 against 5 and tw 14 against 3 -- both
+ * fields differ, so copying the trapezoid words across would have fed
+ * WARP nonsense.  Spec 3-228 gives the reason: tw and rfw depend on the
+ * fractional format of whatever produces the coordinate, and for WARP
+ * that is not the CPU.
+ */
+#define OSMGA_M3_WARP_TEX_OFS   11UL      /* G400/G450; the G200 value is 28 */
+
+static unsigned long
+osmgaM3WarpTexDim(unsigned long dim, unsigned long log2dim)
+{
+    return ((dim - 1UL) << 18)
+         | ((((10UL - log2dim - 8UL)) & 63UL) << 9)
+         | ((((log2dim + OSMGA_M3_WARP_TEX_OFS) | 0x40UL)) & 63UL);
+}
+
+/*
+ * What a batch says about its texture.  `enable` zero keeps the all-zero
+ * block the depth tests use, which is what makes T0..T2 unaffected by any
+ * of this: with texwidth zero, WR54 is 0 | WR_MAGIC, exactly the constant
+ * that was there before.
+ */
+typedef struct {
+    unsigned long enable;
+    unsigned long org;        /* TEXORG, byte offset into VRAM */
+    unsigned long dim;        /* square, texels */
+    unsigned long log2dim;
+    unsigned long pitch;      /* texels per row, >= dim */
+    unsigned long filter;     /* TEXFILTER, built by the caller */
+} OSMGAM3Tex;
+
+/*
  * Assemble the run-1 list: mga_g400_emit_state's order exactly -- pipe,
  * then context, then texture -- followed by the global initialisation
  * spec 4-30 requires of every operation, then the clip.
@@ -8385,11 +8428,28 @@ osmgaDmaBuildTriangleList(unsigned long *ring, unsigned long ringDwords,
                           unsigned long clipBotPixel,
                           unsigned long dwgctl,
                           unsigned long dstorg, unsigned long zorg,
+                          const OSMGAM3Tex *tex,
                           unsigned long *outTailDwords,
                           unsigned long *outTotalDwords)
 {
     unsigned long pos = 0UL;
+    unsigned long texW = 0UL, texH = 0UL, texctl = 0UL, texctl2, texfil = 0UL;
+    unsigned long texorg = 0UL;
     int ok = 1;
+
+    texctl2 = MGA_TEXCTL2_G400_MAGIC;
+    if (tex != 0 && tex->enable != 0UL) {
+        texW = osmgaM3WarpTexDim(tex->dim, tex->log2dim);
+        texH = texW;                       /* square in this harness */
+        texorg = tex->org;
+        /* NOPERSP is deliberately absent: the trapezoid path sets it
+         * because it feeds affine planes, and the reference WARP path does
+         * not set it either (mgatex.c:373 builds texctl without bit 21). */
+        texctl = MGA_TEXCTL_PITCHLIN | ((tex->pitch & 2047UL) << 9)
+               | MGA_TEXCTL_TAKEY | MGA_TEXCTL_CLAMPUV | MGA_TEXCTL_TW32;
+        texctl2 |= MGA_TEXCTL2_CKSTRANSDIS;
+        texfil = tex->filter;
+    }
 
     /* ---- mga_g400_emit_pipe, single-texture branch ---- */
     ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
@@ -8447,10 +8507,20 @@ osmgaDmaBuildTriangleList(unsigned long *ring, unsigned long ringDwords,
     /* WFLAG = 0 leaves walucfgflag bit 11 (U, enable culling) clear, so no
      * winding order can silently discard this triangle. */
     /*
-     * Spec 4-42, and again at 4-25: "When drawing Gouraud shaded
-     * trapezoids, TDUALSTAGE0 and TDUALSTAGE1 must be programmed to '0'
-     * except for TDUALSTAGE0.color0sel = '11' and TDUALSTAGE1.color1sel =
-     * '11'.  This has no effect on the result."  color_sel is bits 21:22
+     * Spec 4-42 asks for color0sel = '11' -- but that section is opcode
+     * TRAP, and TEXTURE_TRAP is the next one, 4-43, whose rule is instead
+     * that stage 1 match stage 0.  So the value depends on the opcode.
+     *
+     * And these are not two serial stages.  M1_4C8_BILINEAR.md measured
+     * it: stage 0 drives EVEN screen columns and stage 1 ODD ones, found
+     * by changing one and watching the odd columns keep the old texture.
+     * Whatever value is chosen, both must get it.
+     *
+     * Original note, still true for the untextured case:
+     * "When drawing Gouraud shaded trapezoids, TDUALSTAGE0 and
+     * TDUALSTAGE1 must be programmed to '0' except for
+     * TDUALSTAGE0.color0sel = '11' and TDUALSTAGE1.color1sel = '11'.
+     * This has no effect on the result."  color_sel is bits 21:22
      * in both registers -- Mesa proves the layouts are identical by
      * assigning tdualstage1 = tdualstage0 outright (mgatex.c:751).
      *
@@ -8462,8 +8532,12 @@ osmgaDmaBuildTriangleList(unsigned long *ring, unsigned long ringDwords,
      */
     ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
                              MGA_WFLAG1,      0UL,
-                             MGA_TDUALSTAGE0, MGA_TDS_COLOR_SEL_MUL,
-                             MGA_TDUALSTAGE1, MGA_TDS_COLOR_SEL_MUL,
+                             MGA_TDUALSTAGE0,
+                                 (tex != 0 && tex->enable != 0UL)
+                                     ? 0UL : MGA_TDS_COLOR_SEL_MUL,
+                             MGA_TDUALSTAGE1,
+                                 (tex != 0 && tex->enable != 0UL)
+                                     ? 0UL : MGA_TDS_COLOR_SEL_MUL,
                              MGA_FCOL,        0UL);
     ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
                              MGA_STENCIL,    0UL,
@@ -8472,25 +8546,29 @@ osmgaDmaBuildTriangleList(unsigned long *ring, unsigned long ringDwords,
 
     /* ---- mga_g400_emit_tex0, everything zero ---- */
     ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
-                             MGA_TEXCTL2,      MGA_TEXCTL2_G400_MAGIC,
-                             MGA_TEXCTL,       0UL,
-                             MGA_TEXFILTER,    0UL,
+                             MGA_TEXCTL2,      texctl2,
+                             MGA_TEXCTL,       texctl,
+                             MGA_TEXFILTER,    texfil,
                              MGA_TEXBORDERCOL, 0UL);
     ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
-                             MGA_TEXORG,  0UL, MGA_TEXORG1, 0UL,
-                             MGA_TEXORG2, 0UL, MGA_TEXORG3, 0UL);
+                             MGA_TEXORG,  texorg, MGA_TEXORG1, 0UL,
+                             MGA_TEXORG2, 0UL,    MGA_TEXORG3, 0UL);
     ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
                              MGA_TEXORG4,   0UL,
-                             MGA_TEXWIDTH,  0UL,
-                             MGA_TEXHEIGHT, 0UL,
+                             MGA_TEXWIDTH,  texW,
+                             MGA_TEXHEIGHT, texH,
                              MGA_WR49,      0UL);
     ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
                              MGA_WR57, 0UL, MGA_WR53, 0UL,
                              MGA_WR61, 0UL, MGA_WR52, MGA_G400_WR_MAGIC);
+    /* WR54 and WR62 carry the SAME encoded words, ORed with the magic --
+     * mga_state.c:179.  With no texture texW is zero and this reduces to
+     * the bare magic that was here before, which is why the depth tests
+     * are untouched by any of this. */
     ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
                              MGA_WR60, MGA_G400_WR_MAGIC,
-                             MGA_WR54, MGA_G400_WR_MAGIC,
-                             MGA_WR62, MGA_G400_WR_MAGIC,
+                             MGA_WR54, texW | MGA_G400_WR_MAGIC,
+                             MGA_WR62, texH | MGA_G400_WR_MAGIC,
                              MGA_DMAPAD, 0UL);
     ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
                              MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
@@ -9181,6 +9259,7 @@ osmgaM3StateRun(vm_address_t base, unsigned long *ring,
                                    OSMGA_M3_CLIP_LO * stride,
                                    OSMGA_M3_CLIP_HI * stride,
                                    dwgctl, dstorg, zorg,
+                                   (const OSMGAM3Tex *)0,
                                    &tailDwords, &totalDwords))
         return 0;
     listEnd = (unsigned long)ringPhys + tailDwords * 4UL;
@@ -9479,6 +9558,7 @@ osmgaM3OracleTri(vm_address_t base, unsigned long stride,
                                    (testY + OSMGA_D2C_CLIP_LO) * stride,
                                    (testY + OSMGA_D2C_CLIP_HI) * stride,
                                    dwgctl, 0UL, 0UL,
+                                   (const OSMGAM3Tex *)0,
                                    &tailDwords, &totalDwords)) {
         IOLog("OpenStepMGA D2-2c: FAIL -- run 1 list rejected\n");
         osmgaD2Settle();
