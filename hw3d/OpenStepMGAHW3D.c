@@ -339,6 +339,45 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
 }
 
 /*
+ * What one primitive asks the engine to DO -- its opcode, its access type
+ * and its alpha control.
+ *
+ * Judged once for both contracts, because both hand these two words to the
+ * same registers: version 9 carries them per trapezoid and version 10 per
+ * run, and a rule written twice is a rule that drifts.
+ *
+ * zmode is deliberately not checked: every value of it only decides
+ * whether a pixel is written, never where.
+ */
+int
+osmgaHW3DValidatePrimState(unsigned long dwgctl, unsigned long alphactrl)
+{
+    unsigned long opcode = dwgctl & 0xFUL;
+    unsigned long atype  = (dwgctl >> 4) & 0x7UL;
+    unsigned long ac     = alphactrl & OSMGA_HW3D_AC_CLIENT;
+
+    if ((opcode != OSMGA_HW3D_OPCODE_TRAP &&
+         opcode != OSMGA_HW3D_OPCODE_TEX) ||
+        (atype != OSMGA_HW3D_ATYPE_I && atype != OSMGA_HW3D_ATYPE_ZI))
+        return OSMGA_HW3D_E_DWGCTL;
+
+    /* Encodings the register documentation never names.  None of them
+     * moves a write, but a field whose meaning is unknown is not something
+     * to hand to a client. */
+    if ((ac & 0xFUL) > OSMGA_HW3D_AC_SRC_MAX ||
+        ((ac >> 4) & 0xFUL) > OSMGA_HW3D_AC_DST_MAX ||
+        ((ac >> 8) & 0x3UL) == 0x3UL ||          /* amode RSVD */
+        ((ac >> 13) & 0x7UL) == 0x1UL)           /* atmode has no macro */
+        return OSMGA_HW3D_E_ALPHA;
+    /* Fields apart, the combination.  Its own verdict: reusing E_ALPHA
+     * would hide one behind the other, because the driver logs a verdict
+     * number once and never again. */
+    if (!osmgaHW3DAlphaCross(ac))
+        return OSMGA_HW3D_E_ALPHACROSS;
+    return OSMGA_HW3D_OK;
+}
+
+/*
  * The batch state, judged once for both contracts.
  *
  * The trapezoid path and the WARP path program the SAME registers from the
@@ -508,7 +547,7 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                        unsigned long *badTri, OSMGAHW3DTexReach *reach,
                        OSMGAHW3DTexBand *bands)
 {
-    unsigned long i, rows, opcode, atype;
+    unsigned long i, rows, opcode;
     int anyDepth, anyTex;
     /*
      * How far a texture coordinate actually travels in this batch.
@@ -636,33 +675,15 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
         if (badTri != 0)
             *badTri = i;
 
-        /* The mask has already removed everything outside opcode, atype
-         * and zmode; what is left is to reject values those fields do not
-         * define.  zmode is not checked: every value only decides whether
-         * a pixel is written, never where. */
-        opcode = t->dwgctl & 0xFUL;
-        atype  = (t->dwgctl >> 4) & 0x7UL;
-        if ((opcode != OSMGA_HW3D_OPCODE_TRAP &&
-             opcode != OSMGA_HW3D_OPCODE_TEX) ||
-            (atype != OSMGA_HW3D_ATYPE_I && atype != OSMGA_HW3D_ATYPE_ZI))
-            return OSMGA_HW3D_E_DWGCTL;
+        {
+            int pv = osmgaHW3DValidatePrimState(t->dwgctl, t->alphactrl);
 
-        {   /* Encodings the register documentation never names.  None of
-             * them moves a write, but a field whose meaning is unknown is
-             * not something to hand to a client. */
-            unsigned long ac = t->alphactrl & OSMGA_HW3D_AC_CLIENT;
-
-            if ((ac & 0xFUL) > OSMGA_HW3D_AC_SRC_MAX ||
-                ((ac >> 4) & 0xFUL) > OSMGA_HW3D_AC_DST_MAX ||
-                ((ac >> 8) & 0x3UL) == 0x3UL ||          /* amode RSVD */
-                ((ac >> 13) & 0x7UL) == 0x1UL)           /* atmode has no macro */
-                return OSMGA_HW3D_E_ALPHA;
-            /* Fields apart, the combination.  Its own verdict: reusing
-             * E_ALPHA would hide one behind the other, because the driver
-             * logs a verdict number once and never again. */
-            if (!osmgaHW3DAlphaCross(ac))
-                return OSMGA_HW3D_E_ALPHACROSS;
+            if (pv != OSMGA_HW3D_OK)
+                return pv;
         }
+        /* Read again here, after the rule above has admitted it: the reach
+         * checks below need to know whether this primitive is textured. */
+        opcode = t->dwgctl & 0xFUL;
 
         if (t->y < 0L || t->h <= 0L)
             return OSMGA_HW3D_E_TRIROW;
@@ -1433,18 +1454,28 @@ osmgaHW3DWarpAdmits(const OSMGAHW3DState *st, const OSMGAHW3DRun *run)
     if (st == 0 || run == 0)
         return OSMGA_HW3D_E_WARPPOLICY;
 
-    /* T7 has not run.  CLAMPUV is what M4's T5 measured, on both filters. */
-    if ((st->texFlags & (OSMGA_HW3D_TEXF_REPEATU |
-                         OSMGA_HW3D_TEXF_REPEATV)) != 0UL)
-        return OSMGA_HW3D_E_WARPPOLICY;
-
-    /* T8 has not run.  ALPHACTRL is admitted only at the value that does
-     * not blend -- src ONE, dst ZERO, both alpha tests off -- which is the
-     * state every WARP band so far has drawn under. */
-    if (run->alphactrl != (osmga_u32)0x00000101UL &&
-        run->alphactrl != (osmga_u32)0x00000001UL)
-        return OSMGA_HW3D_E_WARPPOLICY;
-
+    /*
+     * Repeat and blending were refused here until the hardware answered.
+     * Both are admitted now, and the measurements are why:
+     *
+     *   T7   repeat wraps per axis at one texel a pixel -- one phase of
+     *        four fails on each axis, and that phase is the texel boundary
+     *        T3 had already characterised
+     *   T7e  the seams read 127 and 128, never 0 or 255, so the
+     *        neighbouring tap wrapped rather than clamping
+     *   T8b  the blend matches ((c*a + d*(255-a)) + 127) / 255 in all four
+     *        channels including alpha, on every covered pixel
+     *
+     * What is NOT admitted by those results stays out: repeat still
+     * requires a power-of-two dimension and a pitch equal to the width,
+     * which osmgaHW3DTexClampAxes enforces by simply not clearing the
+     * clamp bit -- so a client asking for repeat on a padded map gets a
+     * clamped map rather than a refusal, and that is the safe direction.
+     *
+     * The function stays because it is where the next limit goes, and
+     * because a reader asking "why did that primitive go the slow way"
+     * should have one place to look.
+     */
     return OSMGA_HW3D_OK;
 }
 
@@ -1505,6 +1536,12 @@ osmgaHW3DValidateWarp(const OSMGAHW3DWarpBatch *b,
             return OSMGA_HW3D_E_VTXCOUNT;
         seen = first + count;
 
+        /* What the run asks the engine to do, by the same rule version 9
+         * applies to each trapezoid. */
+        policy = osmgaHW3DValidatePrimState((unsigned long)run->dwgctl,
+                                            (unsigned long)run->alphactrl);
+        if (policy != OSMGA_HW3D_OK)
+            return policy;
         policy = osmgaHW3DWarpAdmits(&b->state, run);
         if (policy != OSMGA_HW3D_OK)
             return policy;
@@ -1719,4 +1756,26 @@ osmgaHW3DTexDualStage(unsigned long texFlags, int textured)
     else
         tds |= OSMGA_HW3D_TDS_ALPHA_ARG2;
     return tds;
+}
+
+int
+osmgaHW3DDestFits(unsigned long dstorg, unsigned long w, unsigned long h,
+                  unsigned long pitch, unsigned long winStart,
+                  unsigned long winEnd)
+{
+    unsigned long avail;
+
+    if (w == 0UL || h == 0UL || pitch == 0UL)
+        return OSMGA_HW3D_E_DSTSIZE;
+    if (winStart >= winEnd)
+        return OSMGA_HW3D_E_DSTORG;
+    if (dstorg < winStart || dstorg >= winEnd)
+        return OSMGA_HW3D_E_DSTORG;
+
+    avail = winEnd - dstorg;
+    if (w * 4UL > avail)
+        return OSMGA_HW3D_E_DSTSIZE;
+    if (h - 1UL > (avail - w * 4UL) / (pitch * 4UL))
+        return OSMGA_HW3D_E_DSTSIZE;
+    return OSMGA_HW3D_OK;
 }

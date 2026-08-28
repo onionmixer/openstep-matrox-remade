@@ -25,9 +25,23 @@
  *
  * `tex` may be null, and then the texture coordinates come out as nought
  * and are not examined.
+ *
+ * `zoffset` is glPolygonOffset's shift IN DEPTH CODES, which is what the
+ * hook computes from Mesa's own expression.  It is a required argument and
+ * not an optional one: the trapezoid builder takes it the same way, and a
+ * builder that silently drew every offset triangle unoffset is a mistake
+ * this back end has already made once and measured (16384 in the depth
+ * buffer where software left 17408).
+ *
+ * A shifted vertex that leaves [0,1] is REFUSED, not clamped.  The
+ * trapezoid path says why: out there Mesa keeps a 32-bit depth and this
+ * path saturates into 0..65535, so clamping would draw something neither
+ * path draws.  The plane is linear, so its extremes over the triangle are
+ * at the three vertices -- refusing per vertex is refusing the plane.
  */
 int OSMGAMesaBuildWarpVertex(const OSMGAMesaVertex *v,
                              const OSMGAMesaTex *tex,
+                             double zoffset,
                              OSMGAHW3DVertex *out);
 
 /*

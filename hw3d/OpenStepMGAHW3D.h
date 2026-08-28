@@ -950,6 +950,13 @@ int osmgaHW3DValidateWarp(const OSMGAHW3DWarpBatch *b,
 int osmgaHW3DWarpAdmits(const OSMGAHW3DState *st, const OSMGAHW3DRun *run);
 
 /*
+ * One primitive's opcode, access type and alpha control.  Both contracts
+ * hand these to the same registers -- version 9 per trapezoid, version 10
+ * per run -- so the rule lives in one place.
+ */
+int osmgaHW3DValidatePrimState(unsigned long dwgctl, unsigned long alphactrl);
+
+/*
  * The batch is a shared layout, so a change that made it outgrow its half of
  * the ring, or that changed the word size, has to fail the build rather than
  * be discovered at run time.  A negative array size is the C89 way to say so.
@@ -1591,3 +1598,27 @@ unsigned long osmgaHW3DTexDualStage(unsigned long texFlags, int textured);
 #define OSMGA_HW3D_TEXFILTER_FTHRES1 (0x10UL << 21)   /* a step of one */
 #define OSMGA_HW3D_TEXFILTER_MAGBILIN 0x20UL
 #define OSMGA_HW3D_TEXFILTER_MINBILIN 0x02UL
+
+/*
+ * Does the destination the batch declared fit the window the driver owns?
+ *
+ * The last byte the engine can touch is
+ *
+ *      dstorg + (h-1) * pitch * 4 + w * 4 - 1
+ *
+ * and this compares it WITHOUT forming the product, because a height a
+ * caller may legitimately ask for overflows a 32-bit multiply long before
+ * it stops being plausible -- and a check that overflows is not a check.
+ *
+ * It lives here because both contracts declare the same destination and
+ * program the same registers from it.  The version 9 submit path had it
+ * inline; drafting the version 10 path skipped it, which would have
+ * admitted a batch whose declared destination runs past the window --
+ * the containment argument leaving by the back door behind a well formed
+ * vertex array.
+ *
+ * Returns one of OSMGA_HW3D_OK, E_DSTSIZE, E_DSTORG.
+ */
+int osmgaHW3DDestFits(unsigned long dstorg, unsigned long w,
+                      unsigned long h, unsigned long pitch,
+                      unsigned long winStart, unsigned long winEnd);

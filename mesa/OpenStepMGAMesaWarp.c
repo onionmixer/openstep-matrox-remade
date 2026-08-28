@@ -23,6 +23,7 @@ f32bits(double d, osmga_u32 *out)
 int
 OSMGAMesaBuildWarpVertex(const OSMGAMesaVertex *v,
                          const OSMGAMesaTex *tex,
+                         double zoffset,
                          OSMGAHW3DVertex *out)
 {
     osmga_u32 w;
@@ -49,8 +50,18 @@ OSMGAMesaBuildWarpVertex(const OSMGAMesaVertex *v,
     if (!osmgaHW3DF32AbsAtMost((unsigned long)w, OSMGA_HW3D_F32_COORD))
         return OSMGA_MESA_TRI_UNSUPPORTED;
 
-    /* Depth.  See the header: measured, not the reference's constant. */
-    if (!f32bits((double)v->z / OSMGA_MESA_WARP_ZSCALE, &w))
+    /*
+     * Depth, with glPolygonOffset folded in.  See the header: the scale is
+     * measured rather than the reference's, and the offset arrives in
+     * depth CODES while v->z is in 256ths of one, so it is multiplied by
+     * 256 before the shared scale.
+     *
+     * The range check below is the refusal the trapezoid path makes: a
+     * shifted plane that leaves [0,1] goes to software rather than being
+     * clamped into a picture neither path draws.
+     */
+    if (!f32bits(((double)v->z + zoffset * 256.0) / OSMGA_MESA_WARP_ZSCALE,
+                 &w))
         return OSMGA_MESA_TRI_UNSUPPORTED;
     out->z = w;
     if (!osmgaHW3DF32InUnit((unsigned long)w))

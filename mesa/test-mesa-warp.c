@@ -84,7 +84,7 @@ table(void)
 
     for (i = 0; i < n; i++) {
         fill(i);
-        if (OSMGAMesaBuildWarpVertex(&mv, &mt, &out) != 0) {
+        if (OSMGAMesaBuildWarpVertex(&mv, &mt, 0.0, &out) != 0) {
             printf("FAIL: case %d was refused\n", i);
             failures++;
             continue;
@@ -128,7 +128,7 @@ depthRange(void)
         fill(0);
         mv.z = code * 256UL;
         if (OSMGAMesaBuildWarpVertex(&mv, (const OSMGAMesaTex *)0,
-                                     &out) != 0) {
+                                     0.0, &out) != 0) {
             wrong++;
             continue;
         }
@@ -148,44 +148,44 @@ refusals(void)
     OSMGAHW3DVertex out;
 
     fill(0); mv.x = 8193L * 256L;
-    check(OSMGAMesaBuildWarpVertex(&mv, &mt, &out) ==
+    check(OSMGAMesaBuildWarpVertex(&mv, &mt, 0.0, &out) ==
           OSMGA_MESA_TRI_UNSUPPORTED,
           "a coordinate past the bound is refused", 0UL, 0UL);
     fill(0); mv.y = -8193L * 256L;
-    check(OSMGAMesaBuildWarpVertex(&mv, &mt, &out) ==
+    check(OSMGAMesaBuildWarpVertex(&mv, &mt, 0.0, &out) ==
           OSMGA_MESA_TRI_UNSUPPORTED,
           "the bound is symmetric", 0UL, 0UL);
     fill(0); mv.qw = 0.0;
-    check(OSMGAMesaBuildWarpVertex(&mv, &mt, &out) ==
+    check(OSMGAMesaBuildWarpVertex(&mv, &mt, 0.0, &out) ==
           OSMGA_MESA_TRI_UNSUPPORTED,
           "a zero weight is refused", 0UL, 0UL);
     fill(0); mv.qw = -1.0;
-    check(OSMGAMesaBuildWarpVertex(&mv, &mt, &out) ==
+    check(OSMGAMesaBuildWarpVertex(&mv, &mt, 0.0, &out) ==
           OSMGA_MESA_TRI_UNSUPPORTED,
           "a negative weight is refused", 0UL, 0UL);
     fill(0); mv.tq = 0.0;
-    check(OSMGAMesaBuildWarpVertex(&mv, &mt, &out) ==
+    check(OSMGAMesaBuildWarpVertex(&mv, &mt, 0.0, &out) ==
           OSMGA_MESA_TRI_UNSUPPORTED,
           "a zero texture divisor is refused", 0UL, 0UL);
     fill(0); mv.qw = 1.0; mv.tq = 1024.0;
-    check(OSMGAMesaBuildWarpVertex(&mv, &mt, &out) ==
+    check(OSMGAMesaBuildWarpVertex(&mv, &mt, 0.0, &out) ==
           OSMGA_MESA_TRI_UNSUPPORTED,
           "a weight past the converted Q ceiling is refused", 0UL, 0UL);
     fill(0); mv.qw = 0.001; mv.tq = 1.0;
-    check(OSMGAMesaBuildWarpVertex(&mv, &mt, &out) ==
+    check(OSMGAMesaBuildWarpVertex(&mv, &mt, 0.0, &out) ==
           OSMGA_MESA_TRI_UNSUPPORTED,
           "a weight below the converted Q floor is refused", 0UL, 0UL);
     /* z cannot leave [0,1] by construction, but the check has to be there
      * for the day the vertex changes scale. */
     fill(0); mv.z = 65536UL * 256UL * 2UL;
-    check(OSMGAMesaBuildWarpVertex(&mv, &mt, &out) ==
+    check(OSMGAMesaBuildWarpVertex(&mv, &mt, 0.0, &out) ==
           OSMGA_MESA_TRI_UNSUPPORTED,
           "a depth past the buffer's range is refused", 0UL, 0UL);
 
     /* And a vertex with no texture leaves the coordinates alone rather
      * than dividing by a divisor nobody set. */
     fill(1);
-    check(OSMGAMesaBuildWarpVertex(&mv, (const OSMGAMesaTex *)0, &out) == 0,
+    check(OSMGAMesaBuildWarpVertex(&mv, (const OSMGAMesaTex *)0, 0.0, &out) == 0,
           "an untextured vertex is built", 0UL, 0UL);
     check((unsigned long)out.tu0 == 0UL && (unsigned long)out.tv0 == 0UL,
           "an untextured vertex carries no texture coordinates",
@@ -259,7 +259,7 @@ assemble(void)
     int r;
 
     fill(1);
-    if (OSMGAMesaBuildWarpVertex(&mv, &mt, &v) != 0) {
+    if (OSMGAMesaBuildWarpVertex(&mv, &mt, 0.0, &v) != 0) {
         printf("FAIL: the assembler's own vertex was refused\n");
         failures++;
         return;
@@ -283,7 +283,12 @@ assemble(void)
     OSMGAMesaWarpReset(&wbuild, &wb);
     stateUp();
     for (i = 0UL; i < OSMGA_HW3D_MAX_RUN; i++) {
-        r = OSMGAMesaWarpAdd(&wbuild, 0x000c4074UL + (i & 1UL),
+        /* Two states that are both LEGAL -- TRAP with atype I and TRAP
+         * with atype ZI.  Adding one to the word made opcode 5, which the
+         * primitive rule now refuses, and the assembler's batches stopped
+         * validating: the fixture was wrong, not the assembler. */
+        r = OSMGAMesaWarpAdd(&wbuild,
+                             ((i & 1UL) != 0UL) ? 0x000c4034UL : 0x000c4074UL,
                              0x00000001UL, &v, &v, &v);
         check(r == 0, "an alternating triangle is taken",
               (unsigned long)r, 0UL);
@@ -294,7 +299,7 @@ assemble(void)
     accepted("alternating runs");
 
     /* One more state change has nowhere to go, and the batch is unharmed. */
-    r = OSMGAMesaWarpAdd(&wbuild, 0x000c4099UL, 0x00000001UL, &v, &v, &v);
+    r = OSMGAMesaWarpAdd(&wbuild, 0x000c4076UL, 0x00000001UL, &v, &v, &v);
     check(r == OSMGA_MESA_WARP_FULL, "a run past the maximum is refused",
           (unsigned long)r, (unsigned long)OSMGA_MESA_WARP_FULL);
     check((unsigned long)wb.runCount == OSMGA_HW3D_MAX_RUN,
@@ -303,7 +308,7 @@ assemble(void)
     accepted("after a refused run");
 
     /* But the SAME state still fits, because it needs no new run. */
-    r = OSMGAMesaWarpAdd(&wbuild, 0x000c4074UL + 1UL, 0x00000001UL,
+    r = OSMGAMesaWarpAdd(&wbuild, 0x000c4034UL, 0x00000001UL,
                          &v, &v, &v);
     check(r == 0, "the open run still takes triangles",
           (unsigned long)r, 0UL);
@@ -337,17 +342,73 @@ assemble(void)
           "an empty batch is not a submission", 0UL, 0UL);
 }
 
+/*
+ * glPolygonOffset, which the builder used not to take at all.
+ *
+ * The offset arrives in depth CODES and v->z is in 256ths of one, so it is
+ * multiplied by 256 before the shared scale.  A shifted vertex outside
+ * [0,1] is REFUSED rather than clamped, which is what the trapezoid
+ * builder does: clamping would draw something neither path draws.
+ *
+ * Expected patterns from python, not from re-writing the expression here.
+ */
+static void
+offsets(void)
+{
+    OSMGAHW3DVertex out;
+
+    fill(0); mv.z = 32768UL * 256UL;
+    check(OSMGAMesaBuildWarpVertex(&mv, &mt, 100.0, &out) == 0 &&
+          (unsigned long)out.z == 0x3F006400UL,
+          "a positive offset shifts the depth", (unsigned long)out.z,
+          0x3F006400UL);
+
+    fill(0); mv.z = 32768UL * 256UL;
+    check(OSMGAMesaBuildWarpVertex(&mv, &mt, -100.0, &out) == 0 &&
+          (unsigned long)out.z == 0x3EFF3800UL,
+          "a negative offset shifts the other way", (unsigned long)out.z,
+          0x3EFF3800UL);
+
+    fill(0); mv.z = 32768UL * 256UL;
+    check(OSMGAMesaBuildWarpVertex(&mv, &mt, 0.0, &out) == 0 &&
+          (unsigned long)out.z == 0x3F000000UL,
+          "no offset leaves the depth alone", (unsigned long)out.z,
+          0x3F000000UL);
+
+    /* Off the bottom: refused, not clamped to nought. */
+    fill(0); mv.z = 0UL;
+    check(OSMGAMesaBuildWarpVertex(&mv, &mt, -1.0, &out) ==
+          OSMGA_MESA_TRI_UNSUPPORTED,
+          "an offset below the buffer is refused", 0UL, 0UL);
+
+    /* Off the top: the largest code plus two is past one. */
+    fill(0); mv.z = 65535UL * 256UL;
+    check(OSMGAMesaBuildWarpVertex(&mv, &mt, 2.0, &out) ==
+          OSMGA_MESA_TRI_UNSUPPORTED,
+          "an offset above the buffer is refused", 0UL, 0UL);
+
+    /* And exactly at the top is admitted: T4c measured that z = 1
+     * saturates to 65535 rather than wrapping. */
+    fill(0); mv.z = 65535UL * 256UL;
+    check(OSMGAMesaBuildWarpVertex(&mv, &mt, 1.0, &out) == 0 &&
+          (unsigned long)out.z == 0x3F800000UL,
+          "an offset landing exactly on one is admitted",
+          (unsigned long)out.z, 0x3F800000UL);
+}
+
 int
 main(void)
 {
     table();
     depthRange();
     refusals();
+    offsets();
     assemble();
 
     if (failures == 0)
         printf("test-mesa-warp: the vertex conversion matches an independent "
-               "table, all 65536 depth codes round trip, and every assembled "
+               "table, all 65536 depth codes round trip, polygon offset shifts "
+               "and refuses, and every assembled "
                "batch is accepted by the kernel validator (0 failing)\n");
     else
         printf("test-mesa-warp: %d failing\n", failures);

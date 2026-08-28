@@ -6337,7 +6337,7 @@ refuse2:
      * garbage. */
     unsigned long stride3, total3, tail3, listPhys3, status3;
     unsigned long spins3 = OSMGA_S1_SPIN_LIMIT;
-    unsigned long epoch3, dstW3, dstH3, dstP3, avail3, settle3;
+    unsigned long epoch3, dstW3, dstH3, dstP3, settle3;
     int anyDepth3 = 0, overlap3 = 0;
     unsigned long *list3, listDwords3, badTri3 = 0UL;
     unsigned long delay3, limit3;
@@ -6540,35 +6540,25 @@ refuse2:
         simple_unlock(&stormLock);
         return IO_R_INVALID_ARG;
     }
-    if (dstW3 == 0UL || dstH3 == 0UL) {
-        osmgaHW3DLast[0] = (unsigned)OSMGA_HW3D_E_DSTSIZE;
-        simple_lock(&stormLock);
-        stormBusy = NO;
-        simple_unlock(&stormLock);
-        return IO_R_INVALID_ARG;
-    }
-    if (osmgaHW3DSnapshot.state.dstorg < osmgaMmapWindowStart ||
-        osmgaHW3DSnapshot.state.dstorg >= osmgaMmapWindowEnd) {
-        osmgaHW3DLast[0] = (unsigned)OSMGA_HW3D_E_DSTORG;
-        simple_lock(&stormLock);
-        stormBusy = NO;
-        simple_unlock(&stormLock);
-        return IO_R_INVALID_ARG;
-    }
     /*
-     * The last byte the engine can touch is dstorg + (h-1)*pitch*4 + w*4 - 1.
-     * Compared without forming the product, because a height a caller may
-     * legitimately ask for overflows a 32-bit multiply long before it stops
-     * being plausible, and a check that overflows is not a check.
+     * Moved to osmgaHW3DDestFits, in the portable layer, because the
+     * version 10 path declares the same destination and must be bounded
+     * the same way -- drafting it without this check would have admitted a
+     * batch whose destination runs past the window.  The arithmetic is
+     * unchanged, including comparing without forming the product.
      */
-    avail3 = osmgaMmapWindowEnd - osmgaHW3DSnapshot.state.dstorg;
-    if (dstW3 * 4UL > avail3 ||
-        dstH3 - 1UL > (avail3 - dstW3 * 4UL) / (dstP3 * 4UL)) {
-        osmgaHW3DLast[0] = (unsigned)OSMGA_HW3D_E_DSTSIZE;
-        simple_lock(&stormLock);
-        stormBusy = NO;
-        simple_unlock(&stormLock);
-        return IO_R_INVALID_ARG;
+    {
+        int dv = osmgaHW3DDestFits(osmgaHW3DSnapshot.state.dstorg,
+                                   dstW3, dstH3, dstP3,
+                                   osmgaMmapWindowStart, osmgaMmapWindowEnd);
+
+        if (dv != OSMGA_HW3D_OK) {
+            osmgaHW3DLast[0] = (unsigned)dv;
+            simple_lock(&stormLock);
+            stormBusy = NO;
+            simple_unlock(&stormLock);
+            return IO_R_INVALID_ARG;
+        }
     }
     lim.pitchBytes = dstP3 * 4UL;
     lim.clipX1 = dstW3 - 1UL;
@@ -8582,8 +8572,16 @@ osmgaF32FromUInt(unsigned long n)
 typedef struct {
     unsigned long enable;
     unsigned long org;        /* TEXORG, byte offset into VRAM */
-    unsigned long dim;        /* square, texels */
+    unsigned long dim;        /* width, texels */
     unsigned long log2dim;
+    /*
+     * Height, separately.  The harness only ever used square maps and this
+     * struct said "square" for it, so the list builder wrote texH = texW --
+     * which would have silently squared every production texture that is
+     * not square.  Set both, always; the harness sets them equal.
+     */
+    unsigned long dimH;
+    unsigned long log2dimH;
     unsigned long pitch;      /* texels per row, >= dim */
     unsigned long filter;     /* TEXFILTER, built by the caller */
     /*
@@ -8643,7 +8641,7 @@ osmgaDmaBuildTriangleList(unsigned long *ring, unsigned long ringDwords,
     texctl2 = MGA_TEXCTL2_G400_MAGIC;
     if (tex != 0 && tex->enable != 0UL) {
         texW = osmgaHW3DWarpTexDim(tex->dim, tex->log2dim);
-        texH = texW;                       /* square in this harness */
+        texH = osmgaHW3DWarpTexDim(tex->dimH, tex->log2dimH);
         texorg = tex->org;
         /* NOPERSP is deliberately absent: the trapezoid path sets it
          * because it feeds affine planes, and the reference WARP path does
@@ -11675,6 +11673,8 @@ releaseAndReturn:
         m3tex.org     = OSMGA_M3_TEXORG;
         m3tex.dim     = OSMGA_M3_TEXDIM;
         m3tex.log2dim = OSMGA_M3_TEXLOG2;
+        m3tex.dimH    = OSMGA_M3_TEXDIM;
+        m3tex.log2dimH = OSMGA_M3_TEXLOG2;
         m3tex.pitch   = OSMGA_M3_TEXDIM;
         /* nearest both ways -- the min and mag fields are zero -- with
          * uvoffseten left clear, which spec 3-217 calls OpenGL sampling. */
@@ -11829,6 +11829,8 @@ releaseAndReturn:
         m4tex.org     = OSMGA_M4_TEX + OSMGA_M4_MIN_OFS;
         m4tex.dim     = OSMGA_M4_MIN_DIM;
         m4tex.log2dim = OSMGA_M4_MIN_LOG2;
+        m4tex.dimH    = OSMGA_M4_MIN_DIM;
+        m4tex.log2dimH = OSMGA_M4_MIN_LOG2;
         m4tex.pitch   = OSMGA_M4_MIN_PITCH;
         m4tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21);   /* nearest */
         m4tex.clamp   = MGA_TEXCTL_CLAMPUV;
@@ -11884,6 +11886,8 @@ releaseAndReturn:
         m4tex.org     = OSMGA_M4_TEX + OSMGA_M4_MAG_OFS;
         m4tex.dim     = OSMGA_M4_MAG_DIM;
         m4tex.log2dim = OSMGA_M4_MAG_LOG2;
+        m4tex.dimH    = OSMGA_M4_MAG_DIM;
+        m4tex.log2dimH = OSMGA_M4_MAG_LOG2;
         m4tex.pitch   = OSMGA_M4_MAG_PITCH;
         m4tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21) |
                         MGA_TEXFILTER_MAGBILIN;
@@ -11922,6 +11926,8 @@ releaseAndReturn:
         m4tex.org     = OSMGA_M4_TEX + OSMGA_M4_MIN_OFS;
         m4tex.dim     = OSMGA_M4_MIN_DIM;
         m4tex.log2dim = OSMGA_M4_MIN_LOG2;
+        m4tex.dimH    = OSMGA_M4_MIN_DIM;
+        m4tex.log2dimH = OSMGA_M4_MIN_LOG2;
         m4tex.pitch   = OSMGA_M4_MIN_PITCH;
         m4tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21) |
                         MGA_TEXFILTER_MINBILIN;
@@ -11984,6 +11990,8 @@ releaseAndReturn:
         m4tex.org     = OSMGA_M4_TEX + OSMGA_M4_REP_BASE;
         m4tex.dim     = OSMGA_M4_REP_DIM;
         m4tex.log2dim = OSMGA_M4_REP_LOG2;
+        m4tex.dimH    = OSMGA_M4_REP_DIM;
+        m4tex.log2dimH = OSMGA_M4_REP_LOG2;
         m4tex.pitch   = OSMGA_M4_REP_PITCH;   /* == dim: repeat requires it */
         m4tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21);  /* nearest */
         m4tex.tds     = 0UL;
@@ -12080,6 +12088,8 @@ releaseAndReturn:
         m4tex.org     = OSMGA_M4_TEX + OSMGA_M4_SEAM_BASE;
         m4tex.dim     = OSMGA_M4_SEAM_DIM;
         m4tex.log2dim = OSMGA_M4_SEAM_LOG2;
+        m4tex.dimH    = OSMGA_M4_SEAM_DIM;
+        m4tex.log2dimH = OSMGA_M4_SEAM_LOG2;
         m4tex.pitch   = OSMGA_M4_SEAM_PITCH;
         m4tex.clamp   = 0UL;                     /* both axes repeat */
         m4tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21) |
@@ -12132,6 +12142,8 @@ releaseAndReturn:
         m4tex.org     = OSMGA_M4_TEX + OSMGA_M4_A8_BASE;
         m4tex.dim     = OSMGA_M4_A8_DIM;
         m4tex.log2dim = OSMGA_M4_A8_LOG2;
+        m4tex.dimH    = OSMGA_M4_A8_DIM;
+        m4tex.log2dimH = OSMGA_M4_A8_LOG2;
         m4tex.pitch   = OSMGA_M4_A8_PITCH;
         m4tex.clamp   = MGA_TEXCTL_CLAMPUV;
         m4tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21);

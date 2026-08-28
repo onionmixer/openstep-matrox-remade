@@ -264,20 +264,58 @@ vertices(void)
 static void
 policy(void)
 {
+    /*
+     * Repeat and blending are ADMITTED now.  Until the hardware answered
+     * they were refused here, and these cases asserted the refusal; the
+     * measurements that changed it are named in osmgaHW3DWarpAdmits.
+     */
     good(); wb.state.texFlags = OSMGA_HW3D_TEXF_REPEATU;
-    expect(OSMGA_HW3D_E_WARPPOLICY, "repeat on u is not admitted yet");
+    expect(OSMGA_HW3D_OK, "repeat on u is admitted");
     good(); wb.state.texFlags = OSMGA_HW3D_TEXF_REPEATV;
-    expect(OSMGA_HW3D_E_WARPPOLICY, "repeat on v is not admitted yet");
+    expect(OSMGA_HW3D_OK, "repeat on v is admitted");
+    good(); wb.state.texFlags = OSMGA_HW3D_TEXF_REPEATU |
+                                OSMGA_HW3D_TEXF_REPEATV;
+    expect(OSMGA_HW3D_OK, "repeat on both axes is admitted");
     good(); wb.run[1].alphactrl = 0x01000154U;
-    expect(OSMGA_HW3D_E_WARPPOLICY, "blending is not admitted yet");
+    expect(OSMGA_HW3D_OK, "blending is admitted");
     good(); wb.run[0].alphactrl = 0x00000101U;
     expect(OSMGA_HW3D_OK, "the opaque alpha state is admitted");
 
-    /* The policy must be reached for EVERY run, or a batch could smuggle a
-     * refused state in behind an admitted one. */
-    good(); wb.run[1].alphactrl = 0x01000154U;
-    expect(OSMGA_HW3D_E_WARPPOLICY, "a refused state in a later run is "
-                                    "still refused");
+    /*
+     * What each RUN asks the engine to do is judged by the same rule
+     * version 9 applies to each trapezoid -- one function, two callers.
+     */
+    good(); wb.run[0].dwgctl = 0x000c4075U;      /* opcode 5 */
+    expect(OSMGA_HW3D_E_DWGCTL, "an opcode the engine does not define is "
+                                "refused");
+    good(); wb.run[0].dwgctl = 0x000c4004U;      /* atype 0 */
+    expect(OSMGA_HW3D_E_DWGCTL, "an access type outside I and ZI is "
+                                "refused");
+    good(); wb.run[0].dwgctl = 0x000c4076U;      /* opcode 6, textured */
+    expect(OSMGA_HW3D_OK, "a textured opcode is admitted");
+    good(); wb.run[0].dwgctl = 0x000c4034U;      /* atype ZI */
+    expect(OSMGA_HW3D_OK, "the depth access type is admitted");
+
+    good(); wb.run[0].alphactrl = 0x0000010FU;   /* src 15 > 8 */
+    expect(OSMGA_HW3D_E_ALPHA, "a source blend factor past the table is "
+                               "refused");
+    good(); wb.run[0].alphactrl = 0x000001F1U;   /* dst 15 > 7 */
+    expect(OSMGA_HW3D_E_ALPHA, "a destination factor past the table is "
+                               "refused");
+    good(); wb.run[0].alphactrl = 0x00000301U;   /* alphamode RSVD */
+    expect(OSMGA_HW3D_E_ALPHA, "the reserved alpha mode is refused");
+    /* Video alpha with a destination factor of ZERO: the fields are each
+     * legal and the pair is not.  Its own verdict, so one cannot hide
+     * behind the other. */
+    good(); wb.run[0].alphactrl = 0x00000201U;
+    expect(OSMGA_HW3D_E_ALPHACROSS, "video alpha with nothing to blend "
+                                    "into is refused");
+
+    /* And every run is judged, not just the first: a batch must not be
+     * able to smuggle a bad state in behind a good one. */
+    good(); wb.run[1].dwgctl = 0x000c4075U;
+    expect(OSMGA_HW3D_E_DWGCTL, "a bad state in a LATER run is still "
+                                "refused");
 }
 
 /*
@@ -435,6 +473,48 @@ texRegisters(void)
           "modulate with a texture alpha multiplies both");
 }
 
+/*
+ * The destination against the window it must stay inside.  Version 9 had
+ * this inline in the submit path and the drafted version 10 path skipped
+ * it, which is why it is here now: the same declaration reaches the same
+ * registers from both contracts.
+ *
+ * The case worth having is the one the comparison is written to survive --
+ * a height whose product with the pitch overflows a 32-bit multiply.
+ */
+static void
+destFits(void)
+{
+    unsigned long ws = 4UL * 1024UL * 1024UL;
+    unsigned long we = 5UL * 1024UL * 1024UL;
+
+    check(osmgaHW3DDestFits(ws, 64UL, 64UL, 1024UL, ws, we) ==
+          OSMGA_HW3D_OK, "a destination inside the window fits");
+    check(osmgaHW3DDestFits(ws - 1UL, 64UL, 64UL, 1024UL, ws, we) ==
+          OSMGA_HW3D_E_DSTORG, "an origin below the window is refused");
+    check(osmgaHW3DDestFits(we, 64UL, 64UL, 1024UL, ws, we) ==
+          OSMGA_HW3D_E_DSTORG, "an origin at the end is refused");
+    check(osmgaHW3DDestFits(ws, 0UL, 64UL, 1024UL, ws, we) ==
+          OSMGA_HW3D_E_DSTSIZE, "a width of nothing is refused");
+    check(osmgaHW3DDestFits(ws, 64UL, 0UL, 1024UL, ws, we) ==
+          OSMGA_HW3D_E_DSTSIZE, "a height of nothing is refused");
+
+    /* The last row must fit: 1 MiB of window at a 1024 pixel pitch is
+     * 256 rows, so 256 fits and 257 does not. */
+    check(osmgaHW3DDestFits(ws, 64UL, 256UL, 1024UL, ws, we) ==
+          OSMGA_HW3D_OK, "exactly filling the window fits");
+    check(osmgaHW3DDestFits(ws, 64UL, 257UL, 1024UL, ws, we) ==
+          OSMGA_HW3D_E_DSTSIZE, "one row past the window is refused");
+
+    /* And a height that would overflow the multiply the check deliberately
+     * does not form. */
+    check(osmgaHW3DDestFits(ws, 64UL, 0x400000UL, 1024UL, ws, we) ==
+          OSMGA_HW3D_E_DSTSIZE,
+          "a height whose product overflows is refused, not wrapped");
+    check(osmgaHW3DDestFits(ws, 0x100000UL, 1UL, 1024UL, ws, we) ==
+          OSMGA_HW3D_E_DSTSIZE, "a width past the window is refused");
+}
+
 int
 main(void)
 {
@@ -445,6 +525,7 @@ main(void)
     clampPolicy();
     stateCases();
     texRegisters();
+    destFits();
 
     if (failures == 0)
         printf("test-warp-batch: layout shared with version 9, every named "
