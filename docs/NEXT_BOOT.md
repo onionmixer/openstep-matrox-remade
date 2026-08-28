@@ -66,3 +66,36 @@ T9a(펜스 없는 밴드)가 그렇게 될 가능성이 가장 높고, **그것 
 ```
 
 남은 M6(제출 경로)은 **T9 의 답이 구조를 바꾸므로** 그 전에 쓰지 않는다.
+
+## 6. 로그에 나올 순서 (설치본에서 직접 뽑았다)
+
+```
+oracle
+G T0    V T0-warp
+G T1    V T1
+G T2    V T2
+G T3    V T3 x4         (위상 넷이 상태 목록 하나를 공유한다)
+G T4a   V T4a-A  V T4a-B
+        V T4c           (상태 목록 없이 -- T4a 의 것을 그대로 쓴다)
+G T4b   V T4b
+G T5a   V T5a
+G T5b   V T5b
+G T7a   V T7a   G T7b  V T7b   G T7c  V T7c
+G T7e   V T7e
+G T8a-diffuse  V ...   G T8a-fromtex  V ...
+oracle  G T8b   V T8b
+oracle  G T6    V T6
+G T9b   V T9b(run A)   G T9b   V T9b(run B)
+G T9a   V T9a(run A)   G T9a   V T9a(run B)
+```
+
+`G` 는 GENERAL 상태 목록, `V` 는 VERTEX 제출, `oracle` 은 MMIO 사다리꼴이다.
+**T9 가 맨 마지막**이라 그것이 엔진을 세워도 앞의 결과는 전부 로그에 있다.
+
+중간에 끊겼으면 **마지막으로 보인 라벨이 멈춘 지점**이다.
+
+## 7. 실기를 조용히 둘 것
+
+이 대기 구간에 호스트에서 빌드·검사를 여러 번 돌려 타깃 load average 가
+3 을 넘었다(`kernel idle` 누적이지 사용자 작업은 아니다).  재부팅 전까지
+타깃에서 더 돌릴 것은 없다.
