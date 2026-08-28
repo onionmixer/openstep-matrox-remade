@@ -134,10 +134,9 @@ dword 6..7   tu0, tv0                (float)
 
 ×3 = **24 dword = 96 바이트**, `WVRTXSZ` 와 일치.
 
-**미해결 — 구현 전에 답해야 한다:** 24 dword 가 다 도착하면 ACCEPT 시퀀서가
-**스스로** 그리는가, 아니면 별도 트리거가 필요한가. 3-278 의 `primsz` 서술은
-전자를 시사하지만 *시사*다. codex 도 이 질문을 하지 않았다. `WACCEPTSEQ` 를
-run 1 에서 프로그램해야 하는지 포함해 사양서로 확정한다.
+**해결됨 — §10 참조. 24 번째 dword 가 트리거다.** 별도 트리거는 없다.
+단 그것은 `WACCEPTSEQ.seqoff = 1` 을 프로그램했을 때만 성립하고,
+**이 드라이버는 이미 그것을 하고 있다.**
 
 ## 7. 봉쇄 — 카나리를 버린다
 
@@ -179,3 +178,103 @@ run 1 에서 프로그램해야 하는지 포함해 사양서로 확정한다.
 깊이 기각, 정점 가시성, 마이크로코드 불일치, **그리고 수송 자체**. W2 §24.1 이
 확인했듯 1 차 VERTEX 모드는 세 참조 구현 어디에도 실행 선례가 없다.
 **"실패하면 수송은 용의선상에서 빠진다" 는 초판의 주장은 거짓이다.**
+
+---
+
+## 10. ACCEPT 트리거 — 확정 (2026-08-28)
+
+**질문:** 정점 24 dword 가 도착하면 ACCEPT 시퀀서가 스스로 그리는가,
+아니면 별도 트리거가 필요한가.
+
+**답: 스스로 그린다. 24 번째 dword 가 트리거다. 별도 트리거는 없다.**
+
+### 10.1 근거 사슬
+
+**(1) 사양서 3-261, `WACCEPTSEQ.seqoff<28>`:**
+
+> *"When seqoff = 1 the `ACCEPT.seq` instructions are treated like the first
+> `ACCEPT.seq` (using the destination of the `ACCEPT.seq` command and
+> **the size of `primsz`**)."*
+
+**(2) 사양서 3-278, `WVRTXSZ.primsz<13:8>`** — 그 `primsz` 가 프리미티브의
+dword 길이다. `WVRTXSZ = 0x1807` 을 python 으로 풀면:
+
+```
+wvrtxsz = 7  -> 8 dword/정점
+primsz  = 24 -> 24 dword/프리미티브 = 3 정점        <- 정확히 삼각형 하나
+```
+
+즉 `seqoff=1` 이면 ACCEPT 시퀀서는 **길이를 명령이 아니라 레지스터에서** 얻는다.
+24 dword 를 세고, 다 차면 실행한다.
+
+**(3) 참조 구현 둘이 독립적으로 `seqoff` 를 켠다** (python 으로 디코드):
+
+| 출처 | 값 | `seqoff` | `wsametag` | `wfirsttag` | `seqlen` |
+| --- | --- | --- | --- | --- | --- |
+| DRM `mga_warp.c:180` (init, MMIO) | `0x18000000` | **1** | 1 | 0 | 0 |
+| DRM `mga_state.c:325` (단일텍스처 pipe) | `0x18000000` | **1** | 1 | 0 | 0 |
+| DRM `mga_state.c:296` (이중텍스처 pipe) | `0x1e000000` | **1** | 1 | 1 | 2 |
+| Windows `g400dd32.asm:61433` | `0x10000000` | **1** | 0 | 0 | 0 |
+
+네 값이 다르지만 **`seqoff` 만은 넷 다 1 이다.**
+
+**(4) 제출에 전후 장식이 없다.** `mga_state.c:679` 의 정점 dispatch 전부:
+
+```c
+DMA_BLOCK(MGA_DMAPAD, 0, MGA_DMAPAD, 0,
+          MGA_SECADDRESS, (address | MGA_DMA_VERTEX),
+          MGA_SECEND,     ((address + length) | dma_access));
+```
+
+**프롤로그도 에필로그도 트리거 레지스터도 없다.** 정점 버퍼가 제출의 전부다.
+1 차 VERTEX 모드의 대응물은 `PRIMADDRESS = phys|0x3` / `PRIMEND = phys+96`,
+역시 맨몸이다.
+
+### 10.2 그리고 이 드라이버는 이미 그것을 하고 있다
+
+내가 "미해결" 이라고 적은 것이 **두 곳에 이미 구현돼 있었다**:
+
+```
+:8093-8097   WARP init (MMIO)      WIADDR2=SUSPEND, WGETMSB, WVRTXSZ, WACCEPTSEQ, WMISC
+                                   -> DRM mga_warp.c:177-191 과 레지스터·순서·값이 같다
+:7754-7761   osmgaDmaBuildPipeList WVRTXSZ=0x1807, WACCEPTSEQ 4 연속(0,0,0,0x18000000)
+                                   -> DRM mga_state.c:317-325 와 같은 모양
+:341-342     MGA_WVRTXSZ_G400 / MGA_WACCEPTSEQ_G400 상수
+```
+
+**계획서에서 빠졌던 것이지 드라이버에서 빠졌던 것이 아니다.**
+§5 의 상태표에 `WACCEPTSEQ = 0x18000000` 을 명시로 올린다.
+
+`WACCEPTSEQ` 를 같은 블록에서 **네 번 연속** 쓰는 이유는 문서화돼 있지 않다
+(3-260 은 프로그램할 때마다 `seqptr` 이 `seqdst0` 으로 리셋된다고만 한다).
+**이유를 모르므로 그대로 베낀다** — `DMAPAD` 로 바꾸지 않는다.
+
+### 10.3 순서가 뒤집혀 있었다
+
+`mga_g400_emit_state:380-397` 의 순서는 **파이프 → 컨텍스트 → tex0 → tex1** 이다.
+초판은 *"컨텍스트 + 클립 + 파이프 기동"* 이라고 **파이프를 마지막에** 두었다.
+참조 순서로 뒤집는다. WARP 는 기동 후 정점을 기다리므로, 그 사이에 그리기
+상태가 도착하는 것이 정상 순서다.
+
+**그리고 §3 의 SUSPEND 판정이 이것으로 정밀해진다.** `mga_g400_emit_pipe` 는
+**SUSPEND 로 시작해서 START 로 끝난다**(`:281`, `:346`). 즉 선행 SUSPEND 는
+옳고 필수다. `osmgaDmaBuildPipeList` 의 잘못은 **START 뒤에 하나 더** 붙이는
+`:7790-7793` 이다. **앞의 것은 남기고 뒤의 것만 지운다.**
+
+### 10.4 이 사양서로는 더 못 간다 — 챕터 6 이 없다
+
+`WFLAG`(3-263)·`WCODEADDR`(3-262)·`WMISC` 가 *"'Pipeline Operation' on page
+**6-6**"*, *"'Cache Operation' on page **6-**"*, *"page **6-16**"* 를 가리킨다.
+**이 690 쪽 문서의 목차는 챕터 5(Hardware Designer's Notes)에서 끝난다.**
+
+```
+Chapter 1 MGA Overview / 2 Resource Mapping / 3 Register Descriptions
+Chapter 4 Programmer's Specification / 5 Hardware Designer's Notes
+                                       ^^^^ 여기까지. 6 은 없다.
+```
+
+**따라서 `ACCEPT` 명령어 집합과 WARP 파이프라인 동작은 이 문서에 없다.**
+`seqoff`/`primsz` 처럼 **레지스터가 노출하는 것**은 답할 수 있지만, 마이크로코드
+내부 동작은 참조 구현에서만 온다. 이번 답도 사양서 단독이 아니라
+**사양서(무엇을 설정하는가) + 참조 구현(실제로 그렇게 설정한다) + 제출 경로에
+트리거가 없다는 전수 확인**의 합이다. 그 이상의 확실성은 이 문서로 못 얻는다.
