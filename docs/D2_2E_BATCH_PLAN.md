@@ -144,3 +144,68 @@ run 1 목록이 어느 쪽에도 닿지 않는다
 
 `PRIMEND` 가 시작보다 앞이거나 할당 밖이면 **카드가 무관한 물리 메모리를
 bus-master 한다** — codex 가 지목한 가장 위험한 실패다. 위 불변식이 그것을 막는다.
+
+---
+
+## 10. 결과 (2026-08-28 20:43:11) — **Q1·Q2 둘 다 예**
+
+```
+D2-2e/run1: 0 changed, 0 wrong, 0 OUTSIDE CLIP (expecting 0 triangles)
+D2-2e/B1:   72 dwords, PRIMADDRESS 00058123 (wanted 58120|primod), STATUS 80ff0024, spins 33
+D2-2e/B1:   DWGSYNC 0 -> 4, STATUS 80fe0024, spins 1
+D2-2e/B1:   408 changed, 0 wrong, 0 OUTSIDE CLIP (expecting 3 triangles)
+D2-2e/B1:   per-triangle 136 136 136 0 0
+D2-2e/B2:   48 dwords, PRIMADDRESS 000590c3 (wanted 590c0|primod), STATUS 80fe0024, spins 4
+D2-2e/B2:   DWGSYNC 4 -> 8, STATUS 80fe0024, spins 1
+D2-2e/B2:   599 changed, 0 wrong, 0 OUTSIDE CLIP (expecting 5 triangles)
+D2-2e/B2:   per-triangle 136 136 136 136 55
+suspend:    STATUS 80f20024, spins 1        PASS
+```
+
+### 10.1 Q1 — 한 제출이 프리미티브 여러 개를 나른다
+
+72 dword 한 번에 삼각형 **셋**. `408 = 136×3`, **wrong 0** — 개수가 아니라
+**4096 픽셀 전수 대조**로 0 이다. 프리미티브 사이에 구분자도 재프로그래밍도 없다.
+
+### 10.2 Q2 — 참조보다 강한 것이 성립했다
+
+B2 는 **새 GENERAL 목록 없이** 제출됐고 자기 삼각형 둘을 그렸다.
+`599 = 408 + 136 + 55`, 그리고 **B1 의 셋은 여전히 정확히 136 씩** — B2 가
+아무것도 건드리지 않았다.
+
+**참조는 이것을 하지 않는다.** DRM 은 정점 flush 마다 컨텍스트 전체를 다시 내고,
+그 자리에 `/* FIXME: Workaround bug in kernel module. */` 라고 적혀 있다
+(`mgaioctl.c:432`). 우리는 이 하드웨어에서 1 차 VERTEX 모드로
+**컨텍스트 재발행이 필요 없음**을 보였다. §9.1 이 "참조보다 강한 주장" 이라고
+적어둔 그것이다.
+
+### 10.3 펜스가 값을 했다
+
+```
+B1 xfer   STATUS 80ff0024  dwgengsts=1     <- 전송이 끝났는데 그리기는 진행 중
+B1 fence  STATUS 80fe0024  dwgengsts=0     <- 펜스가 그것을 기다렸다
+```
+
+삼각형 하나였던 D2-2c 에서는 xfer 시점에 이미 `dwgengsts=0` 이었다. 셋이 되자
+**실제로 비행 중인 작업이 생겼고**, `DWGSYNC` 펜스가 그것을 붙잡았다.
+레벨 하나로 판정했다면 여기서 갈렸다.
+
+그리고 태그가 배치마다 전진한다 — `0 -> 4`, `4 -> 8`. 펜스는 반복 가능하다.
+
+### 10.4 주소
+
+```
+B1  0x58000 -> 0x58120   (0x8000 + 3*24*4 = 288 바이트)
+B2  0x59000 -> 0x590c0   (0x9000 + 2*24*4 = 192 바이트)
+```
+python 으로 재확인. **두 끝이 다르다** — 낡은 포인터가 완료로 오독될 수 없다.
+
+### 10.5 다음
+
+배치의 뼈대는 끝났다. 남은 생산 질문은 §6 그대로다 —
+**버퍼 재사용/aging**, 배치 사이 **상태 변경**, 인터럽트 완료, Mesa 연결.
+그중 재사용이 다음 차례다: 같은 메모리를 다시 쓰려면 카드가 다 읽었음을 알아야
+하고, 매 배치 펜스는 생산에서 비싸다.
+
+**로그 라벨 정정**: 성공/suspend 줄이 아직 `D2-2c` 로 나온다. 소스는 고쳤고
+다음 빌드에 반영된다(이 결과를 낸 바이너리는 옛 라벨).

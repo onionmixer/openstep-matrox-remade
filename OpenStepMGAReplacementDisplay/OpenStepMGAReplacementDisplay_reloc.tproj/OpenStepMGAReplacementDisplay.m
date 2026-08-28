@@ -9200,17 +9200,17 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
             break;
     }
     status = osmgaR32(base, MGA_ENGSTATUS);
-    IOLog("OpenStepMGA D2-2c/suspend: STATUS %08lx, spins %lu\n",
+    IOLog("OpenStepMGA D2-2e/suspend: STATUS %08lx, spins %lu\n",
           status, spins);
     if (spins >= OSMGA_S1_SPIN_LIMIT) {
-        IOLog("OpenStepMGA D2-2c/suspend: WARP did not reach idle after the "
+        IOLog("OpenStepMGA D2-2e/suspend: WARP did not reach idle after the "
               "suspend request -- nothing further will be programmed\n");
         IOLog("OpenStepMGA D2-2c: ring and microcode RETAINED, engine left "
               "claimed.  *** REBOOT REQUIRED ***\n");
         IOUnmapPhysicalFromIOTask(alias, mapLen);
         return;
     }
-    IOLog("OpenStepMGA D2-2c: PASS -- WARP drew the triangle, fenced, and "
+    IOLog("OpenStepMGA D2-2e: PASS -- WARP drew the batches, fenced, and "
           "suspended\n");
 
     /* This block is inside the window clients are handed, and it was opened
