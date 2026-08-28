@@ -196,3 +196,91 @@ W13 은 *"위험은 엔진이 물리는 것이지 메모리가 아니다"* 라�
 7. **V7 real** ← 유일한 위험 단계
 
 **1~5 는 전부 하드웨어 위험이 없고, 그것만으로도 드라이버가 나아진다.**
+
+---
+
+## 12. 네 번째 교차검토 판정 — **다시 전부 채택**
+
+| # | 지적 | 검증 | 판정 |
+| --- | --- | --- | --- |
+| 1 | **성공이 흔적을 안 남기는 시험을 만들고, 흔적 없음을 증거라 불렀다** | `ENDPRDMASTS` 는 softrap 만으로도 선다 (4-17) | ✅ |
+| 2 | 용량 계산이 틀렸다 | **헤더가 명시**(`ENC_TRI_BLK 9`) | ✅ |
+| 3 | `secActive` 만으로는 경합이 안 닫힌다 + ABI | 스냅샷에 배제 없음 (`:5263`) | ✅ |
+| 4 | claim 실패가 모드 쓰기를 막지 않는다 | `programLinearMode` 무조건 호출 (`:6637`) | ✅ |
+| 5 | `revertToVGAMode` 가 먼저다 | 드라이버 주석 `:1468` | ✅ |
+| 6 | "뺄셈으로 쓴다" 면서 식은 덧셈 | 내 §4 본문 | ✅ |
+| 7 | 1~5 단계가 무위험이 아니다 | `PRIMPTR` 은 MMIO 쓰기다 | ✅ |
+| 8 | W13 의 다른 fail-stop 게이트를 흘렸다 | 내 §7 이 스냅샷·모드만 | ✅ |
+
+### 12.1 ★ 근본 결함 — 증거가 없는 시험
+
+> *"It has designed a test whose intended success leaves no payload-level
+> trace, then declares the absence of a trace to be proof of transport."*
+
+**맞다.** 그리고 `ENDPRDMASTS` 는 증인이 못 된다 (4-17):
+
+> *"It is set to '1' **when a soft trap interrupt occurs**."*
+
+즉 2 차가 한 바이트도 안 읽어도 `SOFTRAP` 만으로 선다. **V6(dry)과 V7(real)이
+내가 적은 관측으로는 구별되지 않는다.**
+
+**관측치를 찾았다** (검토를 기다리는 동안):
+
+| 관측 | 근거 | 증명하는 것 |
+| --- | --- | --- |
+| `SECADDRESS == SECEND` (완료 후) | 4-17: *"The DMA current pointer is readable by the CPU through (…) SECADDRESS"* | 채널이 끝까지 **전진**했다 |
+| **`DWGSYNC` 에 매직값** | 3-... : *"serves as a **synchronisation pointer**"*, `R/W`, 그리기 효과 없음 | **우리가 쓴 바이트가 명령으로 소비됐다** |
+
+`DWGSYNC` 가 훨씬 강하다 — 포인터 전진이 아니라 **페이로드 소비**의 증거다.
+그러므로 페이로드는 `DMAPAD·DMAPAD·DMAPAD·DWGSYNC=<매직>` 이 된다.
+`DMAPAD` **만**이라는 §1 의 규칙을 한 칸 푼다.
+
+> **주의 둘**: `dwgsyncaddr` 갱신 조건이 *"직전 프리미티브가 완료됐을 때"* 라
+> 프리미티브가 없는 페이로드에서 어떻게 동작할지 미확인. 그리고 예약 비트
+> `<1:0>` 이 0 이어야 하므로 매직값의 하위 2 비트를 비운다.
+>
+> **그리고 `primptren1` 이 서 있으면 `DWGSYNC` 갱신이 `PRIMPTR` 주소로 PCI
+> 쓰기를 낸다** — `PRIMPTR = 0` 이 이 관측치의 **선행 조건**이 된다.
+
+### 12.2 ★ 용량을 추측했다 — 헤더에 적혀 있었는데
+
+```
+OSMGA_HW3D_ENC_TRI_BLK  9    /* per primitive; 8 unconditional + tex */
+ENC_DWORDS = ((8 + 4) + 180 x 9) x 5 = 8,160 dword = 32,640 B
+```
+
+| | |
+| --- | --- |
+| 내가 쓴 값 | 2,700~5,400 dword (삼각형당 3~6 블록으로 **추측**) |
+| 실제 | **8,160 dword** |
+| 과소평가 | **1.5~3.0 배** |
+
+**여유는 40,960 − 32,640 = 8,320 B** (general 패킷 416 개)뿐이다.
+
+그리고 헤더의 주석이 이 실수를 미리 경고하고 있었다:
+
+> *"Nine, not eight. Counted from the encoder rather than from memory (…)
+> the bound it produced was therefore an **UNDER-estimate**, which is the one
+> direction a bound must not be wrong in."*
+
+**나도 기억에서 셌고, 같은 방향으로 틀렸다.**
+
+### 12.3 ★ 모드 차단이 동작하지 않는다
+
+```c
+int claimed = [self claimEngineForMode];   /* :6633 */
+...
+if (![self programLinearMode]) {           /* :6637 — claimed 를 안 본다 */
+```
+
+**`claimEngineForMode` 를 실패시켜도 모드 레지스터는 그대로 쓰인다.**
+그리고 `revertToVGAMode` 가 **먼저** 돈다(`:1468` 주석). 게이트는
+`enterLinearMode` 가 아니라 **두 진입점 모두**에서, **`secActive || secUnknown`**
+으로, **락을 쥐지 않고 즉시 실패**해야 한다.
+
+### 12.4 내 두 가지 자책
+
+- §4 가 *"모든 경계를 뺄셈으로 쓴다"* 라고 적고 바로 아래 식이
+  `ringPhys + SEC_OFF + SEC_BYTES` 다. **피하겠다고 쓴 형태를 그대로 썼다.**
+- §7 이 W13 §7 표의 게이트 넷 중 **둘만** 옮겼다. 추가 2 차 제출, `AccelRearm`,
+  표면 재사용이 빠졌다.
