@@ -8244,11 +8244,20 @@ osmgaDmaBuildPipeList(unsigned long *ring, unsigned long ringDwords,
  */
 #define OSMGA_D2C_CLIP_LO        4UL
 #define OSMGA_D2C_CLIP_HI       59UL          /* inclusive, as CXBNDRY is */
-#define OSMGA_D2C_TRI_LO         8UL
-#define OSMGA_D2C_TRI_HI        56UL
-#define OSMGA_D2C_COLOR         0xFFFF8040UL  /* BGRA bytes: B40 G80 RFF AFF */
-#define OSMGA_D2C_VTX_OFF       0x8000UL      /* well past the run-1 list */
+/*
+ * Two batches, at separate offsets in the same physically contiguous
+ * allocation.  Separate rather than reused, because buffer aging is a
+ * different question and this test changes one thing at a time.
+ *
+ * The ends differ (288 vs 192 bytes from different starts), which matters:
+ * an identical end address would let a stale PRIMADDRESS from the previous
+ * batch satisfy the next batch's completion test.
+ */
 #define OSMGA_D2C_VTX_DWORDS      24UL        /* WVRTXSZ.primsz, exactly */
+#define OSMGA_D2E_B1_OFF        0x8000UL
+#define OSMGA_D2E_B2_OFF        0x9000UL
+#define OSMGA_D2E_B1_DWORDS     (OSMGA_D2E_B1 * OSMGA_D2C_VTX_DWORDS)
+#define OSMGA_D2E_B2_DWORDS     (OSMGA_D2E_B2 * OSMGA_D2C_VTX_DWORDS)
 #define OSMGA_D2C_F32_HALF      0x3F000000UL  /* 0.5f */
 #define OSMGA_D2C_F32_ONE       0x3F800000UL  /* 1.0f */
 #define OSMGA_D2C_PIPE             7UL        /* tgzsaf; W2 section 8 */
@@ -8488,9 +8497,43 @@ osmgaDmaBuildTriangleList(unsigned long *ring, unsigned long ringDwords,
 }
 
 /*
- * The twenty-four dwords.  Order and packing are the reference client's
- * (mgavb.h:55 for the layout, mgavb.h:42 for BGRA byte order in the two
- * colours, mgavb.c:57 for fog living in specular's alpha byte).
+ * The batch table.  Five half-open right triangles, no two overlapping and
+ * all inside the clip -- checked on the host over every pixel of the block
+ * before any of this was written.  Colour is how they are told apart: a
+ * count and a bounding box cannot distinguish a triangle from the same
+ * triangle mirrored about its diagonal.
+ *
+ * The first OSMGA_D2E_B1 entries are batch 1, the rest batch 2.
+ */
+typedef struct {
+    unsigned long row0, col0, leg, colour;
+} OSMGAD2eTri;
+
+#define OSMGA_D2E_TRIS      5UL
+#define OSMGA_D2E_B1        3UL
+#define OSMGA_D2E_B2        (OSMGA_D2E_TRIS - OSMGA_D2E_B1)
+/* Measured, not assumed: the vertex carried 0xFFFF8040 and the framebuffer
+ * came back 0x00FF8040, so the alpha byte does not survive the pipeline
+ * and every comparison is made on twenty-four bits. */
+#define OSMGA_D2E_RGB       0x00FFFFFFUL
+
+static const OSMGAD2eTri osmgaD2eTris[OSMGA_D2E_TRIS] = {
+    {  8UL,  8UL, 16UL, 0xFFFF0000UL },   /* B1: red    136 px */
+    {  8UL, 34UL, 16UL, 0xFF00FF00UL },   /* B1: green  136 px */
+    { 34UL,  8UL, 16UL, 0xFF0000FFUL },  /* B1: blue   136 px */
+    { 34UL, 34UL, 16UL, 0xFFFFFF00UL },   /* B2: yellow 136 px */
+    { 20UL, 20UL, 10UL, 0xFF00FFFFUL }    /* B2: cyan    55 px */
+};
+
+/*
+ * Build `count` triangles starting at table entry `first` into `v`, eight
+ * dwords per vertex, three vertices per triangle, no separator of any kind
+ * between them.  Spec 3-261: with WACCEPTSEQ.seqoff set every ACCEPT.seq
+ * takes its length from WVRTXSZ.primsz, so the twenty-fourth dword of each
+ * primitive is its own trigger and consecutive triangles simply follow.
+ *
+ * Order and packing are the reference client's (mgavb.h:55 for the layout,
+ * mgavb.h:42 for BGRA byte order, mgavb.c:57 for fog in specular's alpha):
  *
  *   0..3   x, y, z, rhw     IEEE 754 single
  *   4      diffuse          B G R A bytes
@@ -8498,85 +8541,187 @@ osmgaDmaBuildTriangleList(unsigned long *ring, unsigned long ringDwords,
  *   6..7   tu0, tv0         IEEE 754 single
  */
 static void
-osmgaD2cBuildVertices(unsigned long *v, unsigned long testY)
+osmgaD2eBuildBatch(unsigned long *v, unsigned long testY,
+                   unsigned long first, unsigned long count)
 {
-    unsigned long i;
-    static const unsigned long xs[3] = { OSMGA_D2C_TRI_LO, OSMGA_D2C_TRI_HI,
-                                         OSMGA_D2C_TRI_LO };
-    static const unsigned long ys[3] = { OSMGA_D2C_TRI_LO, OSMGA_D2C_TRI_LO,
-                                         OSMGA_D2C_TRI_HI };
+    unsigned long t, i, p = 0UL;
 
-    for (i = 0UL; i < 3UL; i++) {
-        v[i * 8UL + 0UL] = osmgaF32FromUInt(xs[i]);
-        v[i * 8UL + 1UL] = osmgaF32FromUInt(testY + ys[i]);
-        v[i * 8UL + 2UL] = OSMGA_D2C_F32_HALF;
-        v[i * 8UL + 3UL] = OSMGA_D2C_F32_ONE;
-        v[i * 8UL + 4UL] = OSMGA_D2C_COLOR;
-        v[i * 8UL + 5UL] = 0UL;
-        v[i * 8UL + 6UL] = 0UL;
-        v[i * 8UL + 7UL] = 0UL;
+    for (t = first; t < first + count; t++) {
+        const OSMGAD2eTri *tri = &osmgaD2eTris[t];
+        unsigned long xs[3], ys[3];
+
+        /* The right angle at (col0,row0); legs along +col and +row. */
+        xs[0] = tri->col0;                    ys[0] = tri->row0;
+        xs[1] = tri->col0 + tri->leg;         ys[1] = tri->row0;
+        xs[2] = tri->col0;                    ys[2] = tri->row0 + tri->leg;
+
+        for (i = 0UL; i < 3UL; i++) {
+            v[p++] = osmgaF32FromUInt(xs[i]);
+            v[p++] = osmgaF32FromUInt(testY + ys[i]);
+            v[p++] = OSMGA_D2C_F32_HALF;
+            v[p++] = OSMGA_D2C_F32_ONE;
+            v[p++] = tri->colour;
+            v[p++] = 0UL;
+            v[p++] = 0UL;
+            v[p++] = 0UL;
+        }
     }
 }
 
 /*
- * Scan the 64x64 block and say what changed, in three disjoint regions:
- * outside the clip, inside the clip but outside the triangle, and inside
- * the triangle.  Only the first is a containment statement, and only a
- * weak one -- it says this block was not written outside the clip, not
- * that nothing anywhere else was.
+ * What colour a pixel should be once `n` table entries have been drawn, or
+ * the sentinel if none of them owns it.  The table has no overlaps, so the
+ * first match is the only match.
  */
-static void
-osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
-               const char *label)
+static unsigned long
+osmgaD2eExpectedAt(unsigned long row, unsigned long col, unsigned long n)
 {
-    unsigned long row, col;
-    unsigned long outClip = 0UL, inClipOnly = 0UL, inTri = 0UL;
-    unsigned long firstRow = 0UL, lastRow = 0UL, firstCol = 0UL, lastCol = 0UL;
-    unsigned long seen = 0UL, sample = 0UL;
+    unsigned long i;
+
+    for (i = 0UL; i < n; i++) {
+        const OSMGAD2eTri *t = &osmgaD2eTris[i];
+
+        if (row >= t->row0 && row < t->row0 + t->leg &&
+            col >= t->col0 && col < t->col0 + t->leg &&
+            (row - t->row0) + (col - t->col0) <= t->leg - 1UL)
+            return t->colour & OSMGA_D2E_RGB;
+    }
+    return OSMGA_S1_SENTINEL & OSMGA_D2E_RGB;
+}
+
+/*
+ * Compare the whole block against the exact expected image for `n` drawn
+ * triangles.  Returns 1 only if every one of the 4096 pixels is what it
+ * should be.
+ *
+ * Not a count, and not a bounding box.  A right triangle mirrored about
+ * its own diagonal has the same pixel count and the same bounding box as
+ * the original, so neither statistic can tell them apart; only the map
+ * can.  The per-triangle tallies exist to make a failure diagnosable --
+ * "only the first triangle drew" and "all three drew in the wrong places"
+ * are different answers to the batching question.
+ */
+static int
+osmgaD2eVerify(volatile unsigned long *blk, unsigned long stride,
+               unsigned long n, const char *label)
+{
+    unsigned long row, col, i;
+    unsigned long wrong = 0UL, outClip = 0UL, changed = 0UL;
+    unsigned long badRow = 0UL, badCol = 0UL, badGot = 0UL, badWant = 0UL;
+    unsigned long hit[OSMGA_D2E_TRIS];
+    unsigned long sentinel = OSMGA_S1_SENTINEL & OSMGA_D2E_RGB;
+
+    for (i = 0UL; i < OSMGA_D2E_TRIS; i++)
+        hit[i] = 0UL;
 
     for (row = 0UL; row < OSMGA_S1_H; row++) {
         for (col = 0UL; col < OSMGA_S1_W; col++) {
-            unsigned long v = blk[row * stride + col];
-            int clipped, inside;
+            unsigned long got  = blk[row * stride + col] & OSMGA_D2E_RGB;
+            unsigned long want = osmgaD2eExpectedAt(row, col, n);
 
-            if (v == OSMGA_S1_SENTINEL)
-                continue;
-
-            clipped = (row >= OSMGA_D2C_CLIP_LO && row <= OSMGA_D2C_CLIP_HI &&
-                       col >= OSMGA_D2C_CLIP_LO && col <= OSMGA_D2C_CLIP_HI);
-            /* The right triangle (8,8) (56,8) (8,56): inside means both
-             * coordinates at or past the near edge and their sum within
-             * the hypotenuse. */
-            inside = (clipped &&
-                      row >= OSMGA_D2C_TRI_LO && col >= OSMGA_D2C_TRI_LO &&
-                      (row + col) <= (OSMGA_D2C_TRI_LO + OSMGA_D2C_TRI_HI));
-
-            if (!clipped)      outClip++;
-            else if (!inside)  inClipOnly++;
-            else               inTri++;
-
-            if (seen == 0UL) {
-                firstRow = lastRow = row;
-                firstCol = lastCol = col;
-                sample = v;
-            } else {
-                if (row < firstRow) firstRow = row;
-                if (row > lastRow)  lastRow  = row;
-                if (col < firstCol) firstCol = col;
-                if (col > lastCol)  lastCol  = col;
+            if (got != sentinel) {
+                changed++;
+                if (row < OSMGA_D2C_CLIP_LO || row > OSMGA_D2C_CLIP_HI ||
+                    col < OSMGA_D2C_CLIP_LO || col > OSMGA_D2C_CLIP_HI)
+                    outClip++;
             }
-            seen++;
+            if (got != want) {
+                if (wrong == 0UL) {
+                    badRow = row; badCol = col;
+                    badGot = got; badWant = want;
+                }
+                wrong++;
+            }
+            /* Tally against every entry, drawn or not: a triangle that
+             * appeared when it should not have is as informative as one
+             * that did not appear when it should. */
+            for (i = 0UL; i < OSMGA_D2E_TRIS; i++)
+                if (got == (osmgaD2eTris[i].colour & OSMGA_D2E_RGB))
+                    hit[i]++;
         }
     }
 
-    IOLog("OpenStepMGA D2-2c/%s: changed %lu px -- %lu in triangle, %lu in "
-          "clip only, %lu OUTSIDE CLIP\n",
-          label, seen, inTri, inClipOnly, outClip);
-    if (seen != 0UL)
-        IOLog("OpenStepMGA D2-2c/%s: bbox rows %lu..%lu cols %lu..%lu, "
-              "first value %08lx (wanted %08lx)\n",
-              label, firstRow, lastRow, firstCol, lastCol,
-              sample, OSMGA_D2C_COLOR & 0x00ffffffUL);
+    IOLog("OpenStepMGA D2-2e/%s: %lu changed, %lu wrong, %lu OUTSIDE CLIP "
+          "(expecting %lu triangles)\n", label, changed, wrong, outClip, n);
+    IOLog("OpenStepMGA D2-2e/%s: per-triangle %lu %lu %lu %lu %lu "
+          "(want 136 136 136 136 55 for the first %lu)\n",
+          label, hit[0], hit[1], hit[2], hit[3], hit[4], n);
+    if (wrong != 0UL)
+        IOLog("OpenStepMGA D2-2e/%s: first mismatch at row %lu col %lu -- "
+              "got %06lx wanted %06lx\n",
+              label, badRow, badCol, badGot, badWant);
+    return (wrong == 0UL) ? 1 : 0;
+}
+
+/*
+ * One VERTEX batch and its DWGSYNC fence.  Returns 1 on success; on
+ * failure it has already said what went wrong, and the caller applies the
+ * retain-everything policy.
+ */
+static int
+osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
+                    unsigned long vtxPhys, unsigned long dwords,
+                    const char *label)
+{
+    unsigned long vtxEnd = vtxPhys + dwords * 4UL;
+    unsigned long spins, status, sum, i, devctrl, syncOld, syncTag;
+    unsigned primAfter;
+
+    sum = 0UL;
+    for (i = 0UL; i < dwords; i++)
+        sum += vtx[i];
+    (void)osmgaR32(base, MGA_ENGSTATUS);
+    if (sum == 0xFFFFFFFFUL)
+        IOLog("OpenStepMGA D2-2e/%s: barrier %lu\n", label, sum);
+
+    osmgaW32(base, MGA_PRIMADDRESS, vtxPhys | MGA_DMA_VERTEX);
+    osmgaW32(base, MGA_PRIMEND, vtxEnd);
+
+    for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
+        status = osmgaR32(base, MGA_ENGSTATUS);
+        primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
+        if (((unsigned long)primAfter & ~3UL) == vtxEnd &&
+            (status & MGA_STATUS_ENDPRDMASTS) != 0UL)
+            break;
+    }
+    status    = osmgaR32(base, MGA_ENGSTATUS);
+    primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
+    devctrl   = osmgaPciReadConfigLong(osmgaSelfBus, osmgaSelfDev,
+                                       osmgaSelfFn, MGA_CFG_DEVCTRL);
+    IOLog("OpenStepMGA D2-2e/%s: %lu dwords, PRIMADDRESS %08x raw (wanted "
+          "%08lx | primod), STATUS %08lx, DEVCTRL %08lx, spins %lu\n",
+          label, dwords, primAfter, vtxEnd, status, devctrl, spins);
+    if (spins >= OSMGA_S1_SPIN_LIMIT ||
+        (devctrl & MGA_CFG_DEVCTRL_ABORTS) != 0UL) {
+        IOLog("OpenStepMGA D2-2e/%s: the payload was not consumed\n", label);
+        return 0;
+    }
+
+    syncOld = osmgaR32(base, MGA_DWGSYNC) & OSMGA_D2C_SYNC_MASK;
+    syncTag = (syncOld + OSMGA_D2C_SYNC_STEP) & OSMGA_D2C_SYNC_MASK;
+    if (!osmgaStormWaitFifo(base, 2U)) {
+        IOLog("OpenStepMGA D2-2e/%s: no FIFO room for the tag\n", label);
+        return 0;
+    }
+    osmgaW32(base, MGA_DMAPAD,  0UL);
+    osmgaW32(base, MGA_DWGSYNC, syncTag);
+
+    for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++)
+        if ((osmgaR32(base, MGA_DWGSYNC) & OSMGA_D2C_SYNC_MASK) == syncTag)
+            break;
+    status  = osmgaR32(base, MGA_ENGSTATUS);
+    devctrl = osmgaPciReadConfigLong(osmgaSelfBus, osmgaSelfDev,
+                                     osmgaSelfFn, MGA_CFG_DEVCTRL);
+    IOLog("OpenStepMGA D2-2e/%s: DWGSYNC %08lx -> %08lx, STATUS %08lx, "
+          "DEVCTRL %08lx, spins %lu\n",
+          label, syncOld, syncTag, status, devctrl, spins);
+    if (spins >= OSMGA_S1_SPIN_LIMIT ||
+        (status & MGA_STATUS_DWGENGSTS) != 0UL ||
+        (devctrl & MGA_CFG_DEVCTRL_ABORTS) != 0UL) {
+        IOLog("OpenStepMGA D2-2e/%s: the batch did not fence\n", label);
+        return 0;
+    }
+    return 1;
 }
 
 /*
@@ -8606,7 +8751,8 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
     unsigned long listEnd, vtxPhys, vtxEnd;
     unsigned long spins, status, i, row, col, sum;
     unsigned long devctrl0, devctrl1, primptr, ien, opmode;
-    unsigned long syncOld, syncTag;
+    unsigned long vtx2Phys, vtx2End;
+    unsigned long *vtx2;
     unsigned long *ring;
     unsigned long *vtx;
     void *ringVirt;
@@ -8775,7 +8921,8 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
     }
 
     ring = (unsigned long *)ringVirt;
-    vtx  = (unsigned long *)((unsigned char *)ringVirt + OSMGA_D2C_VTX_OFF);
+    vtx  = (unsigned long *)((unsigned char *)ringVirt + OSMGA_D2E_B1_OFF);
+    vtx2 = (unsigned long *)((unsigned char *)ringVirt + OSMGA_D2E_B2_OFF);
 
     if (!osmgaDmaBuildTriangleList(ring, ringDwords,
                                    osmgaWarpPipeHeld[OSMGA_D2C_PIPE],
@@ -8789,21 +8936,44 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
         IOUnmapPhysicalFromIOTask(alias, mapLen);
         return;
     }
-    if (tailDwords * 4UL >= OSMGA_D2C_VTX_OFF) {
+    if (tailDwords * 4UL >= OSMGA_D2E_B1_OFF) {
         IOLog("OpenStepMGA D2-2c: FAIL -- run 1 list reaches the vertices\n");
         IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
         IOUnmapPhysicalFromIOTask(alias, mapLen);
         return;
     }
-    osmgaD2cBuildVertices(vtx, testY);
+    osmgaD2eBuildBatch(vtx,  testY, 0UL,          OSMGA_D2E_B1);
+    osmgaD2eBuildBatch(vtx2, testY, OSMGA_D2E_B1, OSMGA_D2E_B2);
 
     listEnd = (unsigned long)ringPhys + tailDwords * 4UL;
-    vtxPhys = (unsigned long)ringPhys + OSMGA_D2C_VTX_OFF;
-    vtxEnd  = vtxPhys + OSMGA_D2C_VTX_DWORDS * 4UL;
+    vtxPhys = (unsigned long)ringPhys + OSMGA_D2E_B1_OFF;
+    vtxEnd  = vtxPhys + OSMGA_D2E_B1_DWORDS * 4UL;
+    vtx2Phys = (unsigned long)ringPhys + OSMGA_D2E_B2_OFF;
+    vtx2End  = vtx2Phys + OSMGA_D2E_B2_DWORDS * 4UL;
 
-    for (row = 0UL; row < OSMGA_S1_H; row++)
-        for (col = 0UL; col < OSMGA_S1_W; col++)
-            blk[row * stride + col] = OSMGA_S1_SENTINEL;
+    /*
+     * Address invariants, asserted before anything is handed to the card.
+     * A PRIMEND behind its start, past the allocation, or arrived at by
+     * arithmetic that wrapped, makes the card bus-master through physical
+     * memory that is not ours until the addresses happen to match.  That
+     * is the one failure here with no bound on the damage, so it is
+     * refused rather than watched for.
+     */
+    if ((vtxPhys & 3UL) != 0UL || (vtx2Phys & 3UL) != 0UL ||
+        (vtxEnd  & 3UL) != 0UL || (vtx2End  & 3UL) != 0UL ||
+        vtxEnd <= vtxPhys || vtx2End <= vtx2Phys ||
+        vtxEnd == vtx2End ||
+        (OSMGA_D2E_B1_DWORDS % OSMGA_D2C_VTX_DWORDS) != 0UL ||
+        (OSMGA_D2E_B2_DWORDS % OSMGA_D2C_VTX_DWORDS) != 0UL ||
+        OSMGA_D2E_B1_OFF + OSMGA_D2E_B1_DWORDS * 4UL > OSMGA_D2E_B2_OFF ||
+        OSMGA_D2E_B2_OFF + OSMGA_D2E_B2_DWORDS * 4UL > OSMGA_DMA_RING_BYTES) {
+        IOLog("OpenStepMGA D2-2e: REFUSED -- batch address invariants do "
+              "not hold (%08lx..%08lx, %08lx..%08lx)\n",
+              vtxPhys, vtxEnd, vtx2Phys, vtx2End);
+        IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
+        IOUnmapPhysicalFromIOTask(alias, mapLen);
+        return;
+    }
 
     IOLog("OpenStepMGA D2-2c: ring %08x, list %lu dwords -> %08lx, "
           "vertices %08lx -> %08lx, dwgctl %08lx, y %lu\n",
@@ -8820,6 +8990,19 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
     }
     stormBusy = YES;
     simple_unlock(&stormLock);
+
+    /*
+     * The sentinel goes down here, not earlier.  This block is inside the
+     * window clients are handed, so writing it before the engine is ours
+     * would mean scribbling on memory we had not yet been granted -- and
+     * the refusal above, "engine already claimed", is exactly the case
+     * where that would have happened for nothing.  Nothing here is
+     * fallible, so it does not violate the rule that every fallible step
+     * finishes before run 1.
+     */
+    for (row = 0UL; row < OSMGA_S1_H; row++)
+        for (col = 0UL; col < OSMGA_S1_W; col++)
+            blk[row * stride + col] = OSMGA_S1_SENTINEL;
 
     /* Re-asked under the claim: the entry checks were made while another
      * owner could still have been running. */
@@ -8917,13 +9100,13 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
               "further will be programmed\n");
         IOLog("OpenStepMGA D2-2c: ring and microcode RETAINED, engine left "
               "claimed.  *** REBOOT REQUIRED ***\n");
-        osmgaD2cReport(blk, stride, "run1-timeout");
+        osmgaD2eVerify(blk, stride, 0UL, "run1-timeout");
         IOUnmapPhysicalFromIOTask(alias, mapLen);
         return;
     }
 
     /* Checkpoint: whatever starting a pipe did, it is not run 2's doing. */
-    osmgaD2cReport(blk, stride, "run1");
+    (void)osmgaD2eVerify(blk, stride, 0UL, "run1");
 
     /*
      * Acknowledge run 1's softrap before run 2.  Spec 4-13: writing
@@ -8933,113 +9116,64 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
      */
     osmgaW32(base, MGA_ICLEAR, MGA_SOFTRAPICLR);
 
-    /* ---- run 2: VERTEX.  Twenty-four dwords and nothing else. ---- */
-    sum = 0UL;
-    for (i = 0UL; i < OSMGA_D2C_VTX_DWORDS; i++)
-        sum += vtx[i];
-    (void)osmgaR32(base, MGA_ENGSTATUS);
-    if (sum == 0xFFFFFFFFUL)
-        IOLog("OpenStepMGA D2-2c: barrier %lu\n", sum);
-
-    osmgaW32(base, MGA_PRIMADDRESS, vtxPhys | MGA_DMA_VERTEX);
-    osmgaW32(base, MGA_PRIMEND, vtxEnd);
-
-    /*
-     * PHASE 1 -- the payload was consumed.  Nothing about the triangle yet.
+    /* ---- B1 and B2 ----------------------------------------------
      *
-     * wbusy is deliberately NOT here.  Spec 3-189 defines it as "not idle;
-     * it may be RUNning, WAITing, STALLed or loading microcode", and run 1
-     * exists precisely to leave WARP started and WAITing -- so wbusy is 1
-     * from the moment run 1 succeeds and stays 1 until WARP is suspended,
-     * which happens after the verdict.  Requiring !wbusy here made success
-     * unreachable: measured 2026-08-28, run 2 reported a timeout over a
-     * triangle it had drawn correctly.
+     * B1 asks whether one VERTEX submission carries several primitives;
+     * B2 asks whether the pipe can be fed again with no new GENERAL list.
+     *
+     * B1 gates B2.  If B1 did not draw exactly its three triangles then B2
+     * is no longer a clean experiment -- it would be a second submission
+     * onto an image nobody understands -- so the sequence stops there.
+     *
+     * The references support neither question as strongly as it might look
+     * (docs/D2_2E_BATCH_PLAN.md section 9.1): the DRM re-emits the whole
+     * context before every vertex flush, as a documented workaround, and
+     * its transport is secondary VERTEX inside a primary GENERAL list.
+     * What they establish is only that the WARP pipe need not be
+     * restarted.  If B2 comes back empty the remedy is already known --
+     * re-emit the context per batch, exactly as the reference does.
      */
-    for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
-        status = osmgaR32(base, MGA_ENGSTATUS);
-        primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
-        if (((unsigned long)primAfter & ~3UL) == vtxEnd &&
-            (status & MGA_STATUS_ENDPRDMASTS) != 0UL)
-            break;
+    if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys, OSMGA_D2E_B1_DWORDS, "B1")) {
+        IOLog("OpenStepMGA D2-2e: ring and microcode RETAINED, engine left "
+              "claimed.  *** REBOOT REQUIRED ***\n");
+        (void)osmgaD2eVerify(blk, stride, OSMGA_D2E_B1, "B1-failed");
+        IOUnmapPhysicalFromIOTask(alias, mapLen);
+        return;
     }
-    status = osmgaR32(base, MGA_ENGSTATUS);
-    primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
-    devctrl1 = osmgaPciReadConfigLong(osmgaSelfBus, osmgaSelfDev,
-                                      osmgaSelfFn, MGA_CFG_DEVCTRL);
-    IOLog("OpenStepMGA D2-2c/xfer: PRIMADDRESS %08x raw (wanted %08lx "
-          "| primod), STATUS %08lx, DEVCTRL %08lx, spins %lu\n",
-          primAfter, vtxEnd, status, devctrl1, spins);
-
-    if (spins >= OSMGA_S1_SPIN_LIMIT ||
-        (devctrl1 & MGA_CFG_DEVCTRL_ABORTS) != 0UL) {
+    if (!osmgaD2eVerify(blk, stride, OSMGA_D2E_B1, "B1")) {
         /*
-         * Verdict first, forensics second.  Reading 4096 framebuffer words
-         * is the least trustworthy thing to do when the drawing engine or
-         * the memory path may be wedged, so every line that must survive
-         * is emitted before the scan is attempted.  If the scan never
-         * returns, the log still says what happened and what to do.
+         * The fence succeeded, so nothing is in flight and the engine is
+         * not wedged -- this is a wrong picture, not a hung card.  Suspend
+         * WARP and stop; there is no reason to make the image harder to
+         * read by drawing more onto it.
          */
-        IOLog("OpenStepMGA D2-2c/xfer: the vertex payload was not consumed "
-              "-- nothing further will be programmed\n");
-        IOLog("OpenStepMGA D2-2c: ring and microcode RETAINED, engine left "
+        IOLog("OpenStepMGA D2-2e: B1 did not match -- B2 would not be a "
+              "clean experiment, stopping here\n");
+        (void)osmgaStormWaitFifo(base, 1U);
+        osmgaW32(base, MGA_WIADDR2, MGA_WMODE_SUSPEND);
+        IOLog("OpenStepMGA D2-2e: WARP suspended; the image above is the "
+              "result.  Compare it with docs/D2_2E_BATCH_PLAN.md section 5\n");
+        goto releaseAndReturn;
+    }
+
+    if (!osmgaD2eSubmitBatch(base, vtx2, vtx2Phys, OSMGA_D2E_B2_DWORDS,
+                             "B2")) {
+        IOLog("OpenStepMGA D2-2e: ring and microcode RETAINED, engine left "
               "claimed.  *** REBOOT REQUIRED ***\n");
-        osmgaD2cReport(blk, stride, "xfer-timeout");
+        (void)osmgaD2eVerify(blk, stride, OSMGA_D2E_TRIS, "B2-failed");
         IOUnmapPhysicalFromIOTask(alias, mapLen);
         return;
     }
-
     /*
-     * PHASE 2 -- fence the triangle.
-     *
-     * DWGSYNC's readback changes only after the drawing engine finishes
-     * the primitive that preceded the write, so observing the new tag is
-     * proof that the triangle completed -- proof that a level bit cannot
-     * give.  dwgengsts is then checked once more as a second, independent
-     * statement covering both FIFOs and the last memory access.
-     *
-     * The tag is derived from the current value because DWGSYNC's reset
-     * value is documented as unknown; +4 keeps the reserved low two bits
-     * zero and differs from the old value even across a 32-bit wrap.
+     * n = all five, so this re-checks B1's three as well: B2 must have
+     * added exactly its own two and left the earlier pixels alone.
      */
-    syncOld = osmgaR32(base, MGA_DWGSYNC) & OSMGA_D2C_SYNC_MASK;
-    syncTag = (syncOld + OSMGA_D2C_SYNC_STEP) & OSMGA_D2C_SYNC_MASK;
-    if (!osmgaStormWaitFifo(base, 2U)) {
-        IOLog("OpenStepMGA D2-2c/fence: no FIFO room for the tag\n");
-        IOLog("OpenStepMGA D2-2c: ring and microcode RETAINED, engine left "
-              "claimed.  *** REBOOT REQUIRED ***\n");
-        osmgaD2cReport(blk, stride, "fence-nofifo");
-        IOUnmapPhysicalFromIOTask(alias, mapLen);
-        return;
+    if (!osmgaD2eVerify(blk, stride, OSMGA_D2E_TRIS, "B2")) {
+        IOLog("OpenStepMGA D2-2e: B2 did not match\n");
+        (void)osmgaStormWaitFifo(base, 1U);
+        osmgaW32(base, MGA_WIADDR2, MGA_WMODE_SUSPEND);
+        goto releaseAndReturn;
     }
-    osmgaW32(base, MGA_DMAPAD,  0UL);
-    osmgaW32(base, MGA_DWGSYNC, syncTag);
-
-    for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++)
-        if ((osmgaR32(base, MGA_DWGSYNC) & OSMGA_D2C_SYNC_MASK) == syncTag)
-            break;
-    status   = osmgaR32(base, MGA_ENGSTATUS);
-    devctrl1 = osmgaPciReadConfigLong(osmgaSelfBus, osmgaSelfDev,
-                                      osmgaSelfFn, MGA_CFG_DEVCTRL);
-    IOLog("OpenStepMGA D2-2c/fence: DWGSYNC %08lx -> %08lx (read %08lx), "
-          "STATUS %08lx, DEVCTRL %08lx, spins %lu\n",
-          syncOld, syncTag,
-          osmgaR32(base, MGA_DWGSYNC) & OSMGA_D2C_SYNC_MASK,
-          status, devctrl1, spins);
-
-    if (spins >= OSMGA_S1_SPIN_LIMIT ||
-        (status & MGA_STATUS_DWGENGSTS) != 0UL ||
-        (devctrl1 & MGA_CFG_DEVCTRL_ABORTS) != 0UL) {
-        IOLog("OpenStepMGA D2-2c/fence: the triangle did not fence -- "
-              "nothing further will be programmed\n");
-        IOLog("OpenStepMGA D2-2c: ring and microcode RETAINED, engine left "
-              "claimed.  *** REBOOT REQUIRED ***\n");
-        osmgaD2cReport(blk, stride, "fence-timeout");
-        IOUnmapPhysicalFromIOTask(alias, mapLen);
-        return;
-    }
-
-    /* The triangle is in memory.  This is the verdict scan. */
-    osmgaD2cReport(blk, stride, "run2");
 
     /*
      * PHASE 3 -- suspend, now that the fence says nothing is in flight.
@@ -9098,10 +9232,18 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
 
 releaseAndReturn:
     /*
-     * A refusal, not a failed run: no list has been started, so the engine
+     * A refusal or a wrong picture -- not a wedged engine.  Either no list
+     * was started, or the fence proved nothing is in flight, so the engine
      * is handed back rather than left claimed.  That is the difference
-     * between this and the two timeout paths above.
+     * between this and the timeout paths above, which retain everything.
+     *
+     * The block is restored on the way out for the same reason it was
+     * filled under the claim: it belongs to the client window.
      */
+    for (row = 0UL; row < OSMGA_S1_H; row++)
+        for (col = 0UL; col < OSMGA_S1_W; col++)
+            blk[row * stride + col] = 0UL;
+
     simple_lock(&stormLock);
     stormBusy = NO;
     simple_unlock(&stormLock);
