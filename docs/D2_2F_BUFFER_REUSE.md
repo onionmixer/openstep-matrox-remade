@@ -162,3 +162,60 @@ C1 의 첫 제출과 R2 의 앞 두 제출에서 **포인터 완료 시점의 `d
 128×128 블록, 클립 4..123, 24×24 셀 5×5 격자, 각 셀 +2 에 다리 16 삼각형.
 **21 개, 각 136 px, 겹침 0, 전부 클립 안, 색 21 개 모두 유일이며 sentinel 과 불일치.**
 총 2856 px / 16384.
+
+---
+
+## 10. 결과 (2026-08-28 21:12:50) — **(b) 확정**
+
+```
+D2-2f/R2a: drawing STILL IN FLIGHT at the pointer boundary
+D2-2e/R2b: 72 dwords, PRIMADDRESS 00058123 (wanted 58120|primod), STATUS 808f0024, spins 5
+D2-2f/R2b: drawing STILL IN FLIGHT at the pointer boundary
+D2-2e/R2c: 72 dwords, PRIMADDRESS 00058123, STATUS 80ff0024, spins 5
+D2-2e/R2c: DWGSYNC c -> 10, STATUS 80fe0024, spins 1
+D2-2e/R2:  2856 changed, 0 wrong, 0 OUTSIDE CLIP (expecting 21 triangles)
+D2-2f: R2 PASS -- a buffer is free to overwrite once PRIMADDRESS has passed it,
+       drawing still in flight
+suspend: STATUS 80f20024, spins 1        PASS
+```
+
+### 10.1 답
+
+**정점 버퍼는 `PRIMADDRESS` 가 지나간 순간 자유다.** 그리기 완료를 기다릴 필요가 없다.
+
+`2856 = 21 × 136`, **wrong 0** — 16384 픽셀 전수 대조다. 그리고 R2 의 펜스 없는
+두 제출 모두 포인터 경계에서 **`drawing STILL IN FLIGHT`** 였다.
+`NOT EXERCISED` 는 한 번도 나오지 않았다 — **질문이 실제로 시험됐다.**
+
+**생산은 배치마다 펜스를 칠 필요가 없다.**
+
+### 10.2 그리고 C1 도 통과했다
+
+**그리기가 진행 중일 때 `PRIMADDRESS` 를 다시 써도 된다** — 참조 둘 다 하지 않는
+동작이다(둘 다 idle 을 먼저 확인한다). 이제 선례가 하나 생겼다.
+
+### 10.3 syslog 가 앞부분을 버렸다 — 그래도 결론은 선다
+
+이 부팅의 D2 로그는 **R2a 부터** 시작한다. 링 배치·run1·R1a·R1b·`R1 PASS`·
+C1a·C1b·`C1 PASS` 가 전부 없다. 드라이버 주석이 경고한 그대로다
+(*"syslog drops bursts, and it dropped the whole of D3-3b's first run"*).
+
+**그럼에도 R1·C1 통과는 세 갈래로 독립 증명된다:**
+
+1. `R2: expecting 21 triangles ... 0 wrong` — 21 개 전수 맵이 맞았고 **거기에
+   R1 의 6 개와 C1 의 6 개가 포함된다.**
+2. **제어 흐름** — R1 이나 C1 이 실패하면 `wrongPicture`/`wedged` 로 빠져
+   R2 에 도달하지 못한다. R2 로그가 존재하는 것 자체가 증거다.
+3. **`DWGSYNC` 태그가 카운터다.** 최종 `10`(=16)이고 태그는 4 씩 오르므로
+   **펜스가 정확히 4 회** 일어났다 — 설계상 펜스가 있는 제출은
+   R1a·R1b·C1b·R2c **정확히 4 개**다.
+
+*로그를 잃고도 판정이 서는 것은 gate 구조와 단조 증가 태그 덕이지 운이 아니다.
+그래도 다음 시험 전에 로그 양을 줄이거나 NFS 로 빼는 것이 옳다.*
+
+### 10.4 남은 것
+
+- **`PRIMEND` 연장**(D2-2g) — 4-15 가 *"전송 중에도 목록을 늘리기 위해 여러 번
+  쓸 수 있다"* 고 명시. `PRIMADDRESS` 재기록조차 없앤다. 다음 차례.
+- 배치 사이 상태 변경, 인터럽트 완료, Mesa 연결.
+- **로그 양** — 이번에 실제로 증거를 잃었다.
