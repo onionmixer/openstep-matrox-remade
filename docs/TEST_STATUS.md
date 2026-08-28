@@ -123,3 +123,9 @@ allocation, mapping compatibility를 각각 독립 증거로 확정해야 한다
 세부 실행 근거는 `P1_SUBSYSTEM_MEMORY_RECONCILIATION.md`,
 `P2_CLEAN_REPRODUCIBILITY.md`, `D0_EDID_PARSER_POLICY.md`,
 `P2_RESOURCE_OWNERSHIP.md`, `NEXT_STEP_EXECUTION_PLAN.md`를 따른다.
+| **WARP 삼각형 하나 (D2-2c/d)** | 마이크로코드가 정점을 받아 그리는가 — **1 차 DMA VERTEX 모드**(`PRIMADDRESS \| 0x3`), 파이프 7(`tgzsaf`) | **실기** | ✅ 1176 px = `48*49/2` 정확, 색 정확, **클립 밖 0**. 두 부팅 재현. 참조 구현 셋 어디에도 실행 선례가 없던 모드 — **2 차 DMA 의 네 번 NO-GO 를 우회가 아니라 제거**. 완료 규약은 `DWGSYNC`(3-139) 이지 `wbusy` 가 아니다: **기동된 WARP 는 대기 중에도 busy** 라 `!wbusy` 는 suspend 전엔 도달 불가(`D2_2C`, `D2_2D`) |
+| **WARP 배치 (D2-2e)** | 한 제출이 프리미티브 여럿을 나르는가 / 파이프를 다시 먹일 수 있는가 | **실기** | ✅ 둘 다. 72 dword 에 삼각형 3 개(구분자 없음), 그리고 **새 GENERAL 목록 없이** 2 개 더 — 앞 것 무손상. 4096 px 전수 대조 wrong 0. **참조보다 강하다**: DRM 은 flush 마다 컨텍스트를 다시 낸다(`mgaioctl.c:432`, *"FIXME: Workaround bug in kernel module"*) |
+| **WARP 버퍼 재사용 (D2-2f)** | 정점 버퍼는 언제 덮어써도 되는가 | **실기** | ✅ **`PRIMADDRESS` 가 지나간 순간**. 그리기 완료를 안 기다려도 된다 — 21 삼각형 2856 px wrong 0, 펜스 없는 제출이 포인터 경계에서 `dwgengsts=1`(질문이 실제로 시험됨). **배치마다 펜스 불필요.** 덤으로 **그리기 중 `PRIMADDRESS` 재기록도 안전**(참조 둘 다 안 하는 동작) |
+| **`PRIMEND` 연장 (D2-2g)** | `PRIMADDRESS` 없이 `PRIMEND` 만 올려 목록을 늘릴 수 있는가 | 미실행 | ⏸ **보류**. 4-16 이 *"fill the last set with no-ops"* 를 요구하고 VERTEX 모드엔 no-op 이 없다. IDA 로 확인: Windows 는 모든 패킷의 미사용 인덱스를 `0x15`(DMAPAD)로 채우는 **GENERAL** 링이다(`W19`). 측정된 병목도 아니다. 재개 조건은 프로파일이 시작 주소 되읽기를 지목할 때 |
+| **WARP 커버리지 동등성 (M3 T0)** | WARP 가 사다리꼴 경로와 같은 픽셀을 덮는가 | **실기** | ✅ 오라클 1176/0 wrong, WARP 1176/0 wrong, **둘 사이 0 픽셀 차이**. 정확 A/B 비교가 허가됨 — T1 이하의 전제 |
+| **WARP 깊이·텍스처 (M3 T1~T6)** | z 가 `[0,1]` 인가 / `ZI` 가 WARP 로도 쓰는가 / 텍스처·필터·층 전환 | T1·T2 설치됨, T3~T6 계획 | ⏳ 지금까지의 WARP 증명은 **전부 깊이 끄고 텍스처 0**. 정점 규약(참조): `z = win[2]/(2^bits−1)`, `tu0/tv0` 정규화, 원근은 `rhw *= q, tu /= q`. **Y 는 뒤집지 않는다** — 이 백엔드는 OSMesa 라 `Buffer.c:905` 가 그렇게 적어 놨다 |
