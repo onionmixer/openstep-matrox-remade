@@ -109,6 +109,16 @@
 #define MGA_ENGBUSY_BIT         0x01    /* ENGSTATUS+2, bit 0 */
 #define MGA_OPMODE_DMA_BLIT     0x04
 #define MGA_OPMODE_BYTESWAP     0x30000 /* cleared on little-endian */
+/*
+ * dirdatasiz<17:16> is what MGA_OPMODE_BYTESWAP names, and it governs
+ * DIRECT frame buffer access.  The swapper that governs bus-mastered
+ * lists is a different field two bytes down: spec 4-8 says DMA General
+ * Purpose and DMA Vertex Write "should set dmaDataSiz to '00' for
+ * Little-Endian".  Nothing in this driver ever writes it, so it is
+ * whatever reset or the VGA BIOS left -- which is worth checking before
+ * handing the card a list of packed register indices and IEEE floats.
+ */
+#define MGA_OPMODE_DMADATASIZ   0x00000300UL   /* OPMODE<9:8> */
 #define MGA_MACCESS_PW32        0x02
 
 /*
@@ -8369,10 +8379,24 @@ osmgaDmaBuildTriangleList(unsigned long *ring, unsigned long ringDwords,
                              MGA_ZORG,      0UL);
     /* WFLAG = 0 leaves walucfgflag bit 11 (U, enable culling) clear, so no
      * winding order can silently discard this triangle. */
+    /*
+     * Spec 4-42, and again at 4-25: "When drawing Gouraud shaded
+     * trapezoids, TDUALSTAGE0 and TDUALSTAGE1 must be programmed to '0'
+     * except for TDUALSTAGE0.color0sel = '11' and TDUALSTAGE1.color1sel =
+     * '11'.  This has no effect on the result."  color_sel is bits 21:22
+     * in both registers -- Mesa proves the layouts are identical by
+     * assigning tdualstage1 = tdualstage0 outright (mgatex.c:751).
+     *
+     * This is a deliberate departure from the reference, which emits
+     * Mesa's value and often zero.  The spec states the requirement twice,
+     * for exactly the primitive WARP is about to generate, and disclaims
+     * any effect on the result -- so obeying it cannot change the image
+     * and disobeying it would be an undocumented gamble on a first run.
+     */
     ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
                              MGA_WFLAG1,      0UL,
-                             MGA_TDUALSTAGE0, 0UL,
-                             MGA_TDUALSTAGE1, 0UL,
+                             MGA_TDUALSTAGE0, MGA_TDS_COLOR_SEL_MUL,
+                             MGA_TDUALSTAGE1, MGA_TDS_COLOR_SEL_MUL,
                              MGA_FCOL,        0UL);
     ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
                              MGA_STENCIL,    0UL,
@@ -8567,7 +8591,7 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
     unsigned long dwgctl = MGA_DWGCTL_SLOPED(MGA_DWGCTL_GOURAUD);
     unsigned long listEnd, vtxPhys, vtxEnd;
     unsigned long spins, status, i, row, col, sum;
-    unsigned long devctrl0, devctrl1, primptr;
+    unsigned long devctrl0, devctrl1, primptr, ien, opmode;
     unsigned long *ring;
     unsigned long *vtx;
     void *ringVirt;
@@ -8642,6 +8666,27 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
               devctrl0);
         return;
     }
+    /*
+     * This driver installs no interrupt handler, and run 1 ends by writing
+     * SOFTRAP -- which raises a PCI interrupt on PINTA/ if softrapien is
+     * set (spec 3-150).  wien and wcien would do the same for a WARP or a
+     * WARP cache-miss interrupt, and run 2 is the first thing here that
+     * can provoke either.  IEN is never written by this driver, so this is
+     * a check on what reset and the VGA BIOS left, not on our own state.
+     */
+    ien = osmgaR32(base, MGA_IEN);
+    if (ien != 0UL) {
+        IOLog("OpenStepMGA D2-2c: REFUSED -- IEN is %08lx and there is no "
+              "interrupt handler; SOFTRAP and WARP would raise PINTA/\n", ien);
+        return;
+    }
+    opmode = osmgaR32(base, MGA_OPMODE);
+    if ((opmode & MGA_OPMODE_DMADATASIZ) != 0UL) {
+        IOLog("OpenStepMGA D2-2c: REFUSED -- OPMODE %08lx has dmadatasiz "
+              "%lu; the list indices and the vertex floats would be "
+              "byte-swapped\n", opmode, (opmode >> 8) & 3UL);
+        return;
+    }
     if (!osmgaStormWaitIdle(base)) {
         IOLog("OpenStepMGA D2-2c: REFUSED -- engine BUSY at entry\n");
         return;
@@ -8674,17 +8719,12 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
               osmgaWarpPipeHeld[OSMGA_D2C_PIPE]);
     }
 
-    /* warp_init after placement, so WCACHEFLUSH has code to flush. */
-    osmgaW32(base, MGA_WIADDR2,    MGA_WMODE_SUSPEND);
-    osmgaW32(base, MGA_WGETMSB,    MGA_WGETMSB_G400);
-    osmgaW32(base, MGA_WVRTXSZ,    MGA_WVRTXSZ_G400);
-    osmgaW32(base, MGA_WACCEPTSEQ, MGA_WACCEPTSEQ_G400);
-    osmgaW32(base, MGA_WMISC,      MGA_WMISC_WRITE);
-    if (osmgaR32(base, MGA_WMISC) != MGA_WMISC_EXPECTED) {
-        IOLog("OpenStepMGA D2-2c: FAIL -- warp_init did not settle\n");
-        IOUnmapPhysicalFromIOTask(alias, mapLen);
-        return;
-    }
+    /* warp_init used to run here.  It writes five WARP registers, and
+     * doing that before claiming the engine means modifying WARP while
+     * another owner may be mid-submission -- and then "REFUSING" after the
+     * damage.  It now runs under the claim, below.  Nothing above this
+     * point writes a card register; osmgaWarpPlaceUcode only allocates and
+     * copies. */
 
     ringVirt = IOMallocLow((int)OSMGA_DMA_RING_BYTES);
     if (ringVirt == 0) {
@@ -8766,6 +8806,40 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
     stormBusy = YES;
     simple_unlock(&stormLock);
 
+    /* Re-asked under the claim: the entry checks were made while another
+     * owner could still have been running. */
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA D2-2c: REFUSED -- engine BUSY under the claim\n");
+        goto releaseAndReturn;
+    }
+
+    /*
+     * A softrap left pending by anything earlier would make run 1's
+     * completion predicate satisfiable before run 1's own SOFTRAP has
+     * taken effect: SOFTRAPEN persists until ICLEAR, and writing PRIMEND
+     * resets only ENDPRDMASTS (spec 3-189).  The between-run ICLEAR would
+     * then clear the stale trap while run 1's real one arrives late and
+     * stops run 2.  Clear it now, and refuse if it will not clear.
+     */
+    osmgaW32(base, MGA_ICLEAR, MGA_SOFTRAPICLR);
+    status = osmgaR32(base, MGA_ENGSTATUS);
+    if ((status & MGA_STATUS_SOFTRAPEN) != 0UL) {
+        IOLog("OpenStepMGA D2-2c: REFUSED -- SOFTRAPEN still set after "
+              "ICLEAR (STATUS %08lx)\n", status);
+        goto releaseAndReturn;
+    }
+
+    /* warp_init after placement, so WCACHEFLUSH has code to flush. */
+    osmgaW32(base, MGA_WIADDR2,    MGA_WMODE_SUSPEND);
+    osmgaW32(base, MGA_WGETMSB,    MGA_WGETMSB_G400);
+    osmgaW32(base, MGA_WVRTXSZ,    MGA_WVRTXSZ_G400);
+    osmgaW32(base, MGA_WACCEPTSEQ, MGA_WACCEPTSEQ_G400);
+    osmgaW32(base, MGA_WMISC,      MGA_WMISC_WRITE);
+    if (osmgaR32(base, MGA_WMISC) != MGA_WMISC_EXPECTED) {
+        IOLog("OpenStepMGA D2-2c: FAIL -- warp_init did not settle\n");
+        goto releaseAndReturn;
+    }
+
     /* ---- run 1: GENERAL.  Pipe started, WARP left waiting. ----
      * The sum is the barrier: `(void)ring[i]` is a read the optimiser is
      * free to delete, and a barrier that compiles to nothing is worse than
@@ -8817,11 +8891,18 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
 
     if (spins >= OSMGA_S1_SPIN_LIMIT ||
         (devctrl1 & MGA_CFG_DEVCTRL_ABORTS) != 0UL) {
+        /*
+         * Verdict first, forensics second.  Reading 4096 framebuffer words
+         * is the least trustworthy thing to do when the drawing engine or
+         * the memory path may be wedged, so every line that must survive
+         * is emitted before the scan is attempted.  If the scan never
+         * returns, the log still says what happened and what to do.
+         */
         IOLog("OpenStepMGA D2-2c/run1: TIMEOUT or DMA ABORT -- nothing "
               "further will be programmed\n");
-        osmgaD2cReport(blk, stride, "run1-timeout");
         IOLog("OpenStepMGA D2-2c: ring and microcode RETAINED, engine left "
               "claimed.  *** REBOOT REQUIRED ***\n");
+        osmgaD2cReport(blk, stride, "run1-timeout");
         IOUnmapPhysicalFromIOTask(alias, mapLen);
         return;
     }
@@ -8868,11 +8949,18 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
 
     if (spins >= OSMGA_S1_SPIN_LIMIT ||
         (devctrl1 & MGA_CFG_DEVCTRL_ABORTS) != 0UL) {
+        /*
+         * Verdict first, forensics second.  Reading 4096 framebuffer words
+         * is the least trustworthy thing to do when the drawing engine or
+         * the memory path may be wedged, so every line that must survive
+         * is emitted before the scan is attempted.  If the scan never
+         * returns, the log still says what happened and what to do.
+         */
         IOLog("OpenStepMGA D2-2c/run2: TIMEOUT or DMA ABORT -- nothing "
               "further will be programmed\n");
-        osmgaD2cReport(blk, stride, "run2-timeout");
         IOLog("OpenStepMGA D2-2c: ring and microcode RETAINED, engine left "
               "claimed.  *** REBOOT REQUIRED ***\n");
+        osmgaD2cReport(blk, stride, "run2-timeout");
         IOUnmapPhysicalFromIOTask(alias, mapLen);
         return;
     }
@@ -8887,20 +8975,34 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
     osmgaW32(base, MGA_WIADDR2, MGA_WMODE_SUSPEND);
     IOLog("OpenStepMGA D2-2c: WARP suspended after proven quiescence\n");
 
-    simple_lock(&stormLock);
-    stormBusy = NO;
-    simple_unlock(&stormLock);
-
     /* This block is inside the window clients are handed, and it was opened
      * either zeroed or unspecified -- never full of our sentinel.  Put it
-     * back to zero now that the pixels have been read and reported. */
+     * back to zero before the claim is released, so no client can observe
+     * the intermediate state. */
     for (row = 0UL; row < OSMGA_S1_H; row++)
         for (col = 0UL; col < OSMGA_S1_W; col++)
             blk[row * stride + col] = 0UL;
 
+    simple_lock(&stormLock);
+    stormBusy = NO;
+    simple_unlock(&stormLock);
+
     IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
     IOUnmapPhysicalFromIOTask(alias, mapLen);
     IOLog("OpenStepMGA D2-2c: end (ring released, microcode kept)\n");
+    return;
+
+releaseAndReturn:
+    /*
+     * A refusal, not a failed run: no list has been started, so the engine
+     * is handed back rather than left claimed.  That is the difference
+     * between this and the two timeout paths above.
+     */
+    simple_lock(&stormLock);
+    stormBusy = NO;
+    simple_unlock(&stormLock);
+    IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
+    IOUnmapPhysicalFromIOTask(alias, mapLen);
 }
 
 /*

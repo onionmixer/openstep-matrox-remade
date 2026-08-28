@@ -334,3 +334,55 @@ D2-2a 처럼 합을 누산하고 그 합을 쓰는 형태로 고쳤다.
 `"WARP Triangle Test" = "Yes"` 를 설정에 넣고 **재부팅**해야 돈다.
 그 순간이 이 프로젝트에서 처음으로 **WARP 에 정점을 먹이는** 시점이고,
 freeze 가능 구간이다. §8 의 실패 정책이 그때 작동한다.
+
+---
+
+## 12. 구현 교차검토 판정 (2026-08-28)
+
+codex 판정은 **NO-GO**. 검증 결과 **행동을 바꾸는 지적 다섯 건이 모두 사실**이었다.
+
+| codex 주장 | 검증 | 결과 |
+| --- | --- | --- |
+| run 2 가 무조건 타임아웃한다(`primod` 마스크) | 3-164 | ✅ — **회신 전에 내가 먼저 찾아 고쳤다** (`5e0daf7`) |
+| `TDUALSTAGE0/1` 은 `color0sel/color1sel = '11'` = `0x00600000` 이어야 한다 | 사양서가 **두 곳**(17508, 17978)에서 *"Gouraud shaded trapezoids"* 에 대해 명시. `mgaregs.h:868` 이 `0x600000`. Mesa 가 `tdualstage1 = tdualstage0` 로 값을 복사하므로(`mgatex.c:751`) 레이아웃 동일 | ✅채택 |
+| `OPMODE.dmadatasiz` 를 확인해야 한다 | 4-8: *"DMA General Purpose, DMA Vector Write, or **DMA Vertex Write** — should set dmaDataSiz to ... '00' for Little-Endian"* — 우리 두 모드를 **이름으로** 지목 | ✅채택 |
+| `IEN` 이 켜져 있으면 핸들러 없이 인터럽트가 뜬다 | 3-150 `softrapien<0>`·`wien<7>`·`wcien<8>`. 드라이버는 IEN 을 **읽기만 하고(`:2532`) 쓰지 않는다** — 즉 리셋/BIOS 가 남긴 값 | ✅채택 |
+| run 1 앞의 stale `SOFTRAPEN` 이 완료를 위조할 수 있다 | 3-189: `SOFTRAPEN` 은 `ICLEAR` 까지 남고 `PRIMEND` 는 `ENDPRDMASTS` 만 리셋한다. 시나리오 성립 | ✅채택 |
+| WARP 레지스터를 **claim 전에** 쓰고 있다 | 사실이었다. `warp_init` 5 회 쓰기가 `stormBusy` 검사보다 앞에 있었다 | ✅채택 — 구조 재배치 |
+| 타임아웃에서 VRAM 4096 워드를 읽는 것은 위험하다 | 물리적으로는 CPU 읽기라 hang 근거가 약하다. 그러나 **순서는 공짜로 고칠 수 있다** | ⚖️부분 — 스캔을 없애지 않고 **판정 로그를 스캔보다 먼저** 내보낸다 |
+| 명령 목록·값·정점 페이로드·기하 | 전부 CONFIRMED | ⏭️ 행동 변화 없음 |
+
+### 12.1 검증하다 내가 찾은 것
+
+**`MGA_OPMODE_BYTESWAP`(`0x30000`)은 `dmadatasiz` 가 아니다.** 그것은
+`dirdatasiz<17:16>`(직접 프레임버퍼 접근)이고, 문제의 필드는 `dmadatasiz<9:8>`
+= `0x300` 이다(`mgaregs.h:559,563`). **기존 상수로 검사했으면 엉뚱한 필드를
+보고 통과시켰을 것이다.** 새 상수 `MGA_OPMODE_DMADATASIZ` 를 두고 그 이유를
+주석에 적었다.
+
+그리고 `osmgaStormInitState` 가 `opmode & ~MGA_OPMODE_BYTESWAP` 로 지우는 것도
+`dirdatasiz` 뿐이다 — **`dmadatasiz` 는 이 드라이버가 한 번도 건드린 적이 없다.**
+
+### 12.2 참조와 갈라지는 한 곳
+
+`TDUALSTAGE` 는 **의도적으로 참조와 다르게** 간다. DRM 은 Mesa 값을 싣고 그것은
+흔히 0 이다. 사양서를 택한 이유는 셋이다 — 요구가 **우리가 그릴 바로 그 프리미티브**
+(Gouraud shaded trapezoid)에 대해 **두 번** 적혀 있고, 사양서 자신이
+*"This has no effect on the result"* 라고 **결과에 영향이 없음을 보증**하며,
+따라서 지키면 그림이 달라질 수 없고 안 지키면 첫 실행에서 미문서화 도박이 된다.
+
+### 12.3 최종 제어 흐름
+
+```
+읽기만 (PRIMPTR, DEVCTRL, IEN, OPMODE, 엔진 idle)   <- 거부는 여기서
+할당·매핑·목록 조립·정점 조립·sentinel 채움          <- 카드 레지스터 쓰기 0
+claim (stormLock / stormBusy)
+  idle 재확인 · ICLEAR + SOFTRAPEN 확인 · warp_init  <- 첫 쓰기가 여기다
+  run 1 -> 체크포인트 -> ICLEAR -> run 2 -> 보고
+  성공: 블록 0 복원 -> claim 해제 -> 해제
+  타임아웃: 판정 로그 -> REBOOT 로그 -> 스캔 -> **claim 유지, 아무것도 해제 안 함**
+  거부(목록 시작 전): claim 반납
+```
+
+**claim 이전 첫 카드 레지스터 쓰기는 없다** — 감사로 확인했다.
+`osmgaStormWaitIdle` 도 쓰기 0 회다.
