@@ -901,6 +901,23 @@ typedef int OSMGAD3ZorgAligned[
 #define OSMGA_ACCELREARM_PARAM  "OSMGAAccelRearm"
 
 #define OSMGA_MEMRESET_PARAM    "OSMGAMemReset"
+
+/*
+ * Run the M3 WARP qualification on a machine that is already up.
+ *
+ * Every M3 iteration has cost a reboot, and the reboot is the expensive
+ * part of this work by a wide margin -- most of them spent discovering
+ * something a second run would have told us for free.  The project already
+ * uses this technique and says why, at OSMGA_HW3D_TUNE_PARAM: settings
+ * that "let a measurement turn one thing at a time on a running machine
+ * rather than on a reboot".
+ *
+ * Gated on the same configuration flag as the boot-time run, so a machine
+ * that never opted in cannot be made to do this by a parameter write.  The
+ * failure policy is unchanged: a wedge costs the reboot it would have cost
+ * anyway, and a pass costs none.
+ */
+#define OSMGA_WARPQUAL_PARAM    "OSMGAWarpQual"
 /*
  * M1-3i: which word of the uncached alias to read once a submission has
  * finished, or zero for none.  Development only -- see the note where it is
@@ -5593,6 +5610,18 @@ unmap:
      * latch and says so in the log, because silently re-enabling a latch
      * that was set for a reason is worse than leaving it set.
      */
+    if (osmgaTextEquals(parameterName, OSMGA_WARPQUAL_PARAM)) {
+        if (!warpDepthTestEnabled) {
+            IOLog("OpenStepMGA M3: refused -- \"WARP Depth Test\" is not "
+                  "Yes in this instance table\n");
+            return IO_R_UNSUPPORTED;
+        }
+        IOLog("OpenStepMGA M3: run requested through %s\n",
+              OSMGA_WARPQUAL_PARAM);
+        [self runWarpDepthQualificationTest];
+        return IO_R_SUCCESS;
+    }
+
     if (osmgaTextEquals(parameterName, OSMGA_ACCELREARM_PARAM)) {
         if (parameterArray == 0 || count != 1U)
             return IO_R_INVALID_ARG;
