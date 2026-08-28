@@ -319,15 +319,34 @@ DEPTH_ORG  = 5 MiB = 5,242,880
 (`tdc` 가 `cmd 1 colour 0 depth 0` 으로 정확히 이것을 말한다 — 명령 창은
 매핑되고 VRAM 오프셋만 실패한다.)
 
-> **이것은 별건이다.** W12 와 무관하며, 고치려면 그 상수들을 드라이버가
-> 보고하는 창 시작에서 유도하게 해야 한다. **여기서는 고치지 않고 기록한다.**
+> **고쳤다 (2026-08-28).** 상수를 지우고 `OSMGA_HW3D_CAP_VRAMOFF` 에서
+> 유도하게 했다 — 창이 어디인지 아는 것은 드라이버뿐이다. `TEX_ORG` 도 같은
+> 함정이었다(6 MiB, 역시 창 아래).
+>
+> ```
+> colour = caps[CAP_VRAMOFF]
+> depth  = colour + 1 MiB      (128 정렬, ZORG 요구)
+> tex    = colour + 2 MiB      ( 32 정렬, TEXORG 요구)
+> ```
+>
+> **네 시험이 전부 살아났고, 그중 둘이 이 수정이 덜 덮었다고 적은 바로 그
+> 경로를 실기에서 확인해 준다:**
+>
+> ```
+> tdc : "the validator checks zorg only when it is addressed"
+> ttex: "the texture origin is checked only when something is textured"
+> ```
 
-### 7.5 이 결과가 덮지 **못하는** 것
+### 7.5 덮지 못했던 것 — **같은 날 덮었다**
 
-못 돈 넷이 하필 **pitch·texture·depth·blendsat** 이다. 즉:
+처음 이 절은 이렇게 적혀 있었다: 못 돈 넷이 하필 pitch·texture·depth·
+blendsat 이라 **`zorg`·`texorg` 는 덜 덮였고, 정렬 거부 0 은 `dstorg` 에
+대한 측정으로만 받는다.**
 
-- **`dstorg` 경로는 잘 덮였다** (돈 11 개가 전부 목적지를 쓴다)
-- **`zorg`·`texorg` 는 덜 덮였다** — 깊이·텍스처를 가장 많이 쓰는 시험들이 안 돌았다
+**그 넷을 고치고 나니 덮였다** (§7.4). 전체 회귀:
 
-**정렬 거부 0 을 `dstorg` 에 대한 측정으로는 받되, `zorg`/`texorg` 에 대해서는
-"아직 덜 봤다" 로 남긴다.** 그 넷을 살리는 것이 다음 차례의 값어치 있는 일이다.
+```
+15/15 이 돌고 전부 통과, 정렬 판정(20/21/22) 0 건
+```
+
+**이제 정렬 거부 0 은 세 원점 모두에 대한 측정이다.**

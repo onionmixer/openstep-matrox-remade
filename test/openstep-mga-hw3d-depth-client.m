@@ -47,8 +47,19 @@ extern caddr_t mmap(caddr_t, int, int, int, int, long);
  * because a client able to rewrite it after validation could put anything in
  * front of the engine. */
 #define CMD_MMAP_LEN    ((int)OSMGA_HW3D_BATCH_BYTES)
-#define COLOUR_ORG      (4UL * 1024UL * 1024UL)
-#define DEPTH_ORG       (5UL * 1024UL * 1024UL)
+/*
+ * These were compile-time constants -- colour at 4 MiB, depth at 5 MiB --
+ * and the VRAM window has since moved above them.  At 1600x1200x32 the
+ * visible framebuffer alone is 7.68 MB, the window starts at 8.89 MiB, and
+ * both constants sit below it, so this test died at "a window will not map"
+ * and had been dying that way for as long as the mode was that large.
+ *
+ * Read from the driver now, which is the only thing that knows.
+ */
+static unsigned long osmgaColourOrg;
+#define COLOUR_ORG      osmgaColourOrg
+static unsigned long osmgaDepthOrg;
+#define DEPTH_ORG       osmgaDepthOrg
 #define STRIDE_DW       1024UL              /* 1024x768x4 */
 #define CLIP_COLS       64UL
 #define BAND            20UL
@@ -157,6 +168,21 @@ main(void)
         printf("Display0 not found\n");
         return 1;
     }
+    {   /* Where the window actually is. */
+        unsigned caps[OSMGA_HW3D_CAPS_COUNT];
+        unsigned ncaps = OSMGA_HW3D_CAPS_COUNT;
+
+        if ([master getIntValues:caps forParameter:OSMGA_HW3D_CAPS_PARAM
+                    objectNumber:objNum count:&ncaps] != IO_R_SUCCESS ||
+            ncaps != OSMGA_HW3D_CAPS_COUNT) {
+            printf("capabilities unavailable\n"); return 1;
+        }
+        osmgaColourOrg = (unsigned long)caps[OSMGA_HW3D_CAP_VRAMOFF];
+        /* A MiB above colour: it keeps the two apart, and stays
+         * 128-aligned as ZORG requires because the window base is. */
+        osmgaDepthOrg = osmgaColourOrg + 1024UL * 1024UL;
+    }
+
     if ((fd = open(DEV_PATH, O_RDWR)) < 0) {
         printf("%s will not open\n", DEV_PATH);
         return 1;
