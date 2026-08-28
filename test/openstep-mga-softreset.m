@@ -5,6 +5,9 @@
  *   softreset dry  <breadcrumb-file>     the control: no RST write
  *   softreset real <breadcrumb-file>     the reset
  *   softreset rearm                      clear the permanent-disable latch
+ *   softreset memreset                   the memory reset cycle ALONE -- what
+ *                                        to try before asking for a reboot if
+ *                                        the screen corrupts anyway
  *
  * RUN dry FIRST, LOOK AT IT, THEN run real.  They are separate invocations
  * on purpose: putting both in one run means real goes out before anyone has
@@ -37,6 +40,7 @@ extern int open(); extern int write(); extern int close(); extern int fsync();
 #define RSNAP_PARAM  "OSMGAResetSnap"
 #define RSNAP_COUNT  (2U * SNAP_COUNT + 2U)
 #define REARM_PARAM  "OSMGAAccelRearm"
+#define MEMRST_PARAM "OSMGAMemReset"
 
 static const char *fieldName[SNAP_COUNT] = {
     "version",
@@ -86,7 +90,7 @@ main(int argc, char **argv)
     int real;
 
     if (argc < 2) {
-        fprintf(stderr, "usage: softreset dry|real <breadcrumb> | rearm\n");
+        fprintf(stderr, "usage: softreset dry|real <breadcrumb> | rearm | memreset\n");
         return 2;
     }
 
@@ -95,6 +99,15 @@ main(int argc, char **argv)
             deviceKind:&kind] != IO_R_SUCCESS) {
         printf("Display0 not found\n");
         return 1;
+    }
+
+    if (strcmp(argv[1], "memreset") == 0) {
+        arg[0] = 1U;
+        r = [master setIntValues:arg forParameter:MEMRST_PARAM
+                    objectNumber:objNum count:1U];
+        printf("memreset: %s (%d)\n",
+               (r == IO_R_SUCCESS) ? "done" : "refused", (int)r);
+        return (r == IO_R_SUCCESS) ? 0 : 1;
     }
 
     if (strcmp(argv[1], "rearm") == 0) {
@@ -108,7 +121,7 @@ main(int argc, char **argv)
 
     if (strcmp(argv[1], "dry") == 0)       real = 0;
     else if (strcmp(argv[1], "real") == 0) real = 1;
-    else { fprintf(stderr, "first argument must be dry, real or rearm\n"); return 2; }
+    else { fprintf(stderr, "first argument must be dry, real, rearm or memreset\n"); return 2; }
 
     if (argc < 3) {
         fprintf(stderr, "refusing to run without a breadcrumb file\n");

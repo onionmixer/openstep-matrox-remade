@@ -273,6 +273,9 @@
 #define MGA_VCOUNT              0x1e20   /* RO  -- the raster's own witness */
 #define MGA_RST                 0x1e40   /* R/W -- bit 0 is softreset */
 #define MGA_RST_SOFTRESET       0x00000001UL
+#define MGA_MACCESS_MEMRESET    0x00008000UL   /* MACCESS<15>, WO register */
+#define MGA_C2CTL               0x3c10         /* R/W -- second CRTC control */
+#define MGA_SEQ1_SCROFF         0x20           /* SEQ[1]<5>: screen off */
 #define MGA_MEMRDBK             0x1e44   /* R/W */
 #define MGA_WIADDRNB            0x1e60   /* R/W (WIADDRNB2 at 0x1e00 is WO) */
 #define MGA_WFLAGNB             0x1e64   /* R/W */
@@ -837,6 +840,8 @@
  * calls it on its own.
  */
 #define OSMGA_ACCELREARM_PARAM  "OSMGAAccelRearm"
+
+#define OSMGA_MEMRESET_PARAM    "OSMGAMemReset"
 /*
  * M1-3i: which word of the uncached alias to read once a submission has
  * finished, or zero for none.  Development only -- see the note where it is
@@ -2431,6 +2436,63 @@ static unsigned osmgaResetPost[OSMGA_REGSNAP_COUNT];
 static unsigned osmgaResetRstHeld;      /* RST read back while asserted */
 static unsigned osmgaResetWasReal;      /* 0 dry, 1 real */
 static unsigned osmgaResetValid;        /* a run has completed */
+
+/*
+ * The memory half of a soft reset.
+ *
+ * RST.softreset flushes the BFIFO and the direct access read cache (3-167)
+ * and leaves the memory sequencer out of step with the RAMs.  Measured, when
+ * this step was omitted: reads came back from the wrong burst -- 43% from
+ * eight dwords ahead, 22% from four, and positions 0..11 of every 16-dword
+ * group were never correct.  Writes were fine.  The screen showed that, the
+ * CRTC never stopped scanning, and not one readable register said anything
+ * was wrong.
+ *
+ * MACCESS.memreset makes "the memory sequencer generate a reset cycle to the
+ * RAMs" and the manual says it is for "specific conditions which occur during
+ * the reset sequence".  X.Org's MGASoftReset does exactly this, immediately
+ * after releasing RST, and its being inside that function was the argument
+ * that the last attempt ignored.
+ *
+ * MACCESS is WO, so this cannot preserve what is there; it does not need to.
+ * The driver writes MACCESS in one place, osmgaStormInitState, with PW32
+ * before every draw, and has never set any other field in it.
+ */
+static void
+osmgaMemResetCycle(vm_address_t base)
+{
+    osmgaW32(base, MGA_MACCESS, MGA_MACCESS_MEMRESET);
+    IODelay(10);
+    osmgaW32(base, MGA_MACCESS, MGA_MACCESS_PW32);   /* must not be left set */
+}
+
+/*
+ * Screen off / screen on, the same pair the mode program and the VGA restore
+ * already use.  The vendor blanks before touching the RAMs (4-24, step 1),
+ * and the plan review was right that the previous attempt did not.
+ *
+ * Returns the SEQ[1] value to hand back to osmgaScreenOn.  Reads it rather
+ * than assuming, because the saved console value is the state BEFORE this
+ * driver programmed its own mode.
+ */
+static unsigned char
+osmgaScreenOff(vm_address_t base)
+{
+    unsigned char seq1;
+
+    osmgaW8(base, MGA_SEQ_INDEX, 0x01);
+    seq1 = osmgaR8(base, MGA_SEQ_DATA);
+    osmgaW8(base, MGA_SEQ_INDEX, 0x01);
+    osmgaW8(base, MGA_SEQ_DATA, (unsigned char)(seq1 | MGA_SEQ1_SCROFF));
+    return seq1;
+}
+
+static void
+osmgaScreenOn(vm_address_t base, unsigned char seq1)
+{
+    osmgaW8(base, MGA_SEQ_INDEX, 0x01);
+    osmgaW8(base, MGA_SEQ_DATA, seq1);
+}
 
 /*
  * REMAINING_WORK 3-10.  The submit path claims stormBusy, but mode changes
@@ -5221,6 +5283,52 @@ unmap:
      * merging is knowing WHICH write hung if it hangs; what is kept is a
      * hold time both the vendor and X.Org use.
      */
+    /*
+     * The memory reset on its own, with no soft reset in front of it.
+     *
+     * Two uses.  If the corrected sequence still corrupts VRAM, this is the
+     * one thing to try before asking for a reboot.  And if a bare soft reset
+     * is ever performed again, this repairing it would turn the causal chain
+     * from an inference into an experiment.
+     *
+     * Whether it can resynchronise a sequencer that is ALREADY out of step is
+     * not known -- the manual describes memreset as part of a sequence, not
+     * as a repair.  It is offered as a thing to try, not as a promise.
+     */
+    if (osmgaTextEquals(parameterName, OSMGA_MEMRESET_PARAM)) {
+        unsigned char seq1;
+
+        if (parameterArray == 0 || count != 1U)
+            return IO_R_INVALID_ARG;
+        if (parameterArray[0] != 1U)
+            return IO_R_INVALID_ARG;
+        if (mmioBase == 0 || !mmioMapped || !linearModeActive)
+            return IO_R_NO_DEVICE;
+
+        simple_lock(&stormLock);
+        if (stormBusy) { simple_unlock(&stormLock); return IO_R_BUSY; }
+        stormBusy = YES;
+        simple_unlock(&stormLock);
+
+        if (!osmgaStormWaitIdle(mmioBase)) {
+            simple_lock(&stormLock);
+            stormBusy = NO;
+            simple_unlock(&stormLock);
+            return IO_R_RESOURCE;
+        }
+
+        seq1 = osmgaScreenOff(mmioBase);
+        osmgaMemResetCycle(mmioBase);
+        osmgaScreenOn(mmioBase, seq1);
+
+        simple_lock(&stormLock);
+        stormBusy = NO;
+        simple_unlock(&stormLock);
+
+        IOLog("OpenStepMGA T1b: standalone memreset cycle done\n");
+        return IO_R_SUCCESS;
+    }
+
     if (osmgaTextEquals(parameterName, OSMGA_SOFTRESET_PARAM)) {
         int real;
 
@@ -5258,14 +5366,29 @@ unmap:
         osmgaResetRstHeld = 0xFFFFFFFFU;
 
         if (real) {
+            unsigned char seq1 = osmgaScreenOff(mmioBase);
+
             osmgaW32(mmioBase, MGA_RST, MGA_RST_SOFTRESET);
             /* Free, and the only thing that can testify that the assert
              * landed if the machine survives to be asked. */
             osmgaResetRstHeld = (unsigned)osmgaR32(mmioBase, MGA_RST);
             IODelay(OSMGA_SOFTRESET_HOLD);
             osmgaW32(mmioBase, MGA_RST, 0UL);
-        } else {
+
+            /* The step whose absence cost a screen and a reboot.  The wait
+             * before it is the one the power-up sequence asks for; nothing
+             * says it is needed here, and it costs 200 us. */
             IODelay(OSMGA_SOFTRESET_HOLD);
+            osmgaMemResetCycle(mmioBase);
+
+            osmgaScreenOn(mmioBase, seq1);
+        } else {
+            /* The control blanks and unblanks too, so that the difference
+             * between the two runs stays the reset and nothing else. */
+            unsigned char seq1 = osmgaScreenOff(mmioBase);
+            IODelay(OSMGA_SOFTRESET_HOLD);
+            IODelay(OSMGA_SOFTRESET_HOLD);
+            osmgaScreenOn(mmioBase, seq1);
         }
 
         osmgaCaptureRegs(mmioBase, osmgaResetPost, 1);
