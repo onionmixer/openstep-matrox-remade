@@ -64,6 +64,9 @@
      * this one feeds it vertices and can hang the engine. */
     BOOL warpTriangleTestEnabled;
 
+    /* opt-in M3 WARP depth/texture qualification ("WARP Depth Test"). */
+    BOOL warpDepthTestEnabled;
+
     /* S3 IODisplayDoBlit acceleration.
      *   stormBlitReady   -- accept IODisplayDoBlit requests at all
      *   stormBlitFailed  -- an execute timed out; the engine may still be
@@ -126,6 +129,7 @@
                ringPhys:(unsigned)ringPhys;
 - (void)runWarpPipeStartTest;
 - (void)runWarpTriangleVertexTest;
+- (void)runWarpDepthQualificationTest;
 - (void)runRasterInterpolationTest;
 - (void)runDstorgOriginTest;
 - (void)runDepthCompareTest;

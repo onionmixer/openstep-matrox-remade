@@ -3457,6 +3457,7 @@ static IODisplayInfo osmgaModeTemplate = {
     dmaRingTestEnabled = NO;
     warpTestEnabled = NO;
     warpTriangleTestEnabled = NO;
+    warpDepthTestEnabled = NO;
     rasterTestEnabled = NO;
     stormBlitReady = NO;
     stormBlitFailed = NO;
@@ -3588,6 +3589,17 @@ static IODisplayInfo osmgaModeTemplate = {
         if (warpTriangleTestEnabled)
             IOLog("OpenStepMGAReplacementDisplay: D2-2c WARP triangle test "
                   "ENABLED by configuration\n");
+    }
+
+    {
+        IOConfigTable *ct = [deviceDescription configTable];
+        const char *flag = (ct == nil) ? 0
+                         : (const char *)[ct valueForStringKey:"WARP Depth Test"];
+        warpDepthTestEnabled = (flag != 0 && osmgaTextContains(flag, "Yes"))
+                               ? YES : NO;
+        if (warpDepthTestEnabled)
+            IOLog("OpenStepMGAReplacementDisplay: M3 WARP depth test ENABLED "
+                  "by configuration\n");
     }
 
     /* Opt-in D3 rasteriser probe; absent/anything-but-Yes is off. */
@@ -6932,6 +6944,7 @@ submitDone:
     [self runWarpUcodePlacementTest];
     [self runWarpPipeStartTest];
     [self runWarpTriangleVertexTest];
+    [self runWarpDepthQualificationTest];
     /* D3-0/1/2 and D3-3a-0 are recorded in docs/ and their output costs
      * about ten syslog lines.  syslog drops bursts, and it dropped the
      * whole of D3-3b's first run, so leave them out while D3-3b is the
@@ -8371,6 +8384,7 @@ osmgaDmaBuildTriangleList(unsigned long *ring, unsigned long ringDwords,
                           unsigned long clipTopPixel,
                           unsigned long clipBotPixel,
                           unsigned long dwgctl,
+                          unsigned long dstorg, unsigned long zorg,
                           unsigned long *outTailDwords,
                           unsigned long *outTotalDwords)
 {
@@ -8417,7 +8431,7 @@ osmgaDmaBuildTriangleList(unsigned long *ring, unsigned long ringDwords,
 
     /* ---- mga_g400_emit_context ---- */
     ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
-                             MGA_DSTORG,  0UL,
+                             MGA_DSTORG,  dstorg,
                              MGA_MACCESS, MGA_MACCESS_PW32,
                              MGA_PLNWT,   0xffffffffUL,
                              MGA_DWGCTL,  dwgctl);
@@ -8429,7 +8443,7 @@ osmgaDmaBuildTriangleList(unsigned long *ring, unsigned long ringDwords,
                              MGA_ALPHACTRL, 0x00000001UL,
                              MGA_FOGCOL,    0UL,
                              MGA_WFLAG,     0UL,
-                             MGA_ZORG,      0UL);
+                             MGA_ZORG,      zorg);
     /* WFLAG = 0 leaves walucfgflag bit 11 (U, enable culling) clear, so no
      * winding order can silently discard this triangle. */
     /*
@@ -8863,6 +8877,251 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     return 1;
 }
 
+/* Defined below beside the D3 probes; the oracle draw here is its only
+ * other caller. */
+static void osmgaStormTrap(vm_address_t base, unsigned long dwgctl,
+                           unsigned long y, unsigned long h,
+                           long left,  long dxL, long dyL, long eL,
+                           long right, long dxR, long dyR, long eR);
+
+/* ================================================================
+ * M3 -- does WARP produce the same setup the trapezoid path does?
+ *
+ * docs/M3_WARP_DEPTH_TEXTURE_QUALIFICATION.md, revision 1.
+ *
+ * Everything WARP has drawn so far ran with depth off and every texture
+ * register zero.  What the drawing engine does with depth, alpha and the
+ * texture clamp is already settled on this hardware through the trapezoid
+ * path -- all seven depth compares, ZI writing and I not writing, the
+ * alpha tests, CLAMPUV bounding the fetched address.  Those are engine
+ * properties.  WARP only decides what values reach them.
+ *
+ * So the question is narrow, and this build asks the first three:
+ *
+ *   T0  does WARP cover the same pixels as the trapezoid path?
+ *   T1  is WARP's z normalised to [0,1], and is it left alone by rhw?
+ *   T2  does atype ZI actually write depth when WARP drives it?
+ *
+ * The oracle snapshots are all taken BEFORE any WARP work starts.  An
+ * earlier draft interleaved them, which would have made every WARP
+ * submission a tier transition -- the thing T6 exists to qualify -- before
+ * T6 had run.
+ * ================================================================ */
+
+/*
+ * Three surfaces in the proven offscreen window, far apart and aligned.
+ * DSTORG wants 64, ZORG wants 128; a megabyte satisfies both.
+ *
+ * Colour goes to two separate blocks rather than one drawn twice, so the
+ * comparison is a walk over two live pointers with nothing copied and no
+ * ordering between them to get wrong.
+ */
+#define OSMGA_M3_ORACLE     (10UL * 1024UL * 1024UL)
+#define OSMGA_M3_WARP       (11UL * 1024UL * 1024UL)
+#define OSMGA_M3_ZORG       (12UL * 1024UL * 1024UL)
+#define OSMGA_M3_BLK          64UL
+#define OSMGA_M3_TRI_LO        8UL
+#define OSMGA_M3_TRI_HI       56UL          /* leg = HI - LO = 48 */
+#define OSMGA_M3_COLOUR   0xFFFF8040UL      /* the D2-2c colour, BGRA */
+#define OSMGA_M3_CLIP_LO       4UL
+#define OSMGA_M3_CLIP_HI      59UL
+
+/*
+ * Depth values for T1, as WARP sees them: IEEE floats in [0,1].  Three
+ * distinct planes so that one triangle at one z cannot pass by accident --
+ * a constant z cannot distinguish normalisation from offset from slope,
+ * and it certainly cannot show whether rhw divided it.
+ */
+#define OSMGA_M3_F32_QUARTER  0x3E800000UL  /* 0.25f */
+#define OSMGA_M3_F32_HALF     0x3F000000UL  /* 0.5f  */
+#define OSMGA_M3_F32_3Q       0x3F400000UL  /* 0.75f */
+
+/* 16-bit depth codes the same fractions should land on, for the readback.
+ * 0.25 * 65535 = 16383.75, 0.5 -> 32767.5, 0.75 -> 49151.25.  The engine's
+ * rounding is not assumed: the test reports what it got beside these. */
+#define OSMGA_M3_Z_QUARTER  16384UL
+#define OSMGA_M3_Z_HALF     32768UL
+#define OSMGA_M3_Z_3Q       49152UL
+
+/*
+ * The expected image, from D2-2c's measurement rather than from a formula:
+ * the half-open right triangle with the right angle at (LO,LO) and legs of
+ * (HI-LO) covers rows and columns LO .. HI-1 with (r-LO)+(c-LO) <= leg-1,
+ * which came out as 1176 pixels for leg 48 and matched 48*49/2 exactly.
+ */
+static int
+osmgaM3Inside(unsigned long row, unsigned long col)
+{
+    unsigned long leg = OSMGA_M3_TRI_HI - OSMGA_M3_TRI_LO;
+
+    if (row < OSMGA_M3_TRI_LO || row >= OSMGA_M3_TRI_LO + leg) return 0;
+    if (col < OSMGA_M3_TRI_LO || col >= OSMGA_M3_TRI_LO + leg) return 0;
+    return ((row - OSMGA_M3_TRI_LO) + (col - OSMGA_M3_TRI_LO) <= leg - 1UL)
+           ? 1 : 0;
+}
+
+/*
+ * Compare one surface against the expected map.  Returns the number of
+ * wrong pixels and names the first, so "nothing drew", "the wrong shape"
+ * and "the right shape in the wrong colour" are different reports.
+ */
+static unsigned long
+osmgaM3CheckShape(volatile unsigned long *blk, unsigned long stride,
+                  unsigned long colour, const char *label)
+{
+    unsigned long row, col, wrong = 0UL, drawn = 0UL;
+    unsigned long badRow = 0UL, badCol = 0UL, badGot = 0UL, badWant = 0UL;
+
+    for (row = 0UL; row < OSMGA_M3_BLK; row++) {
+        for (col = 0UL; col < OSMGA_M3_BLK; col++) {
+            unsigned long got  = blk[row * stride + col] & OSMGA_D2E_RGB;
+            unsigned long want = osmgaM3Inside(row, col)
+                                     ? (colour & OSMGA_D2E_RGB)
+                                     : (OSMGA_S1_SENTINEL & OSMGA_D2E_RGB);
+
+            if (got != (OSMGA_S1_SENTINEL & OSMGA_D2E_RGB)) drawn++;
+            if (got != want) {
+                if (wrong == 0UL) {
+                    badRow = row; badCol = col;
+                    badGot = got; badWant = want;
+                }
+                wrong++;
+            }
+        }
+    }
+    IOLog("OpenStepMGA M3/%s: %lu drawn, %lu wrong (want %lu)\n",
+          label, drawn, wrong,
+          (OSMGA_M3_TRI_HI - OSMGA_M3_TRI_LO) *
+          (OSMGA_M3_TRI_HI - OSMGA_M3_TRI_LO + 1UL) / 2UL);
+    osmgaD2Settle();
+    if (wrong != 0UL) {
+        IOLog("OpenStepMGA M3/%s: first wrong at row %lu col %lu -- got "
+              "%06lx wanted %06lx\n", label, badRow, badCol, badGot, badWant);
+        osmgaD2Settle();
+    }
+    return wrong;
+}
+
+/* Compare the two surfaces against each other.  Zero here is the T0
+ * verdict: WARP covered what the trapezoid path covered. */
+static unsigned long
+osmgaM3CompareSurfaces(volatile unsigned long *a, volatile unsigned long *b,
+                       unsigned long stride, const char *label)
+{
+    unsigned long row, col, differ = 0UL;
+    unsigned long badRow = 0UL, badCol = 0UL, va = 0UL, vb = 0UL;
+
+    for (row = 0UL; row < OSMGA_M3_BLK; row++) {
+        for (col = 0UL; col < OSMGA_M3_BLK; col++) {
+            unsigned long x = a[row * stride + col] & OSMGA_D2E_RGB;
+            unsigned long y = b[row * stride + col] & OSMGA_D2E_RGB;
+
+            if (x != y) {
+                if (differ == 0UL) {
+                    badRow = row; badCol = col; va = x; vb = y;
+                }
+                differ++;
+            }
+        }
+    }
+    IOLog("OpenStepMGA M3/%s: %lu pixels differ between oracle and WARP\n",
+          label, differ);
+    osmgaD2Settle();
+    if (differ != 0UL) {
+        IOLog("OpenStepMGA M3/%s: first at row %lu col %lu -- oracle %06lx "
+              "WARP %06lx\n", label, badRow, badCol, va, vb);
+        osmgaD2Settle();
+    }
+    return differ;
+}
+
+/*
+ * T1's three probes.  One triangle at one depth cannot tell a normalised
+ * z from a depth-code z: 0.25f and 0.75f both round to nothing in code
+ * units, so both would draw against a mid-buffer and the test would pass
+ * while proving the opposite.  Three depths against a known stored value
+ * separate them -- with the buffer pre-filled at the half code, a
+ * normalised z draws the near one and refuses the far one, while a z that
+ * reached the engine as raw codes draws all three.
+ */
+typedef struct { unsigned long row, col, leg, z, expect; } OSMGAM3Probe;
+
+#define OSMGA_M3_PROBES  3UL
+static const OSMGAM3Probe osmgaM3Probes[OSMGA_M3_PROBES] = {
+    {  8UL,  6UL, 16UL, OSMGA_M3_F32_QUARTER, 1UL },  /* 0.25 < 0.5 -> draws */
+    {  8UL, 24UL, 16UL, OSMGA_M3_F32_3Q,      0UL },  /* 0.75 > 0.5 -> refused */
+    { 32UL,  6UL, 16UL, OSMGA_M3_F32_QUARTER, 1UL }   /* control, same as [0] */
+};
+
+/*
+ * One WARP triangle, right angle at (col,row), legs `leg`, flat z.
+ * Eight dwords a vertex, three vertices, the layout the reference uses.
+ */
+static void
+osmgaM3BuildTri(unsigned long *v, unsigned long row, unsigned long col,
+                unsigned long leg, unsigned long z, unsigned long colour)
+{
+    unsigned long i, p = 0UL;
+    unsigned long xs[3], ys[3];
+
+    xs[0] = col;        ys[0] = row;
+    xs[1] = col + leg;  ys[1] = row;
+    xs[2] = col;        ys[2] = row + leg;
+
+    for (i = 0UL; i < 3UL; i++) {
+        v[p++] = osmgaF32FromUInt(xs[i]);
+        v[p++] = osmgaF32FromUInt(ys[i]);
+        v[p++] = z;
+        v[p++] = OSMGA_D2C_F32_ONE;    /* rhw = 1: no perspective here */
+        v[p++] = colour;
+        v[p++] = 0UL;
+        v[p++] = 0UL;
+        v[p++] = 0UL;
+    }
+}
+
+/*
+ * The oracle's own draw, through the trapezoid registers by MMIO -- the
+ * same engine, reached the way every earlier probe reaches it.  Its
+ * parameters are NOT assumed correct: the caller checks this surface
+ * against the expected map too, so a wrong edge here reports as a wrong
+ * oracle rather than as a WARP failure.
+ */
+static int
+osmgaM3OracleTri(vm_address_t base, unsigned long stride,
+                 unsigned long dstorg, unsigned long colour)
+{
+    unsigned long leg = OSMGA_M3_TRI_HI - OSMGA_M3_TRI_LO;
+
+    if (!osmgaStormWaitFifo(base, 13U))
+        return 0;
+    osmgaStormInitState(base, stride,
+                        OSMGA_M3_CLIP_LO, OSMGA_M3_CLIP_HI,
+                        OSMGA_M3_CLIP_LO * stride,
+                        OSMGA_M3_CLIP_HI * stride);
+    if (!osmgaStormWaitFifo(base, 6U))
+        return 0;
+    osmgaW32(base, MGA_DSTORG, dstorg);
+    osmgaW32(base, MGA_FCOL,   colour & OSMGA_D2E_RGB);
+
+    /* Left edge vertical at TRI_LO; right edge from TRI_LO+leg-1 back to
+     * TRI_LO over the same rows.  SOLID_FILL rather than Gouraud: T0 asks
+     * about coverage, and a flat colour makes a wrong pixel unambiguous. */
+    osmgaStormTrap(base, MGA_DWGCTL_SOLID_FILL,
+                   OSMGA_M3_TRI_LO, leg,
+                   (long)OSMGA_M3_TRI_LO, 0L, (long)leg, 0L,
+                   (long)(OSMGA_M3_TRI_LO + leg - 1UL),
+                   -(long)(leg - 1UL), (long)leg, 0L);
+
+    if (!osmgaStormWaitIdle(base)) {
+        osmgaW32(base, MGA_DSTORG, 0UL);
+        return 0;
+    }
+    osmgaW32(base, MGA_DSTORG, 0UL);
+    return 1;
+}
+
+
 /*
  * D2-2c.  See docs/D2_2C_VERTEX_MODE_CONTROL.md revision 1.
  *
@@ -9087,7 +9346,8 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
                                    OSMGA_D2C_CLIP_LO, OSMGA_D2C_CLIP_HI,
                                    (testY + OSMGA_D2C_CLIP_LO) * stride,
                                    (testY + OSMGA_D2C_CLIP_HI) * stride,
-                                   dwgctl, &tailDwords, &totalDwords)) {
+                                   dwgctl, 0UL, 0UL,
+                                   &tailDwords, &totalDwords)) {
         IOLog("OpenStepMGA D2-2c: FAIL -- run 1 list rejected\n");
         osmgaD2Settle();
         IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
@@ -9493,6 +9753,242 @@ releaseAndReturn:
     simple_unlock(&stormLock);
     IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
     IOUnmapPhysicalFromIOTask(alias, mapLen);
+}
+
+/*
+ * M3 -- T0, T1 and T2.  See docs/M3_WARP_DEPTH_TEXTURE_QUALIFICATION.md.
+ *
+ * The oracle draw happens FIRST and completely, before WARP is started at
+ * all.  Interleaving them would make every WARP submission a tier
+ * transition, which is the thing T6 exists to qualify and which has not
+ * been qualified yet.
+ *
+ * Failure policy is D2's, unchanged: a transfer or fence that does not
+ * complete retains everything and asks for a reboot; a wrong picture
+ * suspends WARP and hands the engine back.
+ */
+- (void)runWarpDepthQualificationTest
+{
+    IODisplayInfo *di = [self displayInfo];
+    const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
+    vm_address_t base = mmioBase;
+    unsigned long pipePhys[OSMGA_WARP_PIPES];
+    unsigned long pipeOff[OSMGA_WARP_PIPES];
+    unsigned long stride, i, row, col;
+    unsigned long tailDwords = 0UL, totalDwords = 0UL;
+    unsigned long dwgctlFlat = MGA_DWGCTL_SLOPED(MGA_DWGCTL_GOURAUD);
+    unsigned long listEnd, vtxPhys, ringDwords = OSMGA_DMA_RING_BYTES / 4UL;
+    unsigned long ien, opmode, primptr, devctrl, wrong, differ;
+    unsigned long drew[OSMGA_M3_PROBES];
+    unsigned long *ring, *vtx;
+    void *ringVirt;
+    unsigned ringPhys = 0;
+    vm_address_t aOr = 0, aWa = 0, aZ = 0;
+    unsigned long lOr = 0UL, lWa = 0UL, lZ = 0UL;
+    volatile unsigned long *blkOr = 0, *blkWa = 0;
+    volatile unsigned long *blkZ = 0;
+    IOReturn r;
+
+    if (!warpDepthTestEnabled || !linearModeActive || !mmioMapped)
+        return;
+    if (f->bytesPerPixel != 4) {
+        IOLog("OpenStepMGA M3: not a 32bpp mode, skipped\n");
+        return;
+    }
+    stride = (unsigned long)di->rowBytes / 4UL;
+
+    /* ---- refusals, all from reads ---- */
+    primptr = osmgaR32(base, MGA_PRIMPTR);
+    ien     = osmgaR32(base, MGA_IEN);
+    opmode  = osmgaR32(base, MGA_OPMODE);
+    if (primptr != 0UL || ien != 0UL ||
+        (opmode & MGA_OPMODE_DMADATASIZ) != 0UL || osmgaSelfBus < 0) {
+        IOLog("OpenStepMGA M3: REFUSED -- PRIMPTR %08lx IEN %08lx OPMODE "
+              "%08lx\n", primptr, ien, opmode);
+        return;
+    }
+    devctrl = osmgaPciReadConfigLong(osmgaSelfBus, osmgaSelfDev,
+                                     osmgaSelfFn, MGA_CFG_DEVCTRL);
+    if ((devctrl & MGA_CFG_DEVCTRL_ABORTS) != 0UL) {
+        IOLog("OpenStepMGA M3: REFUSED -- DEVCTRL %08lx shows an abort\n",
+              devctrl);
+        return;
+    }
+    if (osmgaWindowState != OSMGA_WINDOW_OPEN ||
+        OSMGA_M3_ZORG + OSMGA_M3_BLK * stride * 2UL > osmgaMmapWindowEnd ||
+        OSMGA_M3_ORACLE < osmgaMmapWindowStart) {
+        IOLog("OpenStepMGA M3: surfaces do not fit the proven window "
+              "%lu..%lu, skipped\n", osmgaMmapWindowStart, osmgaMmapWindowEnd);
+        return;
+    }
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA M3: REFUSED -- engine BUSY at entry\n");
+        return;
+    }
+
+    /* ---- everything fallible, before anything is started ---- */
+    r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_M3_ORACLE,
+                              OSMGA_M3_ORACLE + (OSMGA_M3_BLK - 1UL) *
+                              stride * 4UL + OSMGA_M3_BLK * 4UL,
+                              &aOr, &lOr, &blkOr);
+    if (r != IO_R_SUCCESS) { IOLog("OpenStepMGA M3: oracle map r=%d\n",(int)r); return; }
+    r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_M3_WARP,
+                              OSMGA_M3_WARP + (OSMGA_M3_BLK - 1UL) *
+                              stride * 4UL + OSMGA_M3_BLK * 4UL,
+                              &aWa, &lWa, &blkWa);
+    if (r != IO_R_SUCCESS) { IOLog("OpenStepMGA M3: warp map r=%d\n",(int)r); goto unmapOr; }
+    r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_M3_ZORG,
+                              OSMGA_M3_ZORG + OSMGA_M3_BLK * stride * 2UL,
+                              &aZ, &lZ, &blkZ);
+    if (r != IO_R_SUCCESS) { IOLog("OpenStepMGA M3: depth map r=%d\n",(int)r); goto unmapWa; }
+
+    if (!osmgaWarpUcodeResident) {
+        if (!osmgaWarpPlaceUcode(pipePhys, pipeOff, &osmgaWarpUcodeVirt,
+                                 &osmgaWarpUcodePhys, &osmgaWarpUcodeBytes)) {
+            IOLog("OpenStepMGA M3: FAIL -- could not place microcode\n");
+            goto unmapZ;
+        }
+        for (i = 0UL; i < OSMGA_WARP_PIPES; i++)
+            osmgaWarpPipeHeld[i] = pipePhys[i];
+        osmgaWarpUcodeResident = 1;
+    }
+    ringVirt = IOMallocLow((int)OSMGA_DMA_RING_BYTES);
+    if (ringVirt == 0) { IOLog("OpenStepMGA M3: no ring\n"); goto unmapZ; }
+    r = IOPhysicalFromVirtual(IOVmTaskSelf(), (vm_address_t)ringVirt, &ringPhys);
+    if (r != IO_R_SUCCESS) { IOLog("OpenStepMGA M3: phys r=%d\n",(int)r); goto freeRing; }
+    ring = (unsigned long *)ringVirt;
+    vtx  = (unsigned long *)((unsigned char *)ringVirt + OSMGA_D2F_OFF_A);
+    vtxPhys = (unsigned long)ringPhys + OSMGA_D2F_OFF_A;
+
+    /* ---- the engine is ours from here ---- */
+    simple_lock(&stormLock);
+    if (stormBlitFailed || stormBusy) {
+        simple_unlock(&stormLock);
+        IOLog("OpenStepMGA M3: REFUSED -- engine already claimed\n");
+        goto freeRing;
+    }
+    stormBusy = YES;
+    simple_unlock(&stormLock);
+
+    for (row = 0UL; row < OSMGA_M3_BLK; row++)
+        for (col = 0UL; col < OSMGA_M3_BLK; col++) {
+            blkOr[row * stride + col] = OSMGA_S1_SENTINEL;
+            blkWa[row * stride + col] = OSMGA_S1_SENTINEL;
+        }
+
+    /* ================= ORACLE, complete, before any WARP ============= */
+    if (!osmgaM3OracleTri(base, stride, OSMGA_M3_ORACLE, OSMGA_M3_COLOUR)) {
+        IOLog("OpenStepMGA M3: oracle draw did not finish\n");
+        osmgaD2Settle();
+        goto releaseAll;
+    }
+    (void)osmgaM3CheckShape(blkOr, stride, OSMGA_M3_COLOUR, "T0-oracle");
+
+    /* ================= WARP ========================================== */
+    osmgaW32(base, MGA_ICLEAR, MGA_SOFTRAPICLR);
+    osmgaW32(base, MGA_WIADDR2,    MGA_WMODE_SUSPEND);
+    osmgaW32(base, MGA_WGETMSB,    MGA_WGETMSB_G400);
+    osmgaW32(base, MGA_WVRTXSZ,    MGA_WVRTXSZ_G400);
+    osmgaW32(base, MGA_WACCEPTSEQ, MGA_WACCEPTSEQ_G400);
+    osmgaW32(base, MGA_WMISC,      MGA_WMISC_WRITE);
+    if (osmgaR32(base, MGA_WMISC) != MGA_WMISC_EXPECTED) {
+        IOLog("OpenStepMGA M3: warp_init did not settle\n");
+        osmgaD2Settle();
+        goto releaseAll;
+    }
+
+    /* T0: colour only, depth off -- atype I with NOZCMP touches no depth. */
+    if (!osmgaDmaBuildTriangleList(ring, ringDwords,
+                                   osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
+                                   OSMGA_M3_CLIP_LO, OSMGA_M3_CLIP_HI,
+                                   OSMGA_M3_CLIP_LO * stride,
+                                   OSMGA_M3_CLIP_HI * stride,
+                                   dwgctlFlat, OSMGA_M3_WARP, OSMGA_M3_ZORG,
+                                   &tailDwords, &totalDwords)) {
+        IOLog("OpenStepMGA M3: run 1 list rejected\n");
+        osmgaD2Settle();
+        goto releaseAll;
+    }
+    listEnd = (unsigned long)ringPhys + tailDwords * 4UL;
+    IOLog("OpenStepMGA M3: ring %08x list -> %08lx, oracle %luM warp %luM "
+          "zorg %luM, dwgctl %08lx\n", ringPhys, listEnd,
+          OSMGA_M3_ORACLE >> 20, OSMGA_M3_WARP >> 20, OSMGA_M3_ZORG >> 20,
+          dwgctlFlat);
+    osmgaD2Settle();
+
+    {
+        unsigned long spins, status, sum = 0UL;
+        unsigned primAfter;
+
+        for (i = 0UL; i < totalDwords; i++) sum += ring[i];
+        (void)osmgaR32(base, MGA_ENGSTATUS);
+        if (sum == 0xFFFFFFFFUL) IOLog("OpenStepMGA M3: barrier\n");
+        osmgaW32(base, MGA_PRIMADDRESS, (unsigned long)ringPhys | MGA_DMA_GENERAL);
+        osmgaW32(base, MGA_PRIMEND, listEnd);
+        for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
+            status = osmgaR32(base, MGA_ENGSTATUS);
+            primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
+            if (((unsigned long)primAfter & ~3UL) == listEnd &&
+                (status & MGA_STATUS_SOFTRAPEN) != 0UL &&
+                (status & MGA_STATUS_ENDPRDMASTS) != 0UL) break;
+        }
+        if (spins >= OSMGA_S1_SPIN_LIMIT) {
+            IOLog("OpenStepMGA M3: run 1 TIMEOUT -- nothing further will be "
+                  "programmed\n");
+            IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
+                  "REQUIRED ***\n");
+            goto unmapZ;                 /* retain ring, keep the claim */
+        }
+        osmgaW32(base, MGA_ICLEAR, MGA_SOFTRAPICLR);
+    }
+
+    osmgaM3BuildTri(vtx, OSMGA_M3_TRI_LO, OSMGA_M3_TRI_LO,
+                    OSMGA_M3_TRI_HI - OSMGA_M3_TRI_LO,
+                    OSMGA_M3_F32_HALF, OSMGA_M3_COLOUR);
+    if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys, OSMGA_D2C_VTX_DWORDS,
+                             1, "T0-warp", 0)) {
+        IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
+              "REQUIRED ***\n");
+        goto unmapZ;
+    }
+    wrong  = osmgaM3CheckShape(blkWa, stride, OSMGA_M3_COLOUR, "T0-warp");
+    differ = osmgaM3CompareSurfaces(blkOr, blkWa, stride, "T0");
+
+    /* T1/T2 are only meaningful once coverage agrees. */
+    for (i = 0UL; i < OSMGA_M3_PROBES; i++) drew[i] = 0UL;
+    if (wrong == 0UL && differ == 0UL) {
+        IOLog("OpenStepMGA M3: T0 PASS -- WARP covers what the trapezoid "
+              "path covers\n");
+        osmgaD2Settle();
+        /* T1 will go here once T0 has been seen to pass on hardware. */
+    } else {
+        IOLog("OpenStepMGA M3: T0 did not pass -- T1 and T2 are not run\n");
+        osmgaD2Settle();
+    }
+
+    (void)osmgaStormWaitFifo(base, 1U);
+    osmgaW32(base, MGA_WIADDR2, MGA_WMODE_SUSPEND);
+    IOLog("OpenStepMGA M3: SUMMARY T0 warp-wrong=%lu oracle-vs-warp=%lu\n",
+          wrong, differ);
+    osmgaD2Settle();
+
+releaseAll:
+    for (row = 0UL; row < OSMGA_M3_BLK; row++)
+        for (col = 0UL; col < OSMGA_M3_BLK; col++) {
+            blkOr[row * stride + col] = 0UL;
+            blkWa[row * stride + col] = 0UL;
+        }
+    simple_lock(&stormLock);
+    stormBusy = NO;
+    simple_unlock(&stormLock);
+freeRing:
+    IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
+unmapZ:
+    IOUnmapPhysicalFromIOTask(aZ, lZ);
+unmapWa:
+    IOUnmapPhysicalFromIOTask(aWa, lWa);
+unmapOr:
+    IOUnmapPhysicalFromIOTask(aOr, lOr);
 }
 
 /*
