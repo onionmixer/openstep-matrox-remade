@@ -283,11 +283,31 @@
 #define MGA_DWGSYNC             0x2c4c   /* R/W */
 #define MGA_CFG_DEVCTRL         0x04     /* PCI configuration space */
 #define MGA_CFG_OPTION          0x40     /* PCI configuration space */
+/*
+ * DEVCTRL<29:28> -- the two DMA abort indicators (spec 4-15, field index
+ * "recmastab R/W <29>", "rectargab R/W <28>").  Spec 4-15 also says what
+ * software must do about either: "write to the softreset bit of the RST
+ * register".  W10 established this driver cannot, on a live console card.
+ * So an abort during a DMA test is not a condition to recover from here;
+ * it is a condition to record and reboot out of.
+ */
+#define MGA_CFG_DEVCTRL_RECMASTAB 0x20000000UL
+#define MGA_CFG_DEVCTRL_RECTARGAB 0x10000000UL
+#define MGA_CFG_DEVCTRL_ABORTS    (MGA_CFG_DEVCTRL_RECMASTAB | \
+                                   MGA_CFG_DEVCTRL_RECTARGAB)
 #define MGA_ICLEAR              0x1e18
 #define MGA_SOFTRAPICLR         0x00000001UL
 #define MGA_STATUS_SOFTRAPEN    0x00000001UL   /* STATUS bit0  */
 #define MGA_STATUS_DWGENGSTS    0x00010000UL   /* STATUS bit16 */
 #define MGA_STATUS_ENDPRDMASTS  0x00020000UL   /* STATUS bit17 */
+/*
+ * Spec 3-189: wbusy is '1' whenever WARP is not idle -- RUNning, WAITing,
+ * STALLed, or loading microcode.  A WARP that has been started and is
+ * waiting for vertices reads busy, so these belong in a *drawing* verdict
+ * and must be kept out of a *pipe-started* one.
+ */
+#define MGA_STATUS_WBUSY        0x00040000UL   /* STATUS bit18 */
+#define MGA_STATUS_WBUSY1       0x00080000UL   /* STATUS bit19 */
 /*
  * Completion of a polled primary-DMA list is three conditions at once:
  * the trap we put at the end of the list has fired, the drawing engine has
@@ -602,6 +622,16 @@ typedef int OSMGAD3ZorgAligned[
 #define MGA_TEXCTL2             0x2c3c
 #define MGA_TEXFILTER           0x2c58
 #define MGA_ALPHACTRL           0x2c7c
+/* The rest of mga_g400_emit_context and mga_g400_emit_tex0 (mga_drv.h). */
+#define MGA_FOGCOL              0x1cf4
+#define MGA_LEN                 0x1c5c
+#define MGA_STENCIL             0x2cc8
+#define MGA_STENCILCTL          0x2ccc
+#define MGA_TEXBORDERCOL        0x2c5c
+#define MGA_TEXORG1             0x2ca4
+#define MGA_TEXORG2             0x2ca8
+#define MGA_TEXORG3             0x2cac
+#define MGA_TEXORG4             0x2cb0
 #define MGA_TDUALSTAGE0         0x2cf8
 #define MGA_TDUALSTAGE1         0x2cfc
 
@@ -1032,6 +1062,13 @@ static unsigned long osmgaHW3DEncode(unsigned long *list,
                                      int track);
 
 #define MGA_DMA_GENERAL         0x00     /* PRIMADDRESS mode bits */
+/*
+ * primod = '11', DMA Vertex Write (spec 3-164).  This goes in PRIMADDRESS
+ * and NOWHERE ELSE.  PRIMEND's low two bits are primnostart<0> and
+ * pagpxfer<1> (spec 3-165), so writing PRIMEND symmetrically with this
+ * value would ask for an AGP transfer that then refuses to start.
+ */
+#define MGA_DMA_VERTEX          0x03
 #define MGA_PRIMNOSTART         0x01     /* PRIMEND bit0: do NOT start */
 #define MGA_PAGPXFER            0x02     /* PRIMEND bit1: AGP; 0 for PCI */
 
@@ -3409,6 +3446,7 @@ static IODisplayInfo osmgaModeTemplate = {
     stormTestEnabled = NO;
     dmaRingTestEnabled = NO;
     warpTestEnabled = NO;
+    warpTriangleTestEnabled = NO;
     rasterTestEnabled = NO;
     stormBlitReady = NO;
     stormBlitFailed = NO;
@@ -3522,6 +3560,24 @@ static IODisplayInfo osmgaModeTemplate = {
         if (warpTestEnabled)
             IOLog("OpenStepMGAReplacementDisplay: D2 WARP test ENABLED "
                   "by configuration\n");
+    }
+
+    /*
+     * Opt-in D2-2c WARP triangle control; absent/anything-but-Yes is off.
+     * Kept separate from "WARP Test" because the risk is different: D2-2a
+     * starts a pipe with no vertices, this one hands WARP a primitive and
+     * a timeout here ends in a reboot.
+     */
+    {
+        IOConfigTable *ct = [deviceDescription configTable];
+        const char *flag = (ct == nil) ? 0
+                         : (const char *)[ct valueForStringKey:
+                                              "WARP Triangle Test"];
+        warpTriangleTestEnabled = (flag != 0 && osmgaTextContains(flag, "Yes"))
+                                  ? YES : NO;
+        if (warpTriangleTestEnabled)
+            IOLog("OpenStepMGAReplacementDisplay: D2-2c WARP triangle test "
+                  "ENABLED by configuration\n");
     }
 
     /* Opt-in D3 rasteriser probe; absent/anything-but-Yes is off. */
@@ -6865,6 +6921,7 @@ submitDone:
     [self runWarpConfigTest];
     [self runWarpUcodePlacementTest];
     [self runWarpPipeStartTest];
+    [self runWarpTriangleVertexTest];
     /* D3-0/1/2 and D3-3a-0 are recorded in docs/ and their output costs
      * about ten syslog lines.  syslog drops bursts, and it dropped the
      * whole of D3-3b's first run, so leave them out while D3-3b is the
@@ -8145,6 +8202,696 @@ osmgaDmaBuildPipeList(unsigned long *ring, unsigned long ringDwords,
     IOLog("OpenStepMGA D2-2a: end (ring released, microcode kept)\n");
 }
 
+
+/* ================================================================
+ * D2-2c -- the primary VERTEX-mode positive control.
+ *
+ * docs/D2_2C_VERTEX_MODE_CONTROL.md, revision 1.  One triangle, through
+ * the one vertex path that has documentation, to answer one question:
+ * does WARP microcode take vertices and draw.
+ *
+ * Two runs, because a test can poll where production needs an interrupt:
+ *
+ *   run 1  GENERAL  pipe 7 -> context -> texture -> global -> clip -> SOFTRAP
+ *   run 2  VERTEX   twenty-four dwords, nothing else
+ *
+ * The ACCEPT sequencer needs no trigger: WACCEPTSEQ.seqoff = 1 makes it
+ * take its primitive length from WVRTXSZ.primsz, which is 24 dwords, so
+ * the last dword of the payload is the trigger (spec 3-261, 3-278).
+ * ================================================================ */
+
+/*
+ * Geometry, inside the 64x64 offscreen block D3-2 already uses.
+ *
+ *   rows/cols  0-3, 60-63    outside the clip  -- must never change
+ *   rows/cols  4-59          inside the clip
+ *   the triangle             (8,8) (56,8) (8,56)
+ *
+ * The whole block is compared afterwards, not a handful of canaries.
+ * Eight canaries prove eight words; they cannot say that the pixel beside
+ * them survived.  This is corruption detection, not containment -- nothing
+ * here can bound what opaque microcode writes outside this block.
+ */
+#define OSMGA_D2C_CLIP_LO        4UL
+#define OSMGA_D2C_CLIP_HI       59UL          /* inclusive, as CXBNDRY is */
+#define OSMGA_D2C_TRI_LO         8UL
+#define OSMGA_D2C_TRI_HI        56UL
+#define OSMGA_D2C_COLOR         0xFFFF8040UL  /* BGRA bytes: B40 G80 RFF AFF */
+#define OSMGA_D2C_VTX_OFF       0x8000UL      /* well past the run-1 list */
+#define OSMGA_D2C_VTX_DWORDS      24UL        /* WVRTXSZ.primsz, exactly */
+#define OSMGA_D2C_F32_HALF      0x3F000000UL  /* 0.5f */
+#define OSMGA_D2C_F32_ONE       0x3F800000UL  /* 1.0f */
+#define OSMGA_D2C_PIPE             7UL        /* tgzsaf; W2 section 8 */
+
+/*
+ * Persistent ownership of everything the card has been handed an address
+ * for.  D2-2a kept the microcode by not freeing it, which keeps the memory
+ * but loses the pointer, the size and the pipe table -- so a later test
+ * cannot tell whether microcode is already resident and has to place it
+ * again.  These are never released for the life of the boot.
+ */
+static void          *osmgaWarpUcodeVirt;
+static unsigned long  osmgaWarpUcodeBytes;
+static unsigned       osmgaWarpUcodePhys;
+static unsigned long  osmgaWarpPipeHeld[OSMGA_WARP_PIPES];
+static int            osmgaWarpUcodeResident;
+
+/*
+ * IEEE 754 single-precision bit pattern for a small non-negative integer.
+ *
+ * Kernel code must not touch the FPU, so the vertex coordinates are built
+ * in integer arithmetic and handed to the card as the dwords they would
+ * have been.  Exact for 0 and for 1 .. 2^24-1, checked against the host's
+ * own float encoding over 0..4096 and over the values this test uses.
+ */
+static unsigned long
+osmgaF32FromUInt(unsigned long n)
+{
+    unsigned long e = 0UL, m;
+
+    if (n == 0UL)
+        return 0UL;
+    if (n >= (1UL << 24))
+        return 0UL;                    /* outside the exact range; refuse */
+    m = n;
+    while (m >= 2UL) {
+        m >>= 1;
+        e++;
+    }
+    return ((e + 127UL) << 23) | ((n << (23UL - e)) & 0x7FFFFFUL);
+}
+
+/*
+ * Assemble the run-1 list: mga_g400_emit_state's order exactly -- pipe,
+ * then context, then texture -- followed by the global initialisation
+ * spec 4-30 requires of every operation, then the clip.
+ *
+ * Two departures from osmgaDmaBuildPipeList, both deliberate:
+ *
+ *   - there is no WIADDR2 = SUSPEND after the START.  emit_pipe opens with
+ *     a suspend and closes with a start; the trailing suspend D2-2a adds
+ *     would stop WARP before run 2 could feed it.
+ *   - the pipe is 7 (tgzsaf), not 0.  The reference client ORs ALPHA, SPEC
+ *     and FOG unconditionally (mgastate.c:958), so pipe 0 has no working
+ *     rendering precedent anywhere.
+ *
+ * Texturing is off through TDUALSTAGE0 and DWGCTL's opcode, not through
+ * the pipe: every G400 single-texture pipe is a TGZ* pipe, so there is no
+ * untextured pipe to pick.  The texture registers are still emitted, all
+ * zero, so that TEXCTL2.map1, TEXWIDTH.map1 and TEXHEIGHT.map1 -- whose OR
+ * is tmap0dis (spec 3-215) -- are known rather than inherited.
+ */
+static int
+osmgaDmaBuildTriangleList(unsigned long *ring, unsigned long ringDwords,
+                          unsigned long pipePhys, unsigned long stride,
+                          unsigned long clipX0, unsigned long clipX1,
+                          unsigned long clipTopPixel,
+                          unsigned long clipBotPixel,
+                          unsigned long dwgctl,
+                          unsigned long *outTailDwords,
+                          unsigned long *outTotalDwords)
+{
+    unsigned long pos = 0UL;
+    int ok = 1;
+
+    /* ---- mga_g400_emit_pipe, single-texture branch ---- */
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_WIADDR2, MGA_WMODE_SUSPEND,
+                             MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                             MGA_DMAPAD, 0UL);
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_WVRTXSZ, MGA_WVRTXSZ_G400,
+                             MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                             MGA_DMAPAD, 0UL);
+    /* Four writes to the same register, three zeros then the value, is what
+     * the DRM emits.  Spec 3-260 says only that programming WACCEPTSEQ
+     * resets seqptr; it does not say why three times.  Not understood, so
+     * copied rather than folded into DMAPAD. */
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_WACCEPTSEQ, 0UL,
+                             MGA_WACCEPTSEQ, 0UL,
+                             MGA_WACCEPTSEQ, 0UL,
+                             MGA_WACCEPTSEQ, MGA_WACCEPTSEQ_G400);
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_WFLAG,  0UL,
+                             MGA_WFLAG1, 0UL,
+                             MGA_WR56,   MGA_G400_WR56_MAGIC,
+                             MGA_DMAPAD, 0UL);
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_WR49, 0UL, MGA_WR57, 0UL,
+                             MGA_WR53, 0UL, MGA_WR61, 0UL);
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_WR54, MGA_G400_WR_MAGIC,
+                             MGA_WR62, MGA_G400_WR_MAGIC,
+                             MGA_WR52, MGA_G400_WR_MAGIC,
+                             MGA_WR60, MGA_G400_WR_MAGIC);
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_DMAPAD, 0xffffffffUL,
+                             MGA_DMAPAD, 0xffffffffUL,
+                             MGA_DMAPAD, 0xffffffffUL,
+                             MGA_WIADDR2, pipePhys | MGA_WMODE_START);
+    /* No suspend here.  That is the whole difference from D2-2a. */
+
+    /* ---- mga_g400_emit_context ---- */
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_DSTORG,  0UL,
+                             MGA_MACCESS, MGA_MACCESS_PW32,
+                             MGA_PLNWT,   0xffffffffUL,
+                             MGA_DWGCTL,  dwgctl);
+    /* ALPHACTRL is Mesa's own initial value: src=ONE dst=ZERO, atmode
+     * noacmp, aten disabled.  Both alpha tests are therefore off (W17),
+     * and with src ONE / dst ZERO nothing blends, so the undefined
+     * alphasel=fromtex of an untextured draw cannot gate a pixel. */
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_ALPHACTRL, 0x00000001UL,
+                             MGA_FOGCOL,    0UL,
+                             MGA_WFLAG,     0UL,
+                             MGA_ZORG,      0UL);
+    /* WFLAG = 0 leaves walucfgflag bit 11 (U, enable culling) clear, so no
+     * winding order can silently discard this triangle. */
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_WFLAG1,      0UL,
+                             MGA_TDUALSTAGE0, 0UL,
+                             MGA_TDUALSTAGE1, 0UL,
+                             MGA_FCOL,        0UL);
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_STENCIL,    0UL,
+                             MGA_STENCILCTL, 0UL,
+                             MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL);
+
+    /* ---- mga_g400_emit_tex0, everything zero ---- */
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_TEXCTL2,      MGA_TEXCTL2_G400_MAGIC,
+                             MGA_TEXCTL,       0UL,
+                             MGA_TEXFILTER,    0UL,
+                             MGA_TEXBORDERCOL, 0UL);
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_TEXORG,  0UL, MGA_TEXORG1, 0UL,
+                             MGA_TEXORG2, 0UL, MGA_TEXORG3, 0UL);
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_TEXORG4,   0UL,
+                             MGA_TEXWIDTH,  0UL,
+                             MGA_TEXHEIGHT, 0UL,
+                             MGA_WR49,      0UL);
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_WR57, 0UL, MGA_WR53, 0UL,
+                             MGA_WR61, 0UL, MGA_WR52, MGA_G400_WR_MAGIC);
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_WR60, MGA_G400_WR_MAGIC,
+                             MGA_WR54, MGA_G400_WR_MAGIC,
+                             MGA_WR62, MGA_G400_WR_MAGIC,
+                             MGA_DMAPAD, 0UL);
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                             MGA_TEXTRANS,     0x0000ffffUL,
+                             MGA_TEXTRANSHIGH, 0x0000ffffUL);
+
+    /* ---- spec 4-30 global initialisation, and the map selectors ----
+     * PITCH is mandatory for every operation and is in none of the DRM's
+     * emit functions -- it lives in their blit and clear paths instead.
+     * SRCORG.srcmap<0> can point the source at system memory; a WARP
+     * triangle does not blit, so zeroing it is insurance, not a proven
+     * hazard. */
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_PITCH,   stride,
+                             MGA_YDSTORG, 0UL,
+                             MGA_SRCORG,  0UL,
+                             MGA_DMAPAD,  0UL);
+
+    /* ---- mga_emit_clip_rect, G400 branch ----
+     * The DWGCTL/LEN+EXEC pair is the only documented way to clear the
+     * clip-disable bit on G400.  Leaving it out draws with clipping off. */
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_DWGCTL, dwgctl,
+                             MGA_LEN + MGA_EXEC, 0x80000000UL,
+                             MGA_DWGCTL, dwgctl,
+                             MGA_LEN + MGA_EXEC, 0x80000000UL);
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_DMAPAD, 0UL,
+                             MGA_CXBNDRY, (clipX1 << 16) | clipX0,
+                             MGA_YTOP,    clipTopPixel,
+                             MGA_YBOT,    clipBotPixel);
+
+    ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
+                             MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                             MGA_DMAPAD, 0UL, MGA_SOFTRAP, 0UL);
+    if (!ok)
+        return 0;
+
+    *outTailDwords = pos;
+
+    if (!osmgaDmaBlock(ring, ringDwords, &pos,
+                       MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL,
+                       MGA_DMAPAD, 0UL, MGA_DMAPAD, 0UL))
+        return 0;
+
+    *outTotalDwords = pos;
+    return 1;
+}
+
+/*
+ * The twenty-four dwords.  Order and packing are the reference client's
+ * (mgavb.h:55 for the layout, mgavb.h:42 for BGRA byte order in the two
+ * colours, mgavb.c:57 for fog living in specular's alpha byte).
+ *
+ *   0..3   x, y, z, rhw     IEEE 754 single
+ *   4      diffuse          B G R A bytes
+ *   5      specular         B G R fog
+ *   6..7   tu0, tv0         IEEE 754 single
+ */
+static void
+osmgaD2cBuildVertices(unsigned long *v, unsigned long testY)
+{
+    unsigned long i;
+    static const unsigned long xs[3] = { OSMGA_D2C_TRI_LO, OSMGA_D2C_TRI_HI,
+                                         OSMGA_D2C_TRI_LO };
+    static const unsigned long ys[3] = { OSMGA_D2C_TRI_LO, OSMGA_D2C_TRI_LO,
+                                         OSMGA_D2C_TRI_HI };
+
+    for (i = 0UL; i < 3UL; i++) {
+        v[i * 8UL + 0UL] = osmgaF32FromUInt(xs[i]);
+        v[i * 8UL + 1UL] = osmgaF32FromUInt(testY + ys[i]);
+        v[i * 8UL + 2UL] = OSMGA_D2C_F32_HALF;
+        v[i * 8UL + 3UL] = OSMGA_D2C_F32_ONE;
+        v[i * 8UL + 4UL] = OSMGA_D2C_COLOR;
+        v[i * 8UL + 5UL] = 0UL;
+        v[i * 8UL + 6UL] = 0UL;
+        v[i * 8UL + 7UL] = 0UL;
+    }
+}
+
+/*
+ * Scan the 64x64 block and say what changed, in three disjoint regions:
+ * outside the clip, inside the clip but outside the triangle, and inside
+ * the triangle.  Only the first is a containment statement, and only a
+ * weak one -- it says this block was not written outside the clip, not
+ * that nothing anywhere else was.
+ */
+static void
+osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
+               const char *label)
+{
+    unsigned long row, col;
+    unsigned long outClip = 0UL, inClipOnly = 0UL, inTri = 0UL;
+    unsigned long firstRow = 0UL, lastRow = 0UL, firstCol = 0UL, lastCol = 0UL;
+    unsigned long seen = 0UL, sample = 0UL;
+
+    for (row = 0UL; row < OSMGA_S1_H; row++) {
+        for (col = 0UL; col < OSMGA_S1_W; col++) {
+            unsigned long v = blk[row * stride + col];
+            int clipped, inside;
+
+            if (v == OSMGA_S1_SENTINEL)
+                continue;
+
+            clipped = (row >= OSMGA_D2C_CLIP_LO && row <= OSMGA_D2C_CLIP_HI &&
+                       col >= OSMGA_D2C_CLIP_LO && col <= OSMGA_D2C_CLIP_HI);
+            /* The right triangle (8,8) (56,8) (8,56): inside means both
+             * coordinates at or past the near edge and their sum within
+             * the hypotenuse. */
+            inside = (clipped &&
+                      row >= OSMGA_D2C_TRI_LO && col >= OSMGA_D2C_TRI_LO &&
+                      (row + col) <= (OSMGA_D2C_TRI_LO + OSMGA_D2C_TRI_HI));
+
+            if (!clipped)      outClip++;
+            else if (!inside)  inClipOnly++;
+            else               inTri++;
+
+            if (seen == 0UL) {
+                firstRow = lastRow = row;
+                firstCol = lastCol = col;
+                sample = v;
+            } else {
+                if (row < firstRow) firstRow = row;
+                if (row > lastRow)  lastRow  = row;
+                if (col < firstCol) firstCol = col;
+                if (col > lastCol)  lastCol  = col;
+            }
+            seen++;
+        }
+    }
+
+    IOLog("OpenStepMGA D2-2c/%s: changed %lu px -- %lu in triangle, %lu in "
+          "clip only, %lu OUTSIDE CLIP\n",
+          label, seen, inTri, inClipOnly, outClip);
+    if (seen != 0UL)
+        IOLog("OpenStepMGA D2-2c/%s: bbox rows %lu..%lu cols %lu..%lu, "
+              "first value %08lx (wanted %08lx)\n",
+              label, firstRow, lastRow, firstCol, lastCol,
+              sample, OSMGA_D2C_COLOR & 0x00ffffffUL);
+}
+
+/*
+ * D2-2c.  See docs/D2_2C_VERTEX_MODE_CONTROL.md revision 1.
+ *
+ * Failure policy, and it is the reason this does not reuse
+ * runWarpPipeOnce: on a timeout nothing further is programmed.  No ICLEAR,
+ * no WIADDR2, no reset -- spec 4-15 wants RST.softreset after a DMA abort
+ * and W10 established this driver cannot do that on a live console card.
+ * The ring and the microcode are retained, because the card holds their
+ * addresses and nothing proves it has stopped reading.  stormBusy is left
+ * set, which is the existing mechanism for "this engine is not to be
+ * touched": 2D blits fall back to software and 3D submissions are refused.
+ * Then the only honest instruction is to reboot.
+ */
+- (void)runWarpTriangleVertexTest
+{
+    IODisplayInfo *di = [self displayInfo];
+    const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
+    vm_address_t base = mmioBase;
+    unsigned long pipePhys[OSMGA_WARP_PIPES];
+    unsigned long pipeOff[OSMGA_WARP_PIPES];
+    unsigned long stride, testY, byteStart, byteEnd;
+    unsigned long ringDwords = OSMGA_DMA_RING_BYTES / 4UL;
+    unsigned long tailDwords = 0UL, totalDwords = 0UL;
+    unsigned long dwgctl = MGA_DWGCTL_SLOPED(MGA_DWGCTL_GOURAUD);
+    unsigned long listEnd, vtxPhys, vtxEnd;
+    unsigned long spins, status, i, row, col, sum;
+    unsigned long devctrl0, devctrl1, primptr;
+    unsigned long *ring;
+    unsigned long *vtx;
+    void *ringVirt;
+    unsigned ringPhys = 0;
+    unsigned primAfter;
+    vm_address_t alias = 0;
+    unsigned long mapLen = 0UL;
+    volatile unsigned long *blk = 0;
+    IOReturn r;
+
+    if (!warpTriangleTestEnabled || !linearModeActive || !mmioMapped)
+        return;
+    if (f->bytesPerPixel != 4) {
+        IOLog("OpenStepMGA D2-2c: not a 32bpp mode, skipped\n");
+        return;
+    }
+
+    /*
+     * The block goes in the offscreen window this boot actually proved, not
+     * at a fixed row offset below a fixed bound.  OSMGA_S1_VRAM_PROVEN is
+     * seven megabytes, and at 1600x1200x32 the visible image alone is 7.32
+     * -- the older probes' geometry does not fit this mode at all, and
+     * would have skipped silently.  osmgaMmapWindowStart/End are what the
+     * driver established for the mode that is running.
+     *
+     * WARP is given absolute screen coordinates with DSTORG = 0, so the
+     * block has to begin on a whole row: round the window start up.
+     */
+    stride = (unsigned long)di->rowBytes / 4UL;
+    if (osmgaWindowState != OSMGA_WINDOW_OPEN ||
+        osmgaMmapWindowEnd <= osmgaMmapWindowStart) {
+        IOLog("OpenStepMGA D2-2c: no proven offscreen window, skipped\n");
+        return;
+    }
+    testY     = (osmgaMmapWindowStart + stride * 4UL - 1UL) / (stride * 4UL);
+    byteStart = testY * stride * 4UL;
+    byteEnd   = byteStart + (OSMGA_S1_H - 1UL) * stride * 4UL +
+                OSMGA_S1_W * 4UL;
+
+    if (byteEnd > osmgaMmapWindowEnd) {
+        IOLog("OpenStepMGA D2-2c: 64x64 block does not fit the proven "
+              "window %lu..%lu, skipped\n",
+              osmgaMmapWindowStart, osmgaMmapWindowEnd);
+        return;
+    }
+
+    /* ---- refuse to start, rather than start and hope ---- */
+
+    /*
+     * PRIMPTR is an independent write path into system memory: with
+     * primptren0 set the DMA engine writes a double-qword every time
+     * SOFTRAP is written (spec 3-166), and run 1 ends with a SOFTRAP.  The
+     * driver zeroes it at init and logs if it did not take.  Here that is
+     * not enough -- if it is not zero, do not run.
+     */
+    primptr = osmgaR32(base, MGA_PRIMPTR);
+    if (primptr != 0UL) {
+        IOLog("OpenStepMGA D2-2c: REFUSED -- PRIMPTR is %08lx, not zero; "
+              "SOFTRAP would write system memory\n", primptr);
+        return;
+    }
+    if (osmgaSelfBus < 0) {
+        IOLog("OpenStepMGA D2-2c: REFUSED -- no PCI address, cannot read "
+              "the abort bits\n");
+        return;
+    }
+    devctrl0 = osmgaPciReadConfigLong(osmgaSelfBus, osmgaSelfDev,
+                                      osmgaSelfFn, MGA_CFG_DEVCTRL);
+    if ((devctrl0 & MGA_CFG_DEVCTRL_ABORTS) != 0UL) {
+        IOLog("OpenStepMGA D2-2c: REFUSED -- DEVCTRL=%08lx already shows a "
+              "DMA abort; the card needs a reset we cannot give it\n",
+              devctrl0);
+        return;
+    }
+    if (!osmgaStormWaitIdle(base)) {
+        IOLog("OpenStepMGA D2-2c: REFUSED -- engine BUSY at entry\n");
+        return;
+    }
+
+    /* ---- everything fallible, before run 1 starts ----
+     * Once WARP is running and waiting for vertices there must be no step
+     * left that can fail and leave it waiting. */
+
+    r = osmgaMapUncachedBlock(frameBufferPhysical, byteStart, byteEnd,
+                              &alias, &mapLen, &blk);
+    if (r != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA D2-2c: uncached alias map failed r=%d\n", (int)r);
+        return;
+    }
+
+    if (!osmgaWarpUcodeResident) {
+        if (!osmgaWarpPlaceUcode(pipePhys, pipeOff, &osmgaWarpUcodeVirt,
+                                 &osmgaWarpUcodePhys, &osmgaWarpUcodeBytes)) {
+            IOLog("OpenStepMGA D2-2c: FAIL -- could not place microcode\n");
+            IOUnmapPhysicalFromIOTask(alias, mapLen);
+            return;
+        }
+        for (i = 0UL; i < OSMGA_WARP_PIPES; i++)
+            osmgaWarpPipeHeld[i] = pipePhys[i];
+        osmgaWarpUcodeResident = 1;
+        IOLog("OpenStepMGA D2-2c: microcode at %08x (%lu bytes), pipe %lu at "
+              "%08lx -- held for this boot\n",
+              osmgaWarpUcodePhys, osmgaWarpUcodeBytes, OSMGA_D2C_PIPE,
+              osmgaWarpPipeHeld[OSMGA_D2C_PIPE]);
+    }
+
+    /* warp_init after placement, so WCACHEFLUSH has code to flush. */
+    osmgaW32(base, MGA_WIADDR2,    MGA_WMODE_SUSPEND);
+    osmgaW32(base, MGA_WGETMSB,    MGA_WGETMSB_G400);
+    osmgaW32(base, MGA_WVRTXSZ,    MGA_WVRTXSZ_G400);
+    osmgaW32(base, MGA_WACCEPTSEQ, MGA_WACCEPTSEQ_G400);
+    osmgaW32(base, MGA_WMISC,      MGA_WMISC_WRITE);
+    if (osmgaR32(base, MGA_WMISC) != MGA_WMISC_EXPECTED) {
+        IOLog("OpenStepMGA D2-2c: FAIL -- warp_init did not settle\n");
+        IOUnmapPhysicalFromIOTask(alias, mapLen);
+        return;
+    }
+
+    ringVirt = IOMallocLow((int)OSMGA_DMA_RING_BYTES);
+    if (ringVirt == 0) {
+        IOLog("OpenStepMGA D2-2c: FAIL -- no ring buffer\n");
+        IOUnmapPhysicalFromIOTask(alias, mapLen);
+        return;
+    }
+    r = IOPhysicalFromVirtual(IOVmTaskSelf(), (vm_address_t)ringVirt,
+                              &ringPhys);
+    if (r != IO_R_SUCCESS) {
+        IOLog("OpenStepMGA D2-2c: FAIL -- ring IOPhysicalFromVirtual r=%d\n",
+              (int)r);
+        IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
+        IOUnmapPhysicalFromIOTask(alias, mapLen);
+        return;
+    }
+    /* The vertex payload lives in the same allocation, so its physical
+     * address is only meaningful if the pages really are contiguous.  D1-0
+     * measured that; measure it again rather than inherit it. */
+    for (i = (unsigned long)PAGE_SIZE; i < OSMGA_DMA_RING_BYTES;
+         i += (unsigned long)PAGE_SIZE) {
+        unsigned p2 = 0;
+
+        r = IOPhysicalFromVirtual(IOVmTaskSelf(),
+                                  (vm_address_t)((unsigned char *)ringVirt + i),
+                                  &p2);
+        if (r != IO_R_SUCCESS || p2 != ringPhys + (unsigned)i) {
+            IOLog("OpenStepMGA D2-2c: FAIL -- ring discontiguous at +%lu\n", i);
+            IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
+            IOUnmapPhysicalFromIOTask(alias, mapLen);
+            return;
+        }
+    }
+
+    ring = (unsigned long *)ringVirt;
+    vtx  = (unsigned long *)((unsigned char *)ringVirt + OSMGA_D2C_VTX_OFF);
+
+    if (!osmgaDmaBuildTriangleList(ring, ringDwords,
+                                   osmgaWarpPipeHeld[OSMGA_D2C_PIPE],
+                                   stride,
+                                   OSMGA_D2C_CLIP_LO, OSMGA_D2C_CLIP_HI,
+                                   (testY + OSMGA_D2C_CLIP_LO) * stride,
+                                   (testY + OSMGA_D2C_CLIP_HI) * stride,
+                                   dwgctl, &tailDwords, &totalDwords)) {
+        IOLog("OpenStepMGA D2-2c: FAIL -- run 1 list rejected\n");
+        IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
+        IOUnmapPhysicalFromIOTask(alias, mapLen);
+        return;
+    }
+    if (tailDwords * 4UL >= OSMGA_D2C_VTX_OFF) {
+        IOLog("OpenStepMGA D2-2c: FAIL -- run 1 list reaches the vertices\n");
+        IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
+        IOUnmapPhysicalFromIOTask(alias, mapLen);
+        return;
+    }
+    osmgaD2cBuildVertices(vtx, testY);
+
+    listEnd = (unsigned long)ringPhys + tailDwords * 4UL;
+    vtxPhys = (unsigned long)ringPhys + OSMGA_D2C_VTX_OFF;
+    vtxEnd  = vtxPhys + OSMGA_D2C_VTX_DWORDS * 4UL;
+
+    for (row = 0UL; row < OSMGA_S1_H; row++)
+        for (col = 0UL; col < OSMGA_S1_W; col++)
+            blk[row * stride + col] = OSMGA_S1_SENTINEL;
+
+    IOLog("OpenStepMGA D2-2c: ring %08x, list %lu dwords -> %08lx, "
+          "vertices %08lx -> %08lx, dwgctl %08lx, y %lu\n",
+          ringPhys, tailDwords, listEnd, vtxPhys, vtxEnd, dwgctl, testY);
+
+    /* ---- claim the engine for both runs ---- */
+    simple_lock(&stormLock);
+    if (stormBlitFailed || stormBusy) {
+        simple_unlock(&stormLock);
+        IOLog("OpenStepMGA D2-2c: REFUSED -- engine already claimed\n");
+        IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
+        IOUnmapPhysicalFromIOTask(alias, mapLen);
+        return;
+    }
+    stormBusy = YES;
+    simple_unlock(&stormLock);
+
+    /* ---- run 1: GENERAL.  Pipe started, WARP left waiting. ----
+     * The sum is the barrier: `(void)ring[i]` is a read the optimiser is
+     * free to delete, and a barrier that compiles to nothing is worse than
+     * none because it reads as if it were there. */
+    sum = 0UL;
+    for (i = 0UL; i < totalDwords; i++)
+        sum += ring[i];
+    (void)osmgaR32(base, MGA_ENGSTATUS);
+    if (sum == 0xFFFFFFFFUL)
+        IOLog("OpenStepMGA D2-2c: barrier %lu\n", sum);
+
+    osmgaW32(base, MGA_PRIMADDRESS, (unsigned long)ringPhys | MGA_DMA_GENERAL);
+    /* PRIMEND: primnostart = 0 so a pending softrap cannot block the
+     * restart, pagpxfer = 0 because this buffer is PCI (spec 3-165).  Never
+     * ORed with the PRIMADDRESS mode -- different fields entirely. */
+    osmgaW32(base, MGA_PRIMEND, listEnd);
+
+    /*
+     * Run 1 is NOT judged idle.  Leaving WARP started and waiting for
+     * vertices is the point of run 1, and spec 3-189 says dwgengsts is set
+     * while warpfifo is not empty and wbusy while WARP merely WAITs.  The
+     * completion of the *list* is the pointer reaching the end, together
+     * with the softrap that terminates it.
+     */
+    for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
+        status = osmgaR32(base, MGA_ENGSTATUS);
+        primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
+        if ((unsigned long)primAfter == listEnd &&
+            (status & MGA_STATUS_SOFTRAPEN) != 0UL &&
+            (status & MGA_STATUS_ENDPRDMASTS) != 0UL)
+            break;
+    }
+    status = osmgaR32(base, MGA_ENGSTATUS);
+    primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
+    devctrl1 = osmgaPciReadConfigLong(osmgaSelfBus, osmgaSelfDev,
+                                      osmgaSelfFn, MGA_CFG_DEVCTRL);
+    IOLog("OpenStepMGA D2-2c/run1: PRIMADDRESS %08x (wanted %08lx), "
+          "STATUS %08lx, DEVCTRL %08lx, spins %lu\n",
+          primAfter, listEnd, status, devctrl1, spins);
+
+    if (spins >= OSMGA_S1_SPIN_LIMIT ||
+        (devctrl1 & MGA_CFG_DEVCTRL_ABORTS) != 0UL) {
+        IOLog("OpenStepMGA D2-2c/run1: TIMEOUT or DMA ABORT -- nothing "
+              "further will be programmed\n");
+        osmgaD2cReport(blk, stride, "run1-timeout");
+        IOLog("OpenStepMGA D2-2c: ring and microcode RETAINED, engine left "
+              "claimed.  *** REBOOT REQUIRED ***\n");
+        IOUnmapPhysicalFromIOTask(alias, mapLen);
+        return;
+    }
+
+    /* Checkpoint: whatever starting a pipe did, it is not run 2's doing. */
+    osmgaD2cReport(blk, stride, "run1");
+
+    /*
+     * Acknowledge run 1's softrap before run 2.  Spec 4-13: writing
+     * SOFTRAP stops primary transfers, and ICLEAR is what clears the
+     * pending interrupt.  Without this, run 2's ENDPRDMASTS could be run
+     * 1's -- which is why the pointer is checked as well.
+     */
+    osmgaW32(base, MGA_ICLEAR, MGA_SOFTRAPICLR);
+
+    /* ---- run 2: VERTEX.  Twenty-four dwords and nothing else. ---- */
+    sum = 0UL;
+    for (i = 0UL; i < OSMGA_D2C_VTX_DWORDS; i++)
+        sum += vtx[i];
+    (void)osmgaR32(base, MGA_ENGSTATUS);
+    if (sum == 0xFFFFFFFFUL)
+        IOLog("OpenStepMGA D2-2c: barrier %lu\n", sum);
+
+    osmgaW32(base, MGA_PRIMADDRESS, vtxPhys | MGA_DMA_VERTEX);
+    osmgaW32(base, MGA_PRIMEND, vtxEnd);
+
+    for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
+        status = osmgaR32(base, MGA_ENGSTATUS);
+        primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
+        if ((unsigned long)primAfter == vtxEnd &&
+            (status & MGA_STATUS_ENDPRDMASTS) != 0UL &&
+            (status & (MGA_STATUS_DWGENGSTS | MGA_STATUS_WBUSY |
+                       MGA_STATUS_WBUSY1)) == 0UL)
+            break;
+    }
+    status = osmgaR32(base, MGA_ENGSTATUS);
+    primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
+    devctrl1 = osmgaPciReadConfigLong(osmgaSelfBus, osmgaSelfDev,
+                                      osmgaSelfFn, MGA_CFG_DEVCTRL);
+    IOLog("OpenStepMGA D2-2c/run2: PRIMADDRESS %08x (wanted %08lx), "
+          "STATUS %08lx, DEVCTRL %08lx, spins %lu\n",
+          primAfter, vtxEnd, status, devctrl1, spins);
+
+    if (spins >= OSMGA_S1_SPIN_LIMIT ||
+        (devctrl1 & MGA_CFG_DEVCTRL_ABORTS) != 0UL) {
+        IOLog("OpenStepMGA D2-2c/run2: TIMEOUT or DMA ABORT -- nothing "
+              "further will be programmed\n");
+        osmgaD2cReport(blk, stride, "run2-timeout");
+        IOLog("OpenStepMGA D2-2c: ring and microcode RETAINED, engine left "
+              "claimed.  *** REBOOT REQUIRED ***\n");
+        IOUnmapPhysicalFromIOTask(alias, mapLen);
+        return;
+    }
+
+    osmgaD2cReport(blk, stride, "run2");
+
+    /*
+     * Quiescence is proven, so the pipe can be suspended -- this is the
+     * suspend that belongs after a run, not the one D2-2a put inside the
+     * start list.  The microcode buffer still cannot be released.
+     */
+    osmgaW32(base, MGA_WIADDR2, MGA_WMODE_SUSPEND);
+    IOLog("OpenStepMGA D2-2c: WARP suspended after proven quiescence\n");
+
+    simple_lock(&stormLock);
+    stormBusy = NO;
+    simple_unlock(&stormLock);
+
+    /* This block is inside the window clients are handed, and it was opened
+     * either zeroed or unspecified -- never full of our sentinel.  Put it
+     * back to zero now that the pixels have been read and reported. */
+    for (row = 0UL; row < OSMGA_S1_H; row++)
+        for (col = 0UL; col < OSMGA_S1_W; col++)
+            blk[row * stride + col] = 0UL;
+
+    IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
+    IOUnmapPhysicalFromIOTask(alias, mapLen);
+    IOLog("OpenStepMGA D2-2c: end (ring released, microcode kept)\n");
+}
 
 /*
  * D3-0 -- does the interpolating rasteriser run?

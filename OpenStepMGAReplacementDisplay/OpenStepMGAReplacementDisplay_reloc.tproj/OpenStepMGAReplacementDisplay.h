@@ -59,6 +59,11 @@
     /* opt-in D3 interpolating-rasteriser probe ("Raster Test" = "Yes"). */
     BOOL rasterTestEnabled;
 
+    /* opt-in D2-2c WARP triangle control ("WARP Triangle Test" = "Yes").
+     * Separate from "WARP Test" on purpose: D2-2a starts a pipe and stops,
+     * this one feeds it vertices and can hang the engine. */
+    BOOL warpTriangleTestEnabled;
+
     /* S3 IODisplayDoBlit acceleration.
      *   stormBlitReady   -- accept IODisplayDoBlit requests at all
      *   stormBlitFailed  -- an execute timed out; the engine may still be
@@ -120,6 +125,7 @@
                ringVirt:(unsigned long *)ring
                ringPhys:(unsigned)ringPhys;
 - (void)runWarpPipeStartTest;
+- (void)runWarpTriangleVertexTest;
 - (void)runRasterInterpolationTest;
 - (void)runDstorgOriginTest;
 - (void)runDepthCompareTest;
