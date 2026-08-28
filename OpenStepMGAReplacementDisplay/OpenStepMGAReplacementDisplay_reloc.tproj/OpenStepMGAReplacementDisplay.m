@@ -940,7 +940,8 @@ static int osmgaSecUnknown;
 static unsigned long osmgaHW3DVerdictSeen;
 
 static void
-osmgaHW3DLogVerdictOnce(unsigned verdict, const OSMGAHW3DBatch *b)
+osmgaHW3DLogVerdictOnce(unsigned verdict, const OSMGAHW3DBatch *b,
+                        unsigned long badTri)
 {
     unsigned long bit;
 
@@ -958,8 +959,25 @@ osmgaHW3DLogVerdictOnce(unsigned verdict, const OSMGAHW3DBatch *b)
               "not an address (dstorg %08lx zorg %08lx texorg %08lx); "
               "reported once\n", verdict,
               b->state.dstorg, b->state.zorg, b->state.texorg);
+    else if (verdict == (unsigned)OSMGA_HW3D_E_TRIFIELD) {
+        /*
+         * Name the triangle and print the values.  W15's plan said badTri
+         * and the log would narrow this; the log did not, and the logger
+         * was one I had written the week before.
+         */
+        const OSMGAHW3DTri *t = (badTri < b->triCount) ? &b->tri[badTri]
+                                                       : &b->tri[0];
+        IOLog("OpenStepMGA W15: batch refused %u at triangle %lu -- a value "
+              "does not fit its register's field; ar %ld %ld %ld %ld %ld %ld, "
+              "dr0 %ld dr8 %ld, a0 %ld adx %ld ady %ld; reported once\n",
+              verdict, badTri,
+              t->ar0, t->ar1, t->ar2, t->ar4, t->ar5, t->ar6,
+              (long)t->dr[0], (long)t->dr[8],
+              (long)t->a0, (long)t->adx, (long)t->ady);
+    }
     else
-        IOLog("OpenStepMGA W12: batch refused %u; reported once\n", verdict);
+        IOLog("OpenStepMGA W12: batch refused %u at triangle %lu; "
+              "reported once\n", verdict, badTri);
 }   /* verdict, bad triangle, dwords, spins */
 
 /*
@@ -6294,7 +6312,8 @@ refuse2:
          * this driver has only ever assumed -- that its clients send
          * origins whose low bits are not mode selectors.
          */
-        osmgaHW3DLogVerdictOnce((unsigned)v3, &osmgaHW3DSnapshot);
+        osmgaHW3DLogVerdictOnce((unsigned)v3, &osmgaHW3DSnapshot,
+                                (unsigned long)badTri3);
         simple_lock(&stormLock);
         stormBusy = NO;
         simple_unlock(&stormLock);
