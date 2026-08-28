@@ -702,6 +702,9 @@ static unsigned long hookNarrowed;
  * corrupts the MAGIC, which is deliberately in the second set: forcing the
  * WHOLE replay is what that knob is for.
  *
+ * E_TRIFIELD and E_ALPHACROSS joined the first set with the checks that
+ * raise them.  The rest of this note is why that matters:
+ *
  * E_TRIFIELD joined the first set at the same time as the check that raises
  * it.  A verdict returned inside the per-triangle loop and missing from this
  * list is treated as batch-level: the whole remainder is replayed instead of
@@ -716,7 +719,7 @@ osmgaMesaVerdictNamesTriangle(unsigned long v)
         || v == OSMGA_HW3D_E_TRISLOPE || v == OSMGA_HW3D_E_EDGEDIV
         || v == OSMGA_HW3D_E_TRISGN   || v == OSMGA_HW3D_E_TRICROSS
         || v == OSMGA_HW3D_E_TEXCOORD || v == OSMGA_HW3D_E_TRIEMPTY
-        || v == OSMGA_HW3D_E_TRIFIELD;
+        || v == OSMGA_HW3D_E_TRIFIELD || v == OSMGA_HW3D_E_ALPHACROSS;
 }
 
 /*

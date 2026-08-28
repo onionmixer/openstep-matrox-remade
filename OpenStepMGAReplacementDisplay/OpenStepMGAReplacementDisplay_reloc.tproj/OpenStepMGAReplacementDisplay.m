@@ -959,6 +959,16 @@ osmgaHW3DLogVerdictOnce(unsigned verdict, const OSMGAHW3DBatch *b,
               "not an address (dstorg %08lx zorg %08lx texorg %08lx); "
               "reported once\n", verdict,
               b->state.dstorg, b->state.zorg, b->state.texorg);
+    else if (verdict == (unsigned)OSMGA_HW3D_E_ALPHACROSS) {
+        const OSMGAHW3DTri *t = (badTri < b->triCount) ? &b->tri[badTri]
+                                                       : &b->tri[0];
+        unsigned long a = t->alphactrl & OSMGA_HW3D_AC_CLIENT;
+        IOLog("OpenStepMGA W16: batch refused %u at triangle %lu -- ALPHACTRL "
+              "%08lx is a combination the specification does not support "
+              "(src %lu dst %lu amode %lu astipple %lu); reported once\n",
+              verdict, badTri, a,
+              a & 0xFUL, (a >> 4) & 0xFUL, (a >> 8) & 0x3UL, (a >> 11) & 0x1UL);
+    }
     else if (verdict == (unsigned)OSMGA_HW3D_E_TRIFIELD) {
         /*
          * Name the triangle and print the values.  W15's plan said badTri

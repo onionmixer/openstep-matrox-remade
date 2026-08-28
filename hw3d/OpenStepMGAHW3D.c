@@ -12,6 +12,45 @@
 #define OSMGA_HW3D_DEPTH_BYTES  2UL    /* MACCESS leaves depth 16-bit */
 
 /*
+ * The ALPHACTRL combinations.  See the header for which three and why the
+ * fourth is missing.
+ */
+int
+osmgaHW3DAlphaCross(unsigned long ac)
+{
+    unsigned long src  = ac & 0xFUL;
+    unsigned long dst  = (ac >> 4) & 0xFUL;
+    unsigned long mode = (ac >> 8) & 0x3UL;
+    unsigned long stip = (ac >> 11) & 0x1UL;
+
+    /* 2: video alpha needs somewhere to blend into. */
+    if (mode == OSMGA_HW3D_AC_AM_VIDEO && dst == OSMGA_HW3D_AC_BF_ZERO)
+        return 0;
+
+    /* 3: and it cannot be approximated by the stipple at the same time. */
+    if (mode == OSMGA_HW3D_AC_AM_VIDEO && stip != 0UL)
+        return 0;
+
+    /* 4: the stipple supports four pairs and no others.  Written as the
+     * four rather than as a rule, because the spec gives four rows and
+     * inventing the rule behind them would be inventing. */
+    if (stip != 0UL) {
+        int ok =
+            (src == OSMGA_HW3D_AC_BF_ZERO   && dst == OSMGA_HW3D_AC_BF_ONE)    ||
+            (src == OSMGA_HW3D_AC_BF_ONE    && dst == OSMGA_HW3D_AC_BF_ZERO)   ||
+            (src == OSMGA_HW3D_AC_BF_SRCA   && dst == OSMGA_HW3D_AC_BF_OMSRCA) ||
+            (src == OSMGA_HW3D_AC_BF_OMSRCA && dst == OSMGA_HW3D_AC_BF_SRCA);
+        if (!ok)
+            return 0;
+    }
+
+    /* Rule 1 -- SRC_ALPHA_SATURATE with dst ZERO -- is deliberately not
+     * here.  It is measured; see the header. */
+    (void)OSMGA_HW3D_AC_SRC_SAT;
+    return 1;
+}
+
+/*
  * One field, checked and encoded.  See the header for the contract.
  *
  * The mask is not a repair of a wrong value: for a 22-bit field, -1 IS
@@ -586,6 +625,11 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                 ((ac >> 8) & 0x3UL) == 0x3UL ||          /* amode RSVD */
                 ((ac >> 13) & 0x7UL) == 0x1UL)           /* atmode has no macro */
                 return OSMGA_HW3D_E_ALPHA;
+            /* Fields apart, the combination.  Its own verdict: reusing
+             * E_ALPHA would hide one behind the other, because the driver
+             * logs a verdict number once and never again. */
+            if (!osmgaHW3DAlphaCross(ac))
+                return OSMGA_HW3D_E_ALPHACROSS;
         }
 
         if (t->y < 0L || t->h <= 0L)

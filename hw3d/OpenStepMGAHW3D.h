@@ -128,6 +128,10 @@
 #define OSMGA_HW3D_E_TEXORGAL  22
 #define OSMGA_HW3D_E_TRIFIELD  23   /* a per-triangle value that does not fit
                                      * the signed field its register keeps */
+#define OSMGA_HW3D_E_ALPHACROSS 24  /* an ALPHACTRL combination the spec
+                                     * says is not supported -- see the
+                                     * note below for which three, and for
+                                     * the one that is deliberately absent */
 
 /*
  * What a client may say in DWGCTL, and what the kernel says for it.
@@ -232,6 +236,52 @@ int osmgaHW3DAddressesDepth(unsigned long dwgctl);
 #define OSMGA_HW3D_AC_CLIENT    0x03FFFBFFUL
 #define OSMGA_HW3D_AC_SRC_MAX   8UL
 #define OSMGA_HW3D_AC_DST_MAX   7UL
+
+/*
+ * ---- ALPHACTRL combinations, as opposed to ALPHACTRL fields
+ *
+ * The checks above ask whether each field holds a value its own table
+ * defines.  The register's Notes forbid four COMBINATIONS of fields that
+ * are individually legal (3-32..3-34):
+ *
+ *   1  srcblendf = SRC_ALPHA_SATURATE  =>  dstblendf must not be ZERO
+ *   2  alphamode = video alpha         =>  dstblendf must not be ZERO
+ *   3  alphamode = video alpha         =>  astipple must not be 1
+ *   4  astipple  = 1                   =>  only four (src, dst) pairs
+ *
+ * THREE OF THEM ARE REFUSED.  The first is not, and the reason is not
+ * squeamishness: this repository has measured it.  test/…-blendsat-client
+ * exists to send exactly src 8 with dst ZERO and report what comes back,
+ * and its answer is stable and published -- "source factor 8 is source
+ * alpha on colour and ONE on alpha, so it is not GL_SRC_ALPHA_SATURATE".
+ * Refusing it would retire a measurement and break the test that made it.
+ *
+ * The rule the four share is the one this validator already applies to
+ * reserved zmode 1, which it lets through because no zmode can move a
+ * write: refuse what is undefined to us, not what has been measured.  None
+ * of the four moves a write; what refusing buys is that a client is not
+ * handed semantics nobody knows.  For the first, we know them.
+ *
+ * CAREFUL.  Rules 1 and 2 are about dstblendf = ZERO *in combination*.
+ * dstblendf = ZERO on its own is not merely legal, it is what the spec
+ * recommends: "To disable alpha blending, srcblendf must be programmed
+ * with 1 and dstblendf with 0" -- which is precisely the word Mesa sends
+ * for every opaque triangle.  A check written as "dstblendf must not be
+ * zero" would refuse all of them.
+ */
+#define OSMGA_HW3D_AC_SRC_SAT   8UL   /* SRC_ALPHA_SATURATE */
+#define OSMGA_HW3D_AC_AM_VIDEO  2UL   /* alphamode: video alpha */
+#define OSMGA_HW3D_AC_BF_ZERO   0UL
+#define OSMGA_HW3D_AC_BF_ONE    1UL
+#define OSMGA_HW3D_AC_BF_SRCA   4UL
+#define OSMGA_HW3D_AC_BF_OMSRCA 5UL
+
+/*
+ * Is this ALPHACTRL a combination the specification supports?  Takes the
+ * value already masked to OSMGA_HW3D_AC_CLIENT.  Returns 1 when allowed.
+ * Portable; the host tests link it.
+ */
+int osmgaHW3DAlphaCross(unsigned long ac);
 
 /*
  * Texture description.

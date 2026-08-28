@@ -183,11 +183,40 @@ main(void)
     reset(); b.tri[0].alphactrl = 0x0009UL;     expect("src factor 9, undefined", OSMGA_HW3D_E_ALPHA);
     reset(); b.tri[0].alphactrl = 0x0070UL;     expect("dst factor 7, the last defined", OSMGA_HW3D_OK);
     reset(); b.tri[0].alphactrl = 0x0080UL;     expect("dst factor 8, undefined", OSMGA_HW3D_E_ALPHA);
-    reset(); b.tri[0].alphactrl = 0x0200UL;     expect("amode 2, video alpha", OSMGA_HW3D_OK);
+    /* Video alpha needs a destination factor that is not ZERO, or it trips
+     * the combination rule rather than testing the encoding.  reset() leaves
+     * dst at ZERO, so this case used to assert a pair the spec forbids while
+     * meaning to assert that amode 2 is a defined value. */
+    reset(); b.tri[0].alphactrl = 0x0210UL;     expect("amode 2, video alpha", OSMGA_HW3D_OK);
     reset(); b.tri[0].alphactrl = 0x0300UL;     expect("amode 3, reserved", OSMGA_HW3D_E_ALPHA);
     reset(); b.tri[0].alphactrl = 0x0000UL;     expect("atmode 0, no compare", OSMGA_HW3D_OK);
     reset(); b.tri[0].alphactrl = 0x2000UL;     expect("atmode 1, no macro exists", OSMGA_HW3D_E_ALPHA);
     reset(); b.tri[0].alphactrl = 0x4000UL;     expect("atmode 2, defined", OSMGA_HW3D_OK);
+
+    printf("alpha control -- combinations the spec does not support\n");
+    /* Rules 1 and 2 are about dst = ZERO IN COMBINATION.  On its own it is
+     * what the spec recommends for disabling blending, and it is the word
+     * Mesa sends for every opaque triangle, so it must pass. */
+    reset(); b.tri[0].alphactrl = 0x0001UL;     expect("src ONE, dst ZERO -- blending off", OSMGA_HW3D_OK);
+    reset(); b.tri[0].alphactrl = 0x0000UL;     expect("src ZERO, dst ZERO", OSMGA_HW3D_OK);
+
+    /* Rule 1 is deliberately NOT enforced: measured by the blendsat client. */
+    reset(); b.tri[0].alphactrl = 0x0008UL;     expect("SRC_ALPHA_SATURATE with dst ZERO -- measured, allowed", OSMGA_HW3D_OK);
+
+    /* Rule 2: video alpha with dst ZERO. */
+    reset(); b.tri[0].alphactrl = 0x0200UL;     expect("video alpha with dst ZERO", OSMGA_HW3D_E_ALPHACROSS);
+    reset(); b.tri[0].alphactrl = 0x0210UL;     expect("video alpha with dst ONE", OSMGA_HW3D_OK);
+
+    /* Rule 3: video alpha with the stipple. */
+    reset(); b.tri[0].alphactrl = 0x0A10UL;     expect("video alpha with astipple", OSMGA_HW3D_E_ALPHACROSS);
+
+    /* Rule 4: the stipple's four pairs, and one that is not among them. */
+    reset(); b.tri[0].alphactrl = 0x0810UL;     expect("astipple ZERO/ONE", OSMGA_HW3D_OK);
+    reset(); b.tri[0].alphactrl = 0x0801UL;     expect("astipple ONE/ZERO", OSMGA_HW3D_OK);
+    reset(); b.tri[0].alphactrl = 0x0854UL;     expect("astipple SRC_ALPHA/OM_SRC_ALPHA", OSMGA_HW3D_OK);
+    reset(); b.tri[0].alphactrl = 0x0845UL;     expect("astipple OM_SRC_ALPHA/SRC_ALPHA", OSMGA_HW3D_OK);
+    reset(); b.tri[0].alphactrl = 0x0811UL;     expect("astipple ONE/ONE -- not a listed pair", OSMGA_HW3D_E_ALPHACROSS);
+    reset(); b.tri[0].alphactrl = 0x0800UL;     expect("astipple ZERO/ZERO -- not a listed pair", OSMGA_HW3D_E_ALPHACROSS);
     reset(); b.tri[0].alphactrl = 0xFC000400UL; expect("bits with no field are masked away", OSMGA_HW3D_OK);
 
     printf("origins follow ANY triangle, not all of them\n");
