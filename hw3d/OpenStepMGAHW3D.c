@@ -1674,3 +1674,49 @@ osmgaHW3DClipBox(unsigned long scissorOn,
         return 0;
     return 1;
 }
+
+unsigned long
+osmgaHW3DTexFilter(unsigned long texFlags)
+{
+    unsigned long f = OSMGA_HW3D_TEXFILTER_ALPHA |
+                      OSMGA_HW3D_TEXFILTER_FTHRES1;
+
+    if ((texFlags & OSMGA_HW3D_TEXF_BILIN) != 0UL)
+        f |= OSMGA_HW3D_TEXFILTER_MAGBILIN;
+    /*
+     * The diagnostic selector wins the minification field when it is set;
+     * the validator has already held it to the four named mipmap modes, so
+     * nothing unnamed reaches the register from here.
+     */
+    if ((texFlags & OSMGA_HW3D_TEXF_MINMODE_MASK) != 0UL)
+        f |= (texFlags & OSMGA_HW3D_TEXF_MINMODE_MASK)
+             >> OSMGA_HW3D_TEXF_MINMODE_SHIFT;
+    else if ((texFlags & OSMGA_HW3D_TEXF_BILINMIN) != 0UL)
+        f |= OSMGA_HW3D_TEXFILTER_MINBILIN;
+    return f;
+}
+
+/*
+ * The PRODUCTION rule only.  Version 9 has two diagnostic flags on top of
+ * this -- one that zeroes the second lane and one that swaps them -- and
+ * they stay with version 9: they exist to prove the lanes are the even and
+ * odd screen columns, which is a thing to demonstrate once and not a state
+ * to offer the WARP tier.
+ */
+unsigned long
+osmgaHW3DTexDualStage(unsigned long texFlags, int textured)
+{
+    unsigned long tds;
+
+    if (!textured)
+        return OSMGA_HW3D_TDS_COLOR_MUL;
+
+    tds = ((texFlags & OSMGA_HW3D_TEXF_MODULATE) != 0UL)
+              ? OSMGA_HW3D_TDS_COLOR_MUL : 0UL;
+    if ((texFlags & OSMGA_HW3D_TEXF_TEXALPHA) != 0UL)
+        tds |= ((texFlags & OSMGA_HW3D_TEXF_MODULATE) != 0UL)
+                   ? OSMGA_HW3D_TDS_ALPHA_MUL : 0UL;
+    else
+        tds |= OSMGA_HW3D_TDS_ALPHA_ARG2;
+    return tds;
+}

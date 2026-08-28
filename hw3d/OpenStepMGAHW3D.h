@@ -1542,3 +1542,49 @@ int osmgaHW3DClipBox(unsigned long scissorOn,
                      unsigned long dstW, unsigned long dstH,
                      unsigned long *x0, unsigned long *x1,
                      unsigned long *y0, unsigned long *y1);
+
+/*
+ * TEXFILTER, derived from the client's flags.
+ *
+ * The register's own layout: magfilter is bits 7:4 and minfilter 3:0, both
+ * naming NRST as 0 and BILIN as 2; filteralpha is bit 20 and fthres bits
+ * 28:21, an unsigned 4.4 holding the SQUARE of the step at which the
+ * engine changes from magnifying to minifying, so 0x10 is a step of one.
+ *
+ * Two fields, and only the magnification one was ever written -- so a
+ * texture drawn smaller than itself was point sampled however GL had asked
+ * for it to be filtered.  The diagnostic minification selector wins that
+ * field when it is set, and the validator has already held it to the four
+ * named mipmap modes.
+ *
+ * Here rather than inside an encoder for the reason the wrap policy is:
+ * the WARP path needs the same answer, and a derivation written twice
+ * drifts.  Pure integer arithmetic, so the host tests it.
+ */
+unsigned long osmgaHW3DTexFilter(unsigned long texFlags);
+
+/*
+ * TDUALSTAGE0, and TDUALSTAGE1 takes the SAME value.
+ *
+ * They are not two serial stages: they are the even and odd screen
+ * columns.  Setting the alpha selector in stage nought alone fixed exactly
+ * half the pixels, measured as a row reading `20 ab 28 ab 30 ab 38 ab`
+ * where 0xab was the texture's own alpha -- so both lanes take this one
+ * word, and a caller that writes it to one of them has written a stripe.
+ *
+ * Selector nought is ARG1, the texture's alpha; ARG2 with the operand
+ * fields left at zero is the interpolated one.  Which of them GL wants
+ * depends on whether the texture has an alpha at all, which the client
+ * says through OSMGA_HW3D_TEXF_TEXALPHA.
+ */
+unsigned long osmgaHW3DTexDualStage(unsigned long texFlags, int textured);
+
+/* The register fields these two produce, named here because both encoders
+ * write them and neither owns them. */
+#define OSMGA_HW3D_TDS_COLOR_MUL   0x00600000UL
+#define OSMGA_HW3D_TDS_ALPHA_MUL   0xC0000000UL
+#define OSMGA_HW3D_TDS_ALPHA_ARG2  0x40000000UL
+#define OSMGA_HW3D_TEXFILTER_ALPHA 0x00100000UL
+#define OSMGA_HW3D_TEXFILTER_FTHRES1 (0x10UL << 21)   /* a step of one */
+#define OSMGA_HW3D_TEXFILTER_MAGBILIN 0x20UL
+#define OSMGA_HW3D_TEXFILTER_MINBILIN 0x02UL

@@ -383,6 +383,58 @@ stateCases(void)
                                  "refused");
 }
 
+/*
+ * TEXFILTER and TDUALSTAGE, derived from the client's flags.  Both
+ * encoders write these registers, so the derivation is shared and this is
+ * where it is pinned to the values version 9 has been shipping.
+ */
+static void
+texRegisters(void)
+{
+    unsigned long f, t;
+    unsigned long base = OSMGA_HW3D_TEXFILTER_ALPHA |
+                         OSMGA_HW3D_TEXFILTER_FTHRES1;
+
+    f = osmgaHW3DTexFilter(0UL);
+    check(f == base, "no filter request is nearest both ways");
+
+    f = osmgaHW3DTexFilter(OSMGA_HW3D_TEXF_BILIN);
+    check(f == (base | 0x20UL), "BILIN sets the MAGNIFICATION field");
+
+    f = osmgaHW3DTexFilter(OSMGA_HW3D_TEXF_BILINMIN);
+    check(f == (base | 0x02UL), "BILINMIN sets the MINIFICATION field");
+
+    f = osmgaHW3DTexFilter(OSMGA_HW3D_TEXF_BILIN | OSMGA_HW3D_TEXF_BILINMIN);
+    check(f == (base | 0x22UL), "the two fields are independent");
+
+    /* The diagnostic mipmap selector wins the minification field. */
+    f = osmgaHW3DTexFilter(OSMGA_HW3D_TEXF_BILINMIN |
+                           (OSMGA_HW3D_TEXF_MINMODE_MM8S
+                            << OSMGA_HW3D_TEXF_MINMODE_SHIFT));
+    check(f == (base | OSMGA_HW3D_TEXF_MINMODE_MM8S),
+          "a mipmap mode wins the minification field over BILINMIN");
+
+    t = osmgaHW3DTexDualStage(0UL, 0);
+    check(t == OSMGA_HW3D_TDS_COLOR_MUL,
+          "an untextured primitive multiplies the colour through");
+
+    t = osmgaHW3DTexDualStage(0UL, 1);
+    check(t == OSMGA_HW3D_TDS_ALPHA_ARG2,
+          "a texture without its own alpha takes the interpolated one");
+
+    t = osmgaHW3DTexDualStage(OSMGA_HW3D_TEXF_TEXALPHA, 1);
+    check(t == 0UL, "a texture with its own alpha takes ARG1, which is zero");
+
+    t = osmgaHW3DTexDualStage(OSMGA_HW3D_TEXF_MODULATE, 1);
+    check(t == (OSMGA_HW3D_TDS_COLOR_MUL | OSMGA_HW3D_TDS_ALPHA_ARG2),
+          "modulate multiplies the colour and keeps the fragment alpha");
+
+    t = osmgaHW3DTexDualStage(OSMGA_HW3D_TEXF_MODULATE |
+                              OSMGA_HW3D_TEXF_TEXALPHA, 1);
+    check(t == (OSMGA_HW3D_TDS_COLOR_MUL | OSMGA_HW3D_TDS_ALPHA_MUL),
+          "modulate with a texture alpha multiplies both");
+}
+
 int
 main(void)
 {
@@ -392,6 +444,7 @@ main(void)
     policy();
     clampPolicy();
     stateCases();
+    texRegisters();
 
     if (failures == 0)
         printf("test-warp-batch: layout shared with version 9, every named "
