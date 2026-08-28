@@ -252,3 +252,75 @@ W12 에서 내가 쓴 것이고, 정렬 코드 셋만 특별 처리한다. **좁
 6. 로거가 `badTri` 와 필드를 찍게 한다
 7. 호스트 시험이 **정규 워드 자체**를 확인한다 (판정만이 아니라)
 8. V4 의 판정 기준을 **객관적으로** 정한다 (기존 비교 도구 사용)
+
+---
+
+## 9. 결과 (2026-08-28 실기)
+
+### 9.1 무하드웨어
+
+```
+check-hw3d-validate: PASS (batch validator + secondary range + field encoding)
+```
+
+새 시험은 **판정이 아니라 워드**를 본다 — 검토가 요구한 것:
+
+```
+ok  minus one -- the whole point                003fffff
+ok  colour 255 as 9.15                          007f8000
+ok  the most negative that fits                 00200000
+ok  0xffffffff as a carrier (-1)                00ffffff
+ok  0x00ffffff as a carrier (+16777215)         refused
+ok  every accepted word has its reserved bits clear
+```
+
+**표현 규약이 시험에 박혔다** — 담개가 부호확장을 나른다는 것.
+
+### 9.2 회귀 — 그리고 **정상 값은 하나도 안 걸린다**
+
+```
+15/15 통과
+E_TRIFIELD(23) 거부: 0 건
+```
+
+거부 넷(17·6·13·5)은 시험이 일부러 유발하는 기존 검사다. **`AR0`/`AR6` 의
+새 상한, 아홉 DR, 세 알파 어느 것도 정상 클라이언트를 거부하지 않았다.**
+
+### 9.3 ★ V4 — 객관적 기준으로 그림이 같다
+
+`run-matrox-scene-baselines.sh` 는 장면마다 **엔진과 소프트웨어로 각각
+그려** 저장된 기대 카운트와 대조한다. §3 이 요구한 "객관적 기준" 이 이것이다.
+
+```
+lin 257 · minlin 1024 · near 24 · persp 6 · perspfar 9 · rgba 24
+tile 0 · tilebnd 0 · tilelin 16384 · tileneg 0 · texq 3 · texqn 0
+seam 1024 · seamx 768
+
+SCENES_MOVED=0
+```
+
+**열네 장면 전부 한 픽셀도 움직이지 않았다.** 마스킹이 음수의 32 비트
+표현만 바꾸고 하드웨어가 읽는 값은 같다는 예측이 **측정으로 확인됐다.**
+
+### 9.4 로거
+
+```
+W12: batch refused 17 at triangle 15; reported once
+```
+
+삼각형을 지목한다. §7.5 에서 거짓으로 판명된 주장이 이제 사실이다.
+
+### 9.5 부수 관측 — `PRIMPTR` 은 웜 재부팅을 넘는다
+
+```
+14:52  PRIMPTR fffffbf0 -> 0     (처음)
+15:23  PRIMPTR 0 -> 0
+15:28  PRIMPTR 0 -> 0
+```
+
+**우리가 쓴 0 이 재부팅 뒤에도 남아 있다.** 사양서가 웜 부팅 때
+`RST.softreset` 이 필요하다고 한 것(4-14)과 일관된다 — 웜 부팅은 DMA 채널과
+BFIFO 를 리셋하지 않는다.
+
+그러므로 처음 본 `fffffbf0` 도 **그 부팅에서 생긴 값이 아니라 더 오래된
+잔재**였을 수 있다. 그리고 우리의 0 은 이제 같은 방식으로 지속된다.
