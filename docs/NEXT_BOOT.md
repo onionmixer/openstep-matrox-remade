@@ -133,3 +133,35 @@ the driver must NOT be unloaded while this is enabled (mappings outlive it)
 ```
 
 T0 는 언제나 돈다 — 나머지 전부의 관문이기 때문이다.
+
+## 10. 판정은 꼬리에 남는다 (M8, 2026-08-29)
+
+본문이 잘려도 판정은 남는다.  실행 끝(과 **모든 포기 경로**)에서 세 줄이
+연속으로 나온다:
+
+```
+M4 SUM/<run> T7 <상태> phasefail a b c | T7e <상태> seam u1 u2 v1 v2 c1 c2
+M4 SUM/<run> T8a <상태> alpha lo..hi / lo..hi | T8b <상태> wrong n
+M4 SUM/<run> T9 <상태> busy b leak f u
+```
+
+상태는 넷이다:
+
+```
+-         선택되지 않음 (밴드 선택자가 건너뜀)
+blocked   T0 이 실패해서 뒤가 다 막힘
+ran       끝까지 돌았다
+ABORTED   시작했는데 끝나지 않았다 (엔진을 포기한 실행)
+```
+
+**`0` 과 `-` 는 다른 뜻이다** — `0` 은 "실패 화소 없음", `-` 는 "안 돌았음".
+
+읽는 법:
+
+```
+T7  phasefail 0 0 0 또는 1 이하   -> repeat 가 축마다 감긴다
+T7e seam 127/128 근처, 0 이나 255 아님  -> 이음매도 감긴다
+T8a alpha 0..249 / 51..51        -> ARG2 가 보간 알파, ARG1 이 텍스처 알파
+T8b wrong 0                      -> 블렌딩이 반올림 /255 와 일치
+T9  busy 1, leak 0 0             -> 펜스 불필요 (busy 0 이면 시험 안 된 것)
+```

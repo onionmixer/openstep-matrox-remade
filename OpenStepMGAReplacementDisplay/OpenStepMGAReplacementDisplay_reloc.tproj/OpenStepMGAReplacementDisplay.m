@@ -925,6 +925,127 @@ typedef int OSMGAD3ZorgAligned[
 #define OSMGA_WARPQUAL_SETTLED  2UL   /* T0..T6 */
 #define OSMGA_WARPQUAL_REPAIR   3UL   /* T7 onward */
 static unsigned long osmgaWarpQualBands = OSMGA_WARPQUAL_ALL;
+static int osmgaWarpQualBusy;
+
+/*
+ * ---- M8: the verdict survives even when the body of the log does not ----
+ *
+ * The repaired harness emits about forty-five lines and only the last nine
+ * reached /private/adm/messages on 2026-08-29.  The cause is VOLUME, not
+ * the 5 ms settle between lines: M3 section 20 recorded that the same
+ * harness kept all 25 of its lines through this same runtime trigger, and
+ * said in as many words that the delay was not the problem.
+ *
+ * So the delay stays.  IODelay is a spin and IOSleep would yield, but
+ * doc/driverkit.md carries a measured table saying IOSleep in an ioctl
+ * context stops the machine -- it stopped this one on 2026-07-20 -- and
+ * this harness is entered through setIntValues:.
+ *
+ * Instead every band leaves its verdict here and the whole set is
+ * restated in three consecutive lines at the end, where the tail always
+ * survives.  It is the pattern the osmgaD2Last* statics already use.
+ *
+ * The STATE matters as much as the values: "T0 failed so this was
+ * blocked" and "the operator did not select this band" are different
+ * facts, and a zero cannot tell them apart.
+ */
+#define OSMGA_M4B_T7        0
+#define OSMGA_M4B_T7E       1
+#define OSMGA_M4B_T8A       2
+#define OSMGA_M4B_T8B       3
+#define OSMGA_M4B_T9        4
+#define OSMGA_M4B_COUNT     5
+#define OSMGA_M4B_VALS      6
+
+#define OSMGA_M4S_NOTSEL    0
+#define OSMGA_M4S_BLOCKED   1
+#define OSMGA_M4S_RUNNING   2
+#define OSMGA_M4S_COMPLETE  3
+#define OSMGA_M4S_ABORTED   4
+
+static unsigned long osmgaM4State[OSMGA_M4B_COUNT];
+static unsigned long osmgaM4Val[OSMGA_M4B_COUNT][OSMGA_M4B_VALS];
+static unsigned long osmgaM4RunId;
+
+/*
+ * Cleared at the start of every accepted request, for the reason the v9
+ * submit path gives about osmgaHW3DLast[]: leaving them alone would answer
+ * this run with the last one's verdict, and the worst of those is
+ * reporting a pass for a band that never ran.
+ */
+static void
+osmgaM4SumReset(void)
+{
+    unsigned long b, v;
+
+    for (b = 0UL; b < OSMGA_M4B_COUNT; b++) {
+        osmgaM4State[b] = OSMGA_M4S_NOTSEL;
+        for (v = 0UL; v < OSMGA_M4B_VALS; v++)
+            osmgaM4Val[b][v] = 0UL;
+    }
+    osmgaM4RunId++;
+}
+
+static void
+osmgaM4SumSet(unsigned long band, unsigned long state)
+{
+    if (band < OSMGA_M4B_COUNT)
+        osmgaM4State[band] = state;
+}
+
+static void
+osmgaM4SumVal(unsigned long band, unsigned long i, unsigned long v)
+{
+    if (band < OSMGA_M4B_COUNT && i < OSMGA_M4B_VALS)
+        osmgaM4Val[band][i] = v;
+}
+
+static const char *
+osmgaM4SumWord(unsigned long band)
+{
+    switch (osmgaM4State[band]) {
+    case OSMGA_M4S_NOTSEL:   return "-";
+    case OSMGA_M4S_BLOCKED:  return "blocked";
+    case OSMGA_M4S_RUNNING:  return "ABORTED";   /* it never finished */
+    case OSMGA_M4S_COMPLETE: return "ran";
+    default:                 return "ABORTED";
+    }
+}
+
+/*
+ * Three lines, consecutive, with NO settle between them: whatever the log
+ * keeps of a burst, it keeps the end of it.  Called from the one label
+ * every exit passes through, so a run that gave up still says what it had
+ * measured before it did -- which is when a verdict is worth most.
+ */
+static void
+osmgaM4SumPrint(void)
+{
+    IOLog("OpenStepMGA M4 SUM/%lu T7 %s phasefail %lu %lu %lu | T7e %s "
+          "seam %lu %lu %lu %lu %lu %lu\n",
+          osmgaM4RunId,
+          osmgaM4SumWord(OSMGA_M4B_T7),
+          osmgaM4Val[OSMGA_M4B_T7][0], osmgaM4Val[OSMGA_M4B_T7][1],
+          osmgaM4Val[OSMGA_M4B_T7][2],
+          osmgaM4SumWord(OSMGA_M4B_T7E),
+          osmgaM4Val[OSMGA_M4B_T7E][0], osmgaM4Val[OSMGA_M4B_T7E][1],
+          osmgaM4Val[OSMGA_M4B_T7E][2], osmgaM4Val[OSMGA_M4B_T7E][3],
+          osmgaM4Val[OSMGA_M4B_T7E][4], osmgaM4Val[OSMGA_M4B_T7E][5]);
+    IOLog("OpenStepMGA M4 SUM/%lu T8a %s alpha %lu..%lu / %lu..%lu | T8b "
+          "%s wrong %lu\n",
+          osmgaM4RunId,
+          osmgaM4SumWord(OSMGA_M4B_T8A),
+          osmgaM4Val[OSMGA_M4B_T8A][0], osmgaM4Val[OSMGA_M4B_T8A][1],
+          osmgaM4Val[OSMGA_M4B_T8A][2], osmgaM4Val[OSMGA_M4B_T8A][3],
+          osmgaM4SumWord(OSMGA_M4B_T8B),
+          osmgaM4Val[OSMGA_M4B_T8B][0]);
+    IOLog("OpenStepMGA M4 SUM/%lu T9 %s busy %lu leak %lu %lu\n",
+          osmgaM4RunId,
+          osmgaM4SumWord(OSMGA_M4B_T9),
+          osmgaM4Val[OSMGA_M4B_T9][0], osmgaM4Val[OSMGA_M4B_T9][1],
+          osmgaM4Val[OSMGA_M4B_T9][2]);
+}
+
 
 #define OSMGA_WARPQUAL_PARAM    "OSMGAWarpQual"
 /*
@@ -5639,6 +5760,16 @@ unmap:
          * been doing by hand since D3-3b; this makes it a choice the
          * operator can make without a rebuild.
          */
+        /*
+         * One run at a time.  The selector is a file static read inside
+         * the run, so a second request arriving mid-run would change the
+         * bands underneath the first one.
+         */
+        if (osmgaWarpQualBusy) {
+            IOLog("OpenStepMGA M3: refused -- a qualification run is "
+                  "already in progress\n");
+            return IO_R_BUSY;
+        }
         osmgaWarpQualBands = OSMGA_WARPQUAL_ALL;
         if (parameterArray != 0 && count == 1U) {
             if (parameterArray[0] == 2U)
@@ -5646,9 +5777,12 @@ unmap:
             else if (parameterArray[0] == 3U)
                 osmgaWarpQualBands = OSMGA_WARPQUAL_REPAIR;
         }
-        IOLog("OpenStepMGA M3: run requested through %s, bands %lu\n",
-              OSMGA_WARPQUAL_PARAM, osmgaWarpQualBands);
+        osmgaM4SumReset();
+        IOLog("OpenStepMGA M3: run %lu requested through %s, bands %lu\n",
+              osmgaM4RunId, OSMGA_WARPQUAL_PARAM, osmgaWarpQualBands);
+        osmgaWarpQualBusy = 1;
         [self runWarpDepthQualificationTest];
+        osmgaWarpQualBusy = 0;
         osmgaWarpQualBands = OSMGA_WARPQUAL_ALL;
         return IO_R_SUCCESS;
     }
@@ -10319,7 +10453,7 @@ osmgaM4ReportWrap(volatile unsigned long *blk, unsigned long stride,
  */
 static void
 osmgaM4ReportSeam(volatile unsigned long *blk, unsigned long stride,
-                  unsigned long lo, const char *label)
+                  unsigned long lo, const char *label, unsigned long *out)
 {
     unsigned long nearC = lo + OSMGA_M4_SEAM_NEAR;
     unsigned long farC  = lo + OSMGA_M4_SEAM_FAR;
@@ -10332,6 +10466,11 @@ osmgaM4ReportSeam(volatile unsigned long *blk, unsigned long stride,
     d = blk[farC  * stride + hold ] & OSMGA_D2E_RGB;
     e = blk[nearC * stride + nearC] & OSMGA_D2E_RGB;
 
+    if (out != 0) {
+        out[0] = (a >> 16) & 0xFFUL;   out[1] = (b >> 16) & 0xFFUL;
+        out[2] = (c >>  8) & 0xFFUL;   out[3] = (d >>  8) & 0xFFUL;
+        out[4] = (e >> 16) & 0xFFUL;   out[5] = (e >>  8) & 0xFFUL;
+    }
     IOLog("OpenStepMGA M4/%s: u near %lu far %lu | v near %lu far %lu | "
           "corner u %lu v %lu\n", label,
           (a >> 16) & 0xFFUL, (b >> 16) & 0xFFUL,
@@ -10391,6 +10530,7 @@ osmgaM4ReportAlpha(volatile unsigned long *blk, unsigned long stride,
     if (outLo != 0) *outLo = (seen != 0UL) ? aLo : 0UL;
     if (outHi != 0) *outHi = aHi;
 }
+
 
 
 /*
@@ -11823,6 +11963,10 @@ releaseAndReturn:
 
       }
       if (osmgaWarpQualBands != OSMGA_WARPQUAL_SETTLED) {
+        osmgaM4SumSet(OSMGA_M4B_T7,  OSMGA_M4S_RUNNING);
+        osmgaM4SumSet(OSMGA_M4B_T7E, OSMGA_M4S_RUNNING);
+        osmgaM4SumSet(OSMGA_M4B_T8A, OSMGA_M4S_RUNNING);
+        osmgaM4SumSet(OSMGA_M4B_T8B, OSMGA_M4S_RUNNING);
         /* ---- T7: does the texture unit wrap when WARP drives it? -----
          *
          * Three bands over the same square with the same sweep.  Only the
@@ -11899,6 +12043,7 @@ releaseAndReturn:
                 else if (bad > worst) worst = bad;
             }
             m4wrapBad[i] = OSMGA_M4_REP_PHASES - clean;
+            osmgaM4SumVal(OSMGA_M4B_T7, i, m4wrapBad[i]);
             IOLog("OpenStepMGA M4/%s: %lu of %lu phases clean (worst phase "
                   "%lu px)\n", lbl, clean, OSMGA_M4_REP_PHASES, worst);
             osmgaD2Settle();
@@ -11919,6 +12064,7 @@ releaseAndReturn:
                   "%lu, repeatV %lu of %lu; repeat stays out of the WARP "
                   "tier\n", m4wrapBad[0], m4wrapBad[1], m4wrapBad[2],
                   OSMGA_M4_REP_PHASES);
+        osmgaM4SumSet(OSMGA_M4B_T7, OSMGA_M4S_COMPLETE);
         osmgaD2Settle();
 
         /* ---- T7e: the linear seam, against M1_4CB's trapezoid numbers --
@@ -11963,7 +12109,9 @@ releaseAndReturn:
                   "REQUIRED ***\n");
             goto unmapM4;
         }
-        osmgaM4ReportSeam(blkWa, stride, OSMGA_M4_SQ_LO, "T7e");
+        osmgaM4ReportSeam(blkWa, stride, OSMGA_M4_SQ_LO, "T7e",
+                          &osmgaM4Val[OSMGA_M4B_T7E][0]);
+        osmgaM4SumSet(OSMGA_M4B_T7E, OSMGA_M4S_COMPLETE);
 
         /* ---- T8a: whose alpha reaches the destination? ---------------
          *
@@ -12050,6 +12198,11 @@ releaseAndReturn:
                   "ramp), fromtex %lu..%lu (want %lu everywhere)\n",
                   m4aLo[0], m4aHi[0], m4aLo[1], m4aHi[1],
                   OSMGA_M4_TEX_ALPHA);
+        osmgaM4SumVal(OSMGA_M4B_T8A, 0UL, m4aLo[0]);
+        osmgaM4SumVal(OSMGA_M4B_T8A, 1UL, m4aHi[0]);
+        osmgaM4SumVal(OSMGA_M4B_T8A, 2UL, m4aLo[1]);
+        osmgaM4SumVal(OSMGA_M4B_T8A, 3UL, m4aHi[1]);
+        osmgaM4SumSet(OSMGA_M4B_T8A, OSMGA_M4S_COMPLETE);
         osmgaD2Settle();
 
         /* ---- T8b: does WARP reach the same blended picture? ----------
@@ -12097,6 +12250,8 @@ releaseAndReturn:
         else
             IOLog("OpenStepMGA M4: T8b -- the blend does not match; "
                   "blending stays out of the WARP tier\n");
+        osmgaM4SumVal(OSMGA_M4B_T8B, 0UL, m4diff);
+        osmgaM4SumSet(OSMGA_M4B_T8B, OSMGA_M4S_COMPLETE);
         osmgaD2Settle();
 
       }
@@ -12181,6 +12336,7 @@ releaseAndReturn:
         osmgaD2Settle();
       }
       if (osmgaWarpQualBands != OSMGA_WARPQUAL_SETTLED) {
+        osmgaM4SumSet(OSMGA_M4B_T9, OSMGA_M4S_RUNNING);
         /* ---- T9: is the fence between two runs necessary? -----------
          *
          * M6 has to cut a batch into runs and emit a fresh state list at
@@ -12316,11 +12472,19 @@ releaseAndReturn:
             IOLog("OpenStepMGA M4: T9 -- depth leaked into run A: fenced "
                   "%lu px, unfenced %lu px.  The fence stays\n",
                   m4t9Leak[0], m4t9Leak[1]);
+        osmgaM4SumVal(OSMGA_M4B_T9, 0UL, m4t9Busy[1]);
+        osmgaM4SumVal(OSMGA_M4B_T9, 1UL, m4t9Leak[0]);
+        osmgaM4SumVal(OSMGA_M4B_T9, 2UL, m4t9Leak[1]);
+        osmgaM4SumSet(OSMGA_M4B_T9, OSMGA_M4S_COMPLETE);
         osmgaD2Settle();
       }
 
     } else {
-        IOLog("OpenStepMGA M3: T0 did not pass -- T1 and T2 are not run\n");
+        unsigned long bb;
+
+        for (bb = 0UL; bb < OSMGA_M4B_COUNT; bb++)
+            osmgaM4SumSet(bb, OSMGA_M4S_BLOCKED);
+        IOLog("OpenStepMGA M3: T0 did not pass -- nothing after it runs\n");
         osmgaD2Settle();
     }
 
@@ -12345,6 +12509,14 @@ releaseAll:
 freeRing:
     IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
 unmapM4:
+    /*
+     * Every exit after the mappings passes through here -- the normal one
+     * by falling through releaseAll and freeRing, and all thirty-four
+     * abandonments by jumping straight to it.  So the verdicts are stated
+     * HERE and not at the end of the normal path, which a run that gave up
+     * never reaches.  A run that gave up is when a verdict is worth most.
+     */
+    osmgaM4SumPrint();
     IOUnmapPhysicalFromIOTask(aM4, lM4);
 unmapT:
     IOUnmapPhysicalFromIOTask(aT, lT);
