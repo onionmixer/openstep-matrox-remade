@@ -8242,22 +8242,35 @@ osmgaDmaBuildPipeList(unsigned long *ring, unsigned long ringDwords,
  * them survived.  This is corruption detection, not containment -- nothing
  * here can bound what opaque microcode writes outside this block.
  */
-#define OSMGA_D2C_CLIP_LO        4UL
-#define OSMGA_D2C_CLIP_HI       59UL          /* inclusive, as CXBNDRY is */
 /*
- * Two batches, at separate offsets in the same physically contiguous
- * allocation.  Separate rather than reused, because buffer aging is a
- * different question and this test changes one thing at a time.
+ * The block is this test's own, 128x128, not S1's 64x64 -- twenty-one
+ * triangles of 136 pixels each need the room, and every submission has to
+ * be big enough to leave drawing in flight.  OSMGA_S1_W/H belong to the
+ * other probes and are left alone.
+ */
+#define OSMGA_D2F_BLK          128UL
+#define OSMGA_D2C_CLIP_LO        4UL
+#define OSMGA_D2C_CLIP_HI      123UL          /* inclusive, as CXBNDRY is */
+/*
+ * Three buffer offsets in the one physically contiguous allocation.
  *
- * The ends differ (288 vs 192 bytes from different starts), which matters:
- * an identical end address would let a stale PRIMADDRESS from the previous
- * batch satisfy the next batch's completion test.
+ *   A   R1's two submissions, then R2's three   -- the reuse address
+ *   B   C1's first                              -- distinct, no reuse
+ *   C   C1's second                             -- distinct, no reuse
+ *
+ * C1 exists because R2 would otherwise be asking two unproven questions at
+ * once: whether a buffer may be overwritten once the pointer has passed
+ * it, and whether PRIMADDRESS may be rewritten while drawing is still in
+ * flight.  Neither reference ever does the second -- both establish idle
+ * before rewriting the primary start -- so it needs its own control, at
+ * distinct addresses where no reuse is involved.
  */
 #define OSMGA_D2C_VTX_DWORDS      24UL        /* WVRTXSZ.primsz, exactly */
-#define OSMGA_D2E_B1_OFF        0x8000UL
-#define OSMGA_D2E_B2_OFF        0x9000UL
-#define OSMGA_D2E_B1_DWORDS     (OSMGA_D2E_B1 * OSMGA_D2C_VTX_DWORDS)
-#define OSMGA_D2E_B2_DWORDS     (OSMGA_D2E_B2 * OSMGA_D2C_VTX_DWORDS)
+#define OSMGA_D2F_SUB_DWORDS  (OSMGA_D2E_PER_SUB * OSMGA_D2C_VTX_DWORDS)
+#define OSMGA_D2F_OFF_A         0x8000UL
+#define OSMGA_D2F_OFF_B         0x9000UL
+#define OSMGA_D2F_OFF_C         0xA000UL
+#define OSMGA_D2F_SUBS            7UL
 #define OSMGA_D2C_F32_HALF      0x3F000000UL  /* 0.5f */
 #define OSMGA_D2C_F32_ONE       0x3F800000UL  /* 1.0f */
 #define OSMGA_D2C_PIPE             7UL        /* tgzsaf; W2 section 8 */
@@ -8509,20 +8522,46 @@ typedef struct {
     unsigned long row0, col0, leg, colour;
 } OSMGAD2eTri;
 
-#define OSMGA_D2E_TRIS      5UL
-#define OSMGA_D2E_B1        3UL
-#define OSMGA_D2E_B2        (OSMGA_D2E_TRIS - OSMGA_D2E_B1)
+#define OSMGA_D2E_TRIS     21UL
+#define OSMGA_D2E_PER_SUB   3UL               /* 72 dwords, 408 pixels */
 /* Measured, not assumed: the vertex carried 0xFFFF8040 and the framebuffer
  * came back 0x00FF8040, so the alpha byte does not survive the pipeline
  * and every comparison is made on twenty-four bits. */
 #define OSMGA_D2E_RGB       0x00FFFFFFUL
 
+/*
+ * Seven submissions of three.  Three is not a round number chosen for
+ * tidiness: one triangle and two triangles were both measured leaving
+ * dwgengsts at 0 by the time the pointer reached the end, and three left
+ * it at 1.  A submission that finishes drawing before the buffer is reused
+ * cannot answer the question this test asks.
+ *
+ * 5x5 grid of 24-pixel cells from (4,4), triangle inset 2, leg 16.  No two
+ * overlap, all lie inside the clip, and the twenty-one colours are unique
+ * and none of them is the sentinel -- checked on the host over every pixel.
+ */
 static const OSMGAD2eTri osmgaD2eTris[OSMGA_D2E_TRIS] = {
-    {  8UL,  8UL, 16UL, 0xFFFF0000UL },   /* B1: red    136 px */
-    {  8UL, 34UL, 16UL, 0xFF00FF00UL },   /* B1: green  136 px */
-    { 34UL,  8UL, 16UL, 0xFF0000FFUL },  /* B1: blue   136 px */
-    { 34UL, 34UL, 16UL, 0xFFFFFF00UL },   /* B2: yellow 136 px */
-    { 20UL, 20UL, 10UL, 0xFF00FFFFUL }    /* B2: cyan    55 px */
+    {   6UL,   6UL, 16UL, 0xFF2F1D0DUL },   /* sub 0  -- R1 */
+    {   6UL,  30UL, 16UL, 0xFF5E3A1AUL },
+    {   6UL,  54UL, 16UL, 0xFF8D5727UL },
+    {   6UL,  78UL, 16UL, 0xFFBC7434UL },   /* sub 1  -- R1 */
+    {   6UL, 102UL, 16UL, 0xFFEB9141UL },
+    {  30UL,   6UL, 16UL, 0xFF1AAE4EUL },
+    {  30UL,  30UL, 16UL, 0xFF49CB5BUL },   /* sub 2  -- C1 */
+    {  30UL,  54UL, 16UL, 0xFF78E868UL },
+    {  30UL,  78UL, 16UL, 0xFFA70575UL },
+    {  30UL, 102UL, 16UL, 0xFFD62282UL },   /* sub 3  -- C1 */
+    {  54UL,   6UL, 16UL, 0xFF053F8FUL },
+    {  54UL,  30UL, 16UL, 0xFF345C9CUL },
+    {  54UL,  54UL, 16UL, 0xFF6379A9UL },   /* sub 4  -- R2 */
+    {  54UL,  78UL, 16UL, 0xFF9296B6UL },
+    {  54UL, 102UL, 16UL, 0xFFC1B3C3UL },
+    {  78UL,   6UL, 16UL, 0xFFF0D0D0UL },   /* sub 5  -- R2 */
+    {  78UL,  30UL, 16UL, 0xFF1FEDDDUL },
+    {  78UL,  54UL, 16UL, 0xFF4E0AEAUL },
+    {  78UL,  78UL, 16UL, 0xFF7D27F7UL },   /* sub 6  -- R2 */
+    {  78UL, 102UL, 16UL, 0xFFAC4404UL },
+    { 102UL,   6UL, 16UL, 0xFFDB6111UL }
 };
 
 /*
@@ -8591,7 +8630,7 @@ osmgaD2eExpectedAt(unsigned long row, unsigned long col, unsigned long n)
 
 /*
  * Compare the whole block against the exact expected image for `n` drawn
- * triangles.  Returns 1 only if every one of the 4096 pixels is what it
+ * triangles.  Returns 1 only if every one of the 16384 pixels is what it
  * should be.
  *
  * Not a count, and not a bounding box.  A right triangle mirrored about
@@ -8614,8 +8653,8 @@ osmgaD2eVerify(volatile unsigned long *blk, unsigned long stride,
     for (i = 0UL; i < OSMGA_D2E_TRIS; i++)
         hit[i] = 0UL;
 
-    for (row = 0UL; row < OSMGA_S1_H; row++) {
-        for (col = 0UL; col < OSMGA_S1_W; col++) {
+    for (row = 0UL; row < OSMGA_D2F_BLK; row++) {
+        for (col = 0UL; col < OSMGA_D2F_BLK; col++) {
             unsigned long got  = blk[row * stride + col] & OSMGA_D2E_RGB;
             unsigned long want = osmgaD2eExpectedAt(row, col, n);
 
@@ -8643,9 +8682,24 @@ osmgaD2eVerify(volatile unsigned long *blk, unsigned long stride,
 
     IOLog("OpenStepMGA D2-2e/%s: %lu changed, %lu wrong, %lu OUTSIDE CLIP "
           "(expecting %lu triangles)\n", label, changed, wrong, outClip, n);
-    IOLog("OpenStepMGA D2-2e/%s: per-triangle %lu %lu %lu %lu %lu "
-          "(want 136 136 136 136 55 for the first %lu)\n",
-          label, hit[0], hit[1], hit[2], hit[3], hit[4], n);
+    /*
+     * Twenty-one tallies do not fit a log line, and a line nobody can read
+     * is not a diagnostic.  What matters is which entries disagree with
+     * their expected count -- 136 for a drawn one, 0 for one not yet
+     * submitted -- so only those are named, in submission order, which is
+     * what tells "only the first submission drew" from "they all drew in
+     * the wrong places".
+     */
+    for (i = 0UL; i < OSMGA_D2E_TRIS; i++) {
+        unsigned long want = (i < n) ? (osmgaD2eTris[i].leg *
+                                        (osmgaD2eTris[i].leg + 1UL) / 2UL)
+                                     : 0UL;
+
+        if (hit[i] != want)
+            IOLog("OpenStepMGA D2-2e/%s: triangle %lu (submission %lu) has "
+                  "%lu pixels, wanted %lu\n",
+                  label, i, i / OSMGA_D2E_PER_SUB, hit[i], want);
+    }
     if (wrong != 0UL)
         IOLog("OpenStepMGA D2-2e/%s: first mismatch at row %lu col %lu -- "
               "got %06lx wanted %06lx\n",
@@ -8661,10 +8715,11 @@ osmgaD2eVerify(volatile unsigned long *blk, unsigned long stride,
 static int
 osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
                     unsigned long vtxPhys, unsigned long dwords,
-                    const char *label)
+                    int doFence, const char *label, unsigned long *outBusy)
 {
     unsigned long vtxEnd = vtxPhys + dwords * 4UL;
     unsigned long spins, status, sum, i, devctrl, syncOld, syncTag;
+    unsigned long atPointer = 0UL;
     unsigned primAfter;
 
     sum = 0UL;
@@ -8674,15 +8729,40 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     if (sum == 0xFFFFFFFFUL)
         IOLog("OpenStepMGA D2-2e/%s: barrier %lu\n", label, sum);
 
+    /*
+     * Reusing one address means every submission has the same end address,
+     * which breaks the invariant that a stale pointer cannot pass for
+     * completion.  Confirming the pointer has actually moved to this
+     * submission's START closes that: after this, an observation of the
+     * end cannot be the previous submission's endpoint.
+     *
+     * Bounded, and on timeout PRIMEND is deliberately NOT written -- there
+     * is nothing to be gained by starting a transfer whose completion we
+     * would be unable to recognise.
+     */
     osmgaW32(base, MGA_PRIMADDRESS, vtxPhys | MGA_DMA_VERTEX);
+    for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++)
+        if ((osmgaR32(base, MGA_PRIMADDRESS) & ~3UL) == vtxPhys)
+            break;
+    if (spins >= OSMGA_S1_SPIN_LIMIT) {
+        IOLog("OpenStepMGA D2-2f/%s: PRIMADDRESS never read back as the "
+              "start %08lx (read %08lx); PRIMEND not written\n",
+              label, vtxPhys, osmgaR32(base, MGA_PRIMADDRESS));
+        return 0;
+    }
     osmgaW32(base, MGA_PRIMEND, vtxEnd);
 
     for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
         status = osmgaR32(base, MGA_ENGSTATUS);
         primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
         if (((unsigned long)primAfter & ~3UL) == vtxEnd &&
-            (status & MGA_STATUS_ENDPRDMASTS) != 0UL)
+            (status & MGA_STATUS_ENDPRDMASTS) != 0UL) {
+            /* Captured at the boundary, not after: whether drawing was
+             * still in flight when the buffer became reusable is the whole
+             * question, and it decays if sampled later. */
+            atPointer = status;
             break;
+        }
     }
     status    = osmgaR32(base, MGA_ENGSTATUS);
     primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
@@ -8696,6 +8776,10 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
         IOLog("OpenStepMGA D2-2e/%s: the payload was not consumed\n", label);
         return 0;
     }
+    if (outBusy != 0)
+        *outBusy = (atPointer & MGA_STATUS_DWGENGSTS) != 0UL ? 1UL : 0UL;
+    if (!doFence)
+        return 1;
 
     syncOld = osmgaR32(base, MGA_DWGSYNC) & OSMGA_D2C_SYNC_MASK;
     syncTag = (syncOld + OSMGA_D2C_SYNC_STEP) & OSMGA_D2C_SYNC_MASK;
@@ -8748,13 +8832,13 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     unsigned long ringDwords = OSMGA_DMA_RING_BYTES / 4UL;
     unsigned long tailDwords = 0UL, totalDwords = 0UL;
     unsigned long dwgctl = MGA_DWGCTL_SLOPED(MGA_DWGCTL_GOURAUD);
-    unsigned long listEnd, vtxPhys, vtxEnd;
+    unsigned long listEnd;
     unsigned long spins, status, i, row, col, sum;
     unsigned long devctrl0, devctrl1, primptr, ien, opmode;
-    unsigned long vtx2Phys, vtx2End;
-    unsigned long *vtx2;
+    unsigned long physA, physB, physC, subBytes;
+    unsigned long busy, exercised = 0UL, notExercised = 0UL;
+    unsigned long *vtxA, *vtxB, *vtxC;
     unsigned long *ring;
-    unsigned long *vtx;
     void *ringVirt;
     unsigned ringPhys = 0;
     unsigned primAfter;
@@ -8789,11 +8873,11 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     }
     testY     = (osmgaMmapWindowStart + stride * 4UL - 1UL) / (stride * 4UL);
     byteStart = testY * stride * 4UL;
-    byteEnd   = byteStart + (OSMGA_S1_H - 1UL) * stride * 4UL +
-                OSMGA_S1_W * 4UL;
+    byteEnd   = byteStart + (OSMGA_D2F_BLK - 1UL) * stride * 4UL +
+                OSMGA_D2F_BLK * 4UL;
 
     if (byteEnd > osmgaMmapWindowEnd) {
-        IOLog("OpenStepMGA D2-2c: 64x64 block does not fit the proven "
+        IOLog("OpenStepMGA D2-2f: 128x128 block does not fit the proven "
               "window %lu..%lu, skipped\n",
               osmgaMmapWindowStart, osmgaMmapWindowEnd);
         return;
@@ -8921,8 +9005,9 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     }
 
     ring = (unsigned long *)ringVirt;
-    vtx  = (unsigned long *)((unsigned char *)ringVirt + OSMGA_D2E_B1_OFF);
-    vtx2 = (unsigned long *)((unsigned char *)ringVirt + OSMGA_D2E_B2_OFF);
+    vtxA = (unsigned long *)((unsigned char *)ringVirt + OSMGA_D2F_OFF_A);
+    vtxB = (unsigned long *)((unsigned char *)ringVirt + OSMGA_D2F_OFF_B);
+    vtxC = (unsigned long *)((unsigned char *)ringVirt + OSMGA_D2F_OFF_C);
 
     if (!osmgaDmaBuildTriangleList(ring, ringDwords,
                                    osmgaWarpPipeHeld[OSMGA_D2C_PIPE],
@@ -8936,48 +9021,50 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
         IOUnmapPhysicalFromIOTask(alias, mapLen);
         return;
     }
-    if (tailDwords * 4UL >= OSMGA_D2E_B1_OFF) {
+    if (tailDwords * 4UL >= OSMGA_D2F_OFF_A) {
         IOLog("OpenStepMGA D2-2c: FAIL -- run 1 list reaches the vertices\n");
         IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
         IOUnmapPhysicalFromIOTask(alias, mapLen);
         return;
     }
-    osmgaD2eBuildBatch(vtx,  testY, 0UL,          OSMGA_D2E_B1);
-    osmgaD2eBuildBatch(vtx2, testY, OSMGA_D2E_B1, OSMGA_D2E_B2);
-
-    listEnd = (unsigned long)ringPhys + tailDwords * 4UL;
-    vtxPhys = (unsigned long)ringPhys + OSMGA_D2E_B1_OFF;
-    vtxEnd  = vtxPhys + OSMGA_D2E_B1_DWORDS * 4UL;
-    vtx2Phys = (unsigned long)ringPhys + OSMGA_D2E_B2_OFF;
-    vtx2End  = vtx2Phys + OSMGA_D2E_B2_DWORDS * 4UL;
+    listEnd  = (unsigned long)ringPhys + tailDwords * 4UL;
+    physA    = (unsigned long)ringPhys + OSMGA_D2F_OFF_A;
+    physB    = (unsigned long)ringPhys + OSMGA_D2F_OFF_B;
+    physC    = (unsigned long)ringPhys + OSMGA_D2F_OFF_C;
+    subBytes = OSMGA_D2F_SUB_DWORDS * 4UL;
 
     /*
-     * Address invariants, asserted before anything is handed to the card.
-     * A PRIMEND behind its start, past the allocation, or arrived at by
-     * arithmetic that wrapped, makes the card bus-master through physical
-     * memory that is not ours until the addresses happen to match.  That
-     * is the one failure here with no bound on the damage, so it is
-     * refused rather than watched for.
+     * Address invariants, before anything reaches the card.  A PRIMEND
+     * behind its start, past the allocation, or arrived at by arithmetic
+     * that wrapped makes the card bus-master through physical memory that
+     * is not ours until the addresses happen to match -- the one failure
+     * here with no bound on the damage, so it is refused rather than
+     * watched for.
+     *
+     * The distinct-end invariant D2-2e asserted is deliberately gone: this
+     * test reuses one address on purpose, so every R1 and R2 submission
+     * has the same start and end.  What replaces it is the start readback
+     * in osmgaD2eSubmitBatch.
      */
-    if ((vtxPhys & 3UL) != 0UL || (vtx2Phys & 3UL) != 0UL ||
-        (vtxEnd  & 3UL) != 0UL || (vtx2End  & 3UL) != 0UL ||
-        vtxEnd <= vtxPhys || vtx2End <= vtx2Phys ||
-        vtxEnd == vtx2End ||
-        (OSMGA_D2E_B1_DWORDS % OSMGA_D2C_VTX_DWORDS) != 0UL ||
-        (OSMGA_D2E_B2_DWORDS % OSMGA_D2C_VTX_DWORDS) != 0UL ||
-        OSMGA_D2E_B1_OFF + OSMGA_D2E_B1_DWORDS * 4UL > OSMGA_D2E_B2_OFF ||
-        OSMGA_D2E_B2_OFF + OSMGA_D2E_B2_DWORDS * 4UL > OSMGA_DMA_RING_BYTES) {
-        IOLog("OpenStepMGA D2-2e: REFUSED -- batch address invariants do "
-              "not hold (%08lx..%08lx, %08lx..%08lx)\n",
-              vtxPhys, vtxEnd, vtx2Phys, vtx2End);
+    if ((physA & 3UL) != 0UL || (physB & 3UL) != 0UL ||
+        (physC & 3UL) != 0UL || (subBytes & 3UL) != 0UL ||
+        (OSMGA_D2F_SUB_DWORDS % OSMGA_D2C_VTX_DWORDS) != 0UL ||
+        OSMGA_D2F_OFF_A + subBytes > OSMGA_D2F_OFF_B ||
+        OSMGA_D2F_OFF_B + subBytes > OSMGA_D2F_OFF_C ||
+        OSMGA_D2F_OFF_C + subBytes > OSMGA_DMA_RING_BYTES ||
+        OSMGA_D2E_TRIS != OSMGA_D2F_SUBS * OSMGA_D2E_PER_SUB) {
+        IOLog("OpenStepMGA D2-2f: REFUSED -- batch address invariants do "
+              "not hold (%08lx %08lx %08lx, %lu bytes each)\n",
+              physA, physB, physC, subBytes);
         IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
         IOUnmapPhysicalFromIOTask(alias, mapLen);
         return;
     }
 
-    IOLog("OpenStepMGA D2-2c: ring %08x, list %lu dwords -> %08lx, "
-          "vertices %08lx -> %08lx, dwgctl %08lx, y %lu\n",
-          ringPhys, tailDwords, listEnd, vtxPhys, vtxEnd, dwgctl, testY);
+    IOLog("OpenStepMGA D2-2f: ring %08x, list %lu dwords -> %08lx; "
+          "A %08lx B %08lx C %08lx, %lu bytes each; dwgctl %08lx, y %lu\n",
+          ringPhys, tailDwords, listEnd, physA, physB, physC, subBytes,
+          dwgctl, testY);
 
     /* ---- claim the engine for both runs ---- */
     simple_lock(&stormLock);
@@ -9000,8 +9087,8 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
      * fallible, so it does not violate the rule that every fallible step
      * finishes before run 1.
      */
-    for (row = 0UL; row < OSMGA_S1_H; row++)
-        for (col = 0UL; col < OSMGA_S1_W; col++)
+    for (row = 0UL; row < OSMGA_D2F_BLK; row++)
+        for (col = 0UL; col < OSMGA_D2F_BLK; col++)
             blk[row * stride + col] = OSMGA_S1_SENTINEL;
 
     /* Re-asked under the claim: the entry checks were made while another
@@ -9116,63 +9203,84 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
      */
     osmgaW32(base, MGA_ICLEAR, MGA_SOFTRAPICLR);
 
-    /* ---- B1 and B2 ----------------------------------------------
+    /* ---- R1, C1, R2 -------------------------------------------------
      *
-     * B1 asks whether one VERTEX submission carries several primitives;
-     * B2 asks whether the pipe can be fed again with no new GENERAL list.
+     * R1  same address, a fence after each submission.  If refilling and
+     *     resubmitting one address does not work even with the engine
+     *     quiescent, nothing after this means anything.
+     * C1  two DISTINCT addresses, no fence between.  This is the control
+     *     for rewriting PRIMADDRESS while drawing is still in flight --
+     *     an operation neither reference performs, both of them
+     *     establishing idle first.  No memory is reused here.
+     * R2  same address, no fence between.  The question: is the pointer
+     *     reaching the end enough to make the buffer free?
      *
-     * B1 gates B2.  If B1 did not draw exactly its three triangles then B2
-     * is no longer a clean experiment -- it would be a second submission
-     * onto an image nobody understands -- so the sequence stops there.
-     *
-     * The references support neither question as strongly as it might look
-     * (docs/D2_2E_BATCH_PLAN.md section 9.1): the DRM re-emits the whole
-     * context before every vertex flush, as a documented workaround, and
-     * its transport is secondary VERTEX inside a primary GENERAL list.
-     * What they establish is only that the WARP pipe need not be
-     * restarted.  If B2 comes back empty the remedy is already known --
-     * re-emit the context per batch, exactly as the reference does.
+     * Every submission is three triangles.  One and two were both measured
+     * leaving dwgengsts at 0 by the time the pointer arrived; three left
+     * it at 1.  A submission whose drawing has already finished cannot
+     * distinguish "safe because the card read it" from "safe because the
+     * card finished with it", so the unfenced submissions record whether
+     * drawing really was in flight and the verdict says NOT EXERCISED
+     * rather than PASS when it was not.
      */
-    if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys, OSMGA_D2E_B1_DWORDS, "B1")) {
-        IOLog("OpenStepMGA D2-2e: ring and microcode RETAINED, engine left "
-              "claimed.  *** REBOOT REQUIRED ***\n");
-        (void)osmgaD2eVerify(blk, stride, OSMGA_D2E_B1, "B1-failed");
-        IOUnmapPhysicalFromIOTask(alias, mapLen);
-        return;
-    }
-    if (!osmgaD2eVerify(blk, stride, OSMGA_D2E_B1, "B1")) {
-        /*
-         * The fence succeeded, so nothing is in flight and the engine is
-         * not wedged -- this is a wrong picture, not a hung card.  Suspend
-         * WARP and stop; there is no reason to make the image harder to
-         * read by drawing more onto it.
-         */
-        IOLog("OpenStepMGA D2-2e: B1 did not match -- B2 would not be a "
-              "clean experiment, stopping here\n");
-        (void)osmgaStormWaitFifo(base, 1U);
-        osmgaW32(base, MGA_WIADDR2, MGA_WMODE_SUSPEND);
-        IOLog("OpenStepMGA D2-2e: WARP suspended; the image above is the "
-              "result.  Compare it with docs/D2_2E_BATCH_PLAN.md section 5\n");
-        goto releaseAndReturn;
-    }
+    /* ---- R1: same address, fenced ---- */
+    osmgaD2eBuildBatch(vtxA, testY, 0UL, OSMGA_D2E_PER_SUB);
+    if (!osmgaD2eSubmitBatch(base, vtxA, physA, OSMGA_D2F_SUB_DWORDS,
+                             1, "R1a", 0)) goto wedged;
+    if (!osmgaD2eVerify(blk, stride, 3UL, "R1a")) goto wrongPicture;
 
-    if (!osmgaD2eSubmitBatch(base, vtx2, vtx2Phys, OSMGA_D2E_B2_DWORDS,
-                             "B2")) {
-        IOLog("OpenStepMGA D2-2e: ring and microcode RETAINED, engine left "
-              "claimed.  *** REBOOT REQUIRED ***\n");
-        (void)osmgaD2eVerify(blk, stride, OSMGA_D2E_TRIS, "B2-failed");
-        IOUnmapPhysicalFromIOTask(alias, mapLen);
-        return;
-    }
-    /*
-     * n = all five, so this re-checks B1's three as well: B2 must have
-     * added exactly its own two and left the earlier pixels alone.
-     */
-    if (!osmgaD2eVerify(blk, stride, OSMGA_D2E_TRIS, "B2")) {
-        IOLog("OpenStepMGA D2-2e: B2 did not match\n");
-        (void)osmgaStormWaitFifo(base, 1U);
-        osmgaW32(base, MGA_WIADDR2, MGA_WMODE_SUSPEND);
-        goto releaseAndReturn;
+    osmgaD2eBuildBatch(vtxA, testY, 3UL, OSMGA_D2E_PER_SUB);
+    if (!osmgaD2eSubmitBatch(base, vtxA, physA, OSMGA_D2F_SUB_DWORDS,
+                             1, "R1b", 0)) goto wedged;
+    if (!osmgaD2eVerify(blk, stride, 6UL, "R1b")) goto wrongPicture;
+    IOLog("OpenStepMGA D2-2f: R1 PASS -- one address, refilled and "
+          "resubmitted with the engine quiescent\n");
+
+    /* ---- C1: distinct addresses, unfenced ---- */
+    osmgaD2eBuildBatch(vtxB, testY, 6UL, OSMGA_D2E_PER_SUB);
+    osmgaD2eBuildBatch(vtxC, testY, 9UL, OSMGA_D2E_PER_SUB);
+    busy = 0UL;
+    if (!osmgaD2eSubmitBatch(base, vtxB, physB, OSMGA_D2F_SUB_DWORDS,
+                             0, "C1a", &busy)) goto wedged;
+    if (busy) exercised++; else notExercised++;
+    IOLog("OpenStepMGA D2-2f/C1a: drawing %s at the pointer boundary\n",
+          busy ? "STILL IN FLIGHT" : "already finished -- NOT EXERCISED");
+    if (!osmgaD2eSubmitBatch(base, vtxC, physC, OSMGA_D2F_SUB_DWORDS,
+                             1, "C1b", 0)) goto wedged;
+    if (!osmgaD2eVerify(blk, stride, 12UL, "C1")) goto wrongPicture;
+    IOLog("OpenStepMGA D2-2f: C1 PASS -- PRIMADDRESS rewritten while the "
+          "previous drawing was in flight\n");
+
+    /* ---- R2: same address, unfenced ---- */
+    osmgaD2eBuildBatch(vtxA, testY, 12UL, OSMGA_D2E_PER_SUB);
+    busy = 0UL;
+    if (!osmgaD2eSubmitBatch(base, vtxA, physA, OSMGA_D2F_SUB_DWORDS,
+                             0, "R2a", &busy)) goto wedged;
+    if (busy) exercised++; else notExercised++;
+    IOLog("OpenStepMGA D2-2f/R2a: drawing %s at the pointer boundary\n",
+          busy ? "STILL IN FLIGHT" : "already finished -- NOT EXERCISED");
+
+    osmgaD2eBuildBatch(vtxA, testY, 15UL, OSMGA_D2E_PER_SUB);
+    busy = 0UL;
+    if (!osmgaD2eSubmitBatch(base, vtxA, physA, OSMGA_D2F_SUB_DWORDS,
+                             0, "R2b", &busy)) goto wedged;
+    if (busy) exercised++; else notExercised++;
+    IOLog("OpenStepMGA D2-2f/R2b: drawing %s at the pointer boundary\n",
+          busy ? "STILL IN FLIGHT" : "already finished -- NOT EXERCISED");
+
+    osmgaD2eBuildBatch(vtxA, testY, 18UL, OSMGA_D2E_PER_SUB);
+    if (!osmgaD2eSubmitBatch(base, vtxA, physA, OSMGA_D2F_SUB_DWORDS,
+                             1, "R2c", 0)) goto wedged;
+    if (!osmgaD2eVerify(blk, stride, OSMGA_D2E_TRIS, "R2")) goto wrongPicture;
+
+    if (notExercised != 0UL) {
+        IOLog("OpenStepMGA D2-2f: R2 pixels are correct but %lu of %lu "
+              "unfenced submissions had already finished drawing -- "
+              "NOT EXERCISED, not a pass\n",
+              notExercised, exercised + notExercised);
+    } else {
+        IOLog("OpenStepMGA D2-2f: R2 PASS -- a buffer is free to overwrite "
+              "once PRIMADDRESS has passed it, drawing still in flight\n");
     }
 
     /*
@@ -9217,8 +9325,8 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
      * either zeroed or unspecified -- never full of our sentinel.  Put it
      * back to zero before the claim is released, so no client can observe
      * the intermediate state. */
-    for (row = 0UL; row < OSMGA_S1_H; row++)
-        for (col = 0UL; col < OSMGA_S1_W; col++)
+    for (row = 0UL; row < OSMGA_D2F_BLK; row++)
+        for (col = 0UL; col < OSMGA_D2F_BLK; col++)
             blk[row * stride + col] = 0UL;
 
     simple_lock(&stormLock);
@@ -9230,6 +9338,31 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     IOLog("OpenStepMGA D2-2c: end (ring released, microcode kept)\n");
     return;
 
+wedged:
+    /*
+     * A transfer or a fence did not complete.  The engine is not known to
+     * be safe, so this is the retain-everything path: no further register
+     * write, nothing freed, the claim kept.
+     */
+    IOLog("OpenStepMGA D2-2f: ring and microcode RETAINED, engine left "
+          "claimed.  *** REBOOT REQUIRED ***\n");
+    (void)osmgaD2eVerify(blk, stride, OSMGA_D2E_TRIS, "wedged");
+    IOUnmapPhysicalFromIOTask(alias, mapLen);
+    return;
+
+wrongPicture:
+    /*
+     * The fence succeeded, so nothing is in flight and the card is
+     * healthy -- this is a wrong image, not a wedged engine.  Suspend
+     * WARP, hand the engine back, and stop: drawing more onto a picture
+     * nobody understands would only make it harder to read.
+     */
+    IOLog("OpenStepMGA D2-2f: stopping here; the image above is the "
+          "result.  See docs/D2_2F_BUFFER_REUSE.md section 9.3\n");
+    (void)osmgaStormWaitFifo(base, 1U);
+    osmgaW32(base, MGA_WIADDR2, MGA_WMODE_SUSPEND);
+    goto releaseAndReturn;
+
 releaseAndReturn:
     /*
      * A refusal or a wrong picture -- not a wedged engine.  Either no list
@@ -9240,8 +9373,8 @@ releaseAndReturn:
      * The block is restored on the way out for the same reason it was
      * filled under the claim: it belongs to the client window.
      */
-    for (row = 0UL; row < OSMGA_S1_H; row++)
-        for (col = 0UL; col < OSMGA_S1_W; col++)
+    for (row = 0UL; row < OSMGA_D2F_BLK; row++)
+        for (col = 0UL; col < OSMGA_D2F_BLK; col++)
             blk[row * stride + col] = 0UL;
 
     simple_lock(&stormLock);
