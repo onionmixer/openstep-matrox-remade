@@ -770,3 +770,131 @@ PRE 스냅샷이 말한다: `dwgengsts=0`, DMA 레지스터 전부 0. **부팅 �
 
 그리고 그 확인이 곧 T2 다 — abort 를 유도해 엔진을 실제로 이상 상태에 넣고,
 거기서 회수되는지 본다. **T1 은 T2 의 전제였고, 그 역할은 다했다.**
+
+---
+
+## 12. T1 실패의 근본 원인 — 확정 (2026-08-28, 손상 상태에서 채집)
+
+사용자 판단으로 손상 상태를 유지한 채 조사했다. **재부팅하면 사라지는
+자료였고, 그 판단이 원인을 찾게 했다.**
+
+### 12.1 화면이 아니라 **메모리**가 깨졌다
+
+가장 먼저 판별력이 있는 것을 쟀다 — VRAM 이 멀쩡한가.
+
+```
+OSMGA_VRAM_SELF  FAIL (13498 bad)        <- CPU 가 쓴 것이 읽히지 않는다
+OSMGA_VRAM_FILL  r=-702 REFUSED/FAILED   <- 엔진 채우기도 실패
+```
+
+**CRTC 타이밍은 정상이다**(`VCOUNT` 가 계속 돈다). **스캔아웃이 읽는 메모리가
+쓰레기를 돌려주는 것이다.** 화면이 깨진 이유가 이것이다.
+
+### 12.2 무작위 손상이 아니다 — **버스트가 어긋났다**
+
+유저랜드 전용 포렌식(`test/openstep-mga-vram-forensics.m`, 드라이버 변경
+불가 상황이라 매핑만으로 만들었다)으로 16,384 워드를 세 패스로 조사했다.
+
+**읽은 값이 "다른 인덱스의 기대값" 인지**를 python 으로 분류한 결과:
+
+| 읽은 값의 정체 | A 패스 | B 패스 |
+| --- | --- | --- |
+| **+8 dword 앞의 데이터** | **43.4%** | 41.3% |
+| **+4 dword 앞의 데이터** | 21.6% | 20.5% |
+| 정확 | 21.3% | 20.3% |
+| 0 / 설명 안 됨 | 13.6% | 17.9% |
+
+그리고 **16 dword 그룹 안의 위치별로 완벽하게 구조적이다**:
+
+```
+  pos  0..11 :     0/1024  정확     <- 하나도 없다
+  pos 12     :  1002/1024
+  pos 13     :   745/1024
+  pos 14     :  1002/1024
+  pos 15     :   746/1024
+```
+
+**쓰기는 살아 있다** — B 패턴을 쓴 뒤 A 패턴이 남아 있던 워드는 16,384 중
+283 개뿐이다. **고장은 읽기 경로다.**
+
+16 dword = **64 바이트**이고, +8 dword = **32 바이트 = 8 dword**다. 둘 다
+이 카드에서 이미 본 숫자다 — 사양서 §4.1.6 의 *"one **eight-dword** cache
+entry"*, 그리고 이 드라이버의 M1-3i/j 가 실측한 **64 바이트** 경계(§9.5).
+**같은 접근 단위가 어긋난 것이다.**
+
+### 12.3 원인 — 내가 뺀 그 한 줄
+
+사양서 3-167, `RST.softreset`:
+
+> *"This has the effect of **flushing the BFIFO and the direct access read
+> cache**, and aborting the current drawing instruction."*
+
+사양서 `MACCESS.memreset <15>`:
+
+> *"Resets the RAM. When this bit is set to '1', **the memory sequencer will
+> generate a reset cycle to the RAMs**."*
+> *"The memreset field must always be set to '0' **except under specific
+> conditions which occur during the reset sequence**."*
+
+그리고 X.Org 의 `MGASoftReset` 전문:
+
+```c
+OUTREG(MGAREG_Reset, 1);
+usleep(200);
+OUTREG(MGAREG_Reset, 0);
+/* reset memory */
+OUTREG(MGAREG_MACCESS, 1<<15);   /* memreset */
+usleep(10);
+```
+
+**`RST` 사이클 바로 뒤에 `memreset` 이 있다. 나는 그것을 뺐다.**
+
+§4 T1 에 내가 쓴 문장이 그대로 남아 있다:
+
+> *"뒤의 memreset 은 전원투입 시퀀스(4-24)의 SGRAM 초기화 단계이지 abort
+> 회수 절차가 아니다. **우리는 사양서의 최소 절차만 한다. `memreset` 은
+> 하지 않는다.**"*
+
+**틀렸다.** 참조 구현이 그것을 `MGASoftReset` **안에** 넣어 둔 것이 곧
+"이것은 소프트리셋의 일부다" 라는 진술이었고, 사양서도 *"reset sequence"*
+라고 부른다. 나는 매뉴얼의 **절 구조**(4.3.3 이 "Power Up Sequence" 라는
+제목을 달고 있다는 것)를 근거로 참조 구현의 **행동**을 기각했다.
+
+### 12.4 인과 사슬
+
+```
+RST.softreset          ->  BFIFO 와 direct access read cache 를 비우고
+                           메모리 시퀀서 상태를 리셋한다
+MACCESS.memreset 없음  ->  RAM 인터페이스가 재동기화되지 않는다
+                       ->  읽기가 +4/+8 dword 어긋난 버스트를 돌려준다
+                       ->  스캔아웃이 쓰레기를 읽는다
+                       ->  화면이 깨진다 (CRTC 타이밍은 멀쩡한 채로)
+```
+
+**모든 관측이 이 하나로 설명된다**: 읽을 수 있는 25 개 레지스터가 전부
+정상이었던 것도(메모리 시퀀서 상태는 그중에 없다), `VCOUNT` 가 계속 돈 것도,
+`OPTION`·`MEMRDBK` 가 그대로였던 것도(그것들은 설정이지 동기화가 아니다).
+
+### 12.5 그래서 회수 절차는 이렇게 고쳐진다
+
+```
+RST = 1
+IODelay(>= 10, 관례상 200)
+RST = 0
+MACCESS = 1 << 15          <- 빠져 있던 것
+IODelay(>= 10)
+MACCESS = 정상값            <- memreset 은 "항상 0 이어야 한다"
+```
+
+**그리고 이것은 아직 검증되지 않았다.** 지금 드라이버에는 `memreset` 을 쓰는
+경로가 없고, 새 드라이버는 재부팅해야 로드되며, 재부팅하면 손상 상태가
+사라진다. **다음 T1 은 이 절차로 하고, 같은 포렌식으로 확인한다.**
+
+### 12.6 남는 교훈
+
+- **`VCOUNT` 는 "화면이 살아 있다" 의 증인이 아니다.** 래스터가 도는 것과
+  그림이 옳은 것은 다른 명제다. 통과 조건을 그렇게 쓴 것이 잘못이었다.
+- **참조 구현이 하는 일을 매뉴얼의 절 제목으로 기각하지 않는다.** X.Org 는
+  `MGASoftReset` 안에 memreset 을 넣었고, 그 배치가 곧 근거였다.
+- **손상 상태를 유지하고 조사한 것이 원인을 찾았다.** 재부팅했으면 "왜인지
+  모르지만 화면이 깨졌다" 로 끝났을 것이다.
