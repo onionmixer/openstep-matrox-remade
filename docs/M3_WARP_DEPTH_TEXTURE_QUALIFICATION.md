@@ -185,3 +185,76 @@ tu0 = s, tv0 = t  (정규화)                                      ✅ 유지
 원근: rhw = qw*tq, tu0 = s/tq, tv0 = t/tq                      ✅ 유지
 y   = 그대로                                                    ← 뒤집지 않는다
 ```
+
+---
+
+## 10. T0 결과 (2026-08-28 22:28:29) — **PASS, 그리고 오라클도 맞았다**
+
+```
+M3/T0-oracle: 1176 drawn, 0 wrong (want 1176)
+M3/T0-warp:   1176 drawn, 0 wrong (want 1176)
+M3/T0:        0 pixels differ between oracle and WARP
+M3: T0 PASS -- WARP covers what the trapezoid path covers
+```
+
+두 경로가 **기대맵과 정확히 일치**하고 서로도 픽셀 단위로 같다. 자신 없어 했던
+사다리꼴 오라클 파라미터도 맞았다. **정확 A/B 비교가 허가됐다** — T1 이하가
+의미를 가지려면 필요했던 것.
+
+## 11. T3~T6 — 레지스터 구성은 확보, 그러나 질문이 하나 남는다
+
+사다리꼴 텍스처 경로(`osmgaTextureSetup`, 실기 검증됨)에서 그대로 가져온다:
+
+```
+TEXCTL2   = G400_MAGIC | CKSTRANSDIS
+TEXCTL    = PITCHLIN | (pitch<<9) | TAKEY | CLAMPUV | TW32
+TEXFILTER = ALPHA | (0x10 << 21)
+TEXWIDTH  = ((dim-1)<<18) | (((8-log2dim)&63)<<9) | log2dim     (HEIGHT 동일)
+TEXTRANS  = TEXTRANSHIGH = 0x0000ffff
+DWGCTL    = (GOURAUD & ~OPCODE_MASK) | TEXTURE_TRAP
+```
+
+**빠지는 것 둘, 그리고 그것이 요점이다:**
+
+- **`TMR0..TMR8` 을 쓰지 않는다.** 사다리꼴 경로는 좌표 행렬을 CPU 로 계산해
+  아홉 레지스터에 싣는다. **WARP 가 그것을 정점에서 만든다** — 이 시험의 전부다.
+- **`NOPERSP` 를 켜지 않는다.** 사다리꼴은 affine 평면을 먹이므로 켠다.
+  WARP 는 `rhw` 로 원근을 한다. T3 은 `rhw = 1` 이므로 수학적으로 같고,
+  T4 가 그것을 `rhw` 를 바꿔 가른다.
+
+### 11.1 미해결 — `TDUALSTAGE0` 이 텍스처에서 무엇이어야 하나
+
+| 근거 | 값 | 맥락 |
+| --- | --- | --- |
+| 실기 검증된 사다리꼴 텍스처 경로(`osmgaTextureSetup`) | **`0`** | `TEXTURE_TRAP` |
+| 사양서 4-42 | **`color0sel = '11'`(`0x00600000`)** | *"Gouraud shaded trapezoids"* |
+| 지금의 WARP 목록 | `0x00600000` | 무텍스처, 4-42 를 따름 |
+
+**둘이 충돌하는지, 아니면 4-42 가 `opcode = trap` 에만 걸리는지 모른다.**
+`TEXTURE_TRAP` 은 다른 opcode 다. 틀리면 색이 텍스처가 아니라 diffuse 로
+나오거나 그 반대다 — hang 이 아니라 그림이 틀린다.
+
+### 11.2 T3~T6 설계
+
+```
+T3  nearest + clamp, 8x8 이상, 주소 부호화 텍셀, rhw = 1
+    -> 사다리꼴 오라클과 픽셀 비교
+    -> TDUALSTAGE0 을 0 과 0x00600000 두 번 돌려 §11.1 을 실측으로 가른다
+T4  qw 와 tq 를 독립적으로 바꾸고 z 도 함께 바꾼다
+    -> z 가 rhw 로 나뉘지 않음의 직접 시험
+T5  bilinear, min 과 mag 각각
+    -> 텍스처 앞뒤와 행 패딩에 가드 텍셀(주소 디코드 가능)
+    -> 출력에 그 값이 섞여 나오는지로 fetch 주소를 본다
+T6  펜스 -> suspend -> quiesce -> 사다리꼴 -> 전체 재발행 -> 재시작
+```
+
+### 11.3 codex 에 물을 것
+
+1. **§11.1 이 핵심이다.** `TEXTURE_TRAP` 에서 `TDUALSTAGE0` 은 무엇이어야 하나.
+   4-42 의 요구가 `opcode = trap` 전용인가. 두 값을 다 돌려 보는 것이 맞나.
+2. `NOPERSP` 를 WARP 에서 끄는 것이 맞나. 켜면 `rhw` 가 무시되나?
+3. `TMR0..8` 을 안 쓰는 것이 정말 맞나 — WARP 가 그 레지스터를 **쓰는가**,
+   아니면 다른 경로로 텍스처 기울기를 넣는가.
+4. T3 의 8×8 주소 부호화 텍셀 설계가 fetch 주소를 실제로 드러내나.
+5. T5 의 가드 텍셀 배치(앞·뒤·행 패딩)가 bilinear footprint 를 잡나.
+6. 빠진 것.
