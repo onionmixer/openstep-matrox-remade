@@ -824,6 +824,132 @@ typedef struct {
 } OSMGAHW3DLimits;
 
 /*
+ * ================= The WARP batch (version 10) =================
+ *
+ * A SECOND payload at the same address, not a change to the first.
+ *
+ * The trapezoid batch is 108 + 132 * 180 = 23,868 bytes in a 24 KiB
+ * client-mapped region, which leaves 708 free -- and the 24 KiB itself is
+ * the number that must not move, because the kernel maps whole 8 KiB pages
+ * and a batch that did not end on a page boundary once left every
+ * accelerated process with 4 KiB of the command list mapped read-write.
+ * So nothing is appended to OSMGAHW3DBatch.  A client writes EITHER shape
+ * into the buffer, and the kernel reads magic and version -- which sit at
+ * the same offsets in both -- to know which one it is looking at.
+ *
+ * Version 9 keeps working untouched.  Nothing about the trapezoid layout
+ * moves, so an existing library needs no rebuild to go on drawing.
+ *
+ * Every wire field is an explicit 32-bit type.  The batch has always been
+ * an i386 layout in practice, but a contract should say so rather than
+ * inherit it from a word size assertion.
+ */
+typedef unsigned int osmga_u32;
+
+/*
+ * One WARP vertex, 32 bytes, in the order the microcode consumes them.
+ * All six coordinates are IEEE-754 single bit patterns: the kernel has no
+ * FPU, so the client -- which does -- performs every conversion, and the
+ * kernel judges the bits (see the osmgaHW3DF32* family).
+ *
+ * z is normalised to [0,1].  Measured: the engine multiplies by 65536 and
+ * saturates, so a Mesa window depth code becomes code / 65536.0 and the
+ * round trip is exact for every code.  NOT the reference DRI's 1/65535.
+ *
+ * rhw is qw * tq and tu0/tv0 are s/tq and t/tq -- the texture's own
+ * denominator folded into the vertex weight, which is what the reference
+ * does (mgavb.c) and what the vertex form has room for.
+ */
+typedef struct {
+    osmga_u32 x, y;
+    osmga_u32 z;
+    osmga_u32 rhw;
+    osmga_u32 diffuse;      /* BGRA, packed */
+    osmga_u32 specular;     /* BGR + fog, packed */
+    osmga_u32 tu0, tv0;
+} OSMGAHW3DVertex;
+
+/*
+ * A maximal stretch of primitives that share their engine state.
+ *
+ * The trapezoid contract carries dwgctl and alphactrl PER TRIANGLE,
+ * because Mesa varies them between primitives.  WARP cannot: everything in
+ * one submission shares the state, so the batch is cut into runs and a new
+ * GENERAL state list goes out at each boundary.
+ *
+ * That is affordable because it was measured.  Over 109,803 trapezoids
+ * dwgctl changed on 1.8% and the alpha block on 1.8%
+ * (REMAINING_WORK.md), so a compatible run averages between 28 primitives
+ * (if the two are independent) and 55 (if they move together).  A 240
+ * triangle batch therefore needs at most nine runs, and sixteen is not the
+ * binding constraint on anything.
+ *
+ * Nothing else varies within a batch: OSMGAHW3DState is singular, so the
+ * destination, the depth buffer, the scissor and the whole texture state
+ * are fixed for its lifetime by construction.
+ */
+typedef struct {
+    osmga_u32 dwgctl;
+    osmga_u32 alphactrl;
+    osmga_u32 first;        /* index into vtx[] */
+    osmga_u32 count;        /* vertices, a multiple of three */
+} OSMGAHW3DRun;
+
+#define OSMGA_HW3D_VERSION_WARP  10UL
+#define OSMGA_HW3D_MAX_RUN       16UL
+#define OSMGA_HW3D_MAX_VTX      720UL   /* 240 triangles */
+
+/*
+ * The header is declared identically to OSMGAHW3DBatch's, so magic,
+ * version and triCount and the state block sit at the same offsets in
+ * both and the kernel can read the version before it knows which shape it
+ * has.  The host suite asserts that with offsetof; the kernel header
+ * cannot, so it is stated here and checked there.
+ *
+ * triCount is nought in a WARP batch.  Both counts nonzero is refused
+ * rather than resolved: a client that filled in both did not know what it
+ * was sending.
+ */
+typedef struct {
+    unsigned long magic;
+    unsigned long version;
+    unsigned long triCount;
+    OSMGAHW3DState state;
+    osmga_u32 runCount;
+    osmga_u32 vtxCount;
+    OSMGAHW3DRun    run[OSMGA_HW3D_MAX_RUN];
+    OSMGAHW3DVertex vtx[OSMGA_HW3D_MAX_VTX];
+} OSMGAHW3DWarpBatch;
+
+/*
+ * Verdicts, appended and never renumbered.
+ */
+#define OSMGA_HW3D_E_VTXCOUNT   25  /* vtxCount, runCount, or a run's span */
+#define OSMGA_HW3D_E_VTXFLOAT   26  /* a vertex word that is not a number,
+                                     * not positive, or out of range */
+#define OSMGA_HW3D_E_WARPMIX    27  /* both payload counts are nonzero */
+#define OSMGA_HW3D_E_WARPPOLICY 28  /* a state the WARP tier has not been
+                                     * qualified for -- it declines DOWN to
+                                     * the trapezoid path, which can draw it */
+
+/*
+ * Judge a WARP batch.  Structure, then every vertex word, then the tier's
+ * admission policy.  Returns OSMGA_HW3D_OK or a verdict; `badRun` names
+ * the run when the verdict names one.
+ */
+int osmgaHW3DValidateWarp(const OSMGAHW3DWarpBatch *b,
+                          const OSMGAHW3DLimits *lim,
+                          unsigned long *badRun);
+
+/*
+ * What the WARP tier currently admits, alone in one function because it is
+ * the part that MOVES as bands qualify.  Everything it refuses is drawn by
+ * the trapezoid path instead, so a refusal costs speed and never a
+ * picture.
+ */
+int osmgaHW3DWarpAdmits(const OSMGAHW3DState *st, const OSMGAHW3DRun *run);
+
+/*
  * The batch is a shared layout, so a change that made it outgrow its half of
  * the ring, or that changed the word size, has to fail the build rather than
  * be discovered at run time.  A negative array size is the C89 way to say so.
@@ -831,6 +957,19 @@ typedef struct {
 typedef int OSMGAHW3DFitsCheck[
     (sizeof(OSMGAHW3DBatch) <= OSMGA_HW3D_BATCH_BYTES) ? 1 : -1];
 typedef int OSMGAHW3DWordCheck[(sizeof(unsigned long) == 4) ? 1 : -1];
+/*
+ * And the WARP payload, which shares the buffer rather than extending it.
+ * It is SMALLER than the trapezoid batch (23,412 against 23,868), so the
+ * page split does not move -- but that is a fact about today's maxima and
+ * exactly the kind of fact that stops being true in an edit.
+ */
+typedef int OSMGAHW3DWarpFitsCheck[
+    (sizeof(OSMGAHW3DWarpBatch) <= OSMGA_HW3D_BATCH_BYTES) ? 1 : -1];
+typedef int OSMGAHW3DWarpVtxCheck[
+    ((OSMGA_HW3D_MAX_VTX % 3UL) == 0UL) ? 1 : -1];
+typedef int OSMGAHW3DVertexSizeCheck[
+    (sizeof(OSMGAHW3DVertex) == 32) ? 1 : -1];
+typedef int OSMGAHW3DRunSizeCheck[(sizeof(OSMGAHW3DRun) == 16) ? 1 : -1];
 
 /*
  * And the OTHER half of the ring, which the batch's own size says nothing

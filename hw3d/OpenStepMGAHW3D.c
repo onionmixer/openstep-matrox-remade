@@ -1373,3 +1373,142 @@ osmgaHW3DF32Between(unsigned long p, unsigned long lo, unsigned long hi)
         return 0;
     return (p >= lo && p <= hi) ? 1 : 0;
 }
+
+/*
+ * ---- the WARP tier's admission policy, and the batch validator ----
+ */
+
+/*
+ * What the WARP tier admits TODAY.  Alone in one function because it is
+ * the part that moves as bands qualify, and because a reader asking "why
+ * did that triangle go the slow way" should have one place to look.
+ *
+ * Everything refused here is drawn by the trapezoid path, which has been
+ * qualified for all of it.  So a refusal costs speed and never a picture,
+ * and the conservative direction is the safe one.
+ *
+ * Repeat and blending are refused pending T7 and T8.  Both are qualified
+ * on the TRAPEZOID path already -- M1_4CB opened GL_REPEAT for nearest and
+ * for linear, and M1_4E3 matched Mesa's blending on nine factor pairs with
+ * worst difference nought -- but neither has been shown to behave the same
+ * when WARP produces the coordinates and the setup.  Those bands are
+ * built and waiting on a reboot; when they report, this function is what
+ * changes.
+ */
+int
+osmgaHW3DWarpAdmits(const OSMGAHW3DState *st, const OSMGAHW3DRun *run)
+{
+    if (st == 0 || run == 0)
+        return OSMGA_HW3D_E_WARPPOLICY;
+
+    /* T7 has not run.  CLAMPUV is what M4's T5 measured, on both filters. */
+    if ((st->texFlags & (OSMGA_HW3D_TEXF_REPEATU |
+                         OSMGA_HW3D_TEXF_REPEATV)) != 0UL)
+        return OSMGA_HW3D_E_WARPPOLICY;
+
+    /* T8 has not run.  ALPHACTRL is admitted only at the value that does
+     * not blend -- src ONE, dst ZERO, both alpha tests off -- which is the
+     * state every WARP band so far has drawn under. */
+    if (run->alphactrl != (osmga_u32)0x00000101UL &&
+        run->alphactrl != (osmga_u32)0x00000001UL)
+        return OSMGA_HW3D_E_WARPPOLICY;
+
+    return OSMGA_HW3D_OK;
+}
+
+int
+osmgaHW3DValidateWarp(const OSMGAHW3DWarpBatch *b,
+                      const OSMGAHW3DLimits *lim,
+                      unsigned long *badRun)
+{
+    unsigned long r, i, seen;
+
+    if (badRun != 0)
+        *badRun = 0UL;
+    if (b == 0 || lim == 0)
+        return OSMGA_HW3D_E_MAGIC;
+    if (b->magic != OSMGA_HW3D_MAGIC)
+        return OSMGA_HW3D_E_MAGIC;
+    if (b->version != OSMGA_HW3D_VERSION_WARP)
+        return OSMGA_HW3D_E_VERSION;
+    /*
+     * A client that filled in both payloads did not know what it was
+     * sending, and resolving it in its favour would be guessing.
+     */
+    if (b->triCount != 0UL)
+        return OSMGA_HW3D_E_WARPMIX;
+
+    if ((unsigned long)b->runCount == 0UL ||
+        (unsigned long)b->runCount > OSMGA_HW3D_MAX_RUN)
+        return OSMGA_HW3D_E_VTXCOUNT;
+    if ((unsigned long)b->vtxCount == 0UL ||
+        (unsigned long)b->vtxCount > OSMGA_HW3D_MAX_VTX)
+        return OSMGA_HW3D_E_VTXCOUNT;
+    if (((unsigned long)b->vtxCount % 3UL) != 0UL)
+        return OSMGA_HW3D_E_VTXCOUNT;
+    if (lim->batchBytes < sizeof(OSMGAHW3DWarpBatch) -
+                          sizeof(OSMGAHW3DVertex) * OSMGA_HW3D_MAX_VTX)
+        return OSMGA_HW3D_E_VTXCOUNT;
+
+    /*
+     * The runs must PARTITION the vertices: contiguous, in order, and
+     * covering every one of them.  Overlapping runs would draw a primitive
+     * twice under two states, and a gap would leave vertices the client
+     * believes were drawn.  Both are cheaper to refuse than to explain.
+     */
+    seen = 0UL;
+    for (r = 0UL; r < (unsigned long)b->runCount; r++) {
+        const OSMGAHW3DRun *run = &b->run[r];
+        unsigned long first = (unsigned long)run->first;
+        unsigned long count = (unsigned long)run->count;
+        int policy;
+
+        if (badRun != 0)
+            *badRun = r;
+        if (first != seen)
+            return OSMGA_HW3D_E_VTXCOUNT;
+        if (count == 0UL || (count % 3UL) != 0UL)
+            return OSMGA_HW3D_E_VTXCOUNT;
+        if (count > (unsigned long)b->vtxCount - first)
+            return OSMGA_HW3D_E_VTXCOUNT;
+        seen = first + count;
+
+        policy = osmgaHW3DWarpAdmits(&b->state, run);
+        if (policy != OSMGA_HW3D_OK)
+            return policy;
+    }
+    if (seen != (unsigned long)b->vtxCount)
+        return OSMGA_HW3D_E_VTXCOUNT;
+    if (badRun != 0)
+        *badRun = 0UL;
+
+    /*
+     * Every vertex word, by its bits.  The containment argument rests on
+     * rhw being strictly positive at every vertex -- with that, the
+     * perspective-corrected interpolation of any coordinate is a convex
+     * combination of the three vertex values, so three vertices in range
+     * put every pixel in range.  It is the one check the geometry cannot
+     * do without.
+     */
+    for (i = 0UL; i < (unsigned long)b->vtxCount; i++) {
+        const OSMGAHW3DVertex *v = &b->vtx[i];
+
+        if (!osmgaHW3DF32AbsAtMost((unsigned long)v->x,
+                                   OSMGA_HW3D_F32_COORD) ||
+            !osmgaHW3DF32AbsAtMost((unsigned long)v->y,
+                                   OSMGA_HW3D_F32_COORD))
+            return OSMGA_HW3D_E_VTXFLOAT;
+        if (!osmgaHW3DF32InUnit((unsigned long)v->z))
+            return OSMGA_HW3D_E_VTXFLOAT;
+        if (!osmgaHW3DF32PosNormal((unsigned long)v->rhw) ||
+            !osmgaHW3DF32Between((unsigned long)v->rhw,
+                                 OSMGA_HW3D_F32_RHW_MIN,
+                                 OSMGA_HW3D_F32_RHW_MAX))
+            return OSMGA_HW3D_E_VTXFLOAT;
+        if (!osmgaHW3DF32Finite((unsigned long)v->tu0) ||
+            !osmgaHW3DF32Finite((unsigned long)v->tv0))
+            return OSMGA_HW3D_E_VTXFLOAT;
+    }
+
+    return OSMGA_HW3D_OK;
+}
