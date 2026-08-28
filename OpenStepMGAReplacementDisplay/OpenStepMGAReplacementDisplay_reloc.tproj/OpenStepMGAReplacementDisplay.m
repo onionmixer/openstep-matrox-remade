@@ -1190,7 +1190,28 @@ osmgaHW3DLogVerdictOnce(unsigned verdict, const OSMGAHW3DBatch *b,
  * So the submit path copies first and works only from the copy.  Nothing
  * downstream of the copy can be changed by anyone but us.
  */
-static OSMGAHW3DBatch osmgaHW3DSnapshot;
+/*
+ * The batch the kernel judges and encodes from, taken under the engine
+ * claim so a second caller cannot overwrite it between the copy and the
+ * validation.
+ *
+ * A UNION, because the two contracts never live at once: the claim
+ * serialises submissions, and a batch is version 9 or version 10 and not
+ * both.  Two separate statics would cost 23 KiB of kernel BSS for a
+ * second copy that is only ever used while the first is idle.
+ *
+ * Named members rather than a macro keeping the old spelling: which arm is
+ * live is exactly what a reader needs to see, and a macro would hide it
+ * while giving nothing back.
+ */
+static union {
+    OSMGAHW3DBatch     v9;
+    OSMGAHW3DWarpBatch warp;
+} osmgaHW3DSnap;
+
+/* Where each run's state list ends, filled while they are built and read
+ * when they are submitted. */
+static unsigned long osmgaWarpListTail[OSMGA_HW3D_MAX_RUN];
 
 /*
  * One ladder rung per trapezoid, per axis.
@@ -6377,6 +6398,27 @@ refuse2:
         return IO_R_RESOURCE;
 
     /*
+     * WHICH CONTRACT.  Read the discriminator ONCE, into a local, and
+     * commit to a path on that value.
+     *
+     * The two shapes share magic, version and the state block at the same
+     * offsets and nothing else, which is what lets this read happen before
+     * either path has copied anything.  A client that rewrites the buffer
+     * afterwards does not steer us: each path copies and pins its own
+     * counts under the engine claim, and a version 9 batch reaching the
+     * version 10 validator is refused rather than misread.
+     *
+     * Version 9 keeps working untouched -- it is the fall-through.
+     */
+    {
+        unsigned long ver = ((const OSMGAHW3DBatch *)osmgaMmapCmdVirt)
+                                ->version;
+
+        if (ver == OSMGA_HW3D_VERSION_WARP)
+            return [self runHW3DSubmitWarp:dry];
+    }
+
+    /*
      * Claim the engine BEFORE copying the client's batch, not after
      * validating it.
      *
@@ -6486,7 +6528,7 @@ refuse2:
                    sizeof(OSMGAHW3DTri) * OSMGA_HW3D_MAX_TRI;
         unsigned long words3, i4;
         const unsigned long *src3 = (const unsigned long *)batch;
-        unsigned long *dst3 = (unsigned long *)&osmgaHW3DSnapshot;
+        unsigned long *dst3 = (unsigned long *)&osmgaHW3DSnap.v9;
 
         if (n3 > OSMGA_HW3D_MAX_TRI) {
             osmgaHW3DLast[0] = (unsigned)OSMGA_HW3D_E_COUNT;
@@ -6501,7 +6543,7 @@ refuse2:
         words3 = (fixed3 + n3 * sizeof(OSMGAHW3DTri)) / 4UL;
         for (i4 = 0UL; i4 < words3; i4++)
             dst3[i4] = src3[i4];
-        osmgaHW3DSnapshot.triCount = n3;
+        osmgaHW3DSnap.v9.triCount = n3;
     }
 
     /*
@@ -6514,9 +6556,9 @@ refuse2:
      * destination pitch from a single register holding the display's, and a
      * wider rectangle would simply wrap onto the row below.
      */
-    dstW3 = osmgaHW3DSnapshot.state.dstWidth;
-    dstH3 = osmgaHW3DSnapshot.state.dstHeight;
-    dstP3 = osmgaHW3DSnapshot.state.dstPitch;
+    dstW3 = osmgaHW3DSnap.v9.state.dstWidth;
+    dstH3 = osmgaHW3DSnap.v9.state.dstHeight;
+    dstP3 = osmgaHW3DSnap.v9.state.dstPitch;
 
     /*
      * The pitch decides how far apart the rows are, for colour and for depth
@@ -6541,7 +6583,7 @@ refuse2:
      * unchanged, including comparing without forming the product.
      */
     {
-        int dv = osmgaHW3DDestFits(osmgaHW3DSnapshot.state.dstorg,
+        int dv = osmgaHW3DDestFits(osmgaHW3DSnap.v9.state.dstorg,
                                    dstW3, dstH3, dstP3,
                                    osmgaMmapWindowStart, osmgaMmapWindowEnd);
 
@@ -6557,7 +6599,7 @@ refuse2:
     lim.clipX1 = dstW3 - 1UL;
     lim.clipY1 = dstH3 - 1UL;
 
-    v3 = osmgaHW3DValidateReach(&osmgaHW3DSnapshot, &lim, &badTri3,
+    v3 = osmgaHW3DValidateReach(&osmgaHW3DSnap.v9, &lim, &badTri3,
                                &reach3, osmgaHW3DBands);
     osmgaHW3DLast[0] = (unsigned)v3;
     osmgaHW3DLast[1] = (unsigned)badTri3;
@@ -6577,7 +6619,7 @@ refuse2:
          * this driver has only ever assumed -- that its clients send
          * origins whose low bits are not mode selectors.
          */
-        osmgaHW3DLogVerdictOnce((unsigned)v3, &osmgaHW3DSnapshot,
+        osmgaHW3DLogVerdictOnce((unsigned)v3, &osmgaHW3DSnap.v9,
                                 (unsigned long)badTri3);
         simple_lock(&stormLock);
         stormBusy = NO;
@@ -6612,14 +6654,14 @@ refuse2:
         unsigned long i3;
 
         anyDepth3 = 0;
-        for (i3 = 0UL; i3 < osmgaHW3DSnapshot.triCount; i3++) {
-            if (osmgaHW3DAddressesDepth(osmgaHW3DSnapshot.tri[i3].dwgctl))
+        for (i3 = 0UL; i3 < osmgaHW3DSnap.v9.triCount; i3++) {
+            if (osmgaHW3DAddressesDepth(osmgaHW3DSnap.v9.tri[i3].dwgctl))
                 anyDepth3 = 1;
         }
-        overlap3 = (osmgaHW3DSnapshot.state.dstorg - osmgaMmapWindowStart)
+        overlap3 = (osmgaHW3DSnap.v9.state.dstorg - osmgaMmapWindowStart)
                        < OSMGA_HW3D_DEAD_BYTES;
         if (anyDepth3 &&
-            (osmgaHW3DSnapshot.state.zorg - osmgaMmapWindowStart)
+            (osmgaHW3DSnap.v9.state.zorg - osmgaMmapWindowStart)
                 < OSMGA_HW3D_DEAD_BYTES)
             overlap3 = 1;
     }
@@ -6661,7 +6703,7 @@ refuse2:
      * used still belonging to the older mode.  With the claim taken before
      * anything is read, there is one reading and it cannot go stale.
      */
-    total3 = osmgaHW3DEncode(list3, listDwords3, &osmgaHW3DSnapshot,
+    total3 = osmgaHW3DEncode(list3, listDwords3, &osmgaHW3DSnap.v9,
                              osmgaHW3DBands, &tail3,
                              (osmgaTrackStateNow != 0UL));
     osmgaHW3DLast[2] = (unsigned)total3;
@@ -6792,11 +6834,11 @@ refuse2:
              * the low edge is negative, and it refused 4,675 boxes the
              * double accepted.
              */
-            if (!osmgaHW3DClipBox(osmgaHW3DSnapshot.state.scissorOn,
-                                  osmgaHW3DSnapshot.state.scissorX,
-                                  osmgaHW3DSnapshot.state.scissorY,
-                                  osmgaHW3DSnapshot.state.scissorW,
-                                  osmgaHW3DSnapshot.state.scissorH,
+            if (!osmgaHW3DClipBox(osmgaHW3DSnap.v9.state.scissorOn,
+                                  osmgaHW3DSnap.v9.state.scissorX,
+                                  osmgaHW3DSnap.v9.state.scissorY,
+                                  osmgaHW3DSnap.v9.state.scissorW,
+                                  osmgaHW3DSnap.v9.state.scissorH,
                                   dstW3, dstH3, &bx0, &bx1, &by0, &by1)) {
                 empty = 1;
             } else {
@@ -6880,7 +6922,7 @@ refuse2:
 #ifdef OSMGA_HW3D_FENCE_OBSERVE
             /* W4 A0.  One read, only on success, before the acknowledge. */
             if (spins3 < limit3) {
-                if (osmgaHW3DSnapshot.state.scissorOn != 0UL) {
+                if (osmgaHW3DSnap.v9.state.scissorOn != 0UL) {
                     osmgaFenceSkipped++;
                 } else {
                     unsigned long head3 =
@@ -10870,6 +10912,272 @@ osmgaWarpFenceAndStop(vm_address_t base, const char *label)
         return 0;
     }
     return 1;
+}
+
+
+/*
+ * ---- M10: executing a version 10 (WARP) batch ----
+ *
+ * docs/M10_V10_SUBMIT_PATH.md.  Reached only when the client wrote
+ * OSMGA_HW3D_VERSION_WARP into the shared buffer; nothing does yet except
+ * the probe, because the Mesa hook still builds trapezoids.
+ *
+ * The order is the one the qualification harness proved, minus the fence
+ * T9 removed:
+ *
+ *      per run   GENERAL list -> pointer + SOFTRAPEN + ENDPRDMASTS -> ICLEAR
+ *                VERTEX submission -> pointer
+ *      at the end  DWGSYNC -> SUSPEND -> WBUSY, WBUSY1, DWGENGSTS
+ *
+ * There is no fence between runs.  T9 measured a second state list going
+ * out while the previous run was still drawing, with no depth leaking into
+ * it, so a fence there would be a round trip bought for nothing.
+ *
+ * The list carries PITCH, the clip and MACCESS, which the version 9 path
+ * writes by MMIO instead.  That path's rule is that a batch must not move
+ * the walls it is drawn inside, and it is not broken here: the rule is
+ * about the CLIENT choosing those values, and every one of them is derived
+ * -- the pitch from the validated snapshot, the clip from
+ * osmgaHW3DClipBox's bounded intersection and never from the raw scissor
+ * fields, MACCESS from a constant.
+ */
+- (IOReturn)runHW3DSubmitWarp:(int)dry
+{
+    OSMGAHW3DWarpBatch *batch;
+    OSMGAHW3DLimits lim;
+    IODisplayInfo *di;
+    const OSMGAFormat *f = &osmgaFmt[selectedFormatIndex];
+    unsigned long *list, *vtx;
+    unsigned long listPhys, vtxPhys, stride;
+    unsigned long nr, nv, words, i, r, encoded = 0UL;
+    unsigned long cx0 = 0UL, cx1 = 0UL, cy0 = 0UL, cy1 = 0UL;
+    unsigned long dstW, dstH, dstP;
+    unsigned long tailDwords, totalDwords, listEnd, spins, status;
+    unsigned long badRun = 0UL;
+    unsigned primAfter;
+    OSMGAM3Tex tex;
+    int v, failed = 0;
+
+    osmgaHW3DLast[0] = (unsigned)OSMGA_HW3D_NOT_RUN;
+    osmgaHW3DLast[1] = 0U;
+    osmgaHW3DLast[2] = 0U;
+    osmgaHW3DLast[3] = 0U;
+
+    if (!osmgaMesaAccelEnabled)
+        return IO_R_UNSUPPORTED;
+    if (!osmgaMmapRegistered || !mmioMapped || !linearModeActive)
+        return IO_R_RESOURCE;
+    if (f->bytesPerPixel != 4)
+        return IO_R_RESOURCE;
+    if (osmgaMmapCmdVirt == 0 || osmgaMmapCmdPhysical == 0UL)
+        return IO_R_RESOURCE;
+    if (!osmgaWarpUcodeResident)
+        return IO_R_UNSUPPORTED;      /* nothing has placed the microcode */
+
+    /* The engine before the copy, for the reason version 9 gives: the
+     * snapshot is one union and taking it outside the claim let a second
+     * caller overwrite it between the copy and the validation. */
+    simple_lock(&stormLock);
+    if (stormBlitFailed || stormBusy) {
+        simple_unlock(&stormLock);
+        return IO_R_RESOURCE;
+    }
+    stormBusy = YES;
+    simple_unlock(&stormLock);
+
+    batch = (OSMGAHW3DWarpBatch *)osmgaMmapCmdVirt;
+    list  = (unsigned long *)((char *)osmgaMmapCmdVirt +
+                              OSMGA_HW3D_RING_OFFSET);
+    listPhys = osmgaMmapCmdPhysical + OSMGA_HW3D_RING_OFFSET;
+    vtx      = list + OSMGA_HW3D_WARP_VTX_OFF / 4UL;
+    vtxPhys  = listPhys + OSMGA_HW3D_WARP_VTX_OFF;
+
+    /*
+     * Copy before checking, and read each count exactly once: reading it
+     * again after the copy would reopen the window the copy closes.
+     * run[] goes over whole -- 256 bytes -- so the partial copy's boundary
+     * depends on the vertex count alone.
+     */
+    nr = (unsigned long)batch->runCount;
+    nv = (unsigned long)batch->vtxCount;
+    if (nr > OSMGA_HW3D_MAX_RUN || nv > OSMGA_HW3D_MAX_VTX) {
+        osmgaHW3DLast[0] = (unsigned)OSMGA_HW3D_E_VTXCOUNT;
+        simple_lock(&stormLock); stormBusy = NO; simple_unlock(&stormLock);
+        return IO_R_INVALID_ARG;
+    }
+    {
+        unsigned long fixed = sizeof(OSMGAHW3DWarpBatch) -
+                              sizeof(OSMGAHW3DVertex) * OSMGA_HW3D_MAX_VTX;
+        const unsigned long *src = (const unsigned long *)batch;
+        unsigned long *dst = (unsigned long *)&osmgaHW3DSnap.warp;
+
+        words = (fixed + nv * sizeof(OSMGAHW3DVertex)) / 4UL;
+        for (i = 0UL; i < words; i++)
+            dst[i] = src[i];
+        osmgaHW3DSnap.warp.runCount = (osmga_u32)nr;
+        osmgaHW3DSnap.warp.vtxCount = (osmga_u32)nv;
+    }
+
+    di     = [self displayInfo];
+    stride = (unsigned long)di->rowBytes / 4UL;
+    dstW   = osmgaHW3DSnap.warp.state.dstWidth;
+    dstH   = osmgaHW3DSnap.warp.state.dstHeight;
+    dstP   = osmgaHW3DSnap.warp.state.dstPitch;
+
+    /* The destination against the window, before any limit is taken from
+     * it: a limit read off an unchecked declaration is not a limit. */
+    v = osmgaHW3DDestFits(osmgaHW3DSnap.warp.state.dstorg, dstW, dstH, dstP,
+                          osmgaMmapWindowStart, osmgaMmapWindowEnd);
+    if (v != OSMGA_HW3D_OK) {
+        osmgaHW3DLast[0] = (unsigned)v;
+        simple_lock(&stormLock); stormBusy = NO; simple_unlock(&stormLock);
+        return IO_R_INVALID_ARG;
+    }
+    osmgaWarpFillLimits(&lim);
+    lim.pitchBytes = dstP * 4UL;
+    lim.clipX1     = dstW - 1UL;
+    lim.clipY1     = dstH - 1UL;
+
+    v = osmgaHW3DValidateWarp(&osmgaHW3DSnap.warp, &lim, &badRun);
+    osmgaHW3DLast[0] = (unsigned)v;
+    osmgaHW3DLast[1] = (unsigned)badRun;
+    if (v != OSMGA_HW3D_OK) {
+        simple_lock(&stormLock); stormBusy = NO; simple_unlock(&stormLock);
+        return IO_R_UNSUPPORTED;     /* the caller draws it another way */
+    }
+
+    /* The clip: the destination narrowed by the scissor, as an
+     * intersection, in integers -- the kernel has no FPU. */
+    if (!osmgaHW3DClipBox(osmgaHW3DSnap.warp.state.scissorOn,
+                          osmgaHW3DSnap.warp.state.scissorX,
+                          osmgaHW3DSnap.warp.state.scissorY,
+                          osmgaHW3DSnap.warp.state.scissorW,
+                          osmgaHW3DSnap.warp.state.scissorH,
+                          dstW, dstH, &cx0, &cx1, &cy0, &cy1)) {
+        simple_lock(&stormLock); stormBusy = NO; simple_unlock(&stormLock);
+        return IO_R_SUCCESS;         /* nothing to draw, and nothing wrong */
+    }
+
+    /*
+     * Everything the card reads is now built, and it is built from the
+     * SNAPSHOT: the vertices are copied out of the client's reach for the
+     * same reason the encoder copies, and the state lists are built into
+     * fixed slots so the card's addresses do not depend on a number the
+     * client chose.
+     */
+    {
+        const unsigned long *sv =
+            (const unsigned long *)osmgaHW3DSnap.warp.vtx;
+
+        for (i = 0UL; i < nv * (sizeof(OSMGAHW3DVertex) / 4UL); i++)
+            vtx[i] = sv[i];
+    }
+    for (r = 0UL; r < nr; r++) {
+        const OSMGAHW3DRun *run = &osmgaHW3DSnap.warp.run[r];
+        unsigned long *rlist = list + r *
+                               (OSMGA_HW3D_WARP_STATE_BYTES / 4UL);
+
+        osmgaWarpTexFromState(&osmgaHW3DSnap.warp.state,
+                              (((unsigned long)run->dwgctl & 0xFUL) ==
+                               OSMGA_HW3D_OPCODE_TEX) ? 1 : 0, &tex);
+        if (!osmgaDmaBuildTriangleList(rlist,
+                                       OSMGA_HW3D_WARP_STATE_BYTES / 4UL,
+                                       osmgaWarpPipeHeld[OSMGA_D2C_PIPE],
+                                       dstP, cx0, cx1 - 1UL,
+                                       cy0 * dstP, (cy1 - 1UL) * dstP,
+                                       (unsigned long)run->dwgctl,
+                                       (unsigned long)run->alphactrl,
+                                       osmgaHW3DSnap.warp.state.dstorg,
+                                       osmgaHW3DSnap.warp.state.zorg,
+                                       &tex, &tailDwords, &totalDwords)) {
+            osmgaHW3DLast[0] = (unsigned)OSMGA_HW3D_E_COUNT;
+            osmgaHW3DLast[1] = (unsigned)r;
+            simple_lock(&stormLock); stormBusy = NO;
+            simple_unlock(&stormLock);
+            return IO_R_INVALID_ARG;
+        }
+        encoded += totalDwords;
+        osmgaWarpListTail[r] = tailDwords;
+    }
+    encoded += nv * (sizeof(OSMGAHW3DVertex) / 4UL);
+    osmgaHW3DLast[2] = (unsigned)encoded;
+
+    /*
+     * The dry arm stops HERE: after validation and encoding, before the
+     * first register write.  It is what makes a version 10 dispatch
+     * testable without putting the engine at risk, and the version 9 arm
+     * stops at the same place for the same reason.
+     */
+    if (dry) {
+        simple_lock(&stormLock); stormBusy = NO; simple_unlock(&stormLock);
+        return IO_R_SUCCESS;
+    }
+
+    if (!osmgaStormWaitIdle(mmioBase)) {
+        stormBlitFailed = YES;
+        simple_lock(&stormLock); stormBusy = NO; simple_unlock(&stormLock);
+        return IO_R_RESOURCE;
+    }
+    osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
+
+    for (r = 0UL; r < nr && !failed; r++) {
+        const OSMGAHW3DRun *run = &osmgaHW3DSnap.warp.run[r];
+        unsigned long rphys = listPhys + r * OSMGA_HW3D_WARP_STATE_BYTES;
+        unsigned long vs = vtxPhys + (unsigned long)run->first *
+                           sizeof(OSMGAHW3DVertex);
+        unsigned long ve = vtxPhys + ((unsigned long)run->first +
+                                      (unsigned long)run->count) *
+                           sizeof(OSMGAHW3DVertex);
+
+        listEnd = rphys + osmgaWarpListTail[r] * 4UL;
+        osmgaW32(mmioBase, MGA_PRIMADDRESS, rphys | MGA_DMA_GENERAL);
+        osmgaW32(mmioBase, MGA_PRIMEND, listEnd);
+        for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
+            status = osmgaR32(mmioBase, MGA_ENGSTATUS);
+            primAfter = (unsigned)osmgaR32(mmioBase, MGA_PRIMADDRESS);
+            /* primod is a field OF PRIMADDRESS, so a read returns the
+             * pointer with the mode still in it. */
+            if (((unsigned long)primAfter & ~3UL) == listEnd &&
+                (status & MGA_STATUS_SOFTRAPEN) != 0UL &&
+                (status & MGA_STATUS_ENDPRDMASTS) != 0UL)
+                break;
+        }
+        if (spins >= OSMGA_S1_SPIN_LIMIT) { failed = 1; break; }
+        osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
+
+        osmgaW32(mmioBase, MGA_PRIMADDRESS, vs | MGA_DMA_VERTEX);
+        osmgaW32(mmioBase, MGA_PRIMEND, ve);
+        for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
+            primAfter = (unsigned)osmgaR32(mmioBase, MGA_PRIMADDRESS);
+            if (((unsigned long)primAfter & ~3UL) == ve)
+                break;
+        }
+        if (spins >= OSMGA_S1_SPIN_LIMIT) { failed = 1; break; }
+    }
+
+    if (!failed && !osmgaWarpFenceAndStop(mmioBase, "submit"))
+        failed = 1;
+
+    if (failed) {
+        /*
+         * Nothing further is programmed.  The latch is what makes this
+         * survivable for everyone else: later work is refused by it rather
+         * than queueing behind an engine that may be wedged, and the ring
+         * and microcode are retained because the card holds their
+         * addresses and nothing proves it stopped reading.
+         *
+         * The harness keeps the claim instead, which is right for a test
+         * and would drop every later client's 2D blits to software here.
+         */
+        stormBlitFailed = YES;
+        simple_lock(&stormLock); stormBusy = NO; simple_unlock(&stormLock);
+        IOLog("OpenStepMGA WARP: submission did not complete; acceleration "
+              "latched off.  *** REBOOT REQUIRED to use it again ***\n");
+        return IO_R_RESOURCE;
+    }
+
+    simple_lock(&stormLock); stormBusy = NO; simple_unlock(&stormLock);
+    return IO_R_SUCCESS;
 }
 
 /*

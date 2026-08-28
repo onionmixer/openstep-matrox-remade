@@ -210,3 +210,48 @@ static union {
 
 기존 20 곳을 `osmgaHW3DSnap.v9` 로 기계적으로 바꾼다.  매크로 별칭은 어느
 멤버가 살아 있는지 숨기고 얻는 것이 없다.
+
+---
+
+## 10. 구현 완료 (2026-08-29, 재부팅 대기)
+
+```
+공용체        osmgaHW3DSnap.v9 / .warp    (참조 20 곳 기계적 갱신)
+디스패처      runHW3DSubmitDry: 가 version 을 한 번 읽고 v10 이면 넘긴다
+제출 경로     runHW3DSubmitWarp:  -- dry 팔 포함
+조각 넷       FillLimits / TexFromState / FenceAndStop / 공용체
+프로브        test/openstep-mga-warp-submit-probe.c  -- 다섯 시험
+```
+
+### 10.1 이 빌드는 `dry` 스위치를 켰다
+
+`OSMGA_HW3D_SUBMIT_DRY` 없이는 dry ioctl 이 컴파일되지 않는다 —
+`build-matrox-driver.sh` 의 기본은 OFF 이고, *"A driver built with neither
+is the one that ships"* 라고 적혀 있다.
+
+**이 재부팅의 시험 2·3 이 그것을 요구한다.**  dry 는 검증하고 인코딩한 뒤
+레지스터를 하나도 쓰지 않고 멈추므로, **엔진을 걸지 않고** 디스패치·스냅샷·
+검증·목록 배치를 증명한다.  출하 빌드에는 넣지 않는다.
+
+### 10.2 다섯 시험
+
+```
+1  v9 빈 배치 제출          옛 경로가 여전히 답하는가
+2  v10 dry, 정상            verdict OK 이고 dwords 가 0 이 아니다
+3  v10 dry, 망가진 것 넷    정점 수 / rhw 0 / 없는 opcode / 창 밖 원점
+                            -- 각자 자기 verdict 로 거절되어야 한다
+4  v10 살아 있는 제출       1176 화소 삼각형
+5  v9 빈 배치 제출          끝의 정지가 v9 을 남겨 뒀는가
+```
+
+**타임아웃 시험은 없다** — 그 결과가 가속을 영구히 래치하고 재부팅을 하나 더
+쓴다.
+
+### 10.3 실행
+
+```
+cc -O -DOSMGA_HW3D_SUBMIT_DRY -o /tmp/wsp -Imesa -Ihw3d \
+   test/openstep-mga-warp-submit-probe.c mesa/OpenStepMGAMesaProbe.c \
+   mesa/OpenStepMGAMesaBuffer.c hw3d/OpenStepMGAHW3D.c
+/tmp/wsp
+```
