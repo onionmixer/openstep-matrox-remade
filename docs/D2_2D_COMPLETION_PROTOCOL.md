@@ -73,3 +73,39 @@ loading microcode"* 로 정의한다. run 1 의 **목적이** WARP 를 기동해
 4. 단계 3 이 안 꺼지는 경우, 그것이 STALL 이라는 해석이 맞나.
 5. run 1 술어(`포인터 + SOFTRAPEN + ENDPRDMASTS`, `spins=18` 로 통과)는 그대로 둬도 되나.
 6. 빠진 것.
+
+---
+
+## 8. codex 판정 (2026-08-28) — **내 §3 이 틀렸다**
+
+| codex 주장 | 검증 | 결과 |
+| --- | --- | --- |
+| **연속 N 회 안정은 형식적 방어가 아니다. 정당한 N 이 없다** | 맞다. 전파 시간 상한을 주는 사양서 문장이 없으므로 N 을 늘리는 것은 **확률만 바꾸고 정확성은 못 바꾼다** | ✅채택 — **§3 을 폐기** |
+| `DWGSYNC` 가 문서화된 완료 **이벤트**다 | 3-139: *"dwgsyncaddr 는 **DWGSYNC 가 프로그램되기 전에 보낸 프리미티브를 그리기 엔진이 완료했을 때에만** 프로그램한 값으로 갱신된다"* | ✅채택 |
+| Windows 드라이버 패턴: 태그 +4, 빈 슬롯 2 대기, `DMAPAD`, `DWGSYNC`; 읽을 때 `0xfffffffc` 마스크 | 디스어셈블에 **그대로** 있다 — `add $0x4`, `cmp $0x2,%bl / jb`, `movl $0x0,0x1c54`, `mov %ecx,0x2c4c`; 폴링은 `and $0xfffffffc` (`:102524`, `:69701`) | ✅채택 |
+| `DWGSYNC` 리셋값이 unknown 이므로 현재값에서 태그를 만들어라 | 3-139 이 *"Reset Value unknown"* 이라 적는다. `<1:0>` 도 Reserved | ✅채택 — wrap 포함 전 구간을 python 으로 확인 |
+| `dwgengsts==0` 은 옳지만 **레벨**이라 제출 전에도 0 일 수 있다 | 사실이다. DRM 의 idle 판정도 `ENDPRDMASTS && !DWGENGSTS` 이고 wbusy 를 **뺀다**(`mga_drv.h:386`) | ✅채택 — 펜스 뒤 2 차 확인으로 유지 |
+| 4 단계 타임아웃을 "STALL 이었다" 로 단정하지 마라 | 맞다. suspend 가 막힌 BFIFO 에 머무르는 경우·캐시 미스·상태 고착도 같은 관측을 낳는다 | ✅채택 — 문구를 *"WARP did not reach idle after the suspend request"* 로 |
+| run 1 술어는 그대로 두라 | `spins=18` 로 통과했고 DRM 도 파이프 기동 후 `wbusy` 를 안 본다 | ✅채택(변경 없음) |
+| GENERAL+SOFTRAP 3 번째 run 을 안 쓰는 판단은 옳다 | 3-175 이 SOFTRAP 은 **레지스터 접근**을 멈출 뿐이라 한다 | ✅ — 다만 *"§4 의 dwgengsts 가 이미 더 강하다"* 는 **내 문장이 틀렸다**: 제출 후임을 증명해야 비로소 강하다 |
+
+### 8.1 최종 규약
+
+```
+1 xfer     (PRIMADDRESS & ~3) == vtxEnd && ENDPRDMASTS
+2 fence    old = DWGSYNC & ~3 ; tag = (old+4) & ~3
+           waitFifo(2) ; DMAPAD = 0 ; DWGSYNC = tag
+           poll (DWGSYNC & ~3) == tag ;  그리고 !dwgengsts
+           -> 여기서 삼각형이 메모리에 있다.  판정 스캔은 여기서.
+3 suspend  waitFifo(1) ; WIADDR2 = SUSPEND
+4 quiesce  poll !wbusy && !wbusy1 && !dwgengsts
+```
+
+**`wbusy` 는 4 단계에만 있다** — *"그림이 끝났나"* 가 아니라 *"멈추라니 멈췄나"*.
+
+### 8.2 `PRIMPTR` 이 더 중요해졌다
+
+3-166: `primptren1` 이 서면 **`DWGSYNC` 가 갱신될 때마다** 시스템 메모리에 쓴다.
+이 규약은 `DWGSYNC` 를 반복해서 쓴다. 그리고 이 보드의 펌웨어가 남긴 값은
+`0xfffffbf0` — **무장까지 한 비트 남은 4 GiB 근처 포인터**였다(`:3989`).
+시작 전 `PRIMPTR == 0` 거부 조건은 이제 형식이 아니라 **핵심**이다.

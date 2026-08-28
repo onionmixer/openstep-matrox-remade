@@ -8252,6 +8252,20 @@ osmgaDmaBuildPipeList(unsigned long *ring, unsigned long ringDwords,
 #define OSMGA_D2C_F32_HALF      0x3F000000UL  /* 0.5f */
 #define OSMGA_D2C_F32_ONE       0x3F800000UL  /* 1.0f */
 #define OSMGA_D2C_PIPE             7UL        /* tgzsaf; W2 section 8 */
+/*
+ * DWGSYNC is the documented completion EVENT (spec 3-139): dwgsyncaddr
+ * takes the value written "only when the drawing engine has completed the
+ * primitive sent before DWGSYNC was programmed".  dwgengsts is only a
+ * level, and a level can read idle before the primitive has even entered
+ * the engine -- which is why no number of consecutive idle samples proves
+ * anything.  Bits <1:0> are reserved and must be written zero, and the
+ * reset value is unknown, so the tag is derived from the current value.
+ * The Windows driver does exactly this: tag += 4, wait for two free BFIFO
+ * slots, write DMAPAD, write DWGSYNC (g400dd32.asm:102524), then polls it
+ * masked with 0xfffffffc (g400dd32.asm:69701).
+ */
+#define OSMGA_D2C_SYNC_MASK     0xFFFFFFFCUL
+#define OSMGA_D2C_SYNC_STEP     4UL
 
 /*
  * Persistent ownership of everything the card has been handed an address
@@ -8592,6 +8606,7 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
     unsigned long listEnd, vtxPhys, vtxEnd;
     unsigned long spins, status, i, row, col, sum;
     unsigned long devctrl0, devctrl1, primptr, ien, opmode;
+    unsigned long syncOld, syncTag;
     unsigned long *ring;
     unsigned long *vtx;
     void *ringVirt;
@@ -8929,22 +8944,30 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
     osmgaW32(base, MGA_PRIMADDRESS, vtxPhys | MGA_DMA_VERTEX);
     osmgaW32(base, MGA_PRIMEND, vtxEnd);
 
+    /*
+     * PHASE 1 -- the payload was consumed.  Nothing about the triangle yet.
+     *
+     * wbusy is deliberately NOT here.  Spec 3-189 defines it as "not idle;
+     * it may be RUNning, WAITing, STALLed or loading microcode", and run 1
+     * exists precisely to leave WARP started and WAITing -- so wbusy is 1
+     * from the moment run 1 succeeds and stays 1 until WARP is suspended,
+     * which happens after the verdict.  Requiring !wbusy here made success
+     * unreachable: measured 2026-08-28, run 2 reported a timeout over a
+     * triangle it had drawn correctly.
+     */
     for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
         status = osmgaR32(base, MGA_ENGSTATUS);
         primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
         if (((unsigned long)primAfter & ~3UL) == vtxEnd &&
-            (status & MGA_STATUS_ENDPRDMASTS) != 0UL &&
-            (status & (MGA_STATUS_DWGENGSTS | MGA_STATUS_WBUSY |
-                       MGA_STATUS_WBUSY1)) == 0UL)
+            (status & MGA_STATUS_ENDPRDMASTS) != 0UL)
             break;
     }
     status = osmgaR32(base, MGA_ENGSTATUS);
     primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
     devctrl1 = osmgaPciReadConfigLong(osmgaSelfBus, osmgaSelfDev,
                                       osmgaSelfFn, MGA_CFG_DEVCTRL);
-    IOLog("OpenStepMGA D2-2c/run2: PRIMADDRESS %08x raw (wanted %08lx "
-          "| primod), "
-          "STATUS %08lx, DEVCTRL %08lx, spins %lu\n",
+    IOLog("OpenStepMGA D2-2c/xfer: PRIMADDRESS %08x raw (wanted %08lx "
+          "| primod), STATUS %08lx, DEVCTRL %08lx, spins %lu\n",
           primAfter, vtxEnd, status, devctrl1, spins);
 
     if (spins >= OSMGA_S1_SPIN_LIMIT ||
@@ -8956,24 +8979,105 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
          * is emitted before the scan is attempted.  If the scan never
          * returns, the log still says what happened and what to do.
          */
-        IOLog("OpenStepMGA D2-2c/run2: TIMEOUT or DMA ABORT -- nothing "
-              "further will be programmed\n");
+        IOLog("OpenStepMGA D2-2c/xfer: the vertex payload was not consumed "
+              "-- nothing further will be programmed\n");
         IOLog("OpenStepMGA D2-2c: ring and microcode RETAINED, engine left "
               "claimed.  *** REBOOT REQUIRED ***\n");
-        osmgaD2cReport(blk, stride, "run2-timeout");
+        osmgaD2cReport(blk, stride, "xfer-timeout");
         IOUnmapPhysicalFromIOTask(alias, mapLen);
         return;
     }
 
+    /*
+     * PHASE 2 -- fence the triangle.
+     *
+     * DWGSYNC's readback changes only after the drawing engine finishes
+     * the primitive that preceded the write, so observing the new tag is
+     * proof that the triangle completed -- proof that a level bit cannot
+     * give.  dwgengsts is then checked once more as a second, independent
+     * statement covering both FIFOs and the last memory access.
+     *
+     * The tag is derived from the current value because DWGSYNC's reset
+     * value is documented as unknown; +4 keeps the reserved low two bits
+     * zero and differs from the old value even across a 32-bit wrap.
+     */
+    syncOld = osmgaR32(base, MGA_DWGSYNC) & OSMGA_D2C_SYNC_MASK;
+    syncTag = (syncOld + OSMGA_D2C_SYNC_STEP) & OSMGA_D2C_SYNC_MASK;
+    if (!osmgaStormWaitFifo(base, 2U)) {
+        IOLog("OpenStepMGA D2-2c/fence: no FIFO room for the tag\n");
+        IOLog("OpenStepMGA D2-2c: ring and microcode RETAINED, engine left "
+              "claimed.  *** REBOOT REQUIRED ***\n");
+        osmgaD2cReport(blk, stride, "fence-nofifo");
+        IOUnmapPhysicalFromIOTask(alias, mapLen);
+        return;
+    }
+    osmgaW32(base, MGA_DMAPAD,  0UL);
+    osmgaW32(base, MGA_DWGSYNC, syncTag);
+
+    for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++)
+        if ((osmgaR32(base, MGA_DWGSYNC) & OSMGA_D2C_SYNC_MASK) == syncTag)
+            break;
+    status   = osmgaR32(base, MGA_ENGSTATUS);
+    devctrl1 = osmgaPciReadConfigLong(osmgaSelfBus, osmgaSelfDev,
+                                      osmgaSelfFn, MGA_CFG_DEVCTRL);
+    IOLog("OpenStepMGA D2-2c/fence: DWGSYNC %08lx -> %08lx (read %08lx), "
+          "STATUS %08lx, DEVCTRL %08lx, spins %lu\n",
+          syncOld, syncTag,
+          osmgaR32(base, MGA_DWGSYNC) & OSMGA_D2C_SYNC_MASK,
+          status, devctrl1, spins);
+
+    if (spins >= OSMGA_S1_SPIN_LIMIT ||
+        (status & MGA_STATUS_DWGENGSTS) != 0UL ||
+        (devctrl1 & MGA_CFG_DEVCTRL_ABORTS) != 0UL) {
+        IOLog("OpenStepMGA D2-2c/fence: the triangle did not fence -- "
+              "nothing further will be programmed\n");
+        IOLog("OpenStepMGA D2-2c: ring and microcode RETAINED, engine left "
+              "claimed.  *** REBOOT REQUIRED ***\n");
+        osmgaD2cReport(blk, stride, "fence-timeout");
+        IOUnmapPhysicalFromIOTask(alias, mapLen);
+        return;
+    }
+
+    /* The triangle is in memory.  This is the verdict scan. */
     osmgaD2cReport(blk, stride, "run2");
 
     /*
-     * Quiescence is proven, so the pipe can be suspended -- this is the
-     * suspend that belongs after a run, not the one D2-2a put inside the
-     * start list.  The microcode buffer still cannot be released.
+     * PHASE 3 -- suspend, now that the fence says nothing is in flight.
+     * WIADDR2 is a FIFO register, so admission is waited for; the wait's
+     * result is not a verdict because the card stalls the bus rather than
+     * dropping a write.
      */
+    (void)osmgaStormWaitFifo(base, 1U);
     osmgaW32(base, MGA_WIADDR2, MGA_WMODE_SUSPEND);
-    IOLog("OpenStepMGA D2-2c: WARP suspended after proven quiescence\n");
+
+    /*
+     * PHASE 4 -- and only here does wbusy mean something: not "did the
+     * draw finish" but "did WARP stop when it was told to".
+     *
+     * A timeout here is NOT proof that WARP was STALLed.  It says only
+     * that WARP did not reach observable idle after the suspend request --
+     * which also covers a suspend still sitting in a blocked BFIFO, a
+     * microcode cache miss, or stuck status.  The log says exactly that.
+     */
+    for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
+        status = osmgaR32(base, MGA_ENGSTATUS);
+        if ((status & (MGA_STATUS_WBUSY | MGA_STATUS_WBUSY1 |
+                       MGA_STATUS_DWGENGSTS)) == 0UL)
+            break;
+    }
+    status = osmgaR32(base, MGA_ENGSTATUS);
+    IOLog("OpenStepMGA D2-2c/suspend: STATUS %08lx, spins %lu\n",
+          status, spins);
+    if (spins >= OSMGA_S1_SPIN_LIMIT) {
+        IOLog("OpenStepMGA D2-2c/suspend: WARP did not reach idle after the "
+              "suspend request -- nothing further will be programmed\n");
+        IOLog("OpenStepMGA D2-2c: ring and microcode RETAINED, engine left "
+              "claimed.  *** REBOOT REQUIRED ***\n");
+        IOUnmapPhysicalFromIOTask(alias, mapLen);
+        return;
+    }
+    IOLog("OpenStepMGA D2-2c: PASS -- WARP drew the triangle, fenced, and "
+          "suspended\n");
 
     /* This block is inside the window clients are handed, and it was opened
      * either zeroed or unspecified -- never full of our sentinel.  Put it
