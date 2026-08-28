@@ -9036,6 +9036,64 @@ osmgaM3CompareSurfaces(volatile unsigned long *a, volatile unsigned long *b,
 }
 
 /*
+ * Depth is sixteen bits and there is no depth pitch register: a depth row
+ * is PITCH elements of two bytes (the source says so at the MACCESS note).
+ * So the buffer is walked as shorts at the colour surface's stride.
+ */
+static void
+osmgaM3FillDepth(volatile unsigned long *blk, unsigned long stride,
+                 unsigned long code)
+{
+    volatile unsigned short *z = (volatile unsigned short *)blk;
+    unsigned long row, col;
+
+    for (row = 0UL; row < OSMGA_M3_BLK; row++)
+        for (col = 0UL; col < OSMGA_M3_BLK; col++)
+            z[row * stride + col] = (unsigned short)code;
+}
+
+/*
+ * What the depth buffer holds inside the triangle and outside it.  The
+ * expected code is reported beside the measured one rather than compared
+ * against it: this test is asking what convention the hardware uses, and
+ * a verdict that assumed the answer could not discover it.
+ */
+static void
+osmgaM3ReportDepth(volatile unsigned long *blk, unsigned long stride,
+                   unsigned long row0, unsigned long col0, unsigned long leg,
+                   unsigned long wantIn, unsigned long wantOut,
+                   const char *label)
+{
+    volatile unsigned short *z = (volatile unsigned short *)blk;
+    unsigned long row, col;
+    unsigned long inMin = 0xFFFFUL, inMax = 0UL, inN = 0UL;
+    unsigned long outOther = 0UL, firstIn = 0xFFFFFFFFUL;
+
+    for (row = 0UL; row < OSMGA_M3_BLK; row++) {
+        for (col = 0UL; col < OSMGA_M3_BLK; col++) {
+            unsigned long v = (unsigned long)z[row * stride + col];
+            int inside = (row >= row0 && row < row0 + leg &&
+                          col >= col0 && col < col0 + leg &&
+                          (row - row0) + (col - col0) <= leg - 1UL);
+
+            if (inside) {
+                if (firstIn == 0xFFFFFFFFUL) firstIn = v;
+                if (v < inMin) inMin = v;
+                if (v > inMax) inMax = v;
+                inN++;
+            } else if (v != wantOut) {
+                outOther++;
+            }
+        }
+    }
+    IOLog("OpenStepMGA M3/%s: depth inside %lu px, min %lu max %lu first "
+          "%lu (a normalised z would give %lu); outside differing %lu\n",
+          label, inN, inMin, inMax, firstIn, wantIn, outOther);
+    osmgaD2Settle();
+}
+
+
+/*
  * T1's three probes.  One triangle at one depth cannot tell a normalised
  * z from a depth-code z: 0.25f and 0.75f both round to nothing in code
  * units, so both would draw against a mid-buffer and the test would pass
@@ -9052,6 +9110,22 @@ static const OSMGAM3Probe osmgaM3Probes[OSMGA_M3_PROBES] = {
     {  8UL, 24UL, 16UL, OSMGA_M3_F32_3Q,      0UL },  /* 0.75 > 0.5 -> refused */
     { 32UL,  6UL, 16UL, OSMGA_M3_F32_QUARTER, 1UL }   /* control, same as [0] */
 };
+
+/* Pixels of `colour` inside one T1 probe's triangle. */
+static unsigned long
+osmgaM3CountProbe(volatile unsigned long *blk, unsigned long stride,
+                  const OSMGAM3Probe *pr, unsigned long colour)
+{
+    unsigned long row, col, n = 0UL;
+
+    for (row = pr->row; row < pr->row + pr->leg; row++)
+        for (col = pr->col; col < pr->col + pr->leg; col++)
+            if ((row - pr->row) + (col - pr->col) <= pr->leg - 1UL &&
+                (blk[row * stride + col] & OSMGA_D2E_RGB) ==
+                    (colour & OSMGA_D2E_RGB))
+                n++;
+    return n;
+}
 
 /*
  * One WARP triangle, right angle at (col,row), legs `leg`, flat z.
@@ -9078,6 +9152,64 @@ osmgaM3BuildTri(unsigned long *v, unsigned long row, unsigned long col,
         v[p++] = 0UL;
         v[p++] = 0UL;
     }
+}
+
+/*
+ * Emit one GENERAL state list -- pipe, context, texture, global, clip --
+ * and wait for it.  Returns 1, or 0 with the reason logged.
+ *
+ * T1 and T2 each need their own, because each changes DWGCTL.  D2-2f
+ * showed an IDENTICAL context need not be re-emitted between vertex
+ * submissions; it showed nothing about a changed one, so a change gets a
+ * fresh list.  That also restarts the pipe, which is heavier than the
+ * reference (whose emit_pipe runs only when the pipe index moves) but is
+ * the sequence this project has actually proven.
+ */
+static int
+osmgaM3StateRun(vm_address_t base, unsigned long *ring,
+                unsigned long ringDwords, unsigned ringPhys,
+                unsigned long pipePhys, unsigned long stride,
+                unsigned long dwgctl, unsigned long dstorg,
+                unsigned long zorg, const char *label)
+{
+    unsigned long tailDwords = 0UL, totalDwords = 0UL;
+    unsigned long listEnd, spins, status, sum = 0UL, i;
+    unsigned primAfter;
+
+    if (!osmgaDmaBuildTriangleList(ring, ringDwords, pipePhys, stride,
+                                   OSMGA_M3_CLIP_LO, OSMGA_M3_CLIP_HI,
+                                   OSMGA_M3_CLIP_LO * stride,
+                                   OSMGA_M3_CLIP_HI * stride,
+                                   dwgctl, dstorg, zorg,
+                                   &tailDwords, &totalDwords))
+        return 0;
+    listEnd = (unsigned long)ringPhys + tailDwords * 4UL;
+
+    for (i = 0UL; i < totalDwords; i++)
+        sum += ring[i];
+    (void)osmgaR32(base, MGA_ENGSTATUS);
+    if (sum == 0xFFFFFFFFUL)
+        IOLog("OpenStepMGA M3/%s: barrier\n", label);
+
+    osmgaW32(base, MGA_PRIMADDRESS,
+             (unsigned long)ringPhys | MGA_DMA_GENERAL);
+    osmgaW32(base, MGA_PRIMEND, listEnd);
+    for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
+        status = osmgaR32(base, MGA_ENGSTATUS);
+        primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
+        if (((unsigned long)primAfter & ~3UL) == listEnd &&
+            (status & MGA_STATUS_SOFTRAPEN) != 0UL &&
+            (status & MGA_STATUS_ENDPRDMASTS) != 0UL)
+            break;
+    }
+    if (spins >= OSMGA_S1_SPIN_LIMIT) {
+        IOLog("OpenStepMGA M3/%s: state list TIMEOUT, dwgctl %08lx\n",
+              label, dwgctl);
+        osmgaD2Settle();
+        return 0;
+    }
+    osmgaW32(base, MGA_ICLEAR, MGA_SOFTRAPICLR);
+    return 1;
 }
 
 /*
@@ -9775,9 +9907,8 @@ releaseAndReturn:
     unsigned long pipePhys[OSMGA_WARP_PIPES];
     unsigned long pipeOff[OSMGA_WARP_PIPES];
     unsigned long stride, i, row, col;
-    unsigned long tailDwords = 0UL, totalDwords = 0UL;
     unsigned long dwgctlFlat = MGA_DWGCTL_SLOPED(MGA_DWGCTL_GOURAUD);
-    unsigned long listEnd, vtxPhys, ringDwords = OSMGA_DMA_RING_BYTES / 4UL;
+    unsigned long vtxPhys, ringDwords = OSMGA_DMA_RING_BYTES / 4UL;
     unsigned long ien, opmode, primptr, devctrl, wrong, differ;
     unsigned long drew[OSMGA_M3_PROBES];
     unsigned long *ring, *vtx;
@@ -9897,49 +10028,18 @@ releaseAndReturn:
         goto releaseAll;
     }
 
-    /* T0: colour only, depth off -- atype I with NOZCMP touches no depth. */
-    if (!osmgaDmaBuildTriangleList(ring, ringDwords,
-                                   osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
-                                   OSMGA_M3_CLIP_LO, OSMGA_M3_CLIP_HI,
-                                   OSMGA_M3_CLIP_LO * stride,
-                                   OSMGA_M3_CLIP_HI * stride,
-                                   dwgctlFlat, OSMGA_M3_WARP, OSMGA_M3_ZORG,
-                                   &tailDwords, &totalDwords)) {
-        IOLog("OpenStepMGA M3: run 1 list rejected\n");
-        osmgaD2Settle();
-        goto releaseAll;
-    }
-    listEnd = (unsigned long)ringPhys + tailDwords * 4UL;
-    IOLog("OpenStepMGA M3: ring %08x list -> %08lx, oracle %luM warp %luM "
-          "zorg %luM, dwgctl %08lx\n", ringPhys, listEnd,
-          OSMGA_M3_ORACLE >> 20, OSMGA_M3_WARP >> 20, OSMGA_M3_ZORG >> 20,
-          dwgctlFlat);
+    /* T0: colour only.  atype I with NOZCMP compares nothing and writes
+     * no depth, so the depth buffer is untouched here. */
+    IOLog("OpenStepMGA M3: ring %08x, oracle %luM warp %luM zorg %luM, "
+          "dwgctl %08lx\n", ringPhys, OSMGA_M3_ORACLE >> 20,
+          OSMGA_M3_WARP >> 20, OSMGA_M3_ZORG >> 20, dwgctlFlat);
     osmgaD2Settle();
-
-    {
-        unsigned long spins, status, sum = 0UL;
-        unsigned primAfter;
-
-        for (i = 0UL; i < totalDwords; i++) sum += ring[i];
-        (void)osmgaR32(base, MGA_ENGSTATUS);
-        if (sum == 0xFFFFFFFFUL) IOLog("OpenStepMGA M3: barrier\n");
-        osmgaW32(base, MGA_PRIMADDRESS, (unsigned long)ringPhys | MGA_DMA_GENERAL);
-        osmgaW32(base, MGA_PRIMEND, listEnd);
-        for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
-            status = osmgaR32(base, MGA_ENGSTATUS);
-            primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
-            if (((unsigned long)primAfter & ~3UL) == listEnd &&
-                (status & MGA_STATUS_SOFTRAPEN) != 0UL &&
-                (status & MGA_STATUS_ENDPRDMASTS) != 0UL) break;
-        }
-        if (spins >= OSMGA_S1_SPIN_LIMIT) {
-            IOLog("OpenStepMGA M3: run 1 TIMEOUT -- nothing further will be "
-                  "programmed\n");
-            IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
-                  "REQUIRED ***\n");
-            goto unmapZ;                 /* retain ring, keep the claim */
-        }
-        osmgaW32(base, MGA_ICLEAR, MGA_SOFTRAPICLR);
+    if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
+                         osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
+                         dwgctlFlat, OSMGA_M3_WARP, OSMGA_M3_ZORG, "T0")) {
+        IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
+              "REQUIRED ***\n");
+        goto unmapZ;
     }
 
     osmgaM3BuildTri(vtx, OSMGA_M3_TRI_LO, OSMGA_M3_TRI_LO,
@@ -9960,7 +10060,79 @@ releaseAndReturn:
         IOLog("OpenStepMGA M3: T0 PASS -- WARP covers what the trapezoid "
               "path covers\n");
         osmgaD2Settle();
-        /* T1 will go here once T0 has been seen to pass on hardware. */
+
+        /* ---- T1: is z normalised to [0,1]? ------------------------
+         *
+         * The depth buffer is filled with the half code and three
+         * triangles are compared against it with atype I -- compare,
+         * never write.  A normalised z draws 0.25 and refuses 0.75.  A z
+         * that reached the engine already in code units would be nearly
+         * nought for both and would draw all three, which is why one
+         * triangle at one depth could not have answered this.
+         */
+        osmgaM3FillDepth(blkZ, stride, OSMGA_M3_Z_HALF);
+        for (row = 0UL; row < OSMGA_M3_BLK; row++)
+            for (col = 0UL; col < OSMGA_M3_BLK; col++)
+                blkWa[row * stride + col] = OSMGA_S1_SENTINEL;
+
+        if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
+                             osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
+                             dwgctlFlat | MGA_DWGCTL_ZLT,
+                             OSMGA_M3_WARP, OSMGA_M3_ZORG, "T1")) {
+            IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
+                  "REQUIRED ***\n");
+            goto unmapZ;
+        }
+        for (i = 0UL; i < OSMGA_M3_PROBES; i++)
+            osmgaM3BuildTri(vtx + i * OSMGA_D2C_VTX_DWORDS,
+                            osmgaM3Probes[i].row, osmgaM3Probes[i].col,
+                            osmgaM3Probes[i].leg, osmgaM3Probes[i].z,
+                            OSMGA_M3_COLOUR);
+        if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys,
+                                 OSMGA_M3_PROBES * OSMGA_D2C_VTX_DWORDS,
+                                 1, "T1", 0)) {
+            IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
+                  "REQUIRED ***\n");
+            goto unmapZ;
+        }
+        for (i = 0UL; i < OSMGA_M3_PROBES; i++)
+            drew[i] = osmgaM3CountProbe(blkWa, stride, &osmgaM3Probes[i],
+                                        OSMGA_M3_COLOUR);
+        IOLog("OpenStepMGA M3/T1: drew %lu %lu %lu of %lu each; expected "
+              "%lu %lu %lu for a normalised z\n",
+              drew[0], drew[1], drew[2],
+              osmgaM3Probes[0].leg * (osmgaM3Probes[0].leg + 1UL) / 2UL,
+              osmgaM3Probes[0].expect, osmgaM3Probes[1].expect,
+              osmgaM3Probes[2].expect);
+        osmgaD2Settle();
+
+        /* ---- T2: does atype ZI write depth when WARP drives it? ---- */
+        osmgaM3FillDepth(blkZ, stride, 0UL);
+        for (row = 0UL; row < OSMGA_M3_BLK; row++)
+            for (col = 0UL; col < OSMGA_M3_BLK; col++)
+                blkWa[row * stride + col] = OSMGA_S1_SENTINEL;
+
+        if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
+                             osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
+                             (dwgctlFlat & ~MGA_DWGCTL_ATYPE_I) |
+                                 MGA_DWGCTL_ATYPE_ZI | MGA_DWGCTL_NOZCMP,
+                             OSMGA_M3_WARP, OSMGA_M3_ZORG, "T2")) {
+            IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
+                  "REQUIRED ***\n");
+            goto unmapZ;
+        }
+        osmgaM3BuildTri(vtx, osmgaM3Probes[0].row, osmgaM3Probes[0].col,
+                        osmgaM3Probes[0].leg, OSMGA_M3_F32_3Q,
+                        OSMGA_M3_COLOUR);
+        if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys, OSMGA_D2C_VTX_DWORDS,
+                                 1, "T2", 0)) {
+            IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
+                  "REQUIRED ***\n");
+            goto unmapZ;
+        }
+        osmgaM3ReportDepth(blkZ, stride, osmgaM3Probes[0].row,
+                           osmgaM3Probes[0].col, osmgaM3Probes[0].leg,
+                           OSMGA_M3_Z_3Q, 0UL, "T2");
     } else {
         IOLog("OpenStepMGA M3: T0 did not pass -- T1 and T2 are not run\n");
         osmgaD2Settle();
@@ -9968,8 +10140,11 @@ releaseAndReturn:
 
     (void)osmgaStormWaitFifo(base, 1U);
     osmgaW32(base, MGA_WIADDR2, MGA_WMODE_SUSPEND);
-    IOLog("OpenStepMGA M3: SUMMARY T0 warp-wrong=%lu oracle-vs-warp=%lu\n",
-          wrong, differ);
+    IOLog("OpenStepMGA M3: SUMMARY T0 wrong=%lu differ=%lu | T1 drew "
+          "%lu %lu %lu (want %lu 0 %lu)\n",
+          wrong, differ, drew[0], drew[1], drew[2],
+          osmgaM3Probes[0].leg * (osmgaM3Probes[0].leg + 1UL) / 2UL,
+          osmgaM3Probes[2].leg * (osmgaM3Probes[2].leg + 1UL) / 2UL);
     osmgaD2Settle();
 
 releaseAll:
