@@ -204,3 +204,52 @@ if (*verdict != OSMGA_HW3D_OK) return 0xFFFFFFFFUL;     /* 거부 = 실패 */
    삼각형이 거부된다**
 5. `astipple` 시험은 **72 조합 전수** — 네 개 통과, 68 개 거부
 6. Mesa 판정 목록 + 로거
+
+---
+
+## 9. 결과 (2026-08-28 실기)
+
+### 9.1 ★ `tsa` 가 그대로 돈다 — 제약 1 판단의 직접 시험
+
+```
+=== source factor 8 is source alpha on colour and ONE on alpha,
+    so it is not GL_SRC_ALPHA_SATURATE ===
+```
+
+**측정된 조합을 거부하지 않기로 한 판단이 옳았다.** 거부했다면 이 줄이 안
+나왔을 것이고, 그것을 재려고 만든 시험이 죽었을 것이다.
+
+### 9.2 나머지 셋
+
+| | |
+| --- | --- |
+| 회귀 | 전 항목 `0 failing`, 실패·미실행 없음 |
+| 장면 기준선 | **`SCENES_MOVED=0`** |
+| `E_ALPHACROSS`(24) | **로그에 없음** — Mesa 는 금지 조합을 안 보낸다 |
+
+거부 코드는 기존 넷(`17 · 6 · 13 · 5`)뿐이고, 전부 시험이 일부러 유발하는
+것이다.
+
+### 9.3 무하드웨어
+
+```
+check-hw3d-validate: PASS
+  (batch validator + secondary range + field encoding + alpha combinations)
+```
+
+스티플 전수 훑기: **72 조합 중 4 통과 · 68 거부**, 그리고 통과 개수가 4 임을
+주장한다 — 허용된 것까지 거부하는 구현이 통과하지 못하도록.
+
+### 9.4 남긴 어긋남
+
+**4.5.5.4 의 `"must set aten = '0'"` 은 구현하지 않았다.** `tat` 이 텍스처
+없는 알파 테스트가 비교 함수 일곱 개에서 소프트웨어와 일치함을 측정한다.
+**하드웨어가 문서보다 관대하고, 이 프로젝트에서는 실측이 이긴다.**
+
+이 저장소가 같은 종류의 어긋남을 이미 셋 갖고 있다:
+
+| 어긋남 | 문서 | 실측 |
+| --- | --- | --- |
+| 정착 읽기 (W9 §9.5) | 8-dword 캐시 | 64 바이트 경계 |
+| soft reset (W10) | *"video circuitry not affected"* | 화면이 깨진다 |
+| **`aten` (여기)** | *"must set aten = '0'"* | **정상 동작한다** |
