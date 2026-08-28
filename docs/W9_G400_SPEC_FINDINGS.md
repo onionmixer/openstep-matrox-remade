@@ -397,6 +397,71 @@ DRM 주석이 *"page 4-16 in the G400 manual"* 이라고 **문서 이름을 대�
 
 ---
 
+## 9.5 항목 6 — 그리고 **우리 드라이버의 미해결 수수께끼가 풀린다**
+
+W7 §6 은 가시성을 "OPENSTEP 이 침묵한다" 로 닫았다. **그것은 두 문제를 하나로
+본 것이었고, 매뉴얼이 그중 하나를 설명한다.**
+
+### 9.5.1 두 문제는 다르다
+
+| | 무엇 | 매뉴얼이 다루는가 |
+| --- | --- | --- |
+| (a) 체크섬 배리어 `:5752` | **호스트 쓰기**가 카드에 보이게 | **아니다** — CPU 캐시는 칩의 소관이 아니다 |
+| (b) 정착 읽기 `:5928` | **엔진 쓰기**가 호스트에 보이게 | **그렇다 — §4.1.6** |
+
+### 9.5.2 정착 읽기가 무엇을 우회하고 있었는가
+
+**4.1.6 Direct Access Read Cache (4-5)**:
+
+> *"Direct read accesses to the frame buffer (…) are cached by **one eight-dword
+> cache entry**. (…)*
+> *Note: **The cache is not flushed when the frame buffer configuration is
+> modified (or when the drawing engine writes to a cached location).** As a
+> result, **it is the software's responsibility to invalidate the cache**,
+> using one of the methods listed above, whenever any bit is written that
+> affects the frame buffer configuration or contents. **The `CACHEFLUSH`
+> register can be used**, since it occupies a reserved address in the memory
+> mapped VGA register space (MGABASE1 + 1FFFh)."*
+
+우리 드라이버의 M1-3i/j 주석과 나란히 놓으면 정확히 같은 현상이다:
+
+> *"writes the engine makes into the first 64 bytes of the mmap window become
+> visible late **whenever the last read before the submission fell inside those
+> same 64 bytes**, and a single read at byte 64 or beyond makes them visible.
+> (…) **WHY it is 64 bytes, and why only at that one address, is not known.
+> This is an empirical repair and is written down as one.**"*
+
+**이제 알려졌다.** 칩 안에 direct-read 캐시 항목이 **하나** 있고, 엔진이 그
+자리에 쓸 때 무효화되지 않는다. 제출 직전의 읽기가 그 줄을 캐시에 올려 두면
+엔진의 쓰기가 늦게 보이고, **다른 줄을 읽으면 그 항목이 축출되어** 보이게
+된다. 우리의 "byte 64 이상을 한 번 읽는다" 는 **캐시 축출**이었다.
+
+### 9.5.3 그리고 제대로 된 도구가 있다
+
+```
+CACHEFLUSH   MGABASE1 + 1FFFh   R/W, BYTE
+```
+
+> *"Writes to this register will flush the cache."*
+
+**바이트 쓰기 하나가 VRAM 읽기와 매직 오프셋을 대신한다.** 그리고 우연이
+아니라 **그 목적으로 있는 레지스터**이므로, 64 바이트 경계가 다른 기하에서도
+성립하는지 걱정할 필요가 없어진다.
+
+> **다만 실측이 필요하다.** 매뉴얼이 있다고 코드를 바꾸지 않는다 — M1-3i/j 는
+> 80 회 × 7 오프셋으로 잰 것이고, 대체하려면 같은 수준으로 재야 한다.
+> **8 dword(32 바이트)와 우리가 잰 64 바이트 경계가 다르다는 것도 설명되지
+> 않았다.**
+
+### 9.5.4 (a)는 여전히 열려 있다
+
+체크섬 배리어가 답하는 것 — **호스트가 쓴 DMA 목록이 카드에 보이는가** — 는
+CPU 캐시 문제이고 **칩 사양서의 소관이 아니다.** DRM 은 `_DRM_CONSISTENT` 로
+할당자에게서 받고, OPENSTEP 은 `IOMallocLow` 에 대해 아무것도 문서화하지
+않는다(W7 §6.2). **그 질문은 그대로 남는다.**
+
+---
+
 ## 10. blocker 재판정 — 매뉴얼 기준
 
 W2 §6·§7 이 들고 있던 안전 blocker 를 사양서로 다시 본다.
