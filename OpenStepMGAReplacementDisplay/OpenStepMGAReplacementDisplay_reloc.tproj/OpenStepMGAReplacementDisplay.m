@@ -9768,6 +9768,19 @@ osmgaM3OracleTri(vm_address_t base, unsigned long stride,
  * mistaken for success. */
 #define OSMGA_M4_SRC_COLOUR   0x80FF8040UL
 
+/*
+ * T9's two triangles.  They do not overlap, so "which run wrote this
+ * depth" has one answer per pixel and not a rule about ordering.
+ * Twenty triangles in run A because D2-2f measured drawing still in
+ * flight at the pointer boundary at that size.
+ */
+#define OSMGA_M4_T9_TRIS        20UL
+#define OSMGA_M4_T9_LEG         20UL
+#define OSMGA_M4_T9_AROW         8UL
+#define OSMGA_M4_T9_ACOL         8UL
+#define OSMGA_M4_T9_BROW         8UL
+#define OSMGA_M4_T9_BCOL        34UL
+
 /* The square T5 draws, inside M3's clip (4..59). */
 #define OSMGA_M4_SQ_LO          8UL
 #define OSMGA_M4_SQ_HI         56UL
@@ -10262,6 +10275,42 @@ osmgaM4ReportAlpha(volatile unsigned long *blk, unsigned long stride,
     IOLog("OpenStepMGA M4/%s: %lu px (%lu never drawn), alpha %lu..%lu, "
           "residual %ld..%ld against a 0..255 ramp\n",
           label, seen, undrawn, aLo, aHi, dMin, dMax);
+    osmgaD2Settle();
+}
+
+
+/*
+ * T9's other half: run A drew with atype I, which writes no depth, so its
+ * triangle must still read the prefill.  A code there means the second
+ * state list took effect over the first run's pixels -- which is exactly
+ * the failure the fence exists to prevent.
+ */
+static void
+osmgaM4ReportRunA(volatile unsigned long *blkZ, unsigned long stride,
+                  const char *label)
+{
+    volatile unsigned short *z = (volatile unsigned short *)blkZ;
+    unsigned long row, col, seen = 0UL, wrote = 0UL, maxv = 0UL;
+
+    for (row = OSMGA_M4_T9_AROW; row < OSMGA_M4_T9_AROW + OSMGA_M4_T9_LEG;
+         row++)
+        for (col = OSMGA_M4_T9_ACOL;
+             col < OSMGA_M4_T9_ACOL + OSMGA_M4_T9_LEG; col++) {
+            unsigned long v;
+
+            if ((row - OSMGA_M4_T9_AROW) + (col - OSMGA_M4_T9_ACOL) >
+                OSMGA_M4_T9_LEG - 1UL)
+                continue;
+            seen++;
+            v = (unsigned long)z[row * stride + col];
+            if (v != 0UL) {
+                wrote++;
+                if (v > maxv) maxv = v;
+            }
+        }
+    IOLog("OpenStepMGA M4/%s: run A (atype I) %lu px, %lu hold depth "
+          "(max %lu) -- any at all means the ZI state reached run A\n",
+          label, seen, wrote, maxv);
     osmgaD2Settle();
 }
 
@@ -11922,6 +11971,123 @@ releaseAndReturn:
             IOLog("OpenStepMGA M3: T6 -- WARP did not come back correctly "
                   "after the other tier, even with a full reissue\n");
         osmgaD2Settle();
+        /* ---- T9: is the fence between two runs necessary? -----------
+         *
+         * M6 has to cut a batch into runs and emit a fresh state list at
+         * each boundary, and the review's position is that a fence must
+         * sit between a run's vertices and the next run's state list --
+         * reaching PRIMEND proves DMA consumption, not that drawing has
+         * finished (3-139), and the state list rewrites DWGCTL under an
+         * engine that may still be using it.
+         *
+         * That is an argument, and this project measures.  A fence per run
+         * is a full round trip, so whether it is needed is worth one band.
+         *
+         * The readout is binary rather than a picture comparison.  Run A
+         * draws with atype I, which writes no depth; run B draws with
+         * atype ZI, which does.  Prefill the depth buffer at nought and
+         * afterwards only run B's triangle may hold a code.  If the second
+         * state list did not take effect, run B writes no depth -- and if
+         * it took effect too early, run A writes some.
+         *
+         * ORDER: the fenced band runs FIRST.  It proves the readout works
+         * while the engine is known good; the unfenced one may wedge, and
+         * if it does, that is itself the answer and the fenced result is
+         * already in the log.
+         */
+        for (i = 0UL; i < 2UL; i++) {
+            int fence = (i == 0UL);
+            const char *lbl = fence ? "T9b-fenced" : "T9a-unfenced";
+            unsigned long busyA = 0UL;
+
+            osmgaM3FillDepth(blkZ, stride, 0UL);
+            for (row = 0UL; row < OSMGA_M3_BLK; row++)
+                for (col = 0UL; col < OSMGA_M3_BLK; col++)
+                    blkWa[row * stride + col] = OSMGA_S1_SENTINEL;
+
+            /* run A: atype I, twenty triangles so drawing is still in
+             * flight when the pointer passes -- D2-2f measured exactly
+             * that at this size. */
+            if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
+                                 osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
+                                 dwgctlFlat, OSMGA_M3_ALPHACTRL_NOBLEND,
+                                 OSMGA_M3_WARP, OSMGA_M3_ZORG,
+                                 (const OSMGAM3Tex *)0, lbl)) {
+                IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** "
+                      "REBOOT REQUIRED ***\n");
+                goto unmapM4;
+            }
+            for (ph = 0UL; ph < OSMGA_M4_T9_TRIS; ph++)
+                osmgaM3BuildTri(vtx + ph * OSMGA_D2C_VTX_DWORDS,
+                                OSMGA_M4_T9_AROW, OSMGA_M4_T9_ACOL,
+                                OSMGA_M4_T9_LEG, OSMGA_M3_F32_QUARTER,
+                                OSMGA_M3_COLOUR);
+            if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys,
+                                     OSMGA_M4_T9_TRIS * OSMGA_D2C_VTX_DWORDS,
+                                     fence, lbl, &busyA)) {
+                IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** "
+                      "REBOOT REQUIRED ***\n");
+                goto unmapM4;
+            }
+            IOLog("OpenStepMGA M4/%s: at run A's pointer boundary STATUS "
+                  "%08lx (dwgengsts %lu)\n", lbl, busyA,
+                  (busyA & MGA_STATUS_DWGENGSTS) != 0UL ? 1UL : 0UL);
+            osmgaD2Settle();
+
+            if (fence) {
+                /* The full production order: the fence above, then stop
+                 * WARP and wait for all three status bits. */
+                osmgaW32(base, MGA_WIADDR2, MGA_WMODE_SUSPEND);
+                for (ph = 0UL; ph < OSMGA_S1_SPIN_LIMIT; ph++) {
+                    unsigned long st = osmgaR32(base, MGA_ENGSTATUS);
+
+                    if ((st & (MGA_STATUS_WBUSY | MGA_STATUS_WBUSY1 |
+                               MGA_STATUS_DWGENGSTS)) == 0UL)
+                        break;
+                }
+                if (ph >= OSMGA_S1_SPIN_LIMIT) {
+                    IOLog("OpenStepMGA M4/%s: did not quiesce\n", lbl);
+                    IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** "
+                          "REBOOT REQUIRED ***\n");
+                    goto unmapM4;
+                }
+            }
+
+            /* run B: atype ZI, which writes depth.  The state list goes
+             * out here -- fenced or not, depending on the band. */
+            if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
+                                 osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
+                                 (dwgctlFlat & ~MGA_DWGCTL_ATYPE_I) |
+                                     MGA_DWGCTL_ATYPE_ZI | MGA_DWGCTL_NOZCMP,
+                                 OSMGA_M3_ALPHACTRL_NOBLEND,
+                                 OSMGA_M3_WARP, OSMGA_M3_ZORG,
+                                 (const OSMGAM3Tex *)0, lbl)) {
+                IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** "
+                      "REBOOT REQUIRED ***\n");
+                goto unmapM4;
+            }
+            osmgaM3BuildTri(vtx, OSMGA_M4_T9_BROW, OSMGA_M4_T9_BCOL,
+                            OSMGA_M4_T9_LEG, OSMGA_M3_F32_3Q,
+                            OSMGA_M3_COLOUR);
+            if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys,
+                                     OSMGA_D2C_VTX_DWORDS, 1, lbl, 0)) {
+                IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** "
+                      "REBOOT REQUIRED ***\n");
+                goto unmapM4;
+            }
+
+            /* Only run B may have written depth. */
+            osmgaM3ReportDepth(blkZ, stride, OSMGA_M4_T9_BROW,
+                               OSMGA_M4_T9_BCOL, OSMGA_M4_T9_LEG,
+                               OSMGA_M3_Z_3Q, 0UL, lbl);
+            osmgaM4ReportRunA(blkZ, stride, lbl);
+            if (!fence)
+                IOLog("OpenStepMGA M4: T9 -- if both bands read the same, "
+                      "the per-run fence M6 plans is not needed; if only "
+                      "the fenced one is right, it is\n");
+            osmgaD2Settle();
+        }
+
     } else {
         IOLog("OpenStepMGA M3: T0 did not pass -- T1 and T2 are not run\n");
         osmgaD2Settle();
