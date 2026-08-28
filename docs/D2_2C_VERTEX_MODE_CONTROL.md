@@ -386,3 +386,75 @@ claim (stormLock / stormBusy)
 
 **claim 이전 첫 카드 레지스터 쓰기는 없다** — 감사로 확인했다.
 `osmgaStormWaitIdle` 도 쓰기 0 회다.
+
+---
+
+## 13. 결과 (2026-08-28 19:59:54) — **삼각형이 나왔다**
+
+```
+D2-2c: microcode at 00040000 (24576 bytes), pipe 7 at 41c00 -- held for this boot
+D2-2c: ring 00050000, list 105 dwords -> 501a4, vertices 58000 -> 58060, dwgctl c4074, y 1457
+D2-2c/run1: PRIMADDRESS 000501a4 raw (wanted 501a4), STATUS 808e0021, DEVCTRL 2900007, spins 18
+D2-2c/run1: changed 0 px -- 0 in triangle, 0 in clip only, 0 OUTSIDE CLIP
+D2-2c/run2: PRIMADDRESS 00058063 raw (wanted 58060 | primod), STATUS 80fe0024, spins 100000
+D2-2c/run2: TIMEOUT or DMA ABORT -- nothing further will be programmed
+D2-2c/run2-timeout: changed 1176 px -- 1176 in triangle, 0 in clip only, 0 OUTSIDE CLIP
+D2-2c/run2-timeout: bbox rows 8..55 cols 8..55, first value ff8040 (wanted ff8040)
+```
+
+### 13.1 픽셀이 정확하다
+
+반개(half-open) 직각삼각형, 다리 48 픽셀:
+
+```
+sum(48..1) = 48*49/2 = 1176      <- python
+측정                    = 1176      rows 8..55, cols 8..55
+색                      = ff8040    지정한 값 그대로
+```
+
+**클립 밖 0 픽셀. 클립 안 삼각형 밖 0 픽셀.** 봉쇄가 관측된 범위에서 성립했다.
+
+### 13.2 그래서 무엇이 성립하는가
+
+- **WARP 마이크로코드가 실행되고 그린다.**
+- **1 차 DMA VERTEX 모드가 정점을 전달한다** — 세 참조 구현 어디에도 실행 선례가
+  없던 모드다(W2 §24.1). 이제 있다.
+- 파이프 7, 상태 목록, 클립, `WVRTXSZ`/`WACCEPTSEQ`, 정점 형식이 전부 맞다.
+- **`primod` 는 읽힌다** — `PRIMADDRESS` 가 `58063` 으로 읽혔다. §12 의 마스크
+  수정이 없었으면 포인터 검사도 실패했다. 그 수정은 필수였다.
+
+### 13.3 그리고 판정 논리가 성공을 실패로 보고했다
+
+`run2 STATUS = 0x80fe0024` 를 풀면:
+
+```
+endprdmasts <17> = 1     전송 완료
+dwgengsts   <16> = 0     그리기 엔진 유휴 -- 그림이 끝났다
+wbusy       <18> = 1     WARP 는 여전히 busy
+wbusy1      <19> = 1
+```
+
+그런데 **run 1 도 이미 `wbusy=1 wbusy1=1` 이었다**(`0x808e0021`). 당연하다 —
+run 1 의 목적이 WARP 를 **기동해서 정점을 기다리게 두는 것**이니까.
+
+3-189 는 `wbusy` 를 *"not idle; it may be RUNning, **WAITing**, STALLed or
+loading microcode"* 라고 정의한다. **기동된 WARP 는 대기 중에도 busy 다.**
+그러므로 `!wbusy` 는 **suspend 하기 전에는 도달할 수 없는 조건**이고,
+suspend 는 성공 판정 뒤에만 한다. **설계상 데드락이었다.**
+
+`dwgengsts` 야말로 완료 비트다 — 3-189 가 *bfifo 비었나 · **warpfifo** 비었나 ·
+그리기 엔진이 아직 처리·전송 중인가 · **마지막 메모리 접근이 끝났나*** 를 모두
+포함한다고 적는다. 정점 도착부터 픽셀이 메모리에 앉을 때까지 전 구간이다.
+
+### 13.4 증거가 남은 이유
+
+§12 에서 codex 는 *"타임아웃에서 프레임버퍼를 스캔하지 마라"* 고 했고 나는
+**부분채택**해서 스캔을 남기고 순서만 바꿨다. 그 결정이 이 결과를 살렸다 —
+전면 채택했다면 **삼각형이 그려진 줄 모르고 재부팅했을 것이다.**
+
+### 13.5 이 부팅이 남긴 상태
+
+`stormBusy` 가 set 인 채다(2D 는 소프트웨어 폴백, 3D 는 거부). 링·마이크로코드
+보유, WARP 미정지, 오프스크린 블록에 sentinel + 삼각형이 남아 있다.
+**의도된 실패 정책 그대로이고, 재부팅으로 전부 사라진다.** 디스플레이는 정상
+(`linear mode ACTIVE 1600x1200 RGB:888/32`, 이후 로그 계속).
