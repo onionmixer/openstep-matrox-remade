@@ -272,6 +272,7 @@
 #define MGA_IEN                 0x1e1c   /* R/W */
 #define MGA_VCOUNT              0x1e20   /* RO  -- the raster's own witness */
 #define MGA_RST                 0x1e40   /* R/W -- bit 0 is softreset */
+#define MGA_RST_SOFTRESET       0x00000001UL
 #define MGA_MEMRDBK             0x1e44   /* R/W */
 #define MGA_WIADDRNB            0x1e60   /* R/W (WIADDRNB2 at 0x1e00 is WO) */
 #define MGA_WFLAGNB             0x1e64   /* R/W */
@@ -805,6 +806,37 @@
 #define OSMGA_REGSNAP_COUNT     25U
 #define OSMGA_REGSNAP_VERSION   1U
 #define OSMGA_REGSNAP_VSPIN     2000UL   /* ~2 ms bound; a line is ~14 us */
+
+/*
+ * T1.  Read back PRE and POST after the reset ioctl returns.
+ */
+#define OSMGA_RESETSNAP_PARAM   "OSMGAResetSnap"
+#define OSMGA_RESETSNAP_COUNT   (2U * OSMGA_REGSNAP_COUNT + 2U)
+
+/*
+ * T1's soft reset.  One argument: 0 asks for the dry run, 1 for the real
+ * one.  Everything else about the two is identical, which is the point --
+ * the dry run measures what the surrounding machinery does on its own, so
+ * the registers that move without a reset are known before any register is
+ * asked to mean something.
+ */
+#define OSMGA_SOFTRESET_PARAM   "OSMGASoftReset"
+#define OSMGA_SOFTRESET_HOLD    200      /* microseconds; spec minimum is 10 */
+
+/*
+ * stormBlitFailed latches on a post-execute timeout and is cleared in
+ * exactly one place: initFromDeviceDescription.  So a single timeout means
+ * acceleration stays off until the driver is loaded again, which on a
+ * console display driver means a reboot.
+ *
+ * That is the most expensive outcome this test has, and it can be reached
+ * without T1 doing anything wrong -- the window server's NEXT blit is what
+ * would time out.  So the escape hatch is built before the test that might
+ * need it.  Development only; it re-arms a latch that exists to stop the
+ * driver from drawing over an engine that may still be writing, and nothing
+ * calls it on its own.
+ */
+#define OSMGA_ACCELREARM_PARAM  "OSMGAAccelRearm"
 /*
  * M1-3i: which word of the uncached alias to read once a submission has
  * finished, or zero for none.  Development only -- see the note where it is
@@ -2324,6 +2356,81 @@ static unsigned long osmgaSettleAutoCount;
 static int osmgaSelfBus = -1;
 static int osmgaSelfDev = -1;
 static int osmgaSelfFn  = -1;
+
+/*
+ * One read-only capture of the snapshot set.  Shared by the OSMGARegSnapshot
+ * parameter and by T1's reset, so PRE, POST and the standalone reading are
+ * literally the same instrument -- a second copy would drift from the first
+ * and the difference would be read as a finding.
+ *
+ * withRaster asks for the bounded VCOUNT spin.  T1 wants it (a still raster
+ * and a dead one look the same in one sample); a caller that only wants the
+ * engine registers can skip it and not pay the spin inside a claimed window.
+ */
+static void
+osmgaCaptureRegs(vm_address_t base, unsigned *out, int withRaster)
+{
+    unsigned long v0, v1, k;
+
+    v0 = osmgaR32(base, MGA_VCOUNT);
+    v1 = v0;
+    k = 0UL;
+    if (withRaster) {
+        for (k = 0UL; k < OSMGA_REGSNAP_VSPIN; k++) {
+            v1 = osmgaR32(base, MGA_VCOUNT);
+            if (v1 != v0)
+                break;
+        }
+    }
+
+    out[0]  = OSMGA_REGSNAP_VERSION;
+    out[1]  = (unsigned)v0;
+    out[2]  = (unsigned)v1;
+    out[3]  = withRaster
+                ? ((k < OSMGA_REGSNAP_VSPIN) ? (unsigned)(k + 1UL) : 0U)
+                : 0xFFFFFFFFU;          /* not asked for, not "did not move" */
+    out[4]  = (unsigned)osmgaR32(base, MGA_FIFOSTATUS);
+    out[5]  = (unsigned)osmgaR32(base, MGA_ENGSTATUS);
+    out[6]  = (unsigned)osmgaR32(base, MGA_IEN);
+    out[7]  = (unsigned)osmgaR32(base, MGA_RST);
+    out[8]  = (unsigned)osmgaR32(base, MGA_MEMRDBK);
+    out[9]  = (unsigned)osmgaR32(base, MGA_PRIMPTR);
+    out[10] = (unsigned)osmgaR32(base, MGA_OPMODE);
+    out[11] = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
+    out[12] = (unsigned)osmgaR32(base, MGA_PRIMEND);
+    out[13] = (unsigned)osmgaR32(base, MGA_WIADDRNB);
+    out[14] = (unsigned)osmgaR32(base, MGA_WFLAGNB);
+    out[15] = (unsigned)osmgaR32(base, MGA_WCODEADDR);
+    out[16] = (unsigned)osmgaR32(base, MGA_WMISC);
+    out[17] = (unsigned)osmgaR32(base, MGA_SECADDRESS);
+    out[18] = (unsigned)osmgaR32(base, MGA_SECEND);
+    out[19] = (unsigned)osmgaR32(base, MGA_SOFTRAP);
+    out[20] = (unsigned)osmgaR32(base, MGA_DWGSYNC);
+    out[21] = (unsigned)osmgaR32(base, MGA_SETUPADDRESS);
+    out[22] = (unsigned)osmgaR32(base, MGA_SETUPEND);
+
+    if (osmgaSelfBus < 0) {
+        out[23] = 0xFFFFFFFFU;
+        out[24] = 0xFFFFFFFFU;
+    } else {
+        out[23] = (unsigned)osmgaPciReadConfigLong(
+            osmgaSelfBus, osmgaSelfDev, osmgaSelfFn, MGA_CFG_DEVCTRL);
+        out[24] = (unsigned)osmgaPciReadConfigLong(
+            osmgaSelfBus, osmgaSelfDev, osmgaSelfFn, MGA_CFG_OPTION);
+    }
+}
+
+/*
+ * T1's captures, kept until the next run replaces them.  Read back through
+ * OSMGAResetSnap after the reset ioctl returns; if it never returns, these
+ * die with the machine and the breadcrumb on the host is what is left (W10
+ * section 2).
+ */
+static unsigned osmgaResetPre[OSMGA_REGSNAP_COUNT];
+static unsigned osmgaResetPost[OSMGA_REGSNAP_COUNT];
+static unsigned osmgaResetRstHeld;      /* RST read back while asserted */
+static unsigned osmgaResetWasReal;      /* 0 dry, 1 real */
+static unsigned osmgaResetValid;        /* a run has completed */
 
 /*
  * REMAINING_WORK 3-10.  The submit path claims stormBusy, but mode changes
@@ -5028,66 +5135,32 @@ unmap:
     }
 
     if (osmgaTextEquals(parameterName, OSMGA_REGSNAP_PARAM)) {
-        unsigned long v0, v1, k;
-
         if (parameterArray == 0 || count == 0 ||
             *count != OSMGA_REGSNAP_COUNT)
             return IO_R_INVALID_ARG;
         if (mmioBase == 0)
             return IO_R_NO_DEVICE;
-
-        /*
-         * VCOUNT first, and then read it until it moves.  A still raster
-         * and a dead one look identical in a single sample, and after a
-         * soft reset "is the display still scanning?" is the question that
-         * matters most.  The loop is bounded and reads an RO register.
-         */
-        v0 = osmgaR32(mmioBase, MGA_VCOUNT);
-        v1 = v0;
-        for (k = 0UL; k < OSMGA_REGSNAP_VSPIN; k++) {
-            v1 = osmgaR32(mmioBase, MGA_VCOUNT);
-            if (v1 != v0)
-                break;
-        }
-
-        parameterArray[0]  = OSMGA_REGSNAP_VERSION;
-        parameterArray[1]  = (unsigned)v0;
-        parameterArray[2]  = (unsigned)v1;
-        parameterArray[3]  = (k < OSMGA_REGSNAP_VSPIN) ? (unsigned)(k + 1UL) : 0U;
-        parameterArray[4]  = (unsigned)osmgaR32(mmioBase, MGA_FIFOSTATUS);
-        parameterArray[5]  = (unsigned)osmgaR32(mmioBase, MGA_ENGSTATUS);
-        parameterArray[6]  = (unsigned)osmgaR32(mmioBase, MGA_IEN);
-        parameterArray[7]  = (unsigned)osmgaR32(mmioBase, MGA_RST);
-        parameterArray[8]  = (unsigned)osmgaR32(mmioBase, MGA_MEMRDBK);
-        parameterArray[9]  = (unsigned)osmgaR32(mmioBase, MGA_PRIMPTR);
-        parameterArray[10] = (unsigned)osmgaR32(mmioBase, MGA_OPMODE);
-        parameterArray[11] = (unsigned)osmgaR32(mmioBase, MGA_PRIMADDRESS);
-        parameterArray[12] = (unsigned)osmgaR32(mmioBase, MGA_PRIMEND);
-        parameterArray[13] = (unsigned)osmgaR32(mmioBase, MGA_WIADDRNB);
-        parameterArray[14] = (unsigned)osmgaR32(mmioBase, MGA_WFLAGNB);
-        parameterArray[15] = (unsigned)osmgaR32(mmioBase, MGA_WCODEADDR);
-        parameterArray[16] = (unsigned)osmgaR32(mmioBase, MGA_WMISC);
-        parameterArray[17] = (unsigned)osmgaR32(mmioBase, MGA_SECADDRESS);
-        parameterArray[18] = (unsigned)osmgaR32(mmioBase, MGA_SECEND);
-        parameterArray[19] = (unsigned)osmgaR32(mmioBase, MGA_SOFTRAP);
-        parameterArray[20] = (unsigned)osmgaR32(mmioBase, MGA_DWGSYNC);
-        parameterArray[21] = (unsigned)osmgaR32(mmioBase, MGA_SETUPADDRESS);
-        parameterArray[22] = (unsigned)osmgaR32(mmioBase, MGA_SETUPEND);
-
-        /* Configuration space.  0xFFFFFFFF is also what an absent function
-         * reads as, so the caller is told which it is by whether the probe
-         * recorded where we live. */
-        if (osmgaSelfBus < 0) {
-            parameterArray[23] = 0xFFFFFFFFU;
-            parameterArray[24] = 0xFFFFFFFFU;
-        } else {
-            parameterArray[23] = (unsigned)osmgaPciReadConfigLong(
-                osmgaSelfBus, osmgaSelfDev, osmgaSelfFn, MGA_CFG_DEVCTRL);
-            parameterArray[24] = (unsigned)osmgaPciReadConfigLong(
-                osmgaSelfBus, osmgaSelfDev, osmgaSelfFn, MGA_CFG_OPTION);
-        }
-
+        osmgaCaptureRegs(mmioBase, parameterArray, 1);
         *count = OSMGA_REGSNAP_COUNT;
+        return IO_R_SUCCESS;
+    }
+
+    /* T1's PRE and POST, plus what RST read back while it was asserted. */
+    if (osmgaTextEquals(parameterName, OSMGA_RESETSNAP_PARAM)) {
+        unsigned i2;
+
+        if (parameterArray == 0 || count == 0 ||
+            *count != OSMGA_RESETSNAP_COUNT)
+            return IO_R_INVALID_ARG;
+        if (!osmgaResetValid)
+            return IO_R_NO_DEVICE;
+        for (i2 = 0U; i2 < OSMGA_REGSNAP_COUNT; i2++) {
+            parameterArray[i2] = osmgaResetPre[i2];
+            parameterArray[OSMGA_REGSNAP_COUNT + i2] = osmgaResetPost[i2];
+        }
+        parameterArray[2U * OSMGA_REGSNAP_COUNT + 0U] = osmgaResetRstHeld;
+        parameterArray[2U * OSMGA_REGSNAP_COUNT + 1U] = osmgaResetWasReal;
+        *count = OSMGA_RESETSNAP_COUNT;
         return IO_R_SUCCESS;
     }
 
@@ -5107,6 +5180,107 @@ unmap:
      * window is registered, and validated against the WINDOW, not the screen.
      * Parameters: [x, y, w, h, colour].
      */
+    /*
+     * Re-arm acceleration after the permanent-disable latch.  See the note
+     * at OSMGA_ACCELREARM_PARAM: this exists so that one timeout does not
+     * cost a reboot.  It does NOT touch the engine; it clears a software
+     * latch and says so in the log, because silently re-enabling a latch
+     * that was set for a reason is worse than leaving it set.
+     */
+    if (osmgaTextEquals(parameterName, OSMGA_ACCELREARM_PARAM)) {
+        if (parameterArray == 0 || count != 1U)
+            return IO_R_INVALID_ARG;
+        if (parameterArray[0] != 1U)
+            return IO_R_INVALID_ARG;
+        if (!stormBlitFailed) {
+            IOLog("OpenStepMGA T1: accel re-arm asked for, latch was not set\n");
+            return IO_R_SUCCESS;
+        }
+        stormBlitFailed = NO;
+        IOLog("OpenStepMGA T1: accel re-armed -- stormBlitFailed cleared by "
+              "request (it had latched; the engine was NOT reinitialised)\n");
+        return IO_R_SUCCESS;
+    }
+
+    /*
+     * T1.  A soft reset of the drawing engine on the card that is driving
+     * this console, to measure what the specification declines to say: it
+     * returns "some register bits to their soft-reset values (see individual
+     * registers)", that phrase occurs once in 690 pages, and no individual
+     * register documents such a value.
+     *
+     * The vendor's ground for doing it at all (4-23): "The soft reset should
+     * be interpreted as a drawing engine reset more than as a general soft
+     * reset.  The video circuitry, VGA registers, and frame buffer memory
+     * accesses ... are not affected."
+     *
+     * Both writes live in one call deliberately.  Splitting them would hold
+     * the engine in reset across a userland round trip, and the specification
+     * gives a minimum hold with no maximum -- which means nobody wrote down
+     * what a long one does, not that a long one is fine.  What is lost by
+     * merging is knowing WHICH write hung if it hangs; what is kept is a
+     * hold time both the vendor and X.Org use.
+     */
+    if (osmgaTextEquals(parameterName, OSMGA_SOFTRESET_PARAM)) {
+        int real;
+
+        if (parameterArray == 0 || count != 1U)
+            return IO_R_INVALID_ARG;
+        if (parameterArray[0] > 1U)
+            return IO_R_INVALID_ARG;
+        real = (parameterArray[0] == 1U);
+
+        if (mmioBase == 0 || !mmioMapped || !linearModeActive)
+            return IO_R_NO_DEVICE;
+
+        simple_lock(&stormLock);
+        if (stormBusy) {
+            simple_unlock(&stormLock);
+            return IO_R_BUSY;          /* refuse; never retry (W2 section 7) */
+        }
+        stormBusy = YES;
+        simple_unlock(&stormLock);
+
+        /*
+         * Every exit from here on goes through the single release below.
+         * A claimed flag that is never cleared would leave acceleration
+         * refusing for the life of the load.
+         */
+        if (!osmgaStormWaitIdle(mmioBase)) {
+            IOLog("OpenStepMGA T1: engine not idle, reset REFUSED\n");
+            simple_lock(&stormLock);
+            stormBusy = NO;
+            simple_unlock(&stormLock);
+            return IO_R_RESOURCE;      /* do not force a reset through */
+        }
+
+        osmgaCaptureRegs(mmioBase, osmgaResetPre, 1);
+        osmgaResetRstHeld = 0xFFFFFFFFU;
+
+        if (real) {
+            osmgaW32(mmioBase, MGA_RST, MGA_RST_SOFTRESET);
+            /* Free, and the only thing that can testify that the assert
+             * landed if the machine survives to be asked. */
+            osmgaResetRstHeld = (unsigned)osmgaR32(mmioBase, MGA_RST);
+            IODelay(OSMGA_SOFTRESET_HOLD);
+            osmgaW32(mmioBase, MGA_RST, 0UL);
+        } else {
+            IODelay(OSMGA_SOFTRESET_HOLD);
+        }
+
+        osmgaCaptureRegs(mmioBase, osmgaResetPost, 1);
+        osmgaResetWasReal = real ? 1U : 0U;
+        osmgaResetValid = 1U;
+
+        simple_lock(&stormLock);
+        stormBusy = NO;
+        simple_unlock(&stormLock);
+
+        IOLog("OpenStepMGA T1: %s reset done, RST held read %08x\n",
+              real ? "REAL" : "dry", osmgaResetRstHeld);
+        return IO_R_SUCCESS;
+    }
+
     if (osmgaTextEquals(parameterName, OSMGA_PROBE_FILL_PARAM)) {
         const OSMGARes *r2 = &osmgaRes[selectedResIndex];
         const OSMGAFormat *f2 = &osmgaFmt[selectedFormatIndex];
