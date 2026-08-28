@@ -135,12 +135,31 @@ layout(void)
     check(offsetof(OSMGAHW3DWarpBatch, state) ==
           offsetof(OSMGAHW3DBatch, state), "state is at the same offset");
 
-    /* And the command list has to hold what the maxima allow: a state list
-     * per run plus every vertex, copied out of the client's reach. */
-    check(OSMGA_HW3D_MAX_RUN * 460UL +
+    /*
+     * The command list has to hold what the maxima allow: a state list per
+     * run plus every vertex, copied out of the client's reach.  The header
+     * asserts this at build time; here it is checked against the sizes the
+     * compiler actually produced, which is not the same statement -- the
+     * header's 32 is a literal and this one is sizeof.
+     */
+    check(OSMGA_HW3D_WARP_VTX_OFF +
           OSMGA_HW3D_MAX_VTX * sizeof(OSMGAHW3DVertex) <=
           OSMGA_HW3D_LIST_BYTES,
           "the runs and vertices fit the command list");
+    check(OSMGA_HW3D_WARP_VTX_BYTES ==
+          OSMGA_HW3D_MAX_VTX * sizeof(OSMGAHW3DVertex),
+          "the vertex span matches the vertex size");
+    check((OSMGA_HW3D_WARP_VTX_OFF % 32UL) == 0UL,
+          "the vertex base needs no mask in PRIMADDRESS");
+    /*
+     * The vertex base does NOT move with the run count.  A base that did
+     * would make the card's addresses depend on a number the client chose,
+     * which is the opposite of why the vertices are copied at all.
+     */
+    check(OSMGA_HW3D_WARP_VTX_OFF ==
+          OSMGA_HW3D_MAX_RUN * OSMGA_HW3D_WARP_STATE_BYTES,
+          "the vertex base is past the WORST case state lists, not this "
+          "batch's");
 }
 
 static void

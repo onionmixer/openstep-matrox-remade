@@ -1042,6 +1042,45 @@ typedef int OSMGAHW3DRunSizeCheck[(sizeof(OSMGAHW3DRun) == 16) ? 1 : -1];
 #define OSMGA_HW3D_SEC_OFF \
     (OSMGA_HW3D_RING_OFFSET + OSMGA_HW3D_LIST_BYTES)
 
+/*
+ * ---- how a WARP batch lays out the SAME list region ----
+ *
+ * The trapezoid path fills the list region with one command list.  A WARP
+ * batch needs two different things in it: a state list per run, and the
+ * vertices themselves -- which cannot be DMA'd out of the client-mapped
+ * batch, because after validation and before the card reads, the client
+ * can still write.  The encoder already copies for that reason and the
+ * vertices are copied for the same one.
+ *
+ * The state lists come first and the vertices after them, at a FIXED
+ * offset rather than after however many lists this batch happened to
+ * need: a base that moved with the run count would make PRIMADDRESS
+ * arithmetic depend on a number the client chose, and the whole point of
+ * copying is that the card's addresses do not.
+ *
+ * The per-run figure is the state list the driver builds -- pipe,
+ * context, texture, global, clip and the trap -- at twenty-three blocks
+ * of twenty bytes, counted from the builder with a block to spare.
+ */
+#define OSMGA_HW3D_WARP_STATE_BYTES  460UL
+#define OSMGA_HW3D_WARP_VTX_OFF \
+    (OSMGA_HW3D_MAX_RUN * OSMGA_HW3D_WARP_STATE_BYTES)
+#define OSMGA_HW3D_WARP_VTX_BYTES \
+    (OSMGA_HW3D_MAX_VTX * 32UL)
+
+/*
+ * Both halves have to fit the list region, and neither number is free to
+ * drift: the maxima come from the batch's own budget and the state list's
+ * length comes from the builder.  A negative array size is the C89 way of
+ * saying so at build time rather than at the far end of a submission.
+ */
+typedef int OSMGAHW3DWarpListCheck[
+    ((OSMGA_HW3D_WARP_VTX_OFF + OSMGA_HW3D_WARP_VTX_BYTES) <=
+     OSMGA_HW3D_LIST_BYTES) ? 1 : -1];
+/* And the vertex base is 32-byte aligned, so PRIMADDRESS needs no mask. */
+typedef int OSMGAHW3DWarpVtxAlign[
+    ((OSMGA_HW3D_WARP_VTX_OFF % 32UL) == 0UL) ? 1 : -1];
+
 /* One general-mode packet: an index dword and four values. */
 #define OSMGA_HW3D_SEC_PACKET   20UL
 
