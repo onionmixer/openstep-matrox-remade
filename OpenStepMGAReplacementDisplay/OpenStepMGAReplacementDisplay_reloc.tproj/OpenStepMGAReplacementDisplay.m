@@ -2501,6 +2501,7 @@ static unsigned osmgaResetValid;        /* a run has completed */
  * The driver writes MACCESS in one place, osmgaStormInitState, with PW32
  * before every draw, and has never set any other field in it.
  */
+#ifdef OSMGA_DANGEROUS_RESET
 static void
 osmgaMemResetCycle(vm_address_t base)
 {
@@ -2536,6 +2537,7 @@ osmgaScreenOn(vm_address_t base, unsigned char seq1)
     osmgaW8(base, MGA_SEQ_INDEX, 0x01);
     osmgaW8(base, MGA_SEQ_DATA, seq1);
 }
+#endif  /* OSMGA_DANGEROUS_RESET */
 
 /*
  * REMAINING_WORK 3-10.  The submit path claims stormBusy, but mode changes
@@ -5357,6 +5359,7 @@ unmap:
      * not known -- the manual describes memreset as part of a sequence, not
      * as a repair.  It is offered as a thing to try, not as a promise.
      */
+#ifdef OSMGA_DANGEROUS_RESET
     if (osmgaTextEquals(parameterName, OSMGA_MEMRESET_PARAM)) {
         unsigned char seq1;
 
@@ -5465,6 +5468,8 @@ unmap:
               real ? "REAL" : "dry", osmgaResetRstHeld);
         return IO_R_SUCCESS;
     }
+
+#endif  /* OSMGA_DANGEROUS_RESET */
 
     if (osmgaTextEquals(parameterName, OSMGA_PROBE_FILL_PARAM)) {
         const OSMGARes *r2 = &osmgaRes[selectedResIndex];
