@@ -12,6 +12,41 @@
 #define OSMGA_HW3D_DEPTH_BYTES  2UL    /* MACCESS leaves depth 16-bit */
 
 /*
+ * One field, checked and encoded.  See the header for the contract.
+ *
+ * The mask is not a repair of a wrong value: for a 22-bit field, -1 IS
+ * 0x3fffff, and the thirty-two-bit 0xffffffff the producer hands over is
+ * the same number wearing a wider coat.  What the mask removes is the
+ * sign extension that would otherwise land in bits the spec says must be
+ * zero.  A value that does NOT fit is a different matter and is refused,
+ * because masking it would hand the engine exactly the truncated number it
+ * already computes for itself -- this repository has that measured, in the
+ * Mesa clamp's own comment: 255 * 119 becomes 0x3B448000 "of which the
+ * hardware would see 0x448000, or +137, and paint a gradient nobody asked
+ * for".
+ */
+int
+osmgaHW3DField(long v, unsigned bits, unsigned long *out)
+{
+    unsigned long span;
+    long hi, lo;
+
+    if (bits == 0U || bits >= 32U)
+        return 0;
+
+    span = 1UL << (bits - 1U);
+    hi   = (long)(span - 1UL);
+    lo   = -hi - 1L;                    /* two's complement is asymmetric */
+
+    if (v < lo || v > hi)
+        return 0;
+
+    if (out != 0)
+        *out = ((unsigned long)v) & ((1UL << bits) - 1UL);
+    return 1;
+}
+
+/*
  * The secondary DMA range check.  See the header.
  *
  * Every bound is a subtraction.  An earlier draft of this said in its own
@@ -607,6 +642,50 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
          */
         if (t->ar0 <= 0L || t->ar6 <= 0L)
             return OSMGA_HW3D_E_EDGEDIV;
+        /*
+         * And an upper bound, which they never had.  A divisor larger than
+         * the field cannot be told apart from a smaller one once the engine
+         * truncates, so the value the hardware acts on stops being the value
+         * the client sent.  Not tied to the trapezoid's height: the
+         * validator already withdrew that once, because a triangle split at
+         * its middle vertex has one edge spanning both halves.
+         */
+        if (!osmgaHW3DField(t->ar0, OSMGA_HW3D_F_AR, (unsigned long *)0) ||
+            !osmgaHW3DField(t->ar6, OSMGA_HW3D_F_AR, (unsigned long *)0))
+            return OSMGA_HW3D_E_TRIFIELD;
+
+        /*
+         * Every other per-triangle value that reaches a register with a
+         * reserved field.  ar1/ar2/ar4/ar5 are already held to the edge
+         * walk, far inside their fields; these are the ones nothing bounded
+         * at all -- the nine emitted DRs and the three alpha values.
+         *
+         * dr[9..11] are structure padding and are never emitted, so they
+         * are not checked: refusing a value the card never sees would
+         * reject working batches for a field that does not exist.
+         *
+         * z0/zdx/zdy go to DR0/DR2/DR3, which are <31:0> with no reserved
+         * field, and are deliberately absent here.
+         */
+        {
+            int k;
+
+            if (!osmgaHW3DField(t->ar1, OSMGA_HW3D_F_AR1, (unsigned long *)0) ||
+                !osmgaHW3DField(t->ar2, OSMGA_HW3D_F_AR, (unsigned long *)0) ||
+                !osmgaHW3DField(t->ar4, OSMGA_HW3D_F_AR, (unsigned long *)0) ||
+                !osmgaHW3DField(t->ar5, OSMGA_HW3D_F_AR, (unsigned long *)0))
+                return OSMGA_HW3D_E_TRIFIELD;
+
+            for (k = 0; k < 9; k++)
+                if (!osmgaHW3DField((long)t->dr[k], OSMGA_HW3D_F_DR,
+                                    (unsigned long *)0))
+                    return OSMGA_HW3D_E_TRIFIELD;
+
+            if (!osmgaHW3DField((long)t->a0,  OSMGA_HW3D_F_ALPHA, (unsigned long *)0) ||
+                !osmgaHW3DField((long)t->adx, OSMGA_HW3D_F_ALPHA, (unsigned long *)0) ||
+                !osmgaHW3DField((long)t->ady, OSMGA_HW3D_F_ALPHA, (unsigned long *)0))
+                return OSMGA_HW3D_E_TRIFIELD;
+        }
         /*
          * Displacements go in negated, always.  A positive one is not a
          * direction -- SGN carries that -- it is a value this walk cannot

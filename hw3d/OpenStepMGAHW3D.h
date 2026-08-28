@@ -126,6 +126,8 @@
 #define OSMGA_HW3D_E_DSTORGAL  20
 #define OSMGA_HW3D_E_ZORGAL    21
 #define OSMGA_HW3D_E_TEXORGAL  22
+#define OSMGA_HW3D_E_TRIFIELD  23   /* a per-triangle value that does not fit
+                                     * the signed field its register keeps */
 
 /*
  * What a client may say in DWGCTL, and what the kernel says for it.
@@ -859,6 +861,49 @@ typedef int OSMGAHW3DWordCheck[(sizeof(unsigned long) == 4) ? 1 : -1];
  */
 int osmgaHW3DSecRange(unsigned long ringPhys,
                       unsigned long secStart, unsigned long secEnd);
+
+/*
+ * ---- What an unsigned batch field carries, and how it reaches a register
+ *
+ * Several registers keep their value in less than thirty-two bits and
+ * reserve the rest, and the spec is explicit about the representation:
+ * ar2 is "a 22-bit signed value in two's complement notation" (3-40), dr4
+ * and the alpha increments hold "a signed 9.15 value in two's complement
+ * notation" (3-121, 3-37), and each says of the bits above that they "must
+ * be set to '0'".
+ *
+ *   AR0 AR2 AR4 AR5 AR6              signed <21:0>
+ *   AR1                              signed <23:0>
+ *   DR4 6 7 8 10 11 12 14 15         signed <23:0>   (9.15)
+ *   ALPHASTART ALPHAXINC ALPHAYINC   signed <23:0>   (9.15)
+ *   DR0 DR2 DR3                      signed <31:0>   -- no reserved field
+ *
+ * THE CARRIER.  dr[], a0, adx and ady are `unsigned long`, so a word like
+ * 0x00ffffff is ambiguous on its face: the raw 24-bit encoding of -1, or
+ * the number 16,777,215, which does not fit a signed 24-bit field.  The
+ * producer settles it -- osmgaFixed returns (unsigned long)(long) -- so:
+ *
+ *   an unsigned batch field carries a SIGN-EXTENDED signed value.
+ *
+ * Read it back as (long), and 0x00ffffff is +16,777,215 and is refused.
+ * Saying this out loud is not pedantry: without it, "does it fit" has no
+ * meaning and neither does any test of it.
+ *
+ * WHY BOTH HALVES.  Fitting the field and having the reserved bits clear
+ * are different properties -- a negative value fits and still has every
+ * high bit set once it is widened to thirty-two.  So one helper answers
+ * both, and the validator and the encoder call the same one rather than
+ * keeping two copies of the widths that are free to drift apart.
+ *
+ * Returns 1 when v is representable in `bits` as two's complement, and
+ * then stores the canonical register word -- v masked to the field.
+ */
+int osmgaHW3DField(long v, unsigned bits, unsigned long *out);
+
+#define OSMGA_HW3D_F_AR     22U   /* AR0 AR2 AR4 AR5 AR6 */
+#define OSMGA_HW3D_F_AR1    24U
+#define OSMGA_HW3D_F_DR     24U   /* the nine emitted DRs, 9.15 */
+#define OSMGA_HW3D_F_ALPHA  24U
 
 typedef int OSMGAHW3DListCheck[
     ((OSMGA_HW3D_ENC_DWORDS * 4UL) <= OSMGA_HW3D_LIST_BYTES) ? 1 : -1];

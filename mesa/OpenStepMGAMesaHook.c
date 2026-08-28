@@ -701,6 +701,12 @@ static unsigned long hookNarrowed;
  * does not name a triangle cannot be narrowed to one.  The injection knob
  * corrupts the MAGIC, which is deliberately in the second set: forcing the
  * WHOLE replay is what that knob is for.
+ *
+ * E_TRIFIELD joined the first set at the same time as the check that raises
+ * it.  A verdict returned inside the per-triangle loop and missing from this
+ * list is treated as batch-level: the whole remainder is replayed instead of
+ * the one triangle, and that counts towards revoking acceleration -- so one
+ * refused triangle would push towards turning the engine off.
  */
 static int
 osmgaMesaVerdictNamesTriangle(unsigned long v)
@@ -709,7 +715,8 @@ osmgaMesaVerdictNamesTriangle(unsigned long v)
         || v == OSMGA_HW3D_E_TRIROW   || v == OSMGA_HW3D_E_TRICOL
         || v == OSMGA_HW3D_E_TRISLOPE || v == OSMGA_HW3D_E_EDGEDIV
         || v == OSMGA_HW3D_E_TRISGN   || v == OSMGA_HW3D_E_TRICROSS
-        || v == OSMGA_HW3D_E_TEXCOORD || v == OSMGA_HW3D_E_TRIEMPTY;
+        || v == OSMGA_HW3D_E_TEXCOORD || v == OSMGA_HW3D_E_TRIEMPTY
+        || v == OSMGA_HW3D_E_TRIFIELD;
 }
 
 /*

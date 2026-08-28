@@ -10172,20 +10172,51 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
         unsigned long v[OSMGA_DMA_VALUES];
         int g, sl;
 
-        v[0]  = MGA_DWGCTL_SLOPED(dwg);
-        v[1]  = (unsigned long)t->ar0;
-        v[2]  = (unsigned long)t->ar1;
-        v[3]  = (unsigned long)t->ar2;
-        v[4]  = (unsigned long)t->ar4;
-        v[5]  = (unsigned long)t->ar5;
-        v[6]  = (unsigned long)t->ar6;
-        v[7]  = (unsigned long)t->sgn;
-        v[8]  = t->dr[0]; v[9]  = t->dr[1]; v[10] = t->dr[2];
-        v[11] = t->dr[3]; v[12] = t->dr[4]; v[13] = t->dr[5];
-        v[14] = t->dr[6]; v[15] = t->dr[7]; v[16] = t->dr[8];
-        v[17] = t->z0;    v[18] = t->zdx;   v[19] = t->zdy;
-        v[20] = t->a0;    v[21] = t->adx;   v[22] = t->ady;
-        v[23] = t->alphactrl & OSMGA_HW3D_AC_CLIENT;
+        /*
+         * Through osmgaHW3DField, not by casting.
+         *
+         * A cast widens a negative long to thirty-two bits and every one of
+         * those high bits lands in a field the spec says must be zero.  The
+         * helper masks to the register's own width, which for two's
+         * complement IS the value -- and it is the same helper the validator
+         * used, so the widths cannot drift between the check and the write.
+         *
+         * The failure branch should be unreachable: the validator ran over
+         * this batch and refused anything that does not fit.  It is here
+         * because "unreachable" and "does not truncate silently if someone
+         * later calls this without validating" are different promises.
+         *
+         * v[17..19] are DR0/DR2/DR3, which are <31:0> with no reserved
+         * field; v[0], v[7] and v[23] are DWGCTL, SGN and ALPHACTRL, which
+         * are flags and already masked elsewhere.  None of them belongs here.
+         */
+        {
+            int fk, fok = 1;
+
+            v[0]  = MGA_DWGCTL_SLOPED(dwg);
+            fok = fok && osmgaHW3DField(t->ar0, OSMGA_HW3D_F_AR,  &v[1]);
+            fok = fok && osmgaHW3DField(t->ar1, OSMGA_HW3D_F_AR1, &v[2]);
+            fok = fok && osmgaHW3DField(t->ar2, OSMGA_HW3D_F_AR,  &v[3]);
+            fok = fok && osmgaHW3DField(t->ar4, OSMGA_HW3D_F_AR,  &v[4]);
+            fok = fok && osmgaHW3DField(t->ar5, OSMGA_HW3D_F_AR,  &v[5]);
+            fok = fok && osmgaHW3DField(t->ar6, OSMGA_HW3D_F_AR,  &v[6]);
+            v[7]  = (unsigned long)t->sgn;
+            for (fk = 0; fk < 9; fk++)
+                fok = fok && osmgaHW3DField((long)t->dr[fk],
+                                            OSMGA_HW3D_F_DR, &v[8 + fk]);
+            v[17] = t->z0;    v[18] = t->zdx;   v[19] = t->zdy;
+            fok = fok && osmgaHW3DField((long)t->a0,  OSMGA_HW3D_F_ALPHA, &v[20]);
+            fok = fok && osmgaHW3DField((long)t->adx, OSMGA_HW3D_F_ALPHA, &v[21]);
+            fok = fok && osmgaHW3DField((long)t->ady, OSMGA_HW3D_F_ALPHA, &v[22]);
+            v[23] = t->alphactrl & OSMGA_HW3D_AC_CLIENT;
+
+            if (!fok) {
+                IOLog("OpenStepMGA W15: triangle %lu has a value that does "
+                      "not fit its register's field, and the validator let "
+                      "it through -- list abandoned\n", i);
+                return 0UL;
+            }
+        }
 
         for (g = 0; ok && g < OSMGA_DMA_GROUPS; g++) {
             int dirty = (!track || !have);
