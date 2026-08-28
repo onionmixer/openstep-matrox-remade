@@ -46,12 +46,31 @@ DRM 은 정점을 **항상** `SECADDRESS | MGA_DMA_VERTEX` 로 보낸다. WR 에
 to be written sequentially in **the WR register** before switching to the
 next bank (…) only used by the **ACCEPT** command"* 다. **단수**다.
 
-| 가능성 | 뜻 |
-| --- | --- |
-| WR 뱅크가 인터페이스, vertex 모드는 수송 최적화 | **general 쓰기로 된다** |
-| ACCEPT 시퀀서가 순차 포트를 요구한다 | **된다는 보장이 없다** |
+> **사양서가 답한다 (교차검토를 기다리는 동안 확인).**
+>
+> `WR` 의 속성 (3-276): **`WO, DB, DYNAMIC, DWORD, FIFO`**
+>
+> 그리고 속성 정의 (3-30): **`FIFO: Data written to this register will pass
+> through the BFIFO.`**
+>
+> `STATUS.wfipath` (3-189): *"WARPFIFO Input Path. This bit indicates which
+> WARPFIFO (**between the BFIFO and the two WARPFIFOs**) has the data path."*
+>
+> **즉 경로가 이렇다: 레지스터 쓰기 → BFIFO → WARPFIFO → WARP.**
+> vertex 모드 DMA 도 같은 BFIFO 로 들어간다 — 인덱스 dword 를 안 싣는 것이
+> 다를 뿐이다.
+>
+> 그리고 `WR` 의 설명이 못을 박는다:
+>
+> > *"These are the 64 multi-purpose WARP registers (…) **It is up to the
+> > software to define what to put in these registers and how the microcode
+> > will interpret them.**"*
+>
+> **WR 뱅크가 소프트웨어 인터페이스다.** `ACCEPT.seq` 의 `seqdst<5:0>` 이
+> 6 비트, 즉 `WR0`~`WR63` 을 가리키는 것도 같은 그림이다(3-260).
 
-**어느 쪽인지 아무도 모른다. D2-2b 가 그것을 묻는다.**
+**그러므로 "될 것" 이 아니라 "사양서상 되어야 한다" 로 올라갔다.** 남은
+불확실성은 **정점의 배치**(어느 WR 부터 몇 개)이지 **도달 가능성**이 아니다.
 
 ## 3. 왜 이것이 더 싼 시험인가
 
