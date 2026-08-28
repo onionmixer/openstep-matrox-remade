@@ -1296,3 +1296,24 @@ int osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                       unsigned long *badTri);
 
 #endif /* OPENSTEP_MGA_HW3D_H */
+
+/*
+ * IEEE-754 singles as bit patterns, judged without an FPU -- see the block
+ * comment in the .c.  The WARP vertex form carries nothing else, and the
+ * kernel has to bound all of it before the card reads any of it.
+ *
+ * The bounds are stated as bit patterns so that a caller names a float and
+ * this code never converts one:
+ */
+#define OSMGA_HW3D_F32_ONE      0x3F800000UL   /*   1.0f */
+#define OSMGA_HW3D_F32_COORD    0x46000000UL   /* 8192.0f -- the same bound
+                                                * the Mesa builder already
+                                                * enforces on vertices */
+#define OSMGA_HW3D_F32_RHW_MIN  0x3E000000UL   /*   0.125f = Q_MIN / 65536 */
+#define OSMGA_HW3D_F32_RHW_MAX  0x43000000UL   /* 128.0f   = Q_MAX / 65536 */
+
+int osmgaHW3DF32Finite(unsigned long p);
+int osmgaHW3DF32PosNormal(unsigned long p);
+int osmgaHW3DF32InUnit(unsigned long p);
+int osmgaHW3DF32AbsAtMost(unsigned long p, unsigned long limit);
+int osmgaHW3DF32Between(unsigned long p, unsigned long lo, unsigned long hi);

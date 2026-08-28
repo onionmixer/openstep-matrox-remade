@@ -1288,3 +1288,88 @@ osmgaHW3DWarpTexDim(unsigned long dim, unsigned long log2dim)
          | ((((10UL - log2dim - 8UL)) & 63UL) << 9)
          | ((((log2dim + OSMGA_HW3D_WARP_TEX_OFS) | 0x40UL)) & 63UL);
 }
+
+/*
+ * ---- IEEE-754 singles, judged with integer operations only ----
+ *
+ * The kernel cannot touch the FPU, and the WARP vertex form is nothing but
+ * float bit patterns: x, y, z, rhw, tu0 and tv0.  So every question the
+ * validator has to ask about them -- is it a number, is it positive, is it
+ * in range -- is asked of the BITS.
+ *
+ * Two facts make that exact rather than approximate, and both were checked
+ * in python against real floats before a line of this was written:
+ *
+ *   - NaN and both infinities are exactly the patterns whose exponent
+ *     field is all ones, so one mask answers "is this a number".
+ *
+ *   - for values that are not negative, the bit pattern ORDERS THE SAME WAY
+ *     the value does.  A range check is therefore an unsigned comparison of
+ *     the patterns, with no arithmetic and no rounding anywhere in it.
+ *
+ * Negative values reverse that order, which is why the sign is taken out
+ * first everywhere below rather than being folded into a comparison.
+ */
+#define OSMGA_F32_EXP    0x7F800000UL
+#define OSMGA_F32_MAG    0x7FFFFFFFUL
+#define OSMGA_F32_SIGN   0x80000000UL
+
+int
+osmgaHW3DF32Finite(unsigned long p)
+{
+    return ((p & OSMGA_F32_EXP) != OSMGA_F32_EXP) ? 1 : 0;
+}
+
+/*
+ * Strictly positive and normal.  Denormals are excluded deliberately: a
+ * denominator of 1e-40 is not a coordinate anyone meant to send, and
+ * admitting it would put the containment argument -- which needs every
+ * vertex weight strictly positive -- on a value the engine may flush to
+ * nought.
+ */
+int
+osmgaHW3DF32PosNormal(unsigned long p)
+{
+    unsigned long exp = p & OSMGA_F32_EXP;
+
+    if ((p & OSMGA_F32_SIGN) != 0UL)
+        return 0;
+    return (exp != 0UL && exp != OSMGA_F32_EXP) ? 1 : 0;
+}
+
+/*
+ * 0 <= v <= 1.  Negative zero passes, because it IS zero and a client that
+ * computed it did nothing wrong; no other negative does.
+ */
+int
+osmgaHW3DF32InUnit(unsigned long p)
+{
+    if (!osmgaHW3DF32Finite(p))
+        return 0;
+    if ((p & OSMGA_F32_SIGN) != 0UL)
+        return ((p & OSMGA_F32_MAG) == 0UL) ? 1 : 0;
+    return (p <= 0x3F800000UL) ? 1 : 0;
+}
+
+/* |v| <= |limit|, sign irrelevant.  `limit` is a bit pattern, so the
+ * caller states the bound as a float and not as a number this code has to
+ * convert. */
+int
+osmgaHW3DF32AbsAtMost(unsigned long p, unsigned long limit)
+{
+    if (!osmgaHW3DF32Finite(p))
+        return 0;
+    return ((p & OSMGA_F32_MAG) <= (limit & OSMGA_F32_MAG)) ? 1 : 0;
+}
+
+/* lo <= v <= hi, for a lo and hi that are not negative.  Used for rhw,
+ * whose admitted band is the Q range converted: 0.125 to 128.0. */
+int
+osmgaHW3DF32Between(unsigned long p, unsigned long lo, unsigned long hi)
+{
+    if (!osmgaHW3DF32Finite(p))
+        return 0;
+    if ((p & OSMGA_F32_SIGN) != 0UL)
+        return 0;
+    return (p >= lo && p <= hi) ? 1 : 0;
+}
