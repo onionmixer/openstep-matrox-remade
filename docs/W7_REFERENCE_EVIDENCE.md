@@ -436,8 +436,29 @@ mga_dma.c:657   drm_addmap(dev, 0, primary_size, _DRM_CONSISTENT, ...)
 > **그러므로 §6 은 최적화 후보가 아니라 질문이다**: OPENSTEP 에 코히런트
 > 할당자가 있는가, 혹은 `IOMallocLow` 메모리가 이미 코히런트인가.
 > S4a 가 VRAM 매핑에 대해 "stale-cache 게이트 COHERENT" 를 실측했지만
-> **그것은 VRAM 이지 conventional memory 가 아니다.** 답이 "코히런트다" 이면
-> 되읽기를 배리어로 바꿀 수 있고, 아니면 되읽기가 옳다.
+> **그것은 VRAM 이지 conventional memory 가 아니다.**
+
+### 6.2 OS 쪽 참조를 찾아봤다 — **아무 말도 없다**
+
+`IOMallocLow` 는 **공개 헤더 어디에도 문서화돼 있지 않다.** 유일한 선언은
+`driverkit/i386/kernelDriver.h` 의 세 줄이다:
+
+```c
+/* Memory allocated by IOMallocLow() must be freed by IOFreeLow(). */
+void *IOMallocLow(int size);
+void  IOFreeLow(void *p, int size);
+```
+
+**캐시 일관성도, DMA 적합성도, write-combining 도 한 마디 없다.** 그리고
+`/NextDeveloper/Headers/driverkit/` 전체에 **캐시 flush/invalidate 프리미티브가
+하나도 없다.**
+
+**그러므로 §6 의 답은 "참조가 침묵한다" 다.** DRM 은 `_DRM_CONSISTENT` 로
+할당자에게서 가시성을 받고, OPENSTEP 은 그에 해당하는 것을 **주지도 않고
+문서화하지도 않는다.**
+
+> **우리 체크섬 되읽기는 그 공백을 메우는 것이다.** 없앨 수 있는지는
+> 참조로는 못 정하고 실측이 필요하다 — 다른 다섯 항목과 같은 자리에 선다.
 
 ---
 
@@ -451,7 +472,7 @@ mga_dma.c:657   drm_addmap(dev, 0, primary_size, _DRM_CONSISTENT, ...)
 | 3. WARP 정지 | 파이프 변경의 **정상 경로**이고 쓰기 자체는 우리 카드에서 PASS. **비동기 MMIO 중단으로는 미검증**, 패딩이 무엇을 막는지도 미상 |
 | 4. WARP 봉쇄 | 참조가 정상 3D 경로에 래스터 클립을 **프로그래밍한다**. 의도의 증거이지 **잘못된 WARP 입력·마이크로코드에 대한 봉쇄 증명이 아니다** |
 | 5. 수명·모드·클라이언트 | **참조에 결함이 여럿.** 베끼지 말 것 (전수 아님) |
-| 6. 가시성 장벽 | 참조는 **코히런트 할당**(`_DRM_CONSISTENT`)으로 가시성을 얻고 배리어는 순서용. 우리 질문은 "OPENSTEP 에 그런 할당자가 있는가" |
+| 6. 가시성 장벽 | 참조는 **코히런트 할당**(`_DRM_CONSISTENT`)으로 가시성을 얻고 배리어는 순서용. **OPENSTEP 은 `IOMallocLow` 에 대해 아무것도 문서화하지 않고 캐시 프리미티브도 없다**(§6.2). 우리 되읽기는 그 공백을 메우는 것 |
 
 ### 7.1 이 문서를 근거로 해서는 안 되는 일
 
@@ -465,7 +486,25 @@ mga_dma.c:657   drm_addmap(dev, 0, primary_size, _DRM_CONSISTENT, ...)
 제목이 "레지스터 레이아웃이 답을 준다" 였고, 그대로 두었으면 정확히 그 함정을
 다시 팠을 것이다.
 
-### 7.2 착수 판정
+### 7.2 참조 증거는 여기서 끝난다
+
+여섯 항목 전부, **구할 수 있는 참조를 다 썼다**:
+
+| 참조 | 썼는가 |
+| --- | --- |
+| Linux DRM (`mga-drm`) | ✅ |
+| XFree86 4.1.0 DRI (`mga-dri-xf410`) | ✅ |
+| xf86-video-mga 2.0.0 DDX | ✅ |
+| 생성 레지스터 헤더 둘 | ✅ (같은 출처임을 확인) |
+| **출하 Windows 드라이버 `G400DD32.dll`** | ✅ (§1.5, §3.5, §4.1) |
+| OPENSTEP DriverKit 헤더 | ✅ (§6.2 — 침묵) |
+| 우리 자신의 실기 기록 (D1-2, D2-0a, D3-2, D3-4, A0) | ✅ |
+| **Matrox 매뉴얼** | ❌ **없다** |
+
+**남은 여섯 개의 간극은 전부 같은 성격이다: 매뉴얼이 없고, 메우려면 실기
+실험이 필요하며, 그 실험들은 §7 금지 아래에 있다.** 더 파낼 참조가 없다.
+
+### 7.3 착수 판정
 
 **바뀌지 않는다.** 안전 blocker 는 여전히 하드웨어 실증을 요구하고, 이 문서는
 **무엇을 실증해야 하는지를 좁혔을 뿐**이다.
