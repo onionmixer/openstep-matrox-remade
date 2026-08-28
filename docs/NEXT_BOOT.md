@@ -18,7 +18,7 @@ git HEAD 와 일치 (빌드·설치를 커밋 뒤에 다시 했다)
 2  bash tools/nx.sh "wc -l /private/adm/messages"      <- 시작 줄수를 적어 둔다
 3  cc -O -o /me/wq /ndrv2/openstep-matrox-remade/test/openstep-mga-warpqual-probe.m \
         -lDriver -ObjC
-4  /me/wq
+4  /me/wq 3          <- 밴드 선택: 없으면 전부, 2 = T0..T6, 3 = T7 이후
 5  awk 'NR>N' /private/adm/messages           <- N 은 2 에서 적은 값
 ```
 
@@ -115,3 +115,21 @@ the driver must NOT be unloaded while this is enabled (mappings outlive it)
 재부팅뿐이다.**
 
 `kl_util` 로 시도하지 말 것.
+
+
+## 9. 부팅 실행은 이제 없다 (2026-08-29)
+
+`enterLinearMode` 의 자동 호출을 **주석 처리했다**(`:6997`).  전에는 부팅에서
+한 번, 트리거에서 한 번, **한 부팅에 두 번** 돌았고 각 50 줄이라 syslogd 가
+한 버스트를 통째로 버렸다 — 2026-08-29 실행에서 T0~T7b 가 그렇게 사라졌다.
+
+그리고 **밴드 선택자**가 생겼다.  수리된 하네스는 80 줄쯤 되는데 50 도 이미
+넘쳤다:
+
+```
+/me/wq      전부
+/me/wq 2    T0..T6   (이미 답이 나온 것들)
+/me/wq 3    T7 이후  (수리 중인 것들)
+```
+
+T0 는 언제나 돈다 — 나머지 전부의 관문이기 때문이다.

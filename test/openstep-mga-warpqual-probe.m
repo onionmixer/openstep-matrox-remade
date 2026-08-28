@@ -25,14 +25,27 @@
 
 #define WARPQUAL_PARAM "OSMGAWarpQual"
 
+/*
+ * The optional argument selects which bands run, because the log is the
+ * scarce resource: syslogd drops bursts and dropped T0 through T7b of the
+ * 2026-08-29 run.
+ *
+ *   (none) or 1   every band
+ *   2             T0..T6, the settled ones
+ *   3             T7 onward, the ones under repair
+ */
 int
-main(void)
+main(int argc, char **argv)
 {
     IODeviceMaster *master;
     IOObjectNumber objNum = 0;
     IOString kind;
     unsigned one = 1;
     IOReturn r;
+
+    if (argc > 1 && argv[1] != 0 &&
+        (argv[1][0] == '2' || argv[1][0] == '3') && argv[1][1] == '\0')
+        one = (unsigned)(argv[1][0] - '0');
 
     master = [IODeviceMaster new];
     if (master == nil) {
@@ -49,7 +62,7 @@ main(void)
 
     r = [master setIntValues:&one forParameter:WARPQUAL_PARAM
                 objectNumber:objNum count:1];
-    printf("WARPQUAL result=%d %s\n", (int)r,
+    printf("WARPQUAL bands=%u result=%d %s\n", one, (int)r,
            (r == IO_R_SUCCESS) ? "ran -- read /usr/adm/messages"
                                : "refused (flag off, or driver too old)");
     return (r == IO_R_SUCCESS) ? 0 : 1;
