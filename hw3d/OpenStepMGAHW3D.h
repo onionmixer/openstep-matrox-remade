@@ -1059,10 +1059,13 @@ typedef int OSMGAHW3DRunSizeCheck[(sizeof(OSMGAHW3DRun) == 16) ? 1 : -1];
  * copying is that the card's addresses do not.
  *
  * The per-run figure is the state list the driver builds -- pipe,
- * context, texture, global, clip and the trap -- at twenty-three blocks
- * of twenty bytes, counted from the builder with a block to spare.
+ * context, texture, global, clip and the trap.  Counted from the builder
+ * it is twenty-two blocks of twenty bytes, so 440; the allowance is 512
+ * because a list that outgrew its slot would be a refusal at submission
+ * time, and three spare blocks cost 1,152 bytes of a region with six
+ * thousand to spare.
  */
-#define OSMGA_HW3D_WARP_STATE_BYTES  460UL
+#define OSMGA_HW3D_WARP_STATE_BYTES  512UL
 #define OSMGA_HW3D_WARP_VTX_OFF \
     (OSMGA_HW3D_MAX_RUN * OSMGA_HW3D_WARP_STATE_BYTES)
 #define OSMGA_HW3D_WARP_VTX_BYTES \
