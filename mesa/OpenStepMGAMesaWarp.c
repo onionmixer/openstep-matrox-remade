@@ -97,3 +97,73 @@ OSMGAMesaBuildWarpVertex(const OSMGAMesaVertex *v,
 
     return 0;
 }
+
+void
+OSMGAMesaWarpReset(OSMGAMesaWarpBuilder *w, OSMGAHW3DWarpBatch *b)
+{
+    if (w == 0)
+        return;
+    w->b    = b;
+    w->open = 0;
+    if (b == 0)
+        return;
+    b->magic    = OSMGA_HW3D_MAGIC;
+    b->version  = OSMGA_HW3D_VERSION_WARP;
+    b->triCount = 0UL;            /* the other payload is not in use */
+    b->runCount = 0U;
+    b->vtxCount = 0U;
+}
+
+int
+OSMGAMesaWarpAdd(OSMGAMesaWarpBuilder *w,
+                 unsigned long dwgctl, unsigned long alphactrl,
+                 const OSMGAHW3DVertex *v0,
+                 const OSMGAHW3DVertex *v1,
+                 const OSMGAHW3DVertex *v2)
+{
+    OSMGAHW3DWarpBatch *b;
+    OSMGAHW3DRun *run;
+    unsigned long n;
+    int needRun;
+
+    if (w == 0 || w->b == 0 || v0 == 0 || v1 == 0 || v2 == 0)
+        return OSMGA_MESA_WARP_FULL;
+    b = w->b;
+
+    n = (unsigned long)b->vtxCount;
+    if (n + 3UL > OSMGA_HW3D_MAX_VTX)
+        return OSMGA_MESA_WARP_FULL;
+
+    /*
+     * A new run whenever the state moves -- and the state is exactly the
+     * two words, because everything else a submission shares lives in
+     * OSMGAHW3DState, which is singular for the whole batch.
+     */
+    needRun = 1;
+    if (w->open != 0) {
+        run = &b->run[(unsigned long)b->runCount - 1UL];
+        if ((unsigned long)run->dwgctl == dwgctl &&
+            (unsigned long)run->alphactrl == alphactrl)
+            needRun = 0;
+    }
+    if (needRun) {
+        if ((unsigned long)b->runCount >= OSMGA_HW3D_MAX_RUN)
+            return OSMGA_MESA_WARP_FULL;
+        run = &b->run[(unsigned long)b->runCount];
+        run->dwgctl    = (osmga_u32)dwgctl;
+        run->alphactrl = (osmga_u32)alphactrl;
+        run->first     = (osmga_u32)n;   /* contiguous with the last run */
+        run->count     = 0U;
+        b->runCount    = (osmga_u32)((unsigned long)b->runCount + 1UL);
+        w->open        = 1;
+    } else {
+        run = &b->run[(unsigned long)b->runCount - 1UL];
+    }
+
+    b->vtx[n + 0UL] = *v0;
+    b->vtx[n + 1UL] = *v1;
+    b->vtx[n + 2UL] = *v2;
+    b->vtxCount = (osmga_u32)(n + 3UL);
+    run->count  = (osmga_u32)((unsigned long)run->count + 3UL);
+    return 0;
+}

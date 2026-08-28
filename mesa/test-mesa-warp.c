@@ -192,16 +192,127 @@ refusals(void)
           (unsigned long)out.tu0, 0UL);
 }
 
+/*
+ * The assembler, judged by the kernel's own validator.
+ *
+ * That is the strongest check available without hardware: the two halves
+ * were written against the same invariant -- runs partition the vertices,
+ * contiguous, in order, covering every one -- and if either drifts, a
+ * batch the assembler built stops being one the kernel accepts.
+ */
+static OSMGAHW3DWarpBatch  wb;
+static OSMGAHW3DLimits     lim;
+static OSMGAMesaWarpBuilder wbuild;
+
+static void
+accepted(const char *what)
+{
+    unsigned long badRun = 0UL;
+    int v;
+
+    lim.batchBytes = OSMGA_HW3D_BATCH_BYTES;
+    v = osmgaHW3DValidateWarp(&wb, &lim, &badRun);
+    if (v != OSMGA_HW3D_OK) {
+        printf("FAIL: %s -- the kernel refused an assembled batch, "
+               "verdict %d run %lu\n", what, v, badRun);
+        failures++;
+    }
+}
+
+static void
+assemble(void)
+{
+    OSMGAHW3DVertex v;
+    unsigned long i;
+    int r;
+
+    fill(1);
+    if (OSMGAMesaBuildWarpVertex(&mv, &mt, &v) != 0) {
+        printf("FAIL: the assembler's own vertex was refused\n");
+        failures++;
+        return;
+    }
+
+    /* One state, many triangles: one run. */
+    OSMGAMesaWarpReset(&wbuild, &wb);
+    for (i = 0UL; i < 40UL; i++) {
+        r = OSMGAMesaWarpAdd(&wbuild, 0x000c4074UL, 0x00000001UL, &v, &v, &v);
+        check(r == 0, "a triangle is taken", (unsigned long)r, 0UL);
+    }
+    check((unsigned long)wb.runCount == 1UL,
+          "forty triangles under one state are one run",
+          (unsigned long)wb.runCount, 1UL);
+    check((unsigned long)wb.vtxCount == 120UL, "and 120 vertices",
+          (unsigned long)wb.vtxCount, 120UL);
+    accepted("one run");
+
+    /* Alternating state: a run each, and the runs still partition. */
+    OSMGAMesaWarpReset(&wbuild, &wb);
+    for (i = 0UL; i < OSMGA_HW3D_MAX_RUN; i++) {
+        r = OSMGAMesaWarpAdd(&wbuild, 0x000c4074UL + (i & 1UL),
+                             0x00000001UL, &v, &v, &v);
+        check(r == 0, "an alternating triangle is taken",
+              (unsigned long)r, 0UL);
+    }
+    check((unsigned long)wb.runCount == OSMGA_HW3D_MAX_RUN,
+          "alternating states make a run each",
+          (unsigned long)wb.runCount, OSMGA_HW3D_MAX_RUN);
+    accepted("alternating runs");
+
+    /* One more state change has nowhere to go, and the batch is unharmed. */
+    r = OSMGAMesaWarpAdd(&wbuild, 0x000c4099UL, 0x00000001UL, &v, &v, &v);
+    check(r == OSMGA_MESA_WARP_FULL, "a run past the maximum is refused",
+          (unsigned long)r, (unsigned long)OSMGA_MESA_WARP_FULL);
+    check((unsigned long)wb.runCount == OSMGA_HW3D_MAX_RUN,
+          "and the refusal changed nothing",
+          (unsigned long)wb.runCount, OSMGA_HW3D_MAX_RUN);
+    accepted("after a refused run");
+
+    /* But the SAME state still fits, because it needs no new run. */
+    r = OSMGAMesaWarpAdd(&wbuild, 0x000c4074UL + 1UL, 0x00000001UL,
+                         &v, &v, &v);
+    check(r == 0, "the open run still takes triangles",
+          (unsigned long)r, 0UL);
+    accepted("after extending the open run");
+
+    /* Fill to the vertex maximum. */
+    OSMGAMesaWarpReset(&wbuild, &wb);
+    for (i = 0UL; i < OSMGA_HW3D_MAX_VTX / 3UL; i++) {
+        r = OSMGAMesaWarpAdd(&wbuild, 0x000c4074UL, 0x00000001UL,
+                             &v, &v, &v);
+        check(r == 0, "a triangle below the vertex maximum is taken",
+              (unsigned long)r, 0UL);
+    }
+    check((unsigned long)wb.vtxCount == OSMGA_HW3D_MAX_VTX,
+          "the batch fills to its vertex maximum",
+          (unsigned long)wb.vtxCount, OSMGA_HW3D_MAX_VTX);
+    accepted("a full batch");
+    r = OSMGAMesaWarpAdd(&wbuild, 0x000c4074UL, 0x00000001UL, &v, &v, &v);
+    check(r == OSMGA_MESA_WARP_FULL, "a full batch takes no more",
+          (unsigned long)r, (unsigned long)OSMGA_MESA_WARP_FULL);
+    accepted("after a refused triangle");
+
+    /* An empty batch is not a valid submission, and the assembler does not
+     * pretend otherwise -- the caller must not send one. */
+    OSMGAMesaWarpReset(&wbuild, &wb);
+    lim.batchBytes = OSMGA_HW3D_BATCH_BYTES;
+    check(osmgaHW3DValidateWarp(&wb, &lim, (unsigned long *)0) !=
+              OSMGA_HW3D_OK,
+          "an empty batch is not a submission", 0UL, 0UL);
+}
+
 int
 main(void)
 {
     table();
     depthRange();
     refusals();
+    assemble();
 
     if (failures == 0)
         printf("test-mesa-warp: the vertex conversion matches an independent "
-               "table and all 65536 depth codes round trip (0 failing)\n");
+               "table, all 65536 depth codes round trip, and every assembled "
+               "batch is accepted by the kernel validator (0 failing)\n");
     else
         printf("test-mesa-warp: %d failing\n", failures);
     return failures != 0;

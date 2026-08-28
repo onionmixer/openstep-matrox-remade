@@ -47,3 +47,40 @@ int OSMGAMesaBuildWarpVertex(const OSMGAMesaVertex *v,
 #define OSMGA_MESA_WARP_ZSCALE  16777216.0
 
 #endif
+
+/*
+ * ---- assembling a batch ----
+ *
+ * The trapezoid contract carries dwgctl and alphactrl per triangle.  WARP
+ * cannot: everything in one submission shares its state, so a batch is cut
+ * into RUNS and a fresh state list goes out at each boundary.
+ *
+ * The assembler's whole job is to keep the invariant the kernel validator
+ * insists on -- that the runs PARTITION the vertices, contiguous and in
+ * order, covering every one -- so that a batch this builds is a batch the
+ * kernel accepts.  A gap would leave vertices the client believes were
+ * drawn; an overlap would draw a primitive twice under two states.
+ *
+ * It never refuses a triangle for being wrong; the vertices were already
+ * judged when they were built.  It refuses only for being FULL, and the
+ * caller's answer to that is to submit what it has and start another.
+ */
+#define OSMGA_MESA_WARP_FULL  (-2)
+
+typedef struct {
+    OSMGAHW3DWarpBatch *b;
+    int                 open;      /* a run is being appended to */
+} OSMGAMesaWarpBuilder;
+
+void OSMGAMesaWarpReset(OSMGAMesaWarpBuilder *w, OSMGAHW3DWarpBatch *b);
+
+/*
+ * Append one triangle under (dwgctl, alphactrl).  Returns 0, or
+ * OSMGA_MESA_WARP_FULL when this batch cannot take it -- which is not an
+ * error and does not disturb what the batch already holds.
+ */
+int OSMGAMesaWarpAdd(OSMGAMesaWarpBuilder *w,
+                     unsigned long dwgctl, unsigned long alphactrl,
+                     const OSMGAHW3DVertex *v0,
+                     const OSMGAHW3DVertex *v1,
+                     const OSMGAHW3DVertex *v2);
