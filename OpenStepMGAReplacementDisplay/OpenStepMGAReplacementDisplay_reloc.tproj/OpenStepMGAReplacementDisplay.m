@@ -6629,27 +6629,31 @@ refuse2:
         {
             unsigned long cx0 = 0UL, cx1 = dstW3 - 1UL;
             unsigned long cy0 = 0UL, cy1 = dstH3 - 1UL;
+            unsigned long bx0 = 0UL, bx1 = 0UL, by0 = 0UL, by1 = 0UL;
             int empty = 0;
 
-            if (osmgaHW3DSnapshot.state.scissorOn != 0UL) {
-                double lx = (double)osmgaHW3DSnapshot.state.scissorX;
-                double ly = (double)osmgaHW3DSnapshot.state.scissorY;
-                double hx = lx + (double)osmgaHW3DSnapshot.state.scissorW;
-                double hy = ly + (double)osmgaHW3DSnapshot.state.scissorH;
-
-                /* clamped in double, so a wild box cannot wrap on the way in */
-                if (lx < 0.0) lx = 0.0;
-                if (ly < 0.0) ly = 0.0;
-                if (hx > (double)dstW3) hx = (double)dstW3;
-                if (hy > (double)dstH3) hy = (double)dstH3;
-                if (hx <= lx || hy <= ly)
-                    empty = 1;
-                else {
-                    cx0 = (unsigned long)lx;
-                    cx1 = (unsigned long)hx - 1UL;
-                    cy0 = (unsigned long)ly;
-                    cy1 = (unsigned long)hy - 1UL;
-                }
+            /*
+             * This was four `double` locals, and they were the ONLY floating
+             * point in the driver -- against the rule this same file states
+             * where the vertex builder is: kernel code must not touch the
+             * FPU.  osmgaHW3DClipBox does it in integers, and the host suite
+             * proves the two agree on 67,600 boxes rather than arguing it.
+             *
+             * Writing that proof found a real defect on the way: clamping
+             * the width to the destination BEFORE offsetting is wrong when
+             * the low edge is negative, and it refused 4,675 boxes the
+             * double accepted.
+             */
+            if (!osmgaHW3DClipBox(osmgaHW3DSnapshot.state.scissorOn,
+                                  osmgaHW3DSnapshot.state.scissorX,
+                                  osmgaHW3DSnapshot.state.scissorY,
+                                  osmgaHW3DSnapshot.state.scissorW,
+                                  osmgaHW3DSnapshot.state.scissorH,
+                                  dstW3, dstH3, &bx0, &bx1, &by0, &by1)) {
+                empty = 1;
+            } else {
+                cx0 = bx0; cx1 = bx1 - 1UL;      /* the box is half open */
+                cy0 = by0; cy1 = by1 - 1UL;
             }
             if (empty) {
                 simple_lock(&stormLock);

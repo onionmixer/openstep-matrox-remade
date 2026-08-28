@@ -1541,3 +1541,75 @@ osmgaHW3DTexClampAxes(const OSMGAHW3DState *st)
         axes &= ~OSMGA_HW3D_CLAMP_V;
     return axes;
 }
+
+/*
+ * One axis of the clip box.  Written once and used twice because the two
+ * axes are the same problem and a second copy is a second place to get the
+ * negative side wrong.
+ *
+ * The order of the guards is what keeps it inside a long:
+ *
+ *   - a width of nought is empty before anything is added;
+ *   - the width is clamped to the destination FIRST, so every later sum is
+ *     bounded by twice the destination;
+ *   - a low edge at or past the destination is empty before it is used;
+ *   - a low edge at or before -dstSize is empty before it is negated,
+ *     which is what keeps LONG_MIN from overflowing on the way.
+ */
+static int
+osmgaHW3DClipAxis(long lo, unsigned long size, unsigned long dst,
+                  unsigned long *o0, unsigned long *o1)
+{
+    unsigned long hi;
+
+    if (size == 0UL || dst == 0UL)
+        return 0;
+    /* Starts at or past the end. */
+    if (lo >= (long)dst)
+        return 0;
+
+    if (lo < 0L) {
+        /*
+         * |lo|, computed so that LONG_MIN cannot overflow on the way:
+         * negating lo directly is undefined there, negating lo+1 is not.
+         */
+        unsigned long neg = (unsigned long)(-(lo + 1L)) + 1UL;
+
+        if (size <= neg)
+            return 0;               /* ends at or before nought */
+        *o0 = 0UL;
+        hi  = size - neg;           /* only the part above nought */
+    } else {
+        unsigned long room = dst - (unsigned long)lo;   /* lo < dst, so > 0 */
+
+        *o0 = (unsigned long)lo;
+        hi  = (size >= room) ? dst : ((unsigned long)lo + size);
+    }
+    if (hi > dst)
+        hi = dst;
+    *o1 = hi;
+    return (hi > *o0) ? 1 : 0;
+}
+
+int
+osmgaHW3DClipBox(unsigned long scissorOn,
+                 long sx, long sy, unsigned long sw, unsigned long sh,
+                 unsigned long dstW, unsigned long dstH,
+                 unsigned long *x0, unsigned long *x1,
+                 unsigned long *y0, unsigned long *y1)
+{
+    if (x0 == 0 || x1 == 0 || y0 == 0 || y1 == 0)
+        return 0;
+    if (dstW == 0UL || dstH == 0UL)
+        return 0;
+    if (scissorOn == 0UL) {
+        *x0 = 0UL; *x1 = dstW;
+        *y0 = 0UL; *y1 = dstH;
+        return 1;
+    }
+    if (!osmgaHW3DClipAxis(sx, sw, dstW, x0, x1))
+        return 0;
+    if (!osmgaHW3DClipAxis(sy, sh, dstH, y0, y1))
+        return 0;
+    return 1;
+}

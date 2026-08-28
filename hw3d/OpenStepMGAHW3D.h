@@ -1481,3 +1481,25 @@ unsigned long osmgaHW3DTexClampAxes(const OSMGAHW3DState *st);
 /* A power of two, and not nought.  It used to be a static in the driver;
  * the wrap policy needs it and the policy lives here now. */
 int osmgaHW3DIsPow2(unsigned long n);
+
+/*
+ * The clip box: the destination window narrowed by whatever scissor the
+ * client asked for, as an INTERSECTION -- so a client can only ever reduce
+ * what it could already reach, and containment does not rest on these four
+ * numbers being sensible.
+ *
+ * Integer only.  The driver computed this in `double` (four locals in the
+ * submit path), which contradicts the rule the same file states at :8367,
+ * "Kernel code must not touch the FPU".  It was the only floating point in
+ * the driver.  The replacement is proved equivalent to it on the host,
+ * where doubles are allowed, across the whole input space that matters.
+ *
+ * Returns 1 with the half-open box in *x0,*x1,*y0,*y1 (x1 and y1
+ * EXCLUSIVE), or 0 when the intersection is empty and nothing should be
+ * drawn at all.
+ */
+int osmgaHW3DClipBox(unsigned long scissorOn,
+                     long sx, long sy, unsigned long sw, unsigned long sh,
+                     unsigned long dstW, unsigned long dstH,
+                     unsigned long *x0, unsigned long *x1,
+                     unsigned long *y0, unsigned long *y1);
