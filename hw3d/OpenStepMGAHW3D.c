@@ -1260,3 +1260,31 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
         *badTri = 0UL;
     return OSMGA_HW3D_OK;
 }
+
+/*
+ * TEXWIDTH/TEXHEIGHT for WARP.  NOT the trapezoid path's encoding.
+ *
+ * osmgaTextureSetup builds those words as ((dim-1)<<18) | ((8-log2)<<9) |
+ * log2, which is hardware-verified -- for the CPU-fed coordinate matrix.
+ * Mesa builds a different pair under a comment reading "warp texture
+ * registers" (mgatex.c:395):
+ *
+ *      ofs  = G200 ? 28 : 11
+ *      rfw  = (10 - log2 - 8) & 63          i.e. (2 - log2)
+ *      tw   = (log2 + ofs) | 0x40
+ *
+ * For an 8x8 texture that is rfw 63 against 5 and tw 14 against 3 -- both
+ * fields differ, so copying the trapezoid words across would have fed
+ * WARP nonsense.  Spec 3-228 gives the reason: tw and rfw depend on the
+ * fractional format of whatever produces the coordinate, and for WARP
+ * that is not the CPU.
+ */
+#define OSMGA_HW3D_WARP_TEX_OFS   11UL      /* G400/G450; the G200 value is 28 */
+
+unsigned long
+osmgaHW3DWarpTexDim(unsigned long dim, unsigned long log2dim)
+{
+    return ((dim - 1UL) << 18)
+         | ((((10UL - log2dim - 8UL)) & 63UL) << 9)
+         | ((((log2dim + OSMGA_HW3D_WARP_TEX_OFS) | 0x40UL)) & 63UL);
+}

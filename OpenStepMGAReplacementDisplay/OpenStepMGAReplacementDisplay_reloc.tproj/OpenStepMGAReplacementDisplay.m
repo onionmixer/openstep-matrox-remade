@@ -8357,33 +8357,6 @@ osmgaF32FromUInt(unsigned long n)
     return ((e + 127UL) << 23) | ((n << (23UL - e)) & 0x7FFFFFUL);
 }
 
-/*
- * TEXWIDTH/TEXHEIGHT for WARP.  NOT the trapezoid path's encoding.
- *
- * osmgaTextureSetup builds those words as ((dim-1)<<18) | ((8-log2)<<9) |
- * log2, which is hardware-verified -- for the CPU-fed coordinate matrix.
- * Mesa builds a different pair under a comment reading "warp texture
- * registers" (mgatex.c:395):
- *
- *      ofs  = G200 ? 28 : 11
- *      rfw  = (10 - log2 - 8) & 63          i.e. (2 - log2)
- *      tw   = (log2 + ofs) | 0x40
- *
- * For an 8x8 texture that is rfw 63 against 5 and tw 14 against 3 -- both
- * fields differ, so copying the trapezoid words across would have fed
- * WARP nonsense.  Spec 3-228 gives the reason: tw and rfw depend on the
- * fractional format of whatever produces the coordinate, and for WARP
- * that is not the CPU.
- */
-#define OSMGA_M3_WARP_TEX_OFS   11UL      /* G400/G450; the G200 value is 28 */
-
-static unsigned long
-osmgaM3WarpTexDim(unsigned long dim, unsigned long log2dim)
-{
-    return ((dim - 1UL) << 18)
-         | ((((10UL - log2dim - 8UL)) & 63UL) << 9)
-         | ((((log2dim + OSMGA_M3_WARP_TEX_OFS) | 0x40UL)) & 63UL);
-}
 
 /*
  * What a batch says about its texture.  `enable` zero keeps the all-zero
@@ -8439,7 +8412,7 @@ osmgaDmaBuildTriangleList(unsigned long *ring, unsigned long ringDwords,
 
     texctl2 = MGA_TEXCTL2_G400_MAGIC;
     if (tex != 0 && tex->enable != 0UL) {
-        texW = osmgaM3WarpTexDim(tex->dim, tex->log2dim);
+        texW = osmgaHW3DWarpTexDim(tex->dim, tex->log2dim);
         texH = texW;                       /* square in this harness */
         texorg = tex->org;
         /* NOPERSP is deliberately absent: the trapezoid path sets it

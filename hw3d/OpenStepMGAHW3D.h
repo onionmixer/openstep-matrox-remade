@@ -284,6 +284,14 @@ int osmgaHW3DAddressesDepth(unsigned long dwgctl);
 int osmgaHW3DAlphaCross(unsigned long ac);
 
 /*
+ * TEXWIDTH/TEXHEIGHT as WARP wants them, which is NOT how the trapezoid
+ * path wants them.  Portable arithmetic; the host tests link it, which is
+ * the point -- the two encodings differ in both variable fields and the
+ * difference is invisible to reading.
+ */
+unsigned long osmgaHW3DWarpTexDim(unsigned long dim, unsigned long log2dim);
+
+/*
  * Texture description.
  *
  * The client says what it means -- a format, a filter, a size -- and the
