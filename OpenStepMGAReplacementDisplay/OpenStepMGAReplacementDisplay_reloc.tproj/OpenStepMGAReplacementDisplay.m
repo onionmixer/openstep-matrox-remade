@@ -9447,6 +9447,46 @@ osmgaM3StateRun(vm_address_t base, unsigned long *ring,
 }
 
 /*
+ * T4's vertices: rhw and z chosen per vertex.
+ *
+ * The reference folds the texture's own q into rhw and divides the
+ * coordinates by it -- rhw = qw*tq, tu = s/tq, tv = t/tq (mgavb.c:69-83).
+ * The kernel never does that arithmetic: it takes bit patterns, because it
+ * cannot touch the FPU.  The caller supplies what the client would have
+ * computed, which is also how the production ABI will work.
+ *
+ * z is NOT divided by anything.  mgavb.c:73 leaves z alone while it
+ * rewrites rhw, tu and tv, and window z is already post-projection depth
+ * that must interpolate affinely in screen space.  Whether WARP agrees is
+ * the point of the band: with vertex depths 0.25, 0.5 and 0.75 an affine
+ * plane reads 0.5 at the centroid, and a perspective-divided one does not.
+ */
+static void
+osmgaM3BuildPerspTri(unsigned long *v, unsigned long row, unsigned long col,
+                     unsigned long leg, const unsigned long *rhw,
+                     const unsigned long *tu, const unsigned long *tv,
+                     const unsigned long *z, unsigned long colour)
+{
+    unsigned long i, p = 0UL;
+    unsigned long xs[3], ys[3];
+
+    xs[0] = col;        ys[0] = row;
+    xs[1] = col + leg;  ys[1] = row;
+    xs[2] = col;        ys[2] = row + leg;
+
+    for (i = 0UL; i < 3UL; i++) {
+        v[p++] = osmgaF32FromUInt(xs[i]);
+        v[p++] = osmgaF32FromUInt(ys[i]);
+        v[p++] = z[i];
+        v[p++] = rhw[i];
+        v[p++] = colour;
+        v[p++] = 0UL;
+        v[p++] = tu[i];
+        v[p++] = tv[i];
+    }
+}
+
+/*
  * The oracle's own draw, through the trapezoid registers by MMIO -- the
  * same engine, reached the way every earlier probe reaches it.  Its
  * parameters are NOT assumed correct: the caller checks this surface
