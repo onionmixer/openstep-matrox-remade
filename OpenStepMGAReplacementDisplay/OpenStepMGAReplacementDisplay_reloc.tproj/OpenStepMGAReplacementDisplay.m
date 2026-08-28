@@ -8793,7 +8793,16 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
     for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
         status = osmgaR32(base, MGA_ENGSTATUS);
         primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
-        if ((unsigned long)primAfter == listEnd &&
+        /*
+         * Mask the mode bits off before comparing.  primod<1:0> is a field
+         * OF PRIMADDRESS (spec 3-164), so a read returns the pointer with
+         * the mode still in it.  D2-2a's comparison gets away without the
+         * mask only because MGA_DMA_GENERAL is zero -- in run 2 primod is
+         * '11' and an unmasked compare against a dword-aligned end can
+         * never be true, which would time out every single time.  The
+         * masked form is right whichever way the field reads back.
+         */
+        if (((unsigned long)primAfter & ~3UL) == listEnd &&
             (status & MGA_STATUS_SOFTRAPEN) != 0UL &&
             (status & MGA_STATUS_ENDPRDMASTS) != 0UL)
             break;
@@ -8802,7 +8811,7 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
     primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
     devctrl1 = osmgaPciReadConfigLong(osmgaSelfBus, osmgaSelfDev,
                                       osmgaSelfFn, MGA_CFG_DEVCTRL);
-    IOLog("OpenStepMGA D2-2c/run1: PRIMADDRESS %08x (wanted %08lx), "
+    IOLog("OpenStepMGA D2-2c/run1: PRIMADDRESS %08x raw (wanted %08lx), "
           "STATUS %08lx, DEVCTRL %08lx, spins %lu\n",
           primAfter, listEnd, status, devctrl1, spins);
 
@@ -8842,7 +8851,7 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
     for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
         status = osmgaR32(base, MGA_ENGSTATUS);
         primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
-        if ((unsigned long)primAfter == vtxEnd &&
+        if (((unsigned long)primAfter & ~3UL) == vtxEnd &&
             (status & MGA_STATUS_ENDPRDMASTS) != 0UL &&
             (status & (MGA_STATUS_DWGENGSTS | MGA_STATUS_WBUSY |
                        MGA_STATUS_WBUSY1)) == 0UL)
@@ -8852,7 +8861,8 @@ osmgaD2cReport(volatile unsigned long *blk, unsigned long stride,
     primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
     devctrl1 = osmgaPciReadConfigLong(osmgaSelfBus, osmgaSelfDev,
                                       osmgaSelfFn, MGA_CFG_DEVCTRL);
-    IOLog("OpenStepMGA D2-2c/run2: PRIMADDRESS %08x (wanted %08lx), "
+    IOLog("OpenStepMGA D2-2c/run2: PRIMADDRESS %08x raw (wanted %08lx "
+          "| primod), "
           "STATUS %08lx, DEVCTRL %08lx, spins %lu\n",
           primAfter, vtxEnd, status, devctrl1, spins);
 
