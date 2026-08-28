@@ -281,8 +281,14 @@ DRM 의 PCI 경로가 2 차 버퍼를 `drm_addbufs_pci` 로 **시스템 메모�
 
 **새로 져야 하는 것:**
 
-- **2 차 DMA 완료 판정.** 지금 `MGA_DMA_DONE_MASK` 는
-  `SOFTRAPEN | DWGENGSTS | ENDPRDMASTS` 로 **1 차 DMA 만** 본다(`:275`).
+- **2 차 DMA 완료 판정.** ~~지금 `MGA_DMA_DONE_MASK` 는 1 차만 본다~~ →
+  **2026-08-28 해소.** 사양서 4-13: *"Use of the primary DMA channel is
+  complete when the primary, **secondary** and setup DMA transfers are
+  finished."* **지금 예측이 이미 2 차를 덮는다**(W9 §1.6). 아래 문단은
+  사양서를 찾기 전의 판단이므로 남겨 두되, 결론은 뒤집혔다.
+
+  ~~지금 `MGA_DMA_DONE_MASK` 는
+  `SOFTRAPEN | DWGENGSTS | ENDPRDMASTS` 로 **1 차 DMA 만** 본다(`:275`).~~
   `SECADDRESS`/`SECEND` 는 소스 전체에서 `#define` 둘과 인코더의 거부 한 줄,
   **총 세 곳에만** 나오고 완료 확인에는 없다. 1 차가 soft trap 에 닿아 "끝났다"
   고 판정하는 동안 2 차가 아직 메모리를 읽고 있을 수 있다.
@@ -330,7 +336,7 @@ neither"*(`:5834`). `stormBlitFailed = YES` 는 커널이 더 일을 넘기지 �
 > | **시저 + 계측을 같은 실행에** | `REMAINING_WORK.md` §3-62 (`:4118`) | 하드 프리즈. 7 회 관측 |
 > | 제출마다 `gettimeofday` | 같은 곳, `:4019` 의 `scissor 120 i1` | 위와 같은 조합의 한쪽 |
 > | 이상 징후 후 **재시도** | §3-62 판정 | — |
-> | `SECADDRESS` 를 회수 절차 없이 쓰기 | 아래 마지막 문단, 그리고 `W6_SECONDARY_DMA_SAFETY.md` | 회수 불가. **W6 2 판이 이 금지를 풀려다 실패했다 — 유지된다** |
+> | `SECADDRESS` 를 회수 절차 없이 쓰기 | 아래 마지막 문단 · `W6_SECONDARY_DMA_SAFETY.md` · **`W9_G400_SPEC_FINDINGS.md`** | **재검토 대상 (2026-08-28).** 금지의 전제("회수 수단이 없다")가 사양서로 **무너졌다** — abort 시 `RST.softreset` 이 문서화돼 있고 비디오 회로를 건드리지 않는다. **다만 아직 푼 것이 아니다**: 매뉴얼은 하드웨어 설계를 말하지 시험을 대신하지 않는다. W9 §10 참조 |
 >
 > **시저 단독은 안전하고 계측 단독도 안전하다. 둘이 만나야 언다.** 그래서
 > 코드나 구현을 아무리 읽어도 이 금지는 안 보인다 — 문서에만 있다.

@@ -4,6 +4,15 @@
 **설계 자체가 자기 질문에 답할 수 없다.** codex 교차검토가 그것을 지적했고
 검증한 결과 맞다.
 
+> **2026-08-28 추가: 이 시험은 철회된 데 더해 이제 불필요하다.**
+> G400 사양서가 Q1 에 직접 답한다 — *"Writing to this field will start the
+> secondary DMA transfers (…) The SECEND register must always be written to
+> after SECADDRESS."* `docs/W9_G400_SPEC_FINDINGS.md` §1.
+>
+> 아래 철회 사유 셋 중 **(3) GENERAL 이 전례 없다** 는 것도 약해진다 —
+> 매뉴얼이 *"any Pseudo-DMA mode can actually be used for either case"* 라고
+> 적는다. **(1)과 (2)는 그대로 유효하다.**
+
 ## 철회 사유 — 셋, 그리고 첫째만으로 충분하다
 
 ### (1) 이 시험은 Q1 에 답할 수 없다 — 논리 결함
