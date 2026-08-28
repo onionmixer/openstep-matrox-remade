@@ -258,3 +258,58 @@ T6  펜스 -> suspend -> quiesce -> 사다리꼴 -> 전체 재발행 -> 재시�
 4. T3 의 8×8 주소 부호화 텍셀 설계가 fetch 주소를 실제로 드러내나.
 5. T5 의 가드 텍셀 배치(앞·뒤·행 패딩)가 bilinear footprint 를 잡나.
 6. 빠진 것.
+
+---
+
+## 12. codex 판정 (2026-08-28) — **NO-GO, 그리고 치명적 누락 하나**
+
+| codex 주장 | 검증 | 결과 |
+| --- | --- | --- |
+| **WARP 는 `TEXWIDTH/TEXHEIGHT` 인코딩이 다르다** | `mgatex.c:395` 가 문자 그대로 `/* warp texture registers */` 라 적고 `ofs = G200 ? 28 : 11`, `rfw = (10 − s2 − 8) & 63`, `tw = (s2 + ofs) \| 0x40` 을 만든다. python 대조: 8×8 에서 `rfw` 5 vs **63**, `tw` 3 vs **14** — **두 필드가 다 다르다** | ✅**채택 — 치명적.** 사다리꼴 워드를 복사했으면 텍스처가 쓰레기로 나왔다 |
+| `WR54/WR62` 는 인코딩된 폭/높이를 받아야 한다 | `mga_state.c:179` 가 `WR54 = texwidth \| WR_MAGIC`, `WR62 = texheight \| WR_MAGIC`. 우리 목록은 `WR_MAGIC` 만 싣는다(`:8473`) | ✅채택. **무텍스처에서는 `texwidth = 0` 이라 우연히 일치** → T0·T1·T2 는 영향 없음 |
+| `TDUALSTAGE0 = 0` 이고 **`TDUALSTAGE1` 이 그것을 따라가야** 한다 | 4-42 는 `opcode = TRAP` 절이고 `TEXTURE_TRAP` 은 4-43 의 다른 절이다. 그리고 **저장소가 이미 실측했다**: `M1_4C8_BILINEAR.md:157` — *"홀수 열은 여전히 텍스처의 0xAB 를 가져간다"*, `:159` — **`TDUALSTAGE0/1` 은 직렬 두 단계가 아니라 짝수/홀수 열 레인 둘** | ✅채택 — **다섯 번째다** |
+| `TMR0..8` 을 호스트가 안 내는 것은 맞다 | `mga_g400_emit_tex0` 에 TMR 이 없고, Mesa/DRM 어디에서도 CPU 가 쓰지 않는다 | ✅ 확인. 다만 *"WARP 가 그 레지스터를 쓴다"* 는 **증거보다 강한 말** — 챕터 6 이 없어 내부 경로는 미상 |
+| `NOPERSP` 를 끄는 것은 맞지만 *"켜면 rhw 무시"* 는 틀리다 | `mgatex.c:373` 의 `texctl` 에 비트 21 이 없다. 그리고 `HW3D.h:383` 이 *"NOPERSP 를 끄면 TMR4/5/8 이 분모 평면이 된다"* 고 적는다 — 분모를 무시하는 것이지 `rhw` 를 안 쓰는 것이 아니다 | ✅채택 |
+| 가드 텍셀은 **1 텍셀 2D 헤일로**여야 한다 | `M1_4C8_BILINEAR.md:22` 가 샘플링 규칙 `u' = u·N − 0.5` 를 **32 개 값 전부 일치**로 실측해 뒀다. `u=0` 에서 탭은 `−1`과 `0`, 모서리에서는 넷 중 셋이 밖 | ✅채택 — 네 변·네 모서리 전부 |
+| bilinear 에 선형 주소 코드를 쓰지 마라 | 두 연속 코드의 블렌드가 제3의 유효 코드처럼 보인다. 저장소의 **0/255 기저 패턴**이 탭 가중치를 직접 드러낸다(`M1_4C8:9`) | ✅채택 |
+| MAG 과 MIN 을 각각 | 둘 다 bilinear 로 두면 어느 선택자도 증명되지 않는다 | ✅채택 |
+
+### 12.1 다섯 번째다
+
+`M1_4C8_BILINEAR.md` 가 **`TDUALSTAGE0/1` 의 레인 구조, 샘플링 규칙, `CLAMP_TO_EDGE`
+거동, 0/255 기저 패턴**을 전부 실측해 뒀는데, 나는 §11.1 에서 그중 첫 번째를
+*"미해결"* 이라 불렀다. `TEST_STATUS.md` 만 봤고 `M1_4C8` 은 안 봤다.
+
+**대응**: 방금 `TEST_STATUS.md` 에 WARP 여섯 행을 넣었다. 다음 계획 전에는
+`docs/` 를 **질문어로 grep** 한다 — 파일 이름을 짐작하지 않는다.
+
+### 12.2 T1·T2 는 영향 없다
+
+이 누락은 전부 **텍스처 레지스터**다. T0·T1·T2 는 텍스처를 0 으로 두므로
+`texwidth = 0` 이고 `WR54 = 0 | 0x40 = 0x40` 이라 **지금 설치본이 이미 맞다.**
+대기 중인 재부팅은 그대로 유효하다.
+
+### 12.3 T3 이전에 고칠 것
+
+```
+warpWidth  = ((w−1)<<18) | (((2−log2w) & 63)<<9) | (((log2w+11) | 0x40) & 63)
+warpHeight = 같은 꼴
+TEXWIDTH = warpWidth      TEXHEIGHT = warpHeight
+WR54 = warpWidth | 0x40   WR62 = warpHeight | 0x40
+WR52 = WR60 = 0x40
+TDUALSTAGE0 = TDUALSTAGE1 = 0      (TEXTURE_TRAP, 텍스처 대체)
+NOPERSP 는 켜지 않는다
+```
+
+### 12.4 개정된 부팅 순서
+
+```
+T3a  WARP 폭/높이 워드 + WR54/62 교정, nearest, TDS0=TDS1=0, rhw=1,
+     고유 ID 텍셀, ARGB 전체와 열 패리티 확인
+T3b  TMR 을 범위 안의 틀린 지도로 오염시킨 뒤 반복 (상속 상태 배제)
+T4   qw · tq · z 를 각각, NOPERSP 음성 대조 한 밴드
+T5a  MAG=BILIN, MIN=NEAREST (확대)
+T5b  MIN=BILIN, MAG=NEAREST (축소)
+T5c  네 변·네 모서리, 완전한 가드 헤일로, 0/255 기저
+T6   WARP 텍스처 -> WARP 무텍스처 -> 사다리꼴 -> 전체 재발행 -> WARP 텍스처
+```
