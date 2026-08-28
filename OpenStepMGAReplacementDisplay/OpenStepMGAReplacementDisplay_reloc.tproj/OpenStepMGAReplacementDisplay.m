@@ -8400,6 +8400,21 @@ typedef struct {
     unsigned long log2dim;
     unsigned long pitch;      /* texels per row, >= dim */
     unsigned long filter;     /* TEXFILTER, built by the caller */
+    /*
+     * TEXCTL's clamp bits, which T7 has to be able to CLEAR per axis.
+     * They were a literal here until repeat needed testing; the driver
+     * records at :655 that CLAMPU is 0x10000000 and CLAMPV 0x08000000,
+     * measured rather than guessed.
+     */
+    unsigned long clamp;
+    /*
+     * TDUALSTAGE0 and TDUALSTAGE1, which take the SAME value.  Selecting
+     * the diffuse alpha in stage nought alone fixes exactly half the
+     * pixels -- the even columns take it and the odd ones go on taking the
+     * texture's, measured as `20 ab 28 ab 30 ab 38 ab` (:13249).  One
+     * field, written to both lanes, is the only safe shape.
+     */
+    unsigned long tds;
 } OSMGAM3Tex;
 
 /*
@@ -8428,7 +8443,7 @@ osmgaDmaBuildTriangleList(unsigned long *ring, unsigned long ringDwords,
                           unsigned long clipX0, unsigned long clipX1,
                           unsigned long clipTopPixel,
                           unsigned long clipBotPixel,
-                          unsigned long dwgctl,
+                          unsigned long dwgctl, unsigned long alphactrl,
                           unsigned long dstorg, unsigned long zorg,
                           const OSMGAM3Tex *tex,
                           unsigned long *outTailDwords,
@@ -8448,7 +8463,7 @@ osmgaDmaBuildTriangleList(unsigned long *ring, unsigned long ringDwords,
          * because it feeds affine planes, and the reference WARP path does
          * not set it either (mgatex.c:373 builds texctl without bit 21). */
         texctl = MGA_TEXCTL_PITCHLIN | ((tex->pitch & 2047UL) << 9)
-               | MGA_TEXCTL_TAKEY | MGA_TEXCTL_CLAMPUV | MGA_TEXCTL_TW32;
+               | MGA_TEXCTL_TAKEY | tex->clamp | MGA_TEXCTL_TW32;
         texctl2 |= MGA_TEXCTL2_CKSTRANSDIS;
         texfil = tex->filter;
     }
@@ -8502,7 +8517,7 @@ osmgaDmaBuildTriangleList(unsigned long *ring, unsigned long ringDwords,
      * and with src ONE / dst ZERO nothing blends, so the undefined
      * alphasel=fromtex of an untextured draw cannot gate a pixel. */
     ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
-                             MGA_ALPHACTRL, 0x00000001UL,
+                             MGA_ALPHACTRL, alphactrl,
                              MGA_FOGCOL,    0UL,
                              MGA_WFLAG,     0UL,
                              MGA_ZORG,      zorg);
@@ -8536,10 +8551,10 @@ osmgaDmaBuildTriangleList(unsigned long *ring, unsigned long ringDwords,
                              MGA_WFLAG1,      0UL,
                              MGA_TDUALSTAGE0,
                                  (tex != 0 && tex->enable != 0UL)
-                                     ? 0UL : MGA_TDS_COLOR_SEL_MUL,
+                                     ? tex->tds : MGA_TDS_COLOR_SEL_MUL,
                              MGA_TDUALSTAGE1,
                                  (tex != 0 && tex->enable != 0UL)
-                                     ? 0UL : MGA_TDS_COLOR_SEL_MUL,
+                                     ? tex->tds : MGA_TDS_COLOR_SEL_MUL,
                              MGA_FCOL,        0UL);
     ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
                              MGA_STENCIL,    0UL,
@@ -9005,6 +9020,13 @@ static void osmgaStormTrap(vm_address_t base, unsigned long dwgctl,
 #define OSMGA_M3_COLOUR   0xFFFF8040UL      /* the D2-2c colour, BGRA */
 #define OSMGA_M3_CLIP_LO       4UL
 #define OSMGA_M3_CLIP_HI      59UL
+/*
+ * Mesa's own initial ALPHACTRL: src=ONE dst=ZERO, atmode noacmp, aten
+ * disabled.  Both alpha tests off (W17) and nothing blends, which is what
+ * every band before T8 wants.  It was a literal inside the list builder
+ * until T8 needed to change it.
+ */
+#define OSMGA_M3_ALPHACTRL_NOBLEND  0x00000001UL
 
 /*
  * Depth values for T1, as WARP sees them: IEEE floats in [0,1].  Three
@@ -9402,7 +9424,8 @@ static int
 osmgaM3StateRun(vm_address_t base, unsigned long *ring,
                 unsigned long ringDwords, unsigned ringPhys,
                 unsigned long pipePhys, unsigned long stride,
-                unsigned long dwgctl, unsigned long dstorg,
+                unsigned long dwgctl, unsigned long alphactrl,
+                unsigned long dstorg,
                 unsigned long zorg, const OSMGAM3Tex *tex,
                 const char *label)
 {
@@ -9414,7 +9437,7 @@ osmgaM3StateRun(vm_address_t base, unsigned long *ring,
                                    OSMGA_M3_CLIP_LO, OSMGA_M3_CLIP_HI,
                                    OSMGA_M3_CLIP_LO * stride,
                                    OSMGA_M3_CLIP_HI * stride,
-                                   dwgctl, dstorg, zorg, tex,
+                                   dwgctl, alphactrl, dstorg, zorg, tex,
                                    &tailDwords, &totalDwords))
         return 0;
     listEnd = (unsigned long)ringPhys + tailDwords * 4UL;
@@ -9495,7 +9518,8 @@ osmgaM3BuildPerspTri(unsigned long *v, unsigned long row, unsigned long col,
  */
 static int
 osmgaM3OracleTri(vm_address_t base, unsigned long stride,
-                 unsigned long dstorg, unsigned long colour)
+                 unsigned long dstorg, unsigned long colour,
+                 unsigned long alphactrl)
 {
     unsigned long leg = OSMGA_M3_TRI_HI - OSMGA_M3_TRI_LO;
 
@@ -9508,7 +9532,16 @@ osmgaM3OracleTri(vm_address_t base, unsigned long stride,
     if (!osmgaStormWaitFifo(base, 6U))
         return 0;
     osmgaW32(base, MGA_DSTORG, dstorg);
-    osmgaW32(base, MGA_FCOL,   colour & OSMGA_D2E_RGB);
+    /*
+     * FCOL is written exactly as the caller gave it, alpha included.  It
+     * used to be masked to RGB, which is invisible while nothing blends
+     * and wrong the moment something does: T8b's oracle needs a source
+     * alpha to blend WITH, and a masked one would have made the two paths
+     * differ for a reason that has nothing to do with WARP.  T0 and T6
+     * pass the same value they always did, masked at the call.
+     */
+    osmgaW32(base, MGA_FCOL,      colour);
+    osmgaW32(base, MGA_ALPHACTRL, alphactrl);
 
     /* Left edge vertical at TRI_LO; right edge from TRI_LO+leg-1 back to
      * TRI_LO over the same rows.  SOLID_FILL rather than Gouraud: T0 asks
@@ -9621,8 +9654,115 @@ osmgaM3OracleTri(vm_address_t base, unsigned long stride,
 #define OSMGA_M4_MAG_OFS      (OSMGA_M4_MAG_BASE + \
                                (OSMGA_M4_MAG_GUARD * OSMGA_M4_MAG_PITCH + \
                                 OSMGA_M4_MAG_GUARD) * 4UL)
-#define OSMGA_M4_TEX_BYTES    (OSMGA_M4_MAG_BASE + OSMGA_M4_MAG_PITCH * \
-                               OSMGA_M4_MAG_ROWS * 4UL)
+
+/*
+ * ---- T7: does the texture unit wrap the same way when WARP drives it? ----
+ *
+ * GL_REPEAT is NOT a new question for this driver.  M1_4CB_REPEAT.md ran
+ * it: section 8-1 confirmed on a rebooted kernel which CLAMPUV bit is
+ * which axis, section 8-2 measured the LINEAR seams (u 127 / v 128, corner
+ * 127) and opened repeat for bilinear as well, and the encoder has
+ * required pitch == width and a power-of-two axis ever since (:13128).
+ *
+ * So T7 asks the one thing that is new -- whether coordinates produced by
+ * WARP wrap like coordinates produced by the trapezoid setup -- and
+ * borrows the earlier verdicts to compare against rather than re-deriving
+ * them.
+ *
+ * The map is a power of two with pitch == width, which repeat requires:
+ * spec 3-211 says tpitchext must be a power of two when either clamp bit
+ * is clear, and a masked index into a padded surface addresses the wrong
+ * row.
+ */
+#define OSMGA_M4_REP_BASE     40960UL      /* 40960 % 32 == 0 */
+#define OSMGA_M4_REP_PITCH       64UL
+#define OSMGA_M4_REP_ROWS        64UL
+#define OSMGA_M4_REP_DIM         64UL
+#define OSMGA_M4_REP_LOG2         6UL
+
+/*
+ * The seam map is SMALL so that it magnifies.  fthres compares the square
+ * of the step against 1.0, and a 64 texel map across 48 pixels minifies;
+ * sixteen texels across the same 48 pixels at two periods is 0.667 texels
+ * a pixel, whose square is 0.44, so magfilter is taken.  A seam can only
+ * be seen where the filter is running.
+ */
+#define OSMGA_M4_SEAM_BASE    57344UL      /* 57344 % 32 == 0 */
+#define OSMGA_M4_SEAM_PITCH      16UL
+#define OSMGA_M4_SEAM_ROWS       16UL
+#define OSMGA_M4_SEAM_DIM        16UL
+#define OSMGA_M4_SEAM_LOG2        4UL
+
+/* The whole M4 texture region, which the first draft under-sized: T7's map
+ * at 40960 lay outside a 36,864 byte allocation, and would have been
+ * written through a mapping that did not cover it. */
+/*
+ * T8a's own map, at its own address.  It could have refilled T7's, and
+ * that is exactly what would have made the negative control unreadable:
+ * a fence proves the DRAWING finished, not that the texture cache
+ * forgot -- M2 section 10 says texture overwrite needs more than the
+ * pointer, and "the old alpha came back" and "the selector is wrong"
+ * would have looked the same.
+ */
+#define OSMGA_M4_A8_BASE      58368UL      /* 58368 % 32 == 0 */
+#define OSMGA_M4_A8_PITCH        16UL
+#define OSMGA_M4_A8_ROWS         16UL
+#define OSMGA_M4_A8_DIM          16UL
+#define OSMGA_M4_A8_LOG2          4UL
+
+#define OSMGA_M4_TEX_BYTES    (OSMGA_M4_A8_BASE + OSMGA_M4_A8_PITCH * \
+                               OSMGA_M4_A8_ROWS * 4UL)
+
+/*
+ * T7's sweep: four texels a pixel, three whole periods across the 48 pixel
+ * square, biased half a step so no pixel sits on a texel boundary.
+ *
+ *      texel(dx) = -62 + 4*dx        dx = 0 .. 47
+ *
+ * so u runs -62/64 .. 130/64.  Both dyadic, so neither is a rounded value.
+ * Checked in python: repeat and clamp disagree on 33 of the 49 columns, so
+ * a band that wrapped and a band that clamped cannot be confused.
+ */
+#define OSMGA_M4_REP_ULO      0xBF780000UL   /* -62/64  = -0.96875 */
+#define OSMGA_M4_REP_UHI      0x40020000UL   /* 130/64  =  2.03125 */
+#define OSMGA_M4_REP_HOLD     0x3E080000UL   /* 8.5/64 -- the axis held in */
+#define OSMGA_M4_REP_STEP        4L
+#define OSMGA_M4_REP_START     (-62L)
+#define OSMGA_M4_REP_HOLD_TEXEL   8L
+
+/*
+ * T7e's sweep: two periods of the sixteen texel map across the square, so
+ * that u = 0 lands on dx = 3 and u = 1 on dx = 27 -- both PIXEL CENTRES,
+ * which is where a seam can actually be read.  u = (dx - 3)/24.
+ */
+#define OSMGA_M4_SEAM_LO      0xBE000000UL   /* -3/24 = -0.125  */
+#define OSMGA_M4_SEAM_HI      0x3FF00000UL   /* 45/24 =  1.875  */
+#define OSMGA_M4_SEAM_NEAR       3UL         /* dx where u == 0 */
+#define OSMGA_M4_SEAM_FAR       27UL         /* dx where u == 1 */
+
+/*
+ * ---- T8: alpha and blending ----
+ *
+ * OSMGA_MESA_BLEND_OVER, the value the shipping Mesa path sends for
+ * GL_SRC_ALPHA / GL_ONE_MINUS_SRC_ALPHA (OpenStepMGAMesaTriangle.h:114).
+ * Its blend arithmetic is already qualified against Mesa -- nine factor
+ * pairs, four channels, worst difference nought
+ * (M1_4E3_BLENDFACTOR_PLAN.md) -- so T8 asks only whether WARP reaches the
+ * same picture, not whether the picture is right.
+ */
+#define OSMGA_M4_ALPHACTRL_OVER  0x01000154UL
+
+/* The texture's own alpha in T8a, chosen so that "the interpolated alpha
+ * arrived" and "the texture's alpha arrived" cannot look alike. */
+#define OSMGA_M4_TEX_ALPHA       0x33UL
+
+/* The destination T8b blends into.  Not black: blending against nought is
+ * indistinguishable from not blending for the ONE/ZERO factors. */
+#define OSMGA_M4_PREFILL      0x00204060UL
+/* Half-transparent, so SRC_ALPHA / 1-SRC_ALPHA lands between the prefill
+ * and the source and neither "did not draw" nor "did not blend" can be
+ * mistaken for success. */
+#define OSMGA_M4_SRC_COLOUR   0x80FF8040UL
 
 /* The square T5 draws, inside M3's clip (4..59). */
 #define OSMGA_M4_SQ_LO          8UL
@@ -9758,7 +9898,7 @@ static void
 osmgaM4BuildTri(unsigned long *v, const unsigned long *xs,
                 const unsigned long *ys, const unsigned long *z,
                 const unsigned long *rhw, const unsigned long *tu,
-                const unsigned long *tv, unsigned long colour)
+                const unsigned long *tv, const unsigned long *colour)
 {
     unsigned long i, p = 0UL;
 
@@ -9767,7 +9907,7 @@ osmgaM4BuildTri(unsigned long *v, const unsigned long *xs,
         v[p++] = osmgaF32FromUInt(ys[i]);
         v[p++] = z[i];
         v[p++] = rhw[i];
-        v[p++] = colour;
+        v[p++] = colour[i];
         v[p++] = 0UL;
         v[p++] = tu[i];
         v[p++] = tv[i];
@@ -9812,7 +9952,7 @@ static void
 osmgaM4SquareVerts(unsigned long *v, unsigned long lo, unsigned long hi)
 {
     static const unsigned long ONE = OSMGA_M4_F32_ONE;
-    unsigned long xs[3], ys[3], z[3], rhw[3], tu[3], tv[3];
+    unsigned long xs[3], ys[3], z[3], rhw[3], tu[3], tv[3], col[3];
     unsigned long i;
 
     for (i = 0UL; i < 3UL; i++) {
@@ -9824,14 +9964,14 @@ osmgaM4SquareVerts(unsigned long *v, unsigned long lo, unsigned long hi)
     xs[0] = OSMGA_M4_SQ_LO; ys[0] = OSMGA_M4_SQ_LO; tu[0] = lo; tv[0] = lo;
     xs[1] = OSMGA_M4_SQ_HI; ys[1] = OSMGA_M4_SQ_LO; tu[1] = hi; tv[1] = lo;
     xs[2] = OSMGA_M4_SQ_LO; ys[2] = OSMGA_M4_SQ_HI; tu[2] = lo; tv[2] = hi;
-    osmgaM4BuildTri(v, xs, ys, z, rhw, tu, tv, OSMGA_M3_COLOUR);
+    col[0] = col[1] = col[2] = OSMGA_M3_COLOUR;
+    osmgaM4BuildTri(v, xs, ys, z, rhw, tu, tv, col);
 
     /* (HI,LO) (HI,HI) (LO,HI) */
     xs[0] = OSMGA_M4_SQ_HI; ys[0] = OSMGA_M4_SQ_LO; tu[0] = hi; tv[0] = lo;
     xs[1] = OSMGA_M4_SQ_HI; ys[1] = OSMGA_M4_SQ_HI; tu[1] = hi; tv[1] = hi;
     xs[2] = OSMGA_M4_SQ_LO; ys[2] = OSMGA_M4_SQ_HI; tu[2] = lo; tv[2] = hi;
-    osmgaM4BuildTri(v + OSMGA_D2C_VTX_DWORDS, xs, ys, z, rhw, tu, tv,
-                    OSMGA_M3_COLOUR);
+    osmgaM4BuildTri(v + OSMGA_D2C_VTX_DWORDS, xs, ys, z, rhw, tu, tv, col);
 }
 
 /*
@@ -9879,6 +10019,301 @@ osmgaM4ReportClamp(volatile unsigned long *blk, unsigned long stride,
     return bled;
 }
 
+
+/*
+ * A plain address-coded map with a chosen alpha.  No halo: T7 wraps rather
+ * than reaching outside, and T8a wants the texture's own alpha to be a
+ * value the interpolated one could never be mistaken for.
+ */
+static void
+osmgaM4FillPlain(volatile unsigned long *tex, unsigned long pitch,
+                 unsigned long rows, unsigned long alpha)
+{
+    unsigned long x, y;
+
+    for (y = 0UL; y < rows; y++)
+        for (x = 0UL; x < pitch; x++)
+            tex[y * pitch + x] = (alpha << 24) | (x << 16) | (y << 8);
+}
+
+/*
+ * The seam map, in M1_4CB section 8-2's shape: the first texel of an axis
+ * nought, the last 255 and everything between 128.  At a seam a wrapping
+ * filter blends 255 with 0 and reads about 127; one that clamped the
+ * neighbouring tap instead reads 0 at the near seam and 255 at the far
+ * one, which is how the two are told apart.  Red carries the u axis and
+ * green the v axis, so one draw measures both.
+ */
+static void
+osmgaM4FillSeam(volatile unsigned long *tex, unsigned long pitch,
+                unsigned long rows, unsigned long dim)
+{
+    unsigned long x, y;
+
+    for (y = 0UL; y < rows; y++)
+        for (x = 0UL; x < pitch; x++) {
+            unsigned long r = (x == 0UL) ? 0UL
+                            : (x == dim - 1UL) ? 255UL : 128UL;
+            unsigned long g = (y == 0UL) ? 0UL
+                            : (y == dim - 1UL) ? 255UL : 128UL;
+            tex[y * pitch + x] = (r << 16) | (g << 8);
+        }
+}
+
+/*
+ * T5's square with the two axes given independently, which T7 needs: one
+ * axis sweeps out of range while the other is held safely inside, so a
+ * band that wrapped u while leaving v clamped cannot pass for both.
+ */
+static void
+osmgaM4SquareVertsUV(unsigned long *v, unsigned long uLo, unsigned long uHi,
+                     unsigned long vLo, unsigned long vHi,
+                     const unsigned long *corner)
+{
+    unsigned long xs[3], ys[3], z[3], rhw[3], tu[3], tv[3], col[3];
+    unsigned long i;
+
+    for (i = 0UL; i < 3UL; i++) {
+        z[i]   = OSMGA_M3_F32_HALF;
+        rhw[i] = OSMGA_M4_F32_ONE;
+    }
+
+    /* corner[] is (LO,LO) (HI,LO) (LO,HI) (HI,HI) -- T8a ramps the alpha
+     * across it, so the two triangles must agree on the shared edge. */
+    xs[0] = OSMGA_M4_SQ_LO; ys[0] = OSMGA_M4_SQ_LO; tu[0] = uLo; tv[0] = vLo;
+    xs[1] = OSMGA_M4_SQ_HI; ys[1] = OSMGA_M4_SQ_LO; tu[1] = uHi; tv[1] = vLo;
+    xs[2] = OSMGA_M4_SQ_LO; ys[2] = OSMGA_M4_SQ_HI; tu[2] = uLo; tv[2] = vHi;
+    col[0] = corner[0]; col[1] = corner[1]; col[2] = corner[2];
+    osmgaM4BuildTri(v, xs, ys, z, rhw, tu, tv, col);
+
+    xs[0] = OSMGA_M4_SQ_HI; ys[0] = OSMGA_M4_SQ_LO; tu[0] = uHi; tv[0] = vLo;
+    xs[1] = OSMGA_M4_SQ_HI; ys[1] = OSMGA_M4_SQ_HI; tu[1] = uHi; tv[1] = vHi;
+    xs[2] = OSMGA_M4_SQ_LO; ys[2] = OSMGA_M4_SQ_HI; tu[2] = uLo; tv[2] = vHi;
+    col[0] = corner[1]; col[1] = corner[3]; col[2] = corner[2];
+    osmgaM4BuildTri(v + OSMGA_D2C_VTX_DWORDS, xs, ys, z, rhw, tu, tv, col);
+}
+
+/* -62 + 4*dx reduced the two ways.  The mask form rather than % because
+ * C89 leaves the sign of a negative remainder to the implementation, and
+ * the smallest value here is -62. */
+static long
+osmgaM4WrapTexel(long t)
+{
+    return (long)(((unsigned long)(t + 640L)) & 63UL);
+}
+
+static long
+osmgaM4ClampTexel(long t)
+{
+    return (t < 0L) ? 0L : ((t > 63L) ? 63L : t);
+}
+
+/*
+ * T7's verdict, per axis, and it does NOT ask for an exact texel.
+ *
+ * The sweep is four texels a pixel, so a sub-pixel difference in where
+ * WARP anchors the coordinate moves the answer by up to two texels -- and
+ * this is not the test that measures the anchor (T3 is).  What separates
+ * wrapping from clamping is the SHAPE:
+ *
+ *   wrapped   (read - unwrapped) & 63 is the SAME value at every pixel,
+ *             whatever the anchor offset happens to be
+ *   clamped   that difference is not constant, because clamping is not a
+ *             shift; the clamped map is matched exactly instead
+ *
+ * So the tallest histogram bin against the drawn count is the verdict for
+ * a repeat band, and the exact clamp match is the verdict for a clamp
+ * band.  `sweepU`/`sweepV` say which axis is moving; the held axis must
+ * read its one texel, which is what makes a band that wrapped the wrong
+ * axis fail rather than pass.
+ */
+static unsigned long
+osmgaM4ReportWrap(volatile unsigned long *blk, unsigned long stride,
+                  unsigned long lo, unsigned long hi,
+                  int sweepU, int wrapU, int sweepV, int wrapV,
+                  const char *label)
+{
+    unsigned long row, col, seen = 0UL, undrawn = 0UL;
+    unsigned long histo[64], k, top = 0UL, topN = 0UL;
+    unsigned long exactClamp = 0UL, heldBad = 0UL;
+    int sweptWrap = sweepU ? wrapU : wrapV;
+
+    for (k = 0UL; k < 64UL; k++)
+        histo[k] = 0UL;
+
+    for (row = lo; row < hi; row++) {
+        for (col = lo; col < hi; col++) {
+            unsigned long v = blk[row * stride + col] & OSMGA_D2E_RGB;
+            long tx, ty, t, swept, held;
+
+            if (v == (OSMGA_S1_SENTINEL & OSMGA_D2E_RGB)) {
+                undrawn++;
+                continue;
+            }
+            seen++;
+            tx = (long)((v >> 16) & 0xFFUL);
+            ty = (long)((v >>  8) & 0xFFUL);
+            swept = sweepU ? tx : ty;
+            held  = sweepU ? ty : tx;
+            t = OSMGA_M4_REP_START + OSMGA_M4_REP_STEP *
+                (long)((sweepU ? col : row) - lo);
+
+            histo[((unsigned long)(swept - t + 640L)) & 63UL]++;
+            if (swept == osmgaM4ClampTexel(t))
+                exactClamp++;
+            if (held != OSMGA_M4_REP_HOLD_TEXEL)
+                heldBad++;
+        }
+    }
+    for (k = 0UL; k < 64UL; k++)
+        if (histo[k] > topN) { topN = histo[k]; top = k; }
+
+    IOLog("OpenStepMGA M4/%s: %lu px (%lu never drawn), held axis wrong on "
+          "%lu\n", label, seen, undrawn, heldBad);
+    osmgaD2Settle();
+    IOLog("OpenStepMGA M4/%s: tallest wrap bin %lu holds %lu of %lu; exact "
+          "clamp match %lu -- %s\n", label, top, topN, seen, exactClamp,
+          sweptWrap ? "a repeat band wants one bin holding all of them"
+                    : "a clamp band wants the exact match instead");
+    osmgaD2Settle();
+
+    if (heldBad != 0UL)
+        return heldBad + seen;
+    return sweptWrap ? (seen - topN) : (seen - exactClamp);
+}
+
+/*
+ * T7e.  Not a pass or a fail: the two seams and the corner are printed so
+ * they can be put beside M1_4CB section 8-2's trapezoid numbers (u 127,
+ * v 128, corner 127).  A wrapping filter reads about half way; one that
+ * clamps the neighbouring tap reads 0 at the near seam and 255 at the far
+ * one, and no arithmetic is needed to tell those apart.
+ */
+static void
+osmgaM4ReportSeam(volatile unsigned long *blk, unsigned long stride,
+                  unsigned long lo, const char *label)
+{
+    unsigned long nearC = lo + OSMGA_M4_SEAM_NEAR;
+    unsigned long farC  = lo + OSMGA_M4_SEAM_FAR;
+    unsigned long hold  = lo + 12UL;          /* mid-texel on the other axis */
+    unsigned long a, b, c, d, e;
+
+    a = blk[hold  * stride + nearC] & OSMGA_D2E_RGB;
+    b = blk[hold  * stride + farC ] & OSMGA_D2E_RGB;
+    c = blk[nearC * stride + hold ] & OSMGA_D2E_RGB;
+    d = blk[farC  * stride + hold ] & OSMGA_D2E_RGB;
+    e = blk[nearC * stride + nearC] & OSMGA_D2E_RGB;
+
+    IOLog("OpenStepMGA M4/%s: u near %lu far %lu | v near %lu far %lu | "
+          "corner u %lu v %lu\n", label,
+          (a >> 16) & 0xFFUL, (b >> 16) & 0xFFUL,
+          (c >>  8) & 0xFFUL, (d >>  8) & 0xFFUL,
+          (e >> 16) & 0xFFUL, (e >> 8) & 0xFFUL);
+    osmgaD2Settle();
+    IOLog("OpenStepMGA M4/%s: M1_4CB 8-2 measured u 127 far 127, v 128 far "
+          "128, corner 127/127 on the trapezoid path; 0 and 255 would mean "
+          "the neighbouring tap was clamped instead of wrapped\n", label);
+    osmgaD2Settle();
+}
+
+/*
+ * T8a.  The destination's top byte, which the repository already knows
+ * arrives -- a texture whose top byte was 0xAB came back 0xAB when the
+ * selector was wrong (:13249).  With the selector right it must carry the
+ * INTERPOLATED alpha instead, which here ramps 0 .. 255 along dx.
+ *
+ * Reported as a residual range, not a pass: the ramp's rounding is not
+ * something this project has measured, and a verdict that assumed it could
+ * not discover it.
+ */
+static void
+osmgaM4ReportAlpha(volatile unsigned long *blk, unsigned long stride,
+                   unsigned long lo, unsigned long hi, const char *label)
+{
+    unsigned long row, col, seen = 0UL, undrawn = 0UL;
+    long dMin = 4096L, dMax = -4096L;
+    unsigned long aLo = 256UL, aHi = 0UL;
+
+    for (row = lo; row < hi; row++) {
+        for (col = lo; col < hi; col++) {
+            unsigned long v = blk[row * stride + col];
+            unsigned long a, want;
+            long d;
+
+            if ((v & OSMGA_D2E_RGB) ==
+                (OSMGA_S1_SENTINEL & OSMGA_D2E_RGB)) {
+                undrawn++;
+                continue;
+            }
+            seen++;
+            a = (v >> 24) & 0xFFUL;
+            if (a < aLo) aLo = a;
+            if (a > aHi) aHi = a;
+            want = (255UL * (col - lo)) / (hi - lo);
+            d = (long)a - (long)want;
+            if (d < dMin) dMin = d;
+            if (d > dMax) dMax = d;
+        }
+    }
+    IOLog("OpenStepMGA M4/%s: %lu px (%lu never drawn), alpha %lu..%lu, "
+          "residual %ld..%ld against a 0..255 ramp\n",
+          label, seen, undrawn, aLo, aHi, dMin, dMax);
+    osmgaD2Settle();
+}
+
+/*
+ * T8b's comparator.  NOT osmgaM3CompareSurfaces: that one masks the alpha
+ * away and tests equality only, so two surfaces that were both left at the
+ * sentinel compare equal and a band where NEITHER path drew reads as
+ * agreement.  This one takes all thirty-two bits, counts what was covered,
+ * and insists the covered pixels moved off the prefill.
+ */
+static unsigned long
+osmgaM4CompareARGB(volatile unsigned long *a, volatile unsigned long *b,
+                   unsigned long stride, unsigned long lo, unsigned long hi,
+                   unsigned long prefill, const char *label)
+{
+    unsigned long row, col, differ = 0UL, covered = 0UL, stillPrefill = 0UL;
+    unsigned long badRow = 0UL, badCol = 0UL, va = 0UL, vb = 0UL;
+
+    for (row = lo; row < hi; row++) {
+        for (col = lo; col < hi; col++) {
+            unsigned long x = a[row * stride + col];
+            unsigned long y = b[row * stride + col];
+
+            if (x != prefill || y != prefill)
+                covered++;
+            else
+                stillPrefill++;
+            if (x == y)
+                continue;
+            if (differ == 0UL) {
+                badRow = row; badCol = col; va = x; vb = y;
+            }
+            differ++;
+        }
+    }
+    IOLog("OpenStepMGA M4/%s: %lu covered, %lu still prefill, %lu differ\n",
+          label, covered, stillPrefill, differ);
+    osmgaD2Settle();
+    if (differ != 0UL)
+        IOLog("OpenStepMGA M4/%s: first at (%lu,%lu) oracle %08lx WARP "
+              "%08lx\n", label, badRow, badCol, va, vb);
+    return differ;
+}
+
+/* Paint a block to one value, both surfaces, so a blend has something to
+ * blend against and "nothing was drawn" is distinguishable from "drawn". */
+static void
+osmgaM4Prefill(volatile unsigned long *blk, unsigned long stride,
+               unsigned long value)
+{
+    unsigned long row, col;
+
+    for (row = 0UL; row < OSMGA_M3_BLK; row++)
+        for (col = 0UL; col < OSMGA_M3_BLK; col++)
+            blk[row * stride + col] = value;
+}
 /*
  * T4b's verdict.  Two hypotheses are scored against the same pixels:
  *
@@ -10174,7 +10609,8 @@ osmgaM4ReportProjTex(volatile unsigned long *blk, unsigned long stride,
                                    OSMGA_D2C_CLIP_LO, OSMGA_D2C_CLIP_HI,
                                    (testY + OSMGA_D2C_CLIP_LO) * stride,
                                    (testY + OSMGA_D2C_CLIP_HI) * stride,
-                                   dwgctl, 0UL, 0UL,
+                                   dwgctl, OSMGA_M3_ALPHACTRL_NOBLEND,
+                                   0UL, 0UL,
                                    (const OSMGAM3Tex *)0,
                                    &tailDwords, &totalDwords)) {
         IOLog("OpenStepMGA D2-2c: FAIL -- run 1 list rejected\n");
@@ -10614,7 +11050,8 @@ releaseAndReturn:
     vm_address_t aOr = 0, aWa = 0, aZ = 0, aT = 0;
     unsigned long lOr = 0UL, lWa = 0UL, lZ = 0UL, lT = 0UL;
     unsigned long ph, texBad;
-    unsigned long m4z[3], m4rhw[3], m4tu[3], m4tv[3];
+    unsigned long m4z[3], m4rhw[3], m4tu[3], m4tv[3], m4corner[4];
+    unsigned long m4wrapBad[3];
     unsigned long m4diff = 0UL, m4bled = 0UL;
     OSMGAM3Tex m3tex, m4tex;
     volatile unsigned long *blkT = 0, *blkM4 = 0;
@@ -10730,7 +11167,9 @@ releaseAndReturn:
         }
 
     /* ================= ORACLE, complete, before any WARP ============= */
-    if (!osmgaM3OracleTri(base, stride, OSMGA_M3_ORACLE, OSMGA_M3_COLOUR)) {
+    if (!osmgaM3OracleTri(base, stride, OSMGA_M3_ORACLE,
+                          OSMGA_M3_COLOUR & OSMGA_D2E_RGB,
+                          OSMGA_M3_ALPHACTRL_NOBLEND)) {
         IOLog("OpenStepMGA M3: oracle draw did not finish\n");
         osmgaD2Settle();
         goto releaseAll;
@@ -10758,7 +11197,8 @@ releaseAndReturn:
     osmgaD2Settle();
     if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
                          osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
-                         dwgctlFlat, OSMGA_M3_WARP, OSMGA_M3_ZORG,
+                         dwgctlFlat, OSMGA_M3_ALPHACTRL_NOBLEND,
+                         OSMGA_M3_WARP, OSMGA_M3_ZORG,
                          (const OSMGAM3Tex *)0, "T0")) {
         IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
               "REQUIRED ***\n");
@@ -10801,6 +11241,7 @@ releaseAndReturn:
         if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
                              osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
                              dwgctlFlat | MGA_DWGCTL_ZLT,
+                             OSMGA_M3_ALPHACTRL_NOBLEND,
                              OSMGA_M3_WARP, OSMGA_M3_ZORG,
                              (const OSMGAM3Tex *)0, "T1")) {
             IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
@@ -10840,6 +11281,7 @@ releaseAndReturn:
                              osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
                              (dwgctlFlat & ~MGA_DWGCTL_ATYPE_I) |
                                  MGA_DWGCTL_ATYPE_ZI | MGA_DWGCTL_NOZCMP,
+                             OSMGA_M3_ALPHACTRL_NOBLEND,
                              OSMGA_M3_WARP, OSMGA_M3_ZORG,
                              (const OSMGAM3Tex *)0, "T2")) {
             IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
@@ -10875,11 +11317,14 @@ releaseAndReturn:
         /* nearest both ways -- the min and mag fields are zero -- with
          * uvoffseten left clear, which spec 3-217 calls OpenGL sampling. */
         m3tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21);
+        m3tex.clamp   = MGA_TEXCTL_CLAMPUV;
+        m3tex.tds     = 0UL;
 
         if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
                              osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
                              (dwgctlFlat & ~MGA_DWGCTL_OPCODE_MASK) |
                                  MGA_DWGCTL_TEXTURE_TRAP,
+                             OSMGA_M3_ALPHACTRL_NOBLEND,
                              OSMGA_M3_WARP, OSMGA_M3_ZORG, &m3tex, "T3")) {
             IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
                   "REQUIRED ***\n");
@@ -10935,6 +11380,7 @@ releaseAndReturn:
                              osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
                              (dwgctlFlat & ~MGA_DWGCTL_ATYPE_I) |
                                  MGA_DWGCTL_ATYPE_ZI | MGA_DWGCTL_NOZCMP,
+                             OSMGA_M3_ALPHACTRL_NOBLEND,
                              OSMGA_M3_WARP, OSMGA_M3_ZORG,
                              (const OSMGAM3Tex *)0, "T4a")) {
             IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
@@ -11023,6 +11469,8 @@ releaseAndReturn:
         m4tex.log2dim = OSMGA_M4_MIN_LOG2;
         m4tex.pitch   = OSMGA_M4_MIN_PITCH;
         m4tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21);   /* nearest */
+        m4tex.clamp   = MGA_TEXCTL_CLAMPUV;
+        m4tex.tds     = 0UL;
 
         for (row = 0UL; row < OSMGA_M3_BLK; row++)
             for (col = 0UL; col < OSMGA_M3_BLK; col++)
@@ -11032,6 +11480,7 @@ releaseAndReturn:
                              (dwgctlFlat & ~MGA_DWGCTL_OPCODE_MASK) |
                                  MGA_DWGCTL_TEXTURE_TRAP |
                                  MGA_DWGCTL_NOZCMP,
+                             OSMGA_M3_ALPHACTRL_NOBLEND,
                              OSMGA_M3_WARP, OSMGA_M3_ZORG, &m4tex, "T4b")) {
             IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
                   "REQUIRED ***\n");
@@ -11076,6 +11525,8 @@ releaseAndReturn:
         m4tex.pitch   = OSMGA_M4_MAG_PITCH;
         m4tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21) |
                         MGA_TEXFILTER_MAGBILIN;
+        m4tex.clamp   = MGA_TEXCTL_CLAMPUV;
+        m4tex.tds     = 0UL;
 
         for (row = 0UL; row < OSMGA_M3_BLK; row++)
             for (col = 0UL; col < OSMGA_M3_BLK; col++)
@@ -11085,6 +11536,7 @@ releaseAndReturn:
                              (dwgctlFlat & ~MGA_DWGCTL_OPCODE_MASK) |
                                  MGA_DWGCTL_TEXTURE_TRAP |
                                  MGA_DWGCTL_NOZCMP,
+                             OSMGA_M3_ALPHACTRL_NOBLEND,
                              OSMGA_M3_WARP, OSMGA_M3_ZORG, &m4tex, "T5a")) {
             IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
                   "REQUIRED ***\n");
@@ -11111,6 +11563,8 @@ releaseAndReturn:
         m4tex.pitch   = OSMGA_M4_MIN_PITCH;
         m4tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21) |
                         MGA_TEXFILTER_MINBILIN;
+        m4tex.clamp   = MGA_TEXCTL_CLAMPUV;
+        m4tex.tds     = 0UL;
 
         for (row = 0UL; row < OSMGA_M3_BLK; row++)
             for (col = 0UL; col < OSMGA_M3_BLK; col++)
@@ -11120,6 +11574,7 @@ releaseAndReturn:
                              (dwgctlFlat & ~MGA_DWGCTL_OPCODE_MASK) |
                                  MGA_DWGCTL_TEXTURE_TRAP |
                                  MGA_DWGCTL_NOZCMP,
+                             OSMGA_M3_ALPHACTRL_NOBLEND,
                              OSMGA_M3_WARP, OSMGA_M3_ZORG, &m4tex, "T5b")) {
             IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
                   "REQUIRED ***\n");
@@ -11142,6 +11597,247 @@ releaseAndReturn:
         else
             IOLog("OpenStepMGA M4: T5 -- halo memory reached the output; "
                   "CLAMPUV alone does not bound the fetch\n");
+        osmgaD2Settle();
+
+        /* ---- T7: does the texture unit wrap when WARP drives it? -----
+         *
+         * Three bands over the same square with the same sweep.  Only the
+         * clamp bits change, and only one axis sweeps at a time: a band
+         * that wrapped u while leaving v clamped would pass a test that
+         * looked at u alone, and the first draft did exactly that.
+         *
+         * The sweep is four texels a pixel over three whole periods, so a
+         * wrapping map and a clamping map disagree on 33 of the 49 columns
+         * (python).  Nothing subtle is being asked of the readback.
+         */
+        osmgaM4FillPlain(blkM4 + OSMGA_M4_REP_BASE / 4UL,
+                         OSMGA_M4_REP_PITCH, OSMGA_M4_REP_ROWS, 0UL);
+        m4tex.enable  = 1UL;
+        m4tex.org     = OSMGA_M4_TEX + OSMGA_M4_REP_BASE;
+        m4tex.dim     = OSMGA_M4_REP_DIM;
+        m4tex.log2dim = OSMGA_M4_REP_LOG2;
+        m4tex.pitch   = OSMGA_M4_REP_PITCH;   /* == dim: repeat requires it */
+        m4tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21);  /* nearest */
+        m4tex.tds     = 0UL;
+
+        for (i = 0UL; i < 3UL; i++) {
+            const char *lbl = (i == 0UL) ? "T7a-clamp"
+                            : (i == 1UL) ? "T7b-repeatU" : "T7c-repeatV";
+            int sweepU = (i != 2UL), sweepV = (i == 2UL);
+            int wrapU  = (i == 1UL), wrapV  = (i == 2UL);
+
+            m4tex.clamp = (i == 0UL) ? MGA_TEXCTL_CLAMPUV
+                        : (i == 1UL) ? MGA_TEXCTL_CLAMPV
+                                     : MGA_TEXCTL_CLAMPU;
+            for (row = 0UL; row < OSMGA_M3_BLK; row++)
+                for (col = 0UL; col < OSMGA_M3_BLK; col++)
+                    blkWa[row * stride + col] = OSMGA_S1_SENTINEL;
+            if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
+                                 osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
+                                 (dwgctlFlat & ~MGA_DWGCTL_OPCODE_MASK) |
+                                     MGA_DWGCTL_TEXTURE_TRAP |
+                                     MGA_DWGCTL_NOZCMP,
+                                 OSMGA_M3_ALPHACTRL_NOBLEND,
+                                 OSMGA_M3_WARP, OSMGA_M3_ZORG, &m4tex, lbl)) {
+                IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** "
+                      "REBOOT REQUIRED ***\n");
+                goto unmapM4;
+            }
+            m4corner[0] = m4corner[1] = m4corner[2] = m4corner[3] =
+                OSMGA_M3_COLOUR;
+            if (sweepU)
+                osmgaM4SquareVertsUV(vtx, OSMGA_M4_REP_ULO, OSMGA_M4_REP_UHI,
+                                     OSMGA_M4_REP_HOLD, OSMGA_M4_REP_HOLD,
+                                     m4corner);
+            else
+                osmgaM4SquareVertsUV(vtx, OSMGA_M4_REP_HOLD,
+                                     OSMGA_M4_REP_HOLD,
+                                     OSMGA_M4_REP_ULO, OSMGA_M4_REP_UHI,
+                                     m4corner);
+            if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys,
+                                     2UL * OSMGA_D2C_VTX_DWORDS, 1,
+                                     lbl, 0)) {
+                IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** "
+                      "REBOOT REQUIRED ***\n");
+                goto unmapM4;
+            }
+            m4wrapBad[i] = osmgaM4ReportWrap(blkWa, stride, OSMGA_M4_SQ_LO,
+                                             OSMGA_M4_SQ_HI, sweepU, wrapU,
+                                             sweepV, wrapV, lbl);
+        }
+        if (m4wrapBad[0] == 0UL && m4wrapBad[1] == 0UL &&
+            m4wrapBad[2] == 0UL)
+            IOLog("OpenStepMGA M4: T7 PASS -- WARP-driven coordinates clamp "
+                  "when clamped and wrap per axis when not\n");
+        else
+            IOLog("OpenStepMGA M4: T7 -- clamp %lu, repeatU %lu, repeatV %lu "
+                  "pixels disagree; repeat stays out of the WARP tier\n",
+                  m4wrapBad[0], m4wrapBad[1], m4wrapBad[2]);
+        osmgaD2Settle();
+
+        /* ---- T7e: the linear seam, against M1_4CB's trapezoid numbers --
+         *
+         * Sixteen texels over two periods across 48 pixels magnifies, so
+         * magfilter runs; u = 0 lands on dx = 3 and u = 1 on dx = 27, both
+         * pixel centres, which is where a seam can be read at all.
+         */
+        osmgaM4FillSeam(blkM4 + OSMGA_M4_SEAM_BASE / 4UL,
+                        OSMGA_M4_SEAM_PITCH, OSMGA_M4_SEAM_ROWS,
+                        OSMGA_M4_SEAM_DIM);
+        m4tex.enable  = 1UL;
+        m4tex.org     = OSMGA_M4_TEX + OSMGA_M4_SEAM_BASE;
+        m4tex.dim     = OSMGA_M4_SEAM_DIM;
+        m4tex.log2dim = OSMGA_M4_SEAM_LOG2;
+        m4tex.pitch   = OSMGA_M4_SEAM_PITCH;
+        m4tex.clamp   = 0UL;                     /* both axes repeat */
+        m4tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21) |
+                        MGA_TEXFILTER_MAGBILIN;
+        m4tex.tds     = 0UL;
+
+        for (row = 0UL; row < OSMGA_M3_BLK; row++)
+            for (col = 0UL; col < OSMGA_M3_BLK; col++)
+                blkWa[row * stride + col] = OSMGA_S1_SENTINEL;
+        if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
+                             osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
+                             (dwgctlFlat & ~MGA_DWGCTL_OPCODE_MASK) |
+                                 MGA_DWGCTL_TEXTURE_TRAP | MGA_DWGCTL_NOZCMP,
+                             OSMGA_M3_ALPHACTRL_NOBLEND,
+                             OSMGA_M3_WARP, OSMGA_M3_ZORG, &m4tex, "T7e")) {
+            IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
+                  "REQUIRED ***\n");
+            goto unmapM4;
+        }
+        m4corner[0] = m4corner[1] = m4corner[2] = m4corner[3] =
+            OSMGA_M3_COLOUR;
+        osmgaM4SquareVertsUV(vtx, OSMGA_M4_SEAM_LO, OSMGA_M4_SEAM_HI,
+                             OSMGA_M4_SEAM_LO, OSMGA_M4_SEAM_HI, m4corner);
+        if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys,
+                                 2UL * OSMGA_D2C_VTX_DWORDS, 1, "T7e", 0)) {
+            IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
+                  "REQUIRED ***\n");
+            goto unmapM4;
+        }
+        osmgaM4ReportSeam(blkWa, stride, OSMGA_M4_SQ_LO, "T7e");
+
+        /* ---- T8a: whose alpha reaches the destination? ---------------
+         *
+         * TDUALSTAGE's alpha selector at nought means the TEXTURE's alpha
+         * (:670); ARG2 with the rest of the register clear means DIFFUSE,
+         * the interpolated one.  BOTH LANES take the same value, because
+         * they are the even and odd screen columns and setting one alone
+         * leaves a row reading `20 ab 28 ab` (:13249).
+         *
+         * The texture's own alpha is 0x33 so that the wrong answer is not
+         * merely wrong but recognisable.  The second band is the negative
+         * control: with the selector back at nought, 0x33 must come back.
+         */
+        osmgaM4FillPlain(blkM4 + OSMGA_M4_A8_BASE / 4UL,
+                         OSMGA_M4_A8_PITCH, OSMGA_M4_A8_ROWS,
+                         OSMGA_M4_TEX_ALPHA);
+        m4tex.enable  = 1UL;
+        m4tex.org     = OSMGA_M4_TEX + OSMGA_M4_A8_BASE;
+        m4tex.dim     = OSMGA_M4_A8_DIM;
+        m4tex.log2dim = OSMGA_M4_A8_LOG2;
+        m4tex.pitch   = OSMGA_M4_A8_PITCH;
+        m4tex.clamp   = MGA_TEXCTL_CLAMPUV;
+        m4tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21);
+
+        for (i = 0UL; i < 2UL; i++) {
+            const char *lbl = (i == 0UL) ? "T8a-diffuse" : "T8a-fromtex";
+
+            m4tex.tds = (i == 0UL) ? MGA_TDS_ALPHA_SEL_ARG2 : 0UL;
+            for (row = 0UL; row < OSMGA_M3_BLK; row++)
+                for (col = 0UL; col < OSMGA_M3_BLK; col++)
+                    blkWa[row * stride + col] = OSMGA_S1_SENTINEL;
+            if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
+                                 osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
+                                 (dwgctlFlat & ~MGA_DWGCTL_OPCODE_MASK) |
+                                     MGA_DWGCTL_TEXTURE_TRAP |
+                                     MGA_DWGCTL_NOZCMP,
+                                 OSMGA_M3_ALPHACTRL_NOBLEND,
+                                 OSMGA_M3_WARP, OSMGA_M3_ZORG, &m4tex, lbl)) {
+                IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** "
+                      "REBOOT REQUIRED ***\n");
+                goto unmapM4;
+            }
+            /* alpha 0 at the low column, 255 at the high one, so the ramp
+             * runs along dx and both triangles agree on the diagonal. */
+            m4corner[0] = 0x00FF8040UL;
+            m4corner[1] = 0xFFFF8040UL;
+            m4corner[2] = 0x00FF8040UL;
+            m4corner[3] = 0xFFFF8040UL;
+            osmgaM4SquareVertsUV(vtx, OSMGA_M4_REP_HOLD, OSMGA_M4_REP_HOLD,
+                                 OSMGA_M4_REP_HOLD, OSMGA_M4_REP_HOLD,
+                                 m4corner);
+            if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys,
+                                     2UL * OSMGA_D2C_VTX_DWORDS, 1,
+                                     lbl, 0)) {
+                IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** "
+                      "REBOOT REQUIRED ***\n");
+                goto unmapM4;
+            }
+            osmgaM4ReportAlpha(blkWa, stride, OSMGA_M4_SQ_LO,
+                               OSMGA_M4_SQ_HI, lbl);
+        }
+        IOLog("OpenStepMGA M4: T8a -- the first band should ramp 0..255 and "
+              "the second should read %lu everywhere\n", OSMGA_M4_TEX_ALPHA);
+        osmgaD2Settle();
+
+        /* ---- T8b: does WARP reach the same blended picture? ----------
+         *
+         * A/B against the trapezoid path with the SAME ALPHACTRL, into a
+         * destination both paths find already painted.  The blend
+         * arithmetic itself is not on trial: M1_4E3 matched Mesa on nine
+         * factor pairs across four channels with worst difference nought.
+         *
+         * The comparator is not osmgaM3CompareSurfaces.  That one masks
+         * the alpha off and tests equality alone, so two surfaces left at
+         * the prefill compare equal -- a band where NEITHER path drew would
+         * have read as agreement.
+         */
+        osmgaM4Prefill(blkOr, stride, OSMGA_M4_PREFILL);
+        osmgaM4Prefill(blkWa, stride, OSMGA_M4_PREFILL);
+        if (!osmgaM3OracleTri(base, stride, OSMGA_M3_ORACLE,
+                              OSMGA_M4_SRC_COLOUR,
+                              OSMGA_M4_ALPHACTRL_OVER)) {
+            IOLog("OpenStepMGA M3/T8b: the oracle draw did not finish\n");
+            osmgaD2Settle();
+            goto releaseAll;
+        }
+        if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
+                             osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
+                             dwgctlFlat, OSMGA_M4_ALPHACTRL_OVER,
+                             OSMGA_M3_WARP, OSMGA_M3_ZORG,
+                             (const OSMGAM3Tex *)0, "T8b")) {
+            IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
+                  "REQUIRED ***\n");
+            goto unmapM4;
+        }
+        osmgaM3BuildTri(vtx, OSMGA_M3_TRI_LO, OSMGA_M3_TRI_LO,
+                        OSMGA_M3_TRI_HI - OSMGA_M3_TRI_LO,
+                        OSMGA_M3_F32_HALF, OSMGA_M4_SRC_COLOUR);
+        if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys, OSMGA_D2C_VTX_DWORDS,
+                                 1, "T8b", 0)) {
+            IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
+                  "REQUIRED ***\n");
+            goto unmapM4;
+        }
+        IOLog("OpenStepMGA M4/T8b: prefill %08lx, source %08lx, oracle "
+              "%08lx, WARP %08lx at (%lu,%lu)\n",
+              OSMGA_M4_PREFILL, OSMGA_M4_SRC_COLOUR,
+              blkOr[(OSMGA_M3_TRI_LO + 4UL) * stride + OSMGA_M3_TRI_LO + 4UL],
+              blkWa[(OSMGA_M3_TRI_LO + 4UL) * stride + OSMGA_M3_TRI_LO + 4UL],
+              OSMGA_M3_TRI_LO + 4UL, OSMGA_M3_TRI_LO + 4UL);
+        osmgaD2Settle();
+        m4diff = osmgaM4CompareARGB(blkOr, blkWa, stride, OSMGA_M3_TRI_LO,
+                                    OSMGA_M3_TRI_HI, OSMGA_M4_PREFILL, "T8b");
+        if (m4diff == 0UL)
+            IOLog("OpenStepMGA M4: T8b PASS -- WARP and the trapezoid path "
+                  "blend to the same picture.  Whether that picture is right "
+                  "is M1_4E3's finding, not this one\n");
+        else
+            IOLog("OpenStepMGA M4: T8b -- the two paths blend differently; "
+                  "blending stays out of the WARP tier\n");
         osmgaD2Settle();
 
         /* ---- T6: does a trapezoid draw between two WARP draws survive? --
@@ -11177,7 +11873,8 @@ releaseAndReturn:
         /* The other tier, into the oracle surface so the WARP surface is
          * left alone and a difference cannot be blamed on overdraw. */
         if (!osmgaM3OracleTri(base, stride, OSMGA_M3_ORACLE,
-                              OSMGA_M3_COLOUR)) {
+                              OSMGA_M3_COLOUR & OSMGA_D2E_RGB,
+                              OSMGA_M3_ALPHACTRL_NOBLEND)) {
             IOLog("OpenStepMGA M3/T6: the trapezoid draw did not finish\n");
             osmgaD2Settle();
             goto releaseAll;
@@ -11196,7 +11893,8 @@ releaseAndReturn:
         osmgaW32(base, MGA_WMISC,      MGA_WMISC_WRITE);
         if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
                              osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
-                             dwgctlFlat, OSMGA_M3_WARP, OSMGA_M3_ZORG,
+                             dwgctlFlat, OSMGA_M3_ALPHACTRL_NOBLEND,
+                             OSMGA_M3_WARP, OSMGA_M3_ZORG,
                              (const OSMGAM3Tex *)0, "T6")) {
             IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
                   "REQUIRED ***\n");
