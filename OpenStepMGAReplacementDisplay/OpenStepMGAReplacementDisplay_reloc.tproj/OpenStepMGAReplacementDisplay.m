@@ -13723,14 +13723,13 @@ unmap:
 
 
 
+/* osmgaHW3DIsPow2 moved to OpenStepMGAHW3D.c when the wrap policy did:
+ * the policy needs it and the policy is now shared with the WARP encoder
+ * and testable on the host.  The declaration is in the header. */
+
 /* Ceiling log2, the same thing MGA_LOG2 and GetPowerOfTwo compute: the
  * log2 field says which power of two CONTAINS the texture, and the exact
  * size travels separately, so a non-power-of-two size is legal. */
-static int
-osmgaHW3DIsPow2(unsigned long n)
-{
-    return (n != 0UL) && ((n & (n - 1UL)) == 0UL);
-}
 
 static unsigned long
 osmgaHW3DLog2Ceil(unsigned long n)
@@ -13835,14 +13834,21 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
          */
         perspBits = ((b->state.texFlags & OSMGA_HW3D_TEXF_PERSP) != 0UL)
                     ? 0UL : MGA_TEXCTL_NOPERSP;
-        clampBits = MGA_TEXCTL_CLAMPU | MGA_TEXCTL_CLAMPV;
-        if (b->state.texPitch == b->state.texW) {
-            if ((b->state.texFlags & OSMGA_HW3D_TEXF_REPEATU) != 0UL &&
-                osmgaHW3DIsPow2(b->state.texW))
-                clampBits &= ~MGA_TEXCTL_CLAMPU;
-            if ((b->state.texFlags & OSMGA_HW3D_TEXF_REPEATV) != 0UL &&
-                osmgaHW3DIsPow2(b->state.texH))
-                clampBits &= ~MGA_TEXCTL_CLAMPV;
+        /*
+         * The policy moved to osmgaHW3DTexClampAxes, in abstract flags,
+         * because the WARP encoder needs the SAME rule while writing the
+         * dimensions in a different format -- and a policy written twice
+         * is a policy that drifts.  Only the mapping to register bits
+         * stays here.  The host suite checks the two agree.
+         */
+        {
+            unsigned long axes = osmgaHW3DTexClampAxes(&b->state);
+
+            clampBits =
+                (((axes & OSMGA_HW3D_CLAMP_U) != 0UL) ? MGA_TEXCTL_CLAMPU
+                                                      : 0UL) |
+                (((axes & OSMGA_HW3D_CLAMP_V) != 0UL) ? MGA_TEXCTL_CLAMPV
+                                                      : 0UL);
         }
 
         ok = ok && osmgaDmaBlock(list, listDwords, &pos,

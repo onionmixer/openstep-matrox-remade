@@ -1512,3 +1512,32 @@ osmgaHW3DValidateWarp(const OSMGAHW3DWarpBatch *b,
 
     return OSMGA_HW3D_OK;
 }
+
+int
+osmgaHW3DIsPow2(unsigned long n)
+{
+    return (n != 0UL) && ((n & (n - 1UL)) == 0UL);
+}
+
+unsigned long
+osmgaHW3DTexClampAxes(const OSMGAHW3DState *st)
+{
+    unsigned long axes = OSMGA_HW3D_CLAMP_U | OSMGA_HW3D_CLAMP_V;
+
+    if (st == 0)
+        return axes;
+    /*
+     * A masked index into a padded surface addresses the wrong row, so a
+     * pitch that is not the width disqualifies BOTH axes at once -- it is
+     * not a per-axis property.
+     */
+    if (st->texPitch != st->texW)
+        return axes;
+    if ((st->texFlags & OSMGA_HW3D_TEXF_REPEATU) != 0UL &&
+        osmgaHW3DIsPow2(st->texW))
+        axes &= ~OSMGA_HW3D_CLAMP_U;
+    if ((st->texFlags & OSMGA_HW3D_TEXF_REPEATV) != 0UL &&
+        osmgaHW3DIsPow2(st->texH))
+        axes &= ~OSMGA_HW3D_CLAMP_V;
+    return axes;
+}

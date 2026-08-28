@@ -1456,3 +1456,28 @@ int osmgaHW3DF32PosNormal(unsigned long p);
 int osmgaHW3DF32InUnit(unsigned long p);
 int osmgaHW3DF32AbsAtMost(unsigned long p, unsigned long limit);
 int osmgaHW3DF32Between(unsigned long p, unsigned long lo, unsigned long hi);
+
+/*
+ * Which axes must CLAMP rather than wrap.
+ *
+ * The rule is not "what the client asked for": repeat is granted only when
+ * the map can safely be wrapped, which needs a power-of-two dimension so
+ * the reduction is a mask, and a pitch equal to the width, since a masked
+ * index into a padded surface addresses the wrong row.  Anything else stays
+ * clamped whatever the client said.
+ *
+ * It lives here, in abstract flags rather than TEXCTL bits, because two
+ * encoders now need the SAME policy: the trapezoid path and the WARP path
+ * write the texture dimensions in different formats but must agree about
+ * wrapping, and a policy written twice is a policy that drifts.  Putting it
+ * here also makes it testable on the host, which it was not when it was
+ * ten lines inside the encoder.
+ */
+#define OSMGA_HW3D_CLAMP_U  0x1UL
+#define OSMGA_HW3D_CLAMP_V  0x2UL
+
+unsigned long osmgaHW3DTexClampAxes(const OSMGAHW3DState *st);
+
+/* A power of two, and not nought.  It used to be a static in the driver;
+ * the wrap policy needs it and the policy lives here now. */
+int osmgaHW3DIsPow2(unsigned long n);

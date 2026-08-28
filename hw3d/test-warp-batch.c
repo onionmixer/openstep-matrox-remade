@@ -239,6 +239,64 @@ policy(void)
                                     "still refused");
 }
 
+/*
+ * The wrap policy, which two encoders now share.  It was ten lines inside
+ * the trapezoid encoder and therefore untestable; the cases below are the
+ * ones that decide whether a texture may wrap at all.
+ *
+ * The rule that is easy to get wrong: a pitch that is not the width
+ * disqualifies BOTH axes, because a masked index into a padded surface
+ * addresses the wrong ROW -- it is not a per-axis property, and reading
+ * it as one would let a client repeat u on a padded map.
+ */
+static void
+clampPolicy(void)
+{
+    OSMGAHW3DState st;
+    unsigned long a;
+
+    memset(&st, 0, sizeof st);
+    st.texW = 64UL; st.texH = 64UL; st.texPitch = 64UL;
+
+    st.texFlags = 0UL;
+    a = osmgaHW3DTexClampAxes(&st);
+    check(a == (OSMGA_HW3D_CLAMP_U | OSMGA_HW3D_CLAMP_V),
+          "no request means both axes clamp");
+
+    st.texFlags = OSMGA_HW3D_TEXF_REPEATU;
+    a = osmgaHW3DTexClampAxes(&st);
+    check(a == OSMGA_HW3D_CLAMP_V, "repeat on u frees u alone");
+
+    st.texFlags = OSMGA_HW3D_TEXF_REPEATV;
+    a = osmgaHW3DTexClampAxes(&st);
+    check(a == OSMGA_HW3D_CLAMP_U, "repeat on v frees v alone");
+
+    st.texFlags = OSMGA_HW3D_TEXF_REPEATU | OSMGA_HW3D_TEXF_REPEATV;
+    a = osmgaHW3DTexClampAxes(&st);
+    check(a == 0UL, "both requested frees both");
+
+    /* A padded map cannot wrap on EITHER axis. */
+    st.texPitch = 80UL;
+    a = osmgaHW3DTexClampAxes(&st);
+    check(a == (OSMGA_HW3D_CLAMP_U | OSMGA_HW3D_CLAMP_V),
+          "a pitch that is not the width disqualifies both axes");
+    st.texPitch = 64UL;
+
+    /* And a dimension that is not a power of two cannot wrap on ITS axis. */
+    st.texW = 48UL; st.texPitch = 48UL;
+    a = osmgaHW3DTexClampAxes(&st);
+    check(a == OSMGA_HW3D_CLAMP_U,
+          "a width that is not a power of two keeps u clamped");
+    st.texW = 64UL; st.texH = 48UL; st.texPitch = 64UL;
+    a = osmgaHW3DTexClampAxes(&st);
+    check(a == OSMGA_HW3D_CLAMP_V,
+          "a height that is not a power of two keeps v clamped");
+
+    check(osmgaHW3DTexClampAxes((const OSMGAHW3DState *)0) ==
+          (OSMGA_HW3D_CLAMP_U | OSMGA_HW3D_CLAMP_V),
+          "no state at all clamps everything");
+}
+
 int
 main(void)
 {
@@ -246,10 +304,12 @@ main(void)
     structure();
     vertices();
     policy();
+    clampPolicy();
 
     if (failures == 0)
-        printf("test-warp-batch: layout shared with version 9, and every "
-               "named defect refused with its own verdict (0 failing)\n");
+        printf("test-warp-batch: layout shared with version 9, every named "
+               "defect refused with its own verdict, and the wrap policy "
+               "holds (0 failing)\n");
     else
         printf("test-warp-batch: %d failing\n", failures);
     return failures != 0;
