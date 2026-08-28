@@ -254,8 +254,13 @@ mga_freelist_get():     head = MGA_READ(MGA_PRIMADDRESS);
 ```
 
 **대기도, idle 검사도, 2 차 상태 조회도 없다.** `SECADDRESS`/`SECEND` 는 소스
-전체에서 디스패치 두 곳(`mga_state.c:679` 정점, `:728` 인덱스)에만 나오고
-어디서도 기다리지 않는다.
+전체에서 **정점 디스패치 한 곳**(`mga_state.c:679`)에만 나오고 어디서도
+기다리지 않는다.
+
+> **초판은 "디스패치 두 곳(정점, 인덱스)" 이라고 썼다. 틀렸다** — 인덱스
+> 디스패치(`:728`)는 `SETUPADDRESS`/`SETUPEND` 를 쓴다. **§9 의 aging 논증은
+> 정점 루프만으로 성립하므로 결론은 그대로다**(그 루프가 클립과 SEC 발사를
+> 번갈아 낸다). 사실관계만 정정한다.
 
 `SECEND` 에 실리는 `dma_access` 는 동기화 비트가 아니다 — AGP 는
 `MGA_PAGPXFER`, PCI 는 **0**(`mga_dma.c:596`, `:699`)이고, **`PRIMEND` 에도
