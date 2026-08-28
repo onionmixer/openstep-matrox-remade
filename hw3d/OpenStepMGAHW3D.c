@@ -338,6 +338,171 @@ osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                                   (OSMGAHW3DTexBand *)0);
 }
 
+/*
+ * The batch state, judged once for both contracts.
+ *
+ * The trapezoid path and the WARP path program the SAME registers from the
+ * SAME OSMGAHW3DState, so they need the same bounds -- and this is the
+ * containment argument itself, not a convenience.  Written twice it would
+ * drift, and the half that drifted would be the half nobody was reading.
+ *
+ * `anyDepth` and `anyTex` come from the caller because they are derived
+ * from the primitives, and the two contracts keep those in different
+ * shapes: version 9 reads tri[].dwgctl, version 10 reads run[].dwgctl.
+ * Deriving them is a pure loop that cannot fail, so doing it before this
+ * call rather than inside leaves the order of every verdict below
+ * unchanged.
+ */
+static int
+osmgaHW3DValidateStateCommon(const OSMGAHW3DState *st,
+                             const OSMGAHW3DLimits *lim,
+                             unsigned long rows, int anyDepth, int anyTex)
+{
+    if (st->dstPitch == 0UL ||
+        st->dstWidth > st->dstPitch ||
+        lim->pitchBytes / 4UL != st->dstPitch)
+        return OSMGA_HW3D_E_DSTPITCH;
+    /*
+     * And a pitch the hardware can actually hold.
+     *
+     * Without this the engine accepts the batch and draws somewhere else --
+     * measured, it covered as little as one per cent of what the software
+     * path covered, and nothing anywhere said no.  It is refused HERE rather
+     * than only in the library because the library is not the only caller:
+     * everything the checks below promise about staying inside the window is
+     * computed from this pitch, and if the hardware is walking a different
+     * one those promises are about a picture nobody is drawing.
+     *
+     * The width is deliberately not constrained -- 333 pixels inside a pitch
+     * of 352 is a perfectly good surface.  It is the PITCH the engine walks.
+     */
+    if ((st->dstPitch % OSMGA_HW3D_PITCH_ALIGN) != 0UL)
+        return OSMGA_HW3D_E_DSTPITCH;
+
+    /*
+     * Alignment before reach, because an unaligned origin is not an address
+     * at all -- its low bits are the memory-space and access selectors --
+     * and measuring the reach of a value that is partly a mode field would
+     * be bounding the wrong number.
+     *
+     * Inside this function only.  The submit path range-checks dstorg
+     * against the window before ever calling here, so an origin that is
+     * both outside the window and unaligned still reports E_DSTORG from
+     * there.  The precedence is local, not global, and saying otherwise
+     * would be a promise this file cannot keep.
+     */
+    if ((st->dstorg & (OSMGA_HW3D_DSTORG_ALIGN - 1UL)) != 0UL)
+        return OSMGA_HW3D_E_DSTORGAL;
+
+    if (!osmgaHW3DReach(st->dstorg, rows, lim->pitchBytes,
+                        lim->colourStart, lim->colourEnd))
+        return OSMGA_HW3D_E_DSTORG;
+
+    /*
+     * Which origins have to be bounded depends on what the triangles ask
+     * for, and the test is ANY rather than ALL: one depth triangle in a
+     * batch of otherwise flat ones still addresses depth.  Writing this as
+     * "all of them" would let exactly that triangle draw against an origin
+     * nobody checked.
+     */
+    /*
+     * "Addresses depth" is osmgaHW3DAddressesDepth and nothing else -- the
+     * same call the encoder and the submit path make.  It used to be atype
+     * ZI spelled out here, which missed atype I asking for a real
+     * comparison: that reads depth, and read from where nobody bounded.
+     */
+
+    if (anyDepth) {
+        unsigned long zstride = (lim->pitchBytes / 4UL) * OSMGA_HW3D_DEPTH_BYTES;
+
+        /* Conditional, like the reach check beside it: when nothing in the
+         * batch addresses depth the field is ignored, and refusing a stale
+         * value nobody is going to use would reject working batches. */
+        if ((st->zorg & (OSMGA_HW3D_ZORG_ALIGN - 1UL)) != 0UL)
+            return OSMGA_HW3D_E_ZORGAL;
+
+        if (!osmgaHW3DReach(st->zorg, rows, zstride,
+                            lim->depthStart, lim->depthEnd))
+            return OSMGA_HW3D_E_ZORG;
+    }
+    if (anyTex) {
+        unsigned long w = st->texW, h = st->texH;
+        unsigned long pitch = st->texPitch;
+
+        if (w == 0UL || h == 0UL ||
+            w > OSMGA_HW3D_TEX_MAX_DIM || h > OSMGA_HW3D_TEX_MAX_DIM ||
+            pitch < w || pitch > OSMGA_HW3D_TEX_MAX_PIT)
+            return OSMGA_HW3D_E_TEXSIZE;
+        if (st->texFormat != OSMGA_HW3D_TEXFMT_TW32)
+            return OSMGA_HW3D_E_TEXSIZE;
+        /*
+         * The requested rungs, which are the rung PLUS ONE so that nought is
+         * the inert value -- see the note by the fields.  Anything above the
+         * ladder is a client that has not read the header, and is refused
+         * rather than clamped: clamping would let a wrong number look as
+         * though it had worked.
+         */
+        if (st->texBiasReqU > OSMGA_HW3D_TEX_BANDS ||
+            st->texBiasReqV > OSMGA_HW3D_TEX_BANDS)
+            return OSMGA_HW3D_E_TEXSIZE;
+        /*
+         * The scissor box is NOT checked here, and that is deliberate.
+         *
+         * The submit path draws the intersection of it with the destination
+         * window, so no value in it can widen anything: a box of nonsense
+         * either narrows the clip or empties it, and an empty one skips the
+         * draw.  Checking it would be checking something containment does
+         * not rest on, and would turn a harmless client mistake into a
+         * refusal.
+         *
+         * The row and column checks below are unchanged and still measured
+         * against the whole window.  A narrow scissor therefore makes this
+         * validation conservative -- it admits only what could be drawn
+         * without one -- and never relaxed.
+         */
+        /*
+         * The diagnostic minification selector, and what it costs.
+         *
+         * Only the four modes the generated register description names are
+         * let through.  The rest of the field is unnamed there -- including
+         * the 0xd the hand-written header calls MIN_ANISO -- and an unnamed
+         * fetch footprint is not something to hand the engine on a guess.
+         */
+        {
+            unsigned long mm = (st->texFlags
+                                & OSMGA_HW3D_TEXF_MINMODE_MASK)
+                               >> OSMGA_HW3D_TEXF_MINMODE_SHIFT;
+
+            if (mm != 0UL &&
+                mm != OSMGA_HW3D_TEXF_MINMODE_MM1S &&
+                mm != OSMGA_HW3D_TEXF_MINMODE_MM2S &&
+                mm != OSMGA_HW3D_TEXF_MINMODE_MM4S &&
+                mm != OSMGA_HW3D_TEXF_MINMODE_MM8S)
+                return OSMGA_HW3D_E_TEXSIZE;
+            /*
+             * Reach from the size the client gave, which is the size the
+             * kernel will program: pitch texels of four bytes, h rows.  With
+             * a mipmap mode asked for it is TWICE that -- a whole chain is
+             * four thirds of the base, and the engine may walk one to an
+             * address this driver has not worked out yet.  Reading beyond the
+             * texture would be reading VRAM nobody proved.
+             */
+            /* Conditional for the same reason as zorg above. */
+            if ((st->texorg & (OSMGA_HW3D_TEXORG_ALIGN - 1UL)) != 0UL)
+                return OSMGA_HW3D_E_TEXORGAL;
+
+            if (!osmgaHW3DReach(st->texorg, (mm != 0UL) ? h * 2UL : h,
+                                pitch * 4UL, lim->texStart, lim->texEnd))
+                return OSMGA_HW3D_E_TEXORG;
+        }
+
+        /* The coordinate check is after the triangle loop, because what it
+         * needs -- how far the drawing actually reaches -- is what that loop
+         * works out. */
+    }
+    return OSMGA_HW3D_OK;
+}
+
 int
 osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                        unsigned long *badTri, OSMGAHW3DTexReach *reach,
@@ -449,153 +614,20 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
      * enough to overflow a multiply is refused rather than wrapping into
      * agreement.
      */
-    if (b->state.dstPitch == 0UL ||
-        b->state.dstWidth > b->state.dstPitch ||
-        lim->pitchBytes / 4UL != b->state.dstPitch)
-        return OSMGA_HW3D_E_DSTPITCH;
-    /*
-     * And a pitch the hardware can actually hold.
-     *
-     * Without this the engine accepts the batch and draws somewhere else --
-     * measured, it covered as little as one per cent of what the software
-     * path covered, and nothing anywhere said no.  It is refused HERE rather
-     * than only in the library because the library is not the only caller:
-     * everything the checks below promise about staying inside the window is
-     * computed from this pitch, and if the hardware is walking a different
-     * one those promises are about a picture nobody is drawing.
-     *
-     * The width is deliberately not constrained -- 333 pixels inside a pitch
-     * of 352 is a perfectly good surface.  It is the PITCH the engine walks.
-     */
-    if ((b->state.dstPitch % OSMGA_HW3D_PITCH_ALIGN) != 0UL)
-        return OSMGA_HW3D_E_DSTPITCH;
+    {
+        int vs;
 
-    /*
-     * Alignment before reach, because an unaligned origin is not an address
-     * at all -- its low bits are the memory-space and access selectors --
-     * and measuring the reach of a value that is partly a mode field would
-     * be bounding the wrong number.
-     *
-     * Inside this function only.  The submit path range-checks dstorg
-     * against the window before ever calling here, so an origin that is
-     * both outside the window and unaligned still reports E_DSTORG from
-     * there.  The precedence is local, not global, and saying otherwise
-     * would be a promise this file cannot keep.
-     */
-    if ((b->state.dstorg & (OSMGA_HW3D_DSTORG_ALIGN - 1UL)) != 0UL)
-        return OSMGA_HW3D_E_DSTORGAL;
-
-    if (!osmgaHW3DReach(b->state.dstorg, rows, lim->pitchBytes,
-                        lim->colourStart, lim->colourEnd))
-        return OSMGA_HW3D_E_DSTORG;
-
-    /*
-     * Which origins have to be bounded depends on what the triangles ask
-     * for, and the test is ANY rather than ALL: one depth triangle in a
-     * batch of otherwise flat ones still addresses depth.  Writing this as
-     * "all of them" would let exactly that triangle draw against an origin
-     * nobody checked.
-     */
-    /*
-     * "Addresses depth" is osmgaHW3DAddressesDepth and nothing else -- the
-     * same call the encoder and the submit path make.  It used to be atype
-     * ZI spelled out here, which missed atype I asking for a real
-     * comparison: that reads depth, and read from where nobody bounded.
-     */
-    anyDepth = 0;
-    anyTex = 0;
-    for (i = 0UL; i < b->triCount; i++) {
-        if (osmgaHW3DAddressesDepth(b->tri[i].dwgctl))            anyDepth = 1;
-        if ((b->tri[i].dwgctl & 0xFUL) == OSMGA_HW3D_OPCODE_TEX)  anyTex = 1;
-    }
-
-    if (anyDepth) {
-        unsigned long zstride = (lim->pitchBytes / 4UL) * OSMGA_HW3D_DEPTH_BYTES;
-
-        /* Conditional, like the reach check beside it: when nothing in the
-         * batch addresses depth the field is ignored, and refusing a stale
-         * value nobody is going to use would reject working batches. */
-        if ((b->state.zorg & (OSMGA_HW3D_ZORG_ALIGN - 1UL)) != 0UL)
-            return OSMGA_HW3D_E_ZORGAL;
-
-        if (!osmgaHW3DReach(b->state.zorg, rows, zstride,
-                            lim->depthStart, lim->depthEnd))
-            return OSMGA_HW3D_E_ZORG;
-    }
-    if (anyTex) {
-        unsigned long w = b->state.texW, h = b->state.texH;
-        unsigned long pitch = b->state.texPitch;
-
-        if (w == 0UL || h == 0UL ||
-            w > OSMGA_HW3D_TEX_MAX_DIM || h > OSMGA_HW3D_TEX_MAX_DIM ||
-            pitch < w || pitch > OSMGA_HW3D_TEX_MAX_PIT)
-            return OSMGA_HW3D_E_TEXSIZE;
-        if (b->state.texFormat != OSMGA_HW3D_TEXFMT_TW32)
-            return OSMGA_HW3D_E_TEXSIZE;
-        /*
-         * The requested rungs, which are the rung PLUS ONE so that nought is
-         * the inert value -- see the note by the fields.  Anything above the
-         * ladder is a client that has not read the header, and is refused
-         * rather than clamped: clamping would let a wrong number look as
-         * though it had worked.
-         */
-        if (b->state.texBiasReqU > OSMGA_HW3D_TEX_BANDS ||
-            b->state.texBiasReqV > OSMGA_HW3D_TEX_BANDS)
-            return OSMGA_HW3D_E_TEXSIZE;
-        /*
-         * The scissor box is NOT checked here, and that is deliberate.
-         *
-         * The submit path draws the intersection of it with the destination
-         * window, so no value in it can widen anything: a box of nonsense
-         * either narrows the clip or empties it, and an empty one skips the
-         * draw.  Checking it would be checking something containment does
-         * not rest on, and would turn a harmless client mistake into a
-         * refusal.
-         *
-         * The row and column checks below are unchanged and still measured
-         * against the whole window.  A narrow scissor therefore makes this
-         * validation conservative -- it admits only what could be drawn
-         * without one -- and never relaxed.
-         */
-        /*
-         * The diagnostic minification selector, and what it costs.
-         *
-         * Only the four modes the generated register description names are
-         * let through.  The rest of the field is unnamed there -- including
-         * the 0xd the hand-written header calls MIN_ANISO -- and an unnamed
-         * fetch footprint is not something to hand the engine on a guess.
-         */
-        {
-            unsigned long mm = (b->state.texFlags
-                                & OSMGA_HW3D_TEXF_MINMODE_MASK)
-                               >> OSMGA_HW3D_TEXF_MINMODE_SHIFT;
-
-            if (mm != 0UL &&
-                mm != OSMGA_HW3D_TEXF_MINMODE_MM1S &&
-                mm != OSMGA_HW3D_TEXF_MINMODE_MM2S &&
-                mm != OSMGA_HW3D_TEXF_MINMODE_MM4S &&
-                mm != OSMGA_HW3D_TEXF_MINMODE_MM8S)
-                return OSMGA_HW3D_E_TEXSIZE;
-            /*
-             * Reach from the size the client gave, which is the size the
-             * kernel will program: pitch texels of four bytes, h rows.  With
-             * a mipmap mode asked for it is TWICE that -- a whole chain is
-             * four thirds of the base, and the engine may walk one to an
-             * address this driver has not worked out yet.  Reading beyond the
-             * texture would be reading VRAM nobody proved.
-             */
-            /* Conditional for the same reason as zorg above. */
-            if ((b->state.texorg & (OSMGA_HW3D_TEXORG_ALIGN - 1UL)) != 0UL)
-                return OSMGA_HW3D_E_TEXORGAL;
-
-            if (!osmgaHW3DReach(b->state.texorg, (mm != 0UL) ? h * 2UL : h,
-                                pitch * 4UL, lim->texStart, lim->texEnd))
-                return OSMGA_HW3D_E_TEXORG;
+        anyDepth = 0;
+        anyTex = 0;
+        for (i = 0UL; i < b->triCount; i++) {
+            if (osmgaHW3DAddressesDepth(b->tri[i].dwgctl))            anyDepth = 1;
+            if ((b->tri[i].dwgctl & 0xFUL) == OSMGA_HW3D_OPCODE_TEX)  anyTex = 1;
         }
-
-        /* The coordinate check is after the triangle loop, because what it
-         * needs -- how far the drawing actually reaches -- is what that loop
-         * works out. */
+    
+        vs = osmgaHW3DValidateStateCommon(&b->state, lim, rows,
+                                          anyDepth, anyTex);
+        if (vs != OSMGA_HW3D_OK)
+            return vs;
     }
 
     for (i = 0UL; i < b->triCount; i++) {
@@ -1481,6 +1513,35 @@ osmgaHW3DValidateWarp(const OSMGAHW3DWarpBatch *b,
         return OSMGA_HW3D_E_VTXCOUNT;
     if (badRun != 0)
         *badRun = 0UL;
+
+    /*
+     * The batch state, through the same checks version 9 uses -- the pitch,
+     * the origins and their alignments, the texture's size and reach.
+     *
+     * It was missing.  The validator judged the run structure and every
+     * vertex word and then let DSTORG, ZORG, TEXORG, the pitch and the
+     * texture size reach the registers unexamined, which is the whole
+     * containment argument going out the door behind a well-formed
+     * vertex array.
+     *
+     * anyDepth and anyTex are derived from the RUNS here, where version 9
+     * derives them from its triangles; the state checks themselves are the
+     * same code.
+     */
+    {
+        int anyDepth = 0, anyTex = 0, vs;
+
+        for (r = 0UL; r < (unsigned long)b->runCount; r++) {
+            unsigned long dw = (unsigned long)b->run[r].dwgctl;
+
+            if (osmgaHW3DAddressesDepth(dw))                anyDepth = 1;
+            if ((dw & 0xFUL) == OSMGA_HW3D_OPCODE_TEX)      anyTex = 1;
+        }
+        vs = osmgaHW3DValidateStateCommon(&b->state, lim, lim->clipY1 + 1UL,
+                                          anyDepth, anyTex);
+        if (vs != OSMGA_HW3D_OK)
+            return vs;
+    }
 
     /*
      * Every vertex word, by its bits.  The containment argument rests on

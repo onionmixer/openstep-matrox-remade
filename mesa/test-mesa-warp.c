@@ -204,13 +204,45 @@ static OSMGAHW3DWarpBatch  wb;
 static OSMGAHW3DLimits     lim;
 static OSMGAMesaWarpBuilder wbuild;
 
+/*
+ * The batch state the runs will program.  The assembler does not fill it
+ * in -- it assembles primitives, and the state is the caller's -- so the
+ * test supplies it, and the validator now bounds it.
+ */
+static void
+stateUp(void)
+{
+    memset(&lim, 0, sizeof lim);
+    lim.pitchBytes  = 4096UL;
+    lim.clipX1      = 63UL;
+    lim.clipY1      = 63UL;
+    lim.colourStart = 4UL * 1024UL * 1024UL;
+    lim.colourEnd   = 5UL * 1024UL * 1024UL;
+    lim.depthStart  = 5UL * 1024UL * 1024UL;
+    lim.depthEnd    = 5UL * 1024UL * 1024UL + 512UL * 1024UL;
+    lim.texStart    = 6UL * 1024UL * 1024UL;
+    lim.texEnd      = 7UL * 1024UL * 1024UL;
+    lim.batchBytes  = OSMGA_HW3D_BATCH_BYTES;
+    lim.maxEdgeWalk = 16384UL;
+
+    wb.state.dstorg    = lim.colourStart;
+    wb.state.dstPitch  = lim.pitchBytes / 4UL;
+    wb.state.dstWidth  = lim.clipX1 + 1UL;
+    wb.state.dstHeight = lim.clipY1 + 1UL;
+    wb.state.zorg      = lim.depthStart;
+    wb.state.texorg    = lim.texStart;
+    wb.state.texW      = 64UL;
+    wb.state.texH      = 64UL;
+    wb.state.texPitch  = 64UL;
+    wb.state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
+}
+
 static void
 accepted(const char *what)
 {
     unsigned long badRun = 0UL;
     int v;
 
-    lim.batchBytes = OSMGA_HW3D_BATCH_BYTES;
     v = osmgaHW3DValidateWarp(&wb, &lim, &badRun);
     if (v != OSMGA_HW3D_OK) {
         printf("FAIL: %s -- the kernel refused an assembled batch, "
@@ -235,6 +267,7 @@ assemble(void)
 
     /* One state, many triangles: one run. */
     OSMGAMesaWarpReset(&wbuild, &wb);
+    stateUp();
     for (i = 0UL; i < 40UL; i++) {
         r = OSMGAMesaWarpAdd(&wbuild, 0x000c4074UL, 0x00000001UL, &v, &v, &v);
         check(r == 0, "a triangle is taken", (unsigned long)r, 0UL);
@@ -248,6 +281,7 @@ assemble(void)
 
     /* Alternating state: a run each, and the runs still partition. */
     OSMGAMesaWarpReset(&wbuild, &wb);
+    stateUp();
     for (i = 0UL; i < OSMGA_HW3D_MAX_RUN; i++) {
         r = OSMGAMesaWarpAdd(&wbuild, 0x000c4074UL + (i & 1UL),
                              0x00000001UL, &v, &v, &v);
@@ -277,6 +311,7 @@ assemble(void)
 
     /* Fill to the vertex maximum. */
     OSMGAMesaWarpReset(&wbuild, &wb);
+    stateUp();
     for (i = 0UL; i < OSMGA_HW3D_MAX_VTX / 3UL; i++) {
         r = OSMGAMesaWarpAdd(&wbuild, 0x000c4074UL, 0x00000001UL,
                              &v, &v, &v);
@@ -295,6 +330,7 @@ assemble(void)
     /* An empty batch is not a valid submission, and the assembler does not
      * pretend otherwise -- the caller must not send one. */
     OSMGAMesaWarpReset(&wbuild, &wb);
+    stateUp();
     lim.batchBytes = OSMGA_HW3D_BATCH_BYTES;
     check(osmgaHW3DValidateWarp(&wb, &lim, (unsigned long *)0) !=
               OSMGA_HW3D_OK,

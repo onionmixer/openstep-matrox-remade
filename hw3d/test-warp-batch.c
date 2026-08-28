@@ -76,7 +76,29 @@ good(void)
         wb.vtx[i].tu0 = (osmga_u32)bits(0.25f);
         wb.vtx[i].tv0 = (osmga_u32)bits(0.75f);
     }
-    lim.batchBytes = OSMGA_HW3D_BATCH_BYTES;
+    memset(&lim, 0, sizeof lim);
+    lim.pitchBytes  = 4096UL;
+    lim.clipX1      = 63UL;
+    lim.clipY1      = 63UL;
+    lim.colourStart = 4UL * 1024UL * 1024UL;
+    lim.colourEnd   = 5UL * 1024UL * 1024UL;
+    lim.depthStart  = 5UL * 1024UL * 1024UL;
+    lim.depthEnd    = 5UL * 1024UL * 1024UL + 512UL * 1024UL;
+    lim.texStart    = 6UL * 1024UL * 1024UL;
+    lim.texEnd      = 7UL * 1024UL * 1024UL;
+    lim.batchBytes  = OSMGA_HW3D_BATCH_BYTES;
+    lim.maxEdgeWalk = 16384UL;
+
+    wb.state.dstorg    = lim.colourStart;
+    wb.state.dstPitch  = lim.pitchBytes / 4UL;
+    wb.state.dstWidth  = lim.clipX1 + 1UL;
+    wb.state.dstHeight = lim.clipY1 + 1UL;
+    wb.state.zorg      = lim.depthStart;
+    wb.state.texorg    = lim.texStart;
+    wb.state.texW      = 64UL;
+    wb.state.texH      = 64UL;
+    wb.state.texPitch  = 64UL;
+    wb.state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
 }
 
 static void
@@ -297,6 +319,51 @@ clampPolicy(void)
           "no state at all clamps everything");
 }
 
+/*
+ * The state the runs will program.  This was the gap: the validator judged
+ * the run structure and every vertex word, then let the destination, the
+ * depth buffer and the texture through unexamined.
+ *
+ * The verdicts are version 9's because the CHECKS are version 9's -- the
+ * two contracts program the same registers from the same state, so they
+ * share the code rather than each carrying a copy that can drift.
+ */
+static void
+stateCases(void)
+{
+    good(); wb.state.dstPitch = 0UL;
+    expect(OSMGA_HW3D_E_DSTPITCH, "a zero pitch is refused");
+    good(); wb.state.dstPitch = 999UL;
+    expect(OSMGA_HW3D_E_DSTPITCH, "a pitch the limits disagree with is "
+                                  "refused");
+    good(); wb.state.dstorg = wb.state.dstorg + 1UL;
+    expect(OSMGA_HW3D_E_DSTORGAL, "an unaligned destination is refused");
+    good(); wb.state.dstorg = 0UL;
+    expect(OSMGA_HW3D_E_DSTORG, "a destination outside the window is "
+                                "refused");
+
+    /* Depth is examined only when a run addresses it -- the same ANY rule
+     * version 9 uses, so one depth run among flat ones still bounds it. */
+    good(); wb.state.zorg = 0UL;
+    expect(OSMGA_HW3D_OK, "an unused depth origin is ignored");
+    good(); wb.state.zorg = 0UL;
+    wb.run[1].dwgctl = 0x000c4034U;           /* atype ZI addresses depth */
+    expect(OSMGA_HW3D_E_ZORG, "a depth origin a LATER run needs is bounded");
+
+    good(); wb.state.texW = 0UL;
+    expect(OSMGA_HW3D_OK, "an unused texture size is ignored");
+    good(); wb.run[0].dwgctl = 0x000c4076U;   /* opcode 6 is textured */
+    wb.state.texW = 0UL;
+    expect(OSMGA_HW3D_E_TEXSIZE, "a texture a run needs is sized");
+    good(); wb.run[0].dwgctl = 0x000c4076U;
+    wb.state.texorg = 0UL;
+    expect(OSMGA_HW3D_E_TEXORG, "a texture outside the window is refused");
+    good(); wb.run[0].dwgctl = 0x000c4076U;
+    wb.state.texPitch = 32UL;
+    expect(OSMGA_HW3D_E_TEXSIZE, "a pitch narrower than the texture is "
+                                 "refused");
+}
+
 int
 main(void)
 {
@@ -305,11 +372,12 @@ main(void)
     vertices();
     policy();
     clampPolicy();
+    stateCases();
 
     if (failures == 0)
         printf("test-warp-batch: layout shared with version 9, every named "
-               "defect refused with its own verdict, and the wrap policy "
-               "holds (0 failing)\n");
+               "defect refused with its own verdict, the state bounded, and "
+               "the wrap policy holds (0 failing)\n");
     else
         printf("test-warp-batch: %d failing\n", failures);
     return failures != 0;
