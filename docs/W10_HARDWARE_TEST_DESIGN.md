@@ -634,3 +634,76 @@ T1 이 직접 블릿하지는 않지만, 리셋 뒤 윈도서버의 **다음** �
 
 `stormBusy = YES` 이후의 **모든** 이탈 경로가 `NO` 로 되돌린다. 전제 실패,
 idle 대기 실패, 인자 오류 전부. 코드에서 단일 출구로 만든다.
+
+---
+
+## 11. 결과 — T0 · T1 (2026-08-28, 실기)
+
+### 11.1 T0 통과
+
+```
+VCOUNT.readsToMove   0000000a      -> RASTER: scanning
+cfg.DEVCTRL.04       02900007      -> recmastab=0 rectargab=0  (T2 전제 성립)
+                                      busmaster=1              (T3 전제 성립)
+STATUS.1e14          80820020      -> dwgengsts=0 endprdmasts=1 (엔진 idle)
+PRIM/SEC/SETUP 전부  00000000      -> 부팅 후 DMA 미사용
+WCODEADDR.1e6c       00000000      -> WARP 마이크로코드 미적재
+```
+
+`VCOUNT` 증인이 실제로 동작한다. 10 회 읽기에 움직였다(예상 40 회보다 빠르다).
+
+### 11.2 T1 dry — **노이즈 바닥이 0 이다**
+
+```
+DONE ioctl rc=0
+RST.readBackWhileAsserted ffffffff   (dry 이므로 읽지 않음)
+--- PRE -> POST ---
+(no register in the set changed)
+POST.RASTER readsToMove=0000000c  scanning
+```
+
+**대조군에서 움직인 레지스터가 하나도 없다.** codex 가 우려한 `DYNAMIC`
+허위 차이는 이 창(0.34 ms)에서 실측 **0** 이다. 그러므로 real 에서 나타나는
+변화는 **전부 리셋에 귀속된다.** 이것이 dry 를 먼저 돌린 이유이고, 그
+값어치는 이 한 줄이다.
+
+### 11.3 T1 real — **기계가 살아남았고, 바뀐 것은 두 비트다**
+
+```
+DONE ioctl rc=0
+RST.readBackWhileAsserted 00000001   <- assert 가 실제로 걸렸다
+--- PRE -> POST ---
+CHANGED STATUS.1e14   80820020 -> 00820000
+POST.RASTER readsToMove=0000000b  scanning
+```
+
+**읽을 수 있는 25 개 값 중 바뀐 것은 `STATUS` 하나뿐이고, 그 안에서도 두
+비트다.** 그리고 두 비트 모두 사양서가 이미 설명한다:
+
+| 비트 | 이름 | 사양서 |
+| --- | --- | --- |
+| **31** | `swflag<31:28>` | *"Software Flag. **These bits have no effect on the chip.**"* |
+| **5** | `vlinepen` | *"cleared through the vlineiclr bit (…) **or upon soft or hard reset**."* |
+
+**즉 사양서가 690 쪽에 한 번 적고 가리키는 곳이 없던 *"some register bits to
+their soft-reset values"* 는, 이 보드에서 실측하면 — 칩에 아무 효과도 없는
+소프트웨어 플래그 하나와, 리셋으로 지워진다고 명시된 인터럽트 대기 비트
+하나다.** `endprdmasts` 도 `OPTION` 도 `DEVCTRL` 도 DMA 주소들도 그대로다.
+
+**그러므로 회수 절차에 재초기화 단계는 필요 없다** — codex 3 번이 요구한
+"재초기화 계약" 은 **실측 결과 비어 있다.** 지적 자체는 옳았고(문서로는 알 수
+없었다), 답이 "없음" 이었을 뿐이다.
+
+부수 확인: `stormBlitFailed = 0` — 영구 비활성 래치는 걸리지 않았다.
+
+### 11.4 **T1 이 증명하지 못한 것 — 중요하다**
+
+PRE 스냅샷이 말한다: `dwgengsts=0`, DMA 레지스터 전부 0. **부팅 이후 엔진이
+한 번도 쓰이지 않았다.** 즉 T1 은 **놀고 있는, 한 번도 쓰이지 않은 엔진**에
+리셋을 걸었다.
+
+**그것은 "리셋이 콘솔을 죽이지 않는다" 를 증명하지, "리셋이 물린 엔진을
+되살린다" 를 증명하지 않는다.** 회수 절차의 본래 목적은 후자다.
+
+그리고 그 확인이 곧 T2 다 — abort 를 유도해 엔진을 실제로 이상 상태에 넣고,
+거기서 회수되는지 본다. **T1 은 T2 의 전제였고, 그 역할은 다했다.**
