@@ -109,3 +109,57 @@ loading microcode"* 로 정의한다. run 1 의 **목적이** WARP 를 기동해
 이 규약은 `DWGSYNC` 를 반복해서 쓴다. 그리고 이 보드의 펌웨어가 남긴 값은
 `0xfffffbf0` — **무장까지 한 비트 남은 4 GiB 근처 포인터**였다(`:3989`).
 시작 전 `PRIMPTR == 0` 거부 조건은 이제 형식이 아니라 **핵심**이다.
+
+---
+
+## 9. 결과 (2026-08-28 20:20:59) — **PASS**
+
+```
+D2-2c/run1:    PRIMADDRESS 000501a4 (wanted 501a4), STATUS 808e0021, spins 18
+D2-2c/run1:    changed 0 px -- 0 in triangle, 0 in clip only, 0 OUTSIDE CLIP
+D2-2c/xfer:    PRIMADDRESS 00058063 (wanted 58060 | primod), STATUS 80be0020, spins 2
+D2-2c/fence:   DWGSYNC 0 -> 4 (read 4), STATUS 80fe0024, spins 1
+D2-2c/run2:    changed 1176 px -- 1176 in triangle, 0 in clip only, 0 OUTSIDE CLIP
+D2-2c/run2:    bbox rows 8..55 cols 8..55, first value ff8040 (wanted ff8040)
+D2-2c/suspend: STATUS 80f20024, spins 1
+D2-2c: PASS -- WARP drew the triangle, fenced, and suspended
+D2-2c: end (ring released, microcode kept)
+```
+
+### 9.1 STATUS 가 진단을 직접 증명한다
+
+```
+run1     softrapen=1 dwgengsts=0 endprdmasts=1 wbusy=1 wbusy1=1
+xfer     softrapen=0 dwgengsts=0 endprdmasts=1 wbusy=1 wbusy1=1
+fence    softrapen=0 dwgengsts=0 endprdmasts=1 wbusy=1 wbusy1=1
+suspend  softrapen=0 dwgengsts=0 endprdmasts=1 wbusy=0 wbusy1=0   <- 여기서 처음 0
+```
+
+**지난 부팅이 타임아웃이라 부른 값 `0x80fe0024` 가 이번엔 fence 단계의 값이다.**
+그리고 `WIADDR2 = SUSPEND` 를 **한 번 쓰자 spins=1 만에** `wbusy`/`wbusy1` 이
+떨어졌다. WARP 는 STALL 이 아니라 **WAIT 였고, 멈추라니 멈췄다** —
+옛 술어가 기다리던 조건은 suspend 없이는 영원히 오지 않았다는 직접 증거다.
+
+### 9.2 펜스가 작동한다
+
+`DWGSYNC 0 -> 4 (read 4)`, `spins=1`. 태그를 쓰고 그것이 되읽힌다.
+`dwgengsts=0` 이 2 차 확인으로 함께 성립한다.
+
+### 9.3 재현된다
+
+`changed 1176 px, bbox rows 8..55 cols 8..55, ff8040` — **지난 부팅과 픽셀 단위로
+동일**하다. 판정만 바뀌었고 하드웨어 거동은 같다.
+
+### 9.4 머신은 깨끗하다
+
+`end (ring released, microcode kept)` 까지 갔다 — 블록을 0 으로 복원하고,
+`stormBusy` 를 반납하고, 링을 해제했다. 디스플레이 정상
+(`linear mode ACTIVE 1600x1200 RGB:888/32`), 이후 로그 정상. **재부팅 불필요.**
+
+### 9.5 spins 가 말해주는 것
+
+```
+run1 18 · xfer 2 · fence 1 · suspend 1        (한계는 100000)
+```
+전 단계가 즉시 끝난다. 옛 술어의 `spins=100000` 은 하드웨어가 느려서가 아니라
+**도달 불가능한 조건을 기다렸기 때문**이었다.
