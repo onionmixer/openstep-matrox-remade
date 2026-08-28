@@ -72,10 +72,12 @@ abort 가 불가능해져도 **엔진이 물릴 수는 있다**(잘못된 명령
 ```
 
 **"엔진을 되살린다" 가 아니라 "엔진을 포기한다" 이고, 정확히는 회수가
-아니라 봉쇄다(§6.4).** 화면과 기계가
+아니라 봉쇄다(§6.4). — 그리고 §7.4 가 이 봉쇄마저 과한 주장임을 보인다:
+읽기가 안 돌아오면 유계가 아니고, 물린 엔진은 계속 쓸 수 있다.** 화면과 기계가
 살아남고, `OSMGAAccelRearm` 으로 재무장할 수 있다(W10 §9.9).
 
-**이것은 열등한 회수가 아니라 이 하드웨어에서 유일하게 검증된 회수다.**
+~~**이것은 열등한 회수가 아니라 이 하드웨어에서 유일하게 검증된 회수다.**~~
+**철회 (§7.4).** 검증된 것이 아니다.
 
 ---
 
@@ -206,3 +208,120 @@ DMA 주소가 구조적으로 링 안에 갇혀 있으므로, 물린 채로 계�
   results."* — **제출 중 이 레지스터를 읽지 않도록** 해야 한다. 지금
   `OSMGARegSnapshot` 이 그것을 읽는다(§4 T0.1). **제출 중에는 스냅샷을
   찍지 않는다**를 규칙으로 넣는다.
+
+---
+
+## 7. codex 교차검토 판정 (2026-08-28)
+
+`gpt-5.3-codex-spark` 은 사용량 한도였고 기본 모델로 받았다. **여섯 지적 중
+넷을 검증해 채택하고 둘을 부분채택했다. 기각은 없다** — 이번 회신은 §6 의
+자가검토가 놓친 것을 실제로 찾아냈다.
+
+| # | 지적 | 검증 | 판정 |
+| --- | --- | --- | --- |
+| 1 | vertex 값은 **프로그래머블 프로세서의 입력**이다. "기하만 틀린다" 는 비약 | 사양서 3-277 | ✅ **채택** |
+| 2 | 클립은 주소 방화벽이 아니다 — `dstmap`/`zorgmap`/`texorgmap` | **사양서 3-130·3-221·3-286** | ✅ **채택 (내 주장이 틀렸다)** |
+| 3 | `SECADDRESS<1:0>` 은 `secmod` 다 — 정렬 불변식이 모순 | 사양서 3-168 | ✅ **채택** |
+| 4 | 봉쇄 주장이 과하다 — 읽기가 안 돌아오면 유계가 아니다 | **드라이버 자신의 주석 `:2318`** | ✅ **채택 (내 주장이 틀렸다)** |
+| 5 | `PRIMPTR` 상태 쓰기 — `SECEND` 쓰기가 시스템 메모리 쓰기를 유발 | **사양서 3-166 + 실측** | ✅ **채택 (가장 값진 것)** |
+| 6 | 마이크로코드 버퍼는 두 번째 카드 가시 할당이다 | 소스 `:7700`·`:7849` | ✅ **채택** |
+
+### 7.1 ★ `PRIMPTR` — `SECEND` 를 쓰면 카드가 시스템 메모리에 쓴다
+
+사양서 3-166:
+
+> `primptren0 <0>`: *"When set to '1', a double-qword of status data
+> information **is written to the system memory** (using PCI cycle) at the
+> address corresponding to `primptr` **every time a Softrap or SECEND or
+> Setupend register write occurs**."*
+
+**`SECEND` 쓰기가 곧 2 차 DMA 트리거인데, 그 쓰기가 별도 경로로 시스템 메모리
+쓰기를 낸다.** "카드는 우리 링만 **읽는다**" 는 논거가 **쓰기**를 고려하지
+않았다.
+
+**실측 (T0 스냅샷)**:
+
+```
+PRIMPTR = fffffbf0
+  primptren0 <0> = 0     <- 다행히 꺼져 있다
+  primptren1 <1> = 0
+  primptr <31:4>         -> 0xfffffbf0   <- 4 GiB 근처의 쓰레기값
+```
+
+**드라이버는 `PRIMPTR` 을 한 번도 쓰지 않는다**(전수 확인). 즉 이 값은 부팅
+잔재이고, **누군가 `primptren0` 을 켜는 순간 `SECEND` 쓰기가 0xfffffbf0 으로
+PCI 쓰기를 낸다.**
+
+> **불변식 추가**: `SECEND` 를 쓰기 전에 `PRIMPTR<1:0> == 0` 을 **확인한다.**
+> `PRIMPTR` 은 `R/W` 라 읽을 수 있고, 이미 스냅샷에 들어 있다.
+
+### 7.2 ✅ 2 번 — **클립은 주소를 묶지 않는다. 내가 틀렸다.**
+
+| 필드 | 0 | **1** |
+| --- | --- | --- |
+| `DSTORG.dstmap<0>` (3-130) | 프레임버퍼 | **시스템 메모리** |
+| `ZORG.zorgmap<0>` (3-286) | 프레임버퍼 | **시스템 메모리** |
+| `TEXORG.texorgmap<0>` (3-221) | 프레임버퍼 | **시스템 메모리** |
+
+**좌표가 완벽히 클립돼도 목적지 베이스가 시스템 메모리를 가리킬 수 있다.**
+그리고 텍스처 **읽기**는 목적지 클립 사각형에 묶이지도 않는다.
+
+§6.1 의 *"남는 위험은 기하가 틀리는 것이고, 그것은 클립이 막는다"* 는
+**철회한다.** 안전 증명에 다음이 들어가야 한다:
+
+```
+DSTORG.dstmap  = 0   (드라이버는 이미 osmgaStormInitState 에서 DSTORG=0 을 쓴다)
+ZORG.zorgmap   = 0   또는 깊이 비활성
+TEXORG.texorgmap = 0 또는 텍스처 비활성
+```
+
+셋 다 `WO` 라 읽어서 확인할 수 없다 — **배치마다 우리가 쓰는 수밖에 없다.**
+
+### 7.3 ✅ 3 번 — `SECADDRESS` 의 낮은 두 비트는 주소가 아니다
+
+사양서 3-168: `secmod<1:0>`, `secaddress<31:2>`. vertex 는 `11`.
+
+§2.2 의 `(secStart & 3) == 0` 은 **주소 필드**에 대한 것이고, 레지스터에 실제로
+쓰는 워드는 `payload_phys | 0x3` 이다. **검증은 주소에 하고 모드는 검증 뒤에
+OR 한다** — 이 순서를 문서에 명시한다. 뒤집으면 유효한 제출이 전부 거부되거나,
+누군가 "고친다" 며 검증 뒤 마스킹을 넣어 증명을 깨뜨린다.
+
+`SECEND<1>` 은 `SAGPXFER`(AGP/PCI 선택)다. **PCI 를 의도적으로 고르고 그
+사실을 적는다.**
+
+### 7.4 ✅ 4 번 — 봉쇄 주장도 과했다
+
+드라이버 자신의 주석(`:2318`):
+
+> *"What this cannot do, said plainly: **if a read itself never returns, the
+> counter never advances and no limit is reached.** A freeze with no give-up
+> line afterwards points there rather than here."*
+
+**유계 폴은 MMIO 읽기가 돌아올 때만 유계다.** 그리고 물린 드로잉 엔진은
+드라이버가 포기한 뒤에도 프레임버퍼에 **쓸 수** 있다(`:830` 이 그래서 래치를
+둔다). **"기계가 계속 쓸 수 있다" 는 보장이 아니라 희망이다.**
+
+### 7.5 ✅ 6 번 — 링이 전부가 아니다
+
+```c
+/* :7849 */
+/* The ring can go; the microcode cannot -- the card was given its
+ * address and nothing proves it has stopped reading. */
+```
+
+**마이크로코드 버퍼는 두 번째 카드 가시 할당이고 해제되지 않는다.**
+"카드는 링만 읽는다" 는 틀렸다. 안전 증명은 **링 + 마이크로코드 버퍼** 둘을
+덮어야 한다.
+
+### 7.6 그래서 방어 가능한 주장은 여기까지다
+
+codex 의 요약을 그대로 받는다:
+
+> *"Vertex secondary DMA prevents a client payload from directly encoding
+> arbitrary drawing-register indices, and a correctly encoded logical stream
+> is bounded by its programmed endpoint. **It does not yet establish
+> non-corruption or continued machine usability.**"*
+
+**§2 의 제목 "abort 를 구조적으로 불가능하게" 는 유지하되, §2.3 의 "기계는
+계속 쓸 수 있다" 는 삭제한다.** 이 설계가 주장할 수 있는 것은 **abort 를
+막는 것**이지 **엔진이 물렸을 때 기계가 무사한 것**이 아니다.
