@@ -6475,14 +6475,7 @@ refuse2:
      * putting its depth immediately after its colour, which is where a
      * surface wants it.
      */
-    lim.colourStart = osmgaMmapWindowStart;
-    lim.colourEnd   = osmgaMmapWindowEnd;
-    lim.depthStart  = osmgaMmapWindowStart;
-    lim.depthEnd    = osmgaMmapWindowEnd;
-    lim.texStart    = osmgaMmapWindowStart;
-    lim.texEnd      = osmgaMmapWindowEnd;
-    lim.batchBytes  = OSMGA_HW3D_BATCH_BYTES;
-    lim.maxEdgeWalk = OSMGA_HW3D_EDGE_WALK;
+    osmgaWarpFillLimits(&lim);
 
     /* Copy before checking.  triCount is read exactly once, because
      * reading it again after the copy would reintroduce the same
@@ -10741,6 +10734,143 @@ osmgaM4ReportProjTex(volatile unsigned long *blk, unsigned long stride,
               label, badRow, badCol, badVal);
 }
 
+
+
+/*
+ * The windows a batch may reach, filled the same way for both contracts.
+ *
+ * All three regions are the whole mapped window: they used to be three
+ * fixed thirds, a convenience from when each probe had a corner of its
+ * own, and that stopped a real drawing surface from putting its depth
+ * immediately after its colour -- which is where a surface wants it.
+ *
+ * The pitch and the clip are NOT set here.  They come from the
+ * destination the batch declared and are filled by the caller after it has
+ * been bounded, because a limit taken from an unchecked declaration is not
+ * a limit.
+ */
+static void
+osmgaWarpFillLimits(OSMGAHW3DLimits *lim)
+{
+    lim->colourStart = osmgaMmapWindowStart;
+    lim->colourEnd   = osmgaMmapWindowEnd;
+    lim->depthStart  = osmgaMmapWindowStart;
+    lim->depthEnd    = osmgaMmapWindowEnd;
+    lim->texStart    = osmgaMmapWindowStart;
+    lim->texEnd      = osmgaMmapWindowEnd;
+    lim->batchBytes  = OSMGA_HW3D_BATCH_BYTES;
+    lim->maxEdgeWalk = OSMGA_HW3D_EDGE_WALK;
+}
+
+/*
+ * OSMGAHW3DState -> the state list builder's texture descriptor.
+ *
+ * Every field comes from a shared helper rather than from a second copy of
+ * the rule: the clamp axes from osmgaHW3DTexClampAxes, the filter from
+ * osmgaHW3DTexFilter, the environment word from osmgaHW3DTexDualStage --
+ * which both lanes take, since they are the even and odd screen columns
+ * and setting one alone leaves a row reading `20 ab 28 ab`.
+ *
+ * The WARP dimension encoding is NOT the trapezoid one; osmgaHW3DWarpTexDim
+ * is the difference and the host suite checks the two never coincide.
+ */
+static void
+osmgaWarpTexFromState(const OSMGAHW3DState *st, int textured,
+                      OSMGAM3Tex *tex)
+{
+    unsigned long axes;
+
+    if (tex == 0)
+        return;
+    tex->enable = 0UL;
+    tex->org = 0UL;
+    tex->dim = 0UL;  tex->log2dim = 0UL;
+    tex->dimH = 0UL; tex->log2dimH = 0UL;
+    tex->pitch = 0UL;
+    tex->filter = 0UL;
+    tex->clamp = MGA_TEXCTL_CLAMPUV;
+    tex->tds = MGA_TDS_COLOR_SEL_MUL;
+    if (st == 0 || !textured)
+        return;
+
+    axes = osmgaHW3DTexClampAxes(st);
+    tex->enable   = 1UL;
+    tex->org      = st->texorg;
+    tex->dim      = st->texW;
+    tex->log2dim  = osmgaHW3DLog2Ceil(st->texW);
+    tex->dimH     = st->texH;
+    tex->log2dimH = osmgaHW3DLog2Ceil(st->texH);
+    tex->pitch    = st->texPitch;
+    tex->filter   = osmgaHW3DTexFilter(st->texFlags);
+    tex->clamp    =
+        (((axes & OSMGA_HW3D_CLAMP_U) != 0UL) ? MGA_TEXCTL_CLAMPU : 0UL) |
+        (((axes & OSMGA_HW3D_CLAMP_V) != 0UL) ? MGA_TEXCTL_CLAMPV : 0UL);
+    tex->tds      = osmgaHW3DTexDualStage(st->texFlags, 1);
+}
+
+
+/*
+ * The end of a WARP batch: prove the drawing finished, stop the pipe, and
+ * see it stop.
+ *
+ * DWGSYNC is the documented completion event (3-139): its readback takes
+ * the written value "only when the drawing engine has completed the
+ * primitive sent before DWGSYNC was programmed".  Reaching PRIMEND proves
+ * only that the DMA was consumed.
+ *
+ * Then WIADDR2 = SUSPEND and all THREE status bits, because wbusy is not a
+ * completion bit -- 3-189 calls a started WARP busy while it is merely
+ * WAITing -- and only a suspend makes it mean anything.
+ *
+ * This is not called between runs.  T9 measured that a second state list
+ * may go out while the previous run is still drawing without leaking into
+ * it, so a fence per run would be a round trip bought for nothing.  It is
+ * called once, at the end, before anything reads what was drawn.
+ *
+ * Returns 1, or 0 having said why.
+ */
+static int
+osmgaWarpFenceAndStop(vm_address_t base, const char *label)
+{
+    unsigned long syncOld, syncTag, spins, status, devctrl;
+
+    syncOld = osmgaR32(base, MGA_DWGSYNC) & OSMGA_D2C_SYNC_MASK;
+    syncTag = (syncOld + OSMGA_D2C_SYNC_STEP) & OSMGA_D2C_SYNC_MASK;
+    if (!osmgaStormWaitFifo(base, 2U)) {
+        IOLog("OpenStepMGA WARP/%s: no FIFO room for the fence tag\n", label);
+        return 0;
+    }
+    osmgaW32(base, MGA_DMAPAD,  0UL);
+    osmgaW32(base, MGA_DWGSYNC, syncTag);
+    for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++)
+        if ((osmgaR32(base, MGA_DWGSYNC) & OSMGA_D2C_SYNC_MASK) == syncTag)
+            break;
+    status  = osmgaR32(base, MGA_ENGSTATUS);
+    devctrl = osmgaPciReadConfigLong(osmgaSelfBus, osmgaSelfDev,
+                                     osmgaSelfFn, MGA_CFG_DEVCTRL);
+    if (spins >= OSMGA_S1_SPIN_LIMIT ||
+        (status & MGA_STATUS_DWGENGSTS) != 0UL ||
+        (devctrl & MGA_CFG_DEVCTRL_ABORTS) != 0UL) {
+        IOLog("OpenStepMGA WARP/%s: did NOT fence -- DWGSYNC %08lx -> %08lx, "
+              "STATUS %08lx, DEVCTRL %08lx, spins %lu\n",
+              label, syncOld, syncTag, status, devctrl, spins);
+        return 0;
+    }
+
+    osmgaW32(base, MGA_WIADDR2, MGA_WMODE_SUSPEND);
+    for (spins = 0UL; spins < OSMGA_S1_SPIN_LIMIT; spins++) {
+        status = osmgaR32(base, MGA_ENGSTATUS);
+        if ((status & (MGA_STATUS_WBUSY | MGA_STATUS_WBUSY1 |
+                       MGA_STATUS_DWGENGSTS)) == 0UL)
+            break;
+    }
+    if (spins >= OSMGA_S1_SPIN_LIMIT) {
+        IOLog("OpenStepMGA WARP/%s: did not quiesce after suspend, STATUS "
+              "%08lx\n", label, status);
+        return 0;
+    }
+    return 1;
+}
 
 /*
  * D2-2c.  See docs/D2_2C_VERTEX_MODE_CONTROL.md revision 1.
