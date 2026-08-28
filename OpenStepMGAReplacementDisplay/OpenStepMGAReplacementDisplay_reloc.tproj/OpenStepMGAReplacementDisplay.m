@@ -8248,6 +8248,23 @@ osmgaDmaBuildPipeList(unsigned long *ring, unsigned long ringDwords,
  * be big enough to leave drawing in flight.  OSMGA_S1_W/H belong to the
  * other probes and are left alone.
  */
+/*
+ * syslog drops bursts.  D2-2f lost the first two thirds of its own run to
+ * exactly that -- the layout line, run 1, both R1 submissions and both C1
+ * submissions were gone, and only the tail survived.  Three things are
+ * done about it, in increasing order of how much they can be relied on:
+ *
+ *   1. fewer lines -- one per submission covering transfer and fence,
+ *      and the per-triangle tally speaks only about triangles that are
+ *      wrong;
+ *   2. a pause after each line, long enough for syslogd to drain;
+ *   3. ONE self-sufficient summary line at the very end.
+ *
+ * The third is the only guarantee.  The first two make the detail likely
+ * to survive; the summary makes the verdict survive even if it does not,
+ * because what syslog keeps is the tail.
+ */
+#define OSMGA_D2_SETTLE_US    5000UL
 #define OSMGA_D2F_BLK          128UL
 #define OSMGA_D2C_CLIP_LO        4UL
 #define OSMGA_D2C_CLIP_HI      123UL          /* inclusive, as CXBNDRY is */
@@ -8579,6 +8596,19 @@ static const OSMGAD2eTri osmgaD2eTris[OSMGA_D2E_TRIS] = {
  *   5      specular         B G R fog
  *   6..7   tu0, tv0         IEEE 754 single
  */
+/* What the last verify saw, so the summary can restate it without the
+ * body of the log having survived. */
+static unsigned long osmgaD2LastChanged;
+static unsigned long osmgaD2LastWrong;
+static unsigned long osmgaD2LastOutClip;
+static unsigned long osmgaD2LastFenceTag;
+
+static void
+osmgaD2Settle(void)
+{
+    IODelay((int)OSMGA_D2_SETTLE_US);
+}
+
 static void
 osmgaD2eBuildBatch(unsigned long *v, unsigned long testY,
                    unsigned long first, unsigned long count)
@@ -8680,8 +8710,12 @@ osmgaD2eVerify(volatile unsigned long *blk, unsigned long stride,
         }
     }
 
+    osmgaD2LastChanged = changed;
+    osmgaD2LastWrong   = wrong;
+    osmgaD2LastOutClip = outClip;
     IOLog("OpenStepMGA D2-2e/%s: %lu changed, %lu wrong, %lu OUTSIDE CLIP "
           "(expecting %lu triangles)\n", label, changed, wrong, outClip, n);
+    osmgaD2Settle();
     /*
      * Twenty-one tallies do not fit a log line, and a line nobody can read
      * is not a diagnostic.  What matters is which entries disagree with
@@ -8699,11 +8733,13 @@ osmgaD2eVerify(volatile unsigned long *blk, unsigned long stride,
             IOLog("OpenStepMGA D2-2e/%s: triangle %lu (submission %lu) has "
                   "%lu pixels, wanted %lu\n",
                   label, i, i / OSMGA_D2E_PER_SUB, hit[i], want);
+            osmgaD2Settle();
     }
     if (wrong != 0UL)
         IOLog("OpenStepMGA D2-2e/%s: first mismatch at row %lu col %lu -- "
               "got %06lx wanted %06lx\n",
               label, badRow, badCol, badGot, badWant);
+        osmgaD2Settle();
     return (wrong == 0UL) ? 1 : 0;
 }
 
@@ -8719,7 +8755,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
 {
     unsigned long vtxEnd = vtxPhys + dwords * 4UL;
     unsigned long spins, status, sum, i, devctrl, syncOld, syncTag;
-    unsigned long atPointer = 0UL;
+    unsigned long atPointer = 0UL, xferSpins = 0UL, xferStatus = 0UL;
     unsigned primAfter;
 
     sum = 0UL;
@@ -8728,6 +8764,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     (void)osmgaR32(base, MGA_ENGSTATUS);
     if (sum == 0xFFFFFFFFUL)
         IOLog("OpenStepMGA D2-2e/%s: barrier %lu\n", label, sum);
+        osmgaD2Settle();
 
     /*
      * Reusing one address means every submission has the same end address,
@@ -8748,6 +8785,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
         IOLog("OpenStepMGA D2-2f/%s: PRIMADDRESS never read back as the "
               "start %08lx (read %08lx); PRIMEND not written\n",
               label, vtxPhys, osmgaR32(base, MGA_PRIMADDRESS));
+        osmgaD2Settle();
         return 0;
     }
     osmgaW32(base, MGA_PRIMEND, vtxEnd);
@@ -8768,23 +8806,34 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     primAfter = (unsigned)osmgaR32(base, MGA_PRIMADDRESS);
     devctrl   = osmgaPciReadConfigLong(osmgaSelfBus, osmgaSelfDev,
                                        osmgaSelfFn, MGA_CFG_DEVCTRL);
-    IOLog("OpenStepMGA D2-2e/%s: %lu dwords, PRIMADDRESS %08x raw (wanted "
-          "%08lx | primod), STATUS %08lx, DEVCTRL %08lx, spins %lu\n",
-          label, dwords, primAfter, vtxEnd, status, devctrl, spins);
     if (spins >= OSMGA_S1_SPIN_LIMIT ||
         (devctrl & MGA_CFG_DEVCTRL_ABORTS) != 0UL) {
-        IOLog("OpenStepMGA D2-2e/%s: the payload was not consumed\n", label);
+        IOLog("OpenStepMGA D2-2e/%s: payload NOT consumed -- PRIMADDRESS "
+              "%08x (wanted %08lx|primod), STATUS %08lx, DEVCTRL %08lx, "
+              "spins %lu\n",
+              label, primAfter, vtxEnd, status, devctrl, spins);
+        osmgaD2Settle();
         return 0;
     }
+    xferSpins  = spins;
+    xferStatus = status;
     if (outBusy != 0)
         *outBusy = (atPointer & MGA_STATUS_DWGENGSTS) != 0UL ? 1UL : 0UL;
-    if (!doFence)
+    if (!doFence) {
+        IOLog("OpenStepMGA D2-2f/%s: %lu dw -> %08lx ok, STATUS %08lx, "
+              "spins %lu, drawing %s, NOT fenced\n",
+              label, dwords, vtxEnd, xferStatus, xferSpins,
+              (atPointer & MGA_STATUS_DWGENGSTS) != 0UL
+                  ? "IN FLIGHT" : "already done (NOT EXERCISED)");
+        osmgaD2Settle();
         return 1;
+    }
 
     syncOld = osmgaR32(base, MGA_DWGSYNC) & OSMGA_D2C_SYNC_MASK;
     syncTag = (syncOld + OSMGA_D2C_SYNC_STEP) & OSMGA_D2C_SYNC_MASK;
     if (!osmgaStormWaitFifo(base, 2U)) {
         IOLog("OpenStepMGA D2-2e/%s: no FIFO room for the tag\n", label);
+        osmgaD2Settle();
         return 0;
     }
     osmgaW32(base, MGA_DMAPAD,  0UL);
@@ -8796,15 +8845,21 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     status  = osmgaR32(base, MGA_ENGSTATUS);
     devctrl = osmgaPciReadConfigLong(osmgaSelfBus, osmgaSelfDev,
                                      osmgaSelfFn, MGA_CFG_DEVCTRL);
-    IOLog("OpenStepMGA D2-2e/%s: DWGSYNC %08lx -> %08lx, STATUS %08lx, "
-          "DEVCTRL %08lx, spins %lu\n",
-          label, syncOld, syncTag, status, devctrl, spins);
     if (spins >= OSMGA_S1_SPIN_LIMIT ||
         (status & MGA_STATUS_DWGENGSTS) != 0UL ||
         (devctrl & MGA_CFG_DEVCTRL_ABORTS) != 0UL) {
-        IOLog("OpenStepMGA D2-2e/%s: the batch did not fence\n", label);
+        IOLog("OpenStepMGA D2-2e/%s: did NOT fence -- DWGSYNC %08lx -> "
+              "%08lx, STATUS %08lx, DEVCTRL %08lx, spins %lu\n",
+              label, syncOld, syncTag, status, devctrl, spins);
+        osmgaD2Settle();
         return 0;
     }
+    IOLog("OpenStepMGA D2-2f/%s: %lu dw -> %08lx ok (spins %lu, STATUS "
+          "%08lx), fenced %08lx -> %08lx (spins %lu)\n",
+          label, dwords, vtxEnd, xferSpins, xferStatus,
+          syncOld, syncTag, spins);
+    osmgaD2Settle();
+    osmgaD2LastFenceTag = syncTag;
     return 1;
 }
 
@@ -8837,6 +8892,8 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     unsigned long devctrl0, devctrl1, primptr, ien, opmode;
     unsigned long physA, physB, physC, subBytes;
     unsigned long busy, exercised = 0UL, notExercised = 0UL;
+    unsigned long stage = 0UL;
+    const char *stageName = "nothing ran";
     unsigned long *vtxA, *vtxB, *vtxC;
     unsigned long *ring;
     void *ringVirt;
@@ -8851,6 +8908,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
         return;
     if (f->bytesPerPixel != 4) {
         IOLog("OpenStepMGA D2-2c: not a 32bpp mode, skipped\n");
+        osmgaD2Settle();
         return;
     }
 
@@ -8869,6 +8927,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     if (osmgaWindowState != OSMGA_WINDOW_OPEN ||
         osmgaMmapWindowEnd <= osmgaMmapWindowStart) {
         IOLog("OpenStepMGA D2-2c: no proven offscreen window, skipped\n");
+        osmgaD2Settle();
         return;
     }
     testY     = (osmgaMmapWindowStart + stride * 4UL - 1UL) / (stride * 4UL);
@@ -8880,6 +8939,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
         IOLog("OpenStepMGA D2-2f: 128x128 block does not fit the proven "
               "window %lu..%lu, skipped\n",
               osmgaMmapWindowStart, osmgaMmapWindowEnd);
+        osmgaD2Settle();
         return;
     }
 
@@ -8896,11 +8956,13 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     if (primptr != 0UL) {
         IOLog("OpenStepMGA D2-2c: REFUSED -- PRIMPTR is %08lx, not zero; "
               "SOFTRAP would write system memory\n", primptr);
+        osmgaD2Settle();
         return;
     }
     if (osmgaSelfBus < 0) {
         IOLog("OpenStepMGA D2-2c: REFUSED -- no PCI address, cannot read "
               "the abort bits\n");
+        osmgaD2Settle();
         return;
     }
     devctrl0 = osmgaPciReadConfigLong(osmgaSelfBus, osmgaSelfDev,
@@ -8909,6 +8971,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
         IOLog("OpenStepMGA D2-2c: REFUSED -- DEVCTRL=%08lx already shows a "
               "DMA abort; the card needs a reset we cannot give it\n",
               devctrl0);
+        osmgaD2Settle();
         return;
     }
     /*
@@ -8923,6 +8986,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     if (ien != 0UL) {
         IOLog("OpenStepMGA D2-2c: REFUSED -- IEN is %08lx and there is no "
               "interrupt handler; SOFTRAP and WARP would raise PINTA/\n", ien);
+        osmgaD2Settle();
         return;
     }
     opmode = osmgaR32(base, MGA_OPMODE);
@@ -8930,10 +8994,12 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
         IOLog("OpenStepMGA D2-2c: REFUSED -- OPMODE %08lx has dmadatasiz "
               "%lu; the list indices and the vertex floats would be "
               "byte-swapped\n", opmode, (opmode >> 8) & 3UL);
+        osmgaD2Settle();
         return;
     }
     if (!osmgaStormWaitIdle(base)) {
         IOLog("OpenStepMGA D2-2c: REFUSED -- engine BUSY at entry\n");
+        osmgaD2Settle();
         return;
     }
 
@@ -8945,6 +9011,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
                               &alias, &mapLen, &blk);
     if (r != IO_R_SUCCESS) {
         IOLog("OpenStepMGA D2-2c: uncached alias map failed r=%d\n", (int)r);
+        osmgaD2Settle();
         return;
     }
 
@@ -8952,6 +9019,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
         if (!osmgaWarpPlaceUcode(pipePhys, pipeOff, &osmgaWarpUcodeVirt,
                                  &osmgaWarpUcodePhys, &osmgaWarpUcodeBytes)) {
             IOLog("OpenStepMGA D2-2c: FAIL -- could not place microcode\n");
+            osmgaD2Settle();
             IOUnmapPhysicalFromIOTask(alias, mapLen);
             return;
         }
@@ -8962,6 +9030,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
               "%08lx -- held for this boot\n",
               osmgaWarpUcodePhys, osmgaWarpUcodeBytes, OSMGA_D2C_PIPE,
               osmgaWarpPipeHeld[OSMGA_D2C_PIPE]);
+        osmgaD2Settle();
     }
 
     /* warp_init used to run here.  It writes five WARP registers, and
@@ -8974,6 +9043,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     ringVirt = IOMallocLow((int)OSMGA_DMA_RING_BYTES);
     if (ringVirt == 0) {
         IOLog("OpenStepMGA D2-2c: FAIL -- no ring buffer\n");
+        osmgaD2Settle();
         IOUnmapPhysicalFromIOTask(alias, mapLen);
         return;
     }
@@ -8982,6 +9052,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     if (r != IO_R_SUCCESS) {
         IOLog("OpenStepMGA D2-2c: FAIL -- ring IOPhysicalFromVirtual r=%d\n",
               (int)r);
+        osmgaD2Settle();
         IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
         IOUnmapPhysicalFromIOTask(alias, mapLen);
         return;
@@ -8998,6 +9069,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
                                   &p2);
         if (r != IO_R_SUCCESS || p2 != ringPhys + (unsigned)i) {
             IOLog("OpenStepMGA D2-2c: FAIL -- ring discontiguous at +%lu\n", i);
+            osmgaD2Settle();
             IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
             IOUnmapPhysicalFromIOTask(alias, mapLen);
             return;
@@ -9017,12 +9089,14 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
                                    (testY + OSMGA_D2C_CLIP_HI) * stride,
                                    dwgctl, &tailDwords, &totalDwords)) {
         IOLog("OpenStepMGA D2-2c: FAIL -- run 1 list rejected\n");
+        osmgaD2Settle();
         IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
         IOUnmapPhysicalFromIOTask(alias, mapLen);
         return;
     }
     if (tailDwords * 4UL >= OSMGA_D2F_OFF_A) {
         IOLog("OpenStepMGA D2-2c: FAIL -- run 1 list reaches the vertices\n");
+        osmgaD2Settle();
         IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
         IOUnmapPhysicalFromIOTask(alias, mapLen);
         return;
@@ -9056,6 +9130,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
         IOLog("OpenStepMGA D2-2f: REFUSED -- batch address invariants do "
               "not hold (%08lx %08lx %08lx, %lu bytes each)\n",
               physA, physB, physC, subBytes);
+        osmgaD2Settle();
         IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
         IOUnmapPhysicalFromIOTask(alias, mapLen);
         return;
@@ -9065,12 +9140,14 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
           "A %08lx B %08lx C %08lx, %lu bytes each; dwgctl %08lx, y %lu\n",
           ringPhys, tailDwords, listEnd, physA, physB, physC, subBytes,
           dwgctl, testY);
+    osmgaD2Settle();
 
     /* ---- claim the engine for both runs ---- */
     simple_lock(&stormLock);
     if (stormBlitFailed || stormBusy) {
         simple_unlock(&stormLock);
         IOLog("OpenStepMGA D2-2c: REFUSED -- engine already claimed\n");
+        osmgaD2Settle();
         IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
         IOUnmapPhysicalFromIOTask(alias, mapLen);
         return;
@@ -9095,6 +9172,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
      * owner could still have been running. */
     if (!osmgaStormWaitIdle(base)) {
         IOLog("OpenStepMGA D2-2c: REFUSED -- engine BUSY under the claim\n");
+        osmgaD2Settle();
         goto releaseAndReturn;
     }
 
@@ -9111,6 +9189,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     if ((status & MGA_STATUS_SOFTRAPEN) != 0UL) {
         IOLog("OpenStepMGA D2-2c: REFUSED -- SOFTRAPEN still set after "
               "ICLEAR (STATUS %08lx)\n", status);
+        osmgaD2Settle();
         goto releaseAndReturn;
     }
 
@@ -9122,6 +9201,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     osmgaW32(base, MGA_WMISC,      MGA_WMISC_WRITE);
     if (osmgaR32(base, MGA_WMISC) != MGA_WMISC_EXPECTED) {
         IOLog("OpenStepMGA D2-2c: FAIL -- warp_init did not settle\n");
+        osmgaD2Settle();
         goto releaseAndReturn;
     }
 
@@ -9135,6 +9215,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     (void)osmgaR32(base, MGA_ENGSTATUS);
     if (sum == 0xFFFFFFFFUL)
         IOLog("OpenStepMGA D2-2c: barrier %lu\n", sum);
+        osmgaD2Settle();
 
     osmgaW32(base, MGA_PRIMADDRESS, (unsigned long)ringPhys | MGA_DMA_GENERAL);
     /* PRIMEND: primnostart = 0 so a pending softrap cannot block the
@@ -9173,6 +9254,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     IOLog("OpenStepMGA D2-2c/run1: PRIMADDRESS %08x raw (wanted %08lx), "
           "STATUS %08lx, DEVCTRL %08lx, spins %lu\n",
           primAfter, listEnd, status, devctrl1, spins);
+    osmgaD2Settle();
 
     if (spins >= OSMGA_S1_SPIN_LIMIT ||
         (devctrl1 & MGA_CFG_DEVCTRL_ABORTS) != 0UL) {
@@ -9185,8 +9267,10 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
          */
         IOLog("OpenStepMGA D2-2c/run1: TIMEOUT or DMA ABORT -- nothing "
               "further will be programmed\n");
+        osmgaD2Settle();
         IOLog("OpenStepMGA D2-2c: ring and microcode RETAINED, engine left "
               "claimed.  *** REBOOT REQUIRED ***\n");
+        osmgaD2Settle();
         osmgaD2eVerify(blk, stride, 0UL, "run1-timeout");
         IOUnmapPhysicalFromIOTask(alias, mapLen);
         return;
@@ -9233,8 +9317,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     if (!osmgaD2eSubmitBatch(base, vtxA, physA, OSMGA_D2F_SUB_DWORDS,
                              1, "R1b", 0)) goto wedged;
     if (!osmgaD2eVerify(blk, stride, 6UL, "R1b")) goto wrongPicture;
-    IOLog("OpenStepMGA D2-2f: R1 PASS -- one address, refilled and "
-          "resubmitted with the engine quiescent\n");
+    stage = 1UL; stageName = "R1 ok";
 
     /* ---- C1: distinct addresses, unfenced ---- */
     osmgaD2eBuildBatch(vtxB, testY, 6UL, OSMGA_D2E_PER_SUB);
@@ -9243,13 +9326,10 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     if (!osmgaD2eSubmitBatch(base, vtxB, physB, OSMGA_D2F_SUB_DWORDS,
                              0, "C1a", &busy)) goto wedged;
     if (busy) exercised++; else notExercised++;
-    IOLog("OpenStepMGA D2-2f/C1a: drawing %s at the pointer boundary\n",
-          busy ? "STILL IN FLIGHT" : "already finished -- NOT EXERCISED");
     if (!osmgaD2eSubmitBatch(base, vtxC, physC, OSMGA_D2F_SUB_DWORDS,
                              1, "C1b", 0)) goto wedged;
     if (!osmgaD2eVerify(blk, stride, 12UL, "C1")) goto wrongPicture;
-    IOLog("OpenStepMGA D2-2f: C1 PASS -- PRIMADDRESS rewritten while the "
-          "previous drawing was in flight\n");
+    stage = 2UL; stageName = "R1 C1 ok";
 
     /* ---- R2: same address, unfenced ---- */
     osmgaD2eBuildBatch(vtxA, testY, 12UL, OSMGA_D2E_PER_SUB);
@@ -9257,31 +9337,22 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     if (!osmgaD2eSubmitBatch(base, vtxA, physA, OSMGA_D2F_SUB_DWORDS,
                              0, "R2a", &busy)) goto wedged;
     if (busy) exercised++; else notExercised++;
-    IOLog("OpenStepMGA D2-2f/R2a: drawing %s at the pointer boundary\n",
-          busy ? "STILL IN FLIGHT" : "already finished -- NOT EXERCISED");
 
     osmgaD2eBuildBatch(vtxA, testY, 15UL, OSMGA_D2E_PER_SUB);
     busy = 0UL;
     if (!osmgaD2eSubmitBatch(base, vtxA, physA, OSMGA_D2F_SUB_DWORDS,
                              0, "R2b", &busy)) goto wedged;
     if (busy) exercised++; else notExercised++;
-    IOLog("OpenStepMGA D2-2f/R2b: drawing %s at the pointer boundary\n",
-          busy ? "STILL IN FLIGHT" : "already finished -- NOT EXERCISED");
 
     osmgaD2eBuildBatch(vtxA, testY, 18UL, OSMGA_D2E_PER_SUB);
     if (!osmgaD2eSubmitBatch(base, vtxA, physA, OSMGA_D2F_SUB_DWORDS,
                              1, "R2c", 0)) goto wedged;
     if (!osmgaD2eVerify(blk, stride, OSMGA_D2E_TRIS, "R2")) goto wrongPicture;
 
-    if (notExercised != 0UL) {
-        IOLog("OpenStepMGA D2-2f: R2 pixels are correct but %lu of %lu "
-              "unfenced submissions had already finished drawing -- "
-              "NOT EXERCISED, not a pass\n",
-              notExercised, exercised + notExercised);
-    } else {
-        IOLog("OpenStepMGA D2-2f: R2 PASS -- a buffer is free to overwrite "
-              "once PRIMADDRESS has passed it, drawing still in flight\n");
-    }
+    stage = 3UL;
+    stageName = (notExercised != 0UL)
+        ? "R1 C1 ok, R2 pixels ok but NOT EXERCISED"
+        : "R1 C1 R2 all ok";
 
     /*
      * PHASE 3 -- suspend, now that the fence says nothing is in flight.
@@ -9310,16 +9381,31 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     status = osmgaR32(base, MGA_ENGSTATUS);
     IOLog("OpenStepMGA D2-2e/suspend: STATUS %08lx, spins %lu\n",
           status, spins);
+    osmgaD2Settle();
     if (spins >= OSMGA_S1_SPIN_LIMIT) {
         IOLog("OpenStepMGA D2-2e/suspend: WARP did not reach idle after the "
               "suspend request -- nothing further will be programmed\n");
+        osmgaD2Settle();
         IOLog("OpenStepMGA D2-2c: ring and microcode RETAINED, engine left "
               "claimed.  *** REBOOT REQUIRED ***\n");
+        osmgaD2Settle();
         IOUnmapPhysicalFromIOTask(alias, mapLen);
         return;
     }
+    /*
+     * The one line that has to survive.  What syslog keeps is the tail, so
+     * every verdict this run reached is restated here in a form that needs
+     * none of the lines above it.
+     */
+    IOLog("OpenStepMGA D2-2f: SUMMARY stage=%lu/3 (%s) inflight=%lu/%lu "
+          "px=%lu wrong=%lu outclip=%lu fencetag=%08lx\n",
+          stage, stageName, exercised, exercised + notExercised,
+          osmgaD2LastChanged, osmgaD2LastWrong, osmgaD2LastOutClip,
+          osmgaD2LastFenceTag);
+    osmgaD2Settle();
     IOLog("OpenStepMGA D2-2e: PASS -- WARP drew the batches, fenced, and "
           "suspended\n");
+    osmgaD2Settle();
 
     /* This block is inside the window clients are handed, and it was opened
      * either zeroed or unspecified -- never full of our sentinel.  Put it
@@ -9336,6 +9422,7 @@ osmgaD2eSubmitBatch(vm_address_t base, unsigned long *vtx,
     IOFreeLow(ringVirt, (int)OSMGA_DMA_RING_BYTES);
     IOUnmapPhysicalFromIOTask(alias, mapLen);
     IOLog("OpenStepMGA D2-2c: end (ring released, microcode kept)\n");
+    osmgaD2Settle();
     return;
 
 wedged:
@@ -9344,8 +9431,20 @@ wedged:
      * be safe, so this is the retain-everything path: no further register
      * write, nothing freed, the claim kept.
      */
+    /*
+     * The one line that has to survive.  What syslog keeps is the tail, so
+     * every verdict this run reached is restated here in a form that needs
+     * none of the lines above it.
+     */
+    IOLog("OpenStepMGA D2-2f: SUMMARY stage=%lu/3 (%s) inflight=%lu/%lu "
+          "px=%lu wrong=%lu outclip=%lu fencetag=%08lx\n",
+          stage, stageName, exercised, exercised + notExercised,
+          osmgaD2LastChanged, osmgaD2LastWrong, osmgaD2LastOutClip,
+          osmgaD2LastFenceTag);
+    osmgaD2Settle();
     IOLog("OpenStepMGA D2-2f: ring and microcode RETAINED, engine left "
           "claimed.  *** REBOOT REQUIRED ***\n");
+    osmgaD2Settle();
     (void)osmgaD2eVerify(blk, stride, OSMGA_D2E_TRIS, "wedged");
     IOUnmapPhysicalFromIOTask(alias, mapLen);
     return;
@@ -9357,8 +9456,20 @@ wrongPicture:
      * WARP, hand the engine back, and stop: drawing more onto a picture
      * nobody understands would only make it harder to read.
      */
+    /*
+     * The one line that has to survive.  What syslog keeps is the tail, so
+     * every verdict this run reached is restated here in a form that needs
+     * none of the lines above it.
+     */
+    IOLog("OpenStepMGA D2-2f: SUMMARY stage=%lu/3 (%s) inflight=%lu/%lu "
+          "px=%lu wrong=%lu outclip=%lu fencetag=%08lx\n",
+          stage, stageName, exercised, exercised + notExercised,
+          osmgaD2LastChanged, osmgaD2LastWrong, osmgaD2LastOutClip,
+          osmgaD2LastFenceTag);
+    osmgaD2Settle();
     IOLog("OpenStepMGA D2-2f: stopping here; the image above is the "
           "result.  See docs/D2_2F_BUFFER_REUSE.md section 9.3\n");
+    osmgaD2Settle();
     (void)osmgaStormWaitFifo(base, 1U);
     osmgaW32(base, MGA_WIADDR2, MGA_WMODE_SUSPEND);
     goto releaseAndReturn;
