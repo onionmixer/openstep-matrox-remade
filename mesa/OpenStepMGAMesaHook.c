@@ -542,10 +542,22 @@ static triangle_func savedTriangle;
  *
  * WHAT MAY SHARE A BATCH.  dwgctl and alphactrl are per trapezoid, so depth
  * modes, depth-mask and blending vary freely inside one batch.  What is
- * batch STATE -- the texture block (gradients tmr[0..5], origin, size,
- * pitch, flags, format) and the scissor -- keys a flush: the first textured
- * triangle of a run sets the key and a different key flushes first.
- * Untextured triangles carry no key and mix with anything.
+ * batch STATE -- the texture block: gradients tmr[0..5], origin, size,
+ * pitch, flags, format -- keys a flush: the first textured triangle of a
+ * run sets the key and a different key flushes first.  Untextured
+ * triangles carry no key and mix with anything.
+ *
+ * THE SCISSOR IS NOT IN THAT KEY, and this comment used to say it was.
+ * It is read from the context at submission time instead, which would be
+ * wrong if it could change while work is pending -- the batch would go out
+ * with the later box applied to the earlier triangles.
+ *
+ * It cannot change.  Mesa's glScissor is
+ * ASSERT_OUTSIDE_BEGIN_END_AND_FLUSH (Mesa-3.4.2/src/scissor.c:43), so it
+ * flushes the vertex buffer, and accumulation never crosses a render
+ * bracket.  The guarantee is Mesa's, not this file's, which is exactly why
+ * it is written down here: a cross review read the old sentence as
+ * evidence that a key existed, and looked for the bug it implied.
  *
  * THE REPLAY CONTRACT.  The kernel validates before it encodes, so a refused
  * batch drew nothing and every accumulated source triangle is replayed
