@@ -255,3 +255,79 @@ OSMGA_D3_ZORG = 5 MiB % 128 = 0    (깊이 비활성 대입값, 안전)
 5. 로그는 **제출 계층 · 코드당 한 번**
 6. 시험이 `OSMGA_D3_ZORG` 와 창 시작 정렬을 **주장**
 7. 문서의 주장을 **봉쇄 결함**으로 좁힘 (§6.3)
+
+---
+
+## 7. 결과 (2026-08-28 실기)
+
+### 7.1 무하드웨어 시험 — 통과
+
+```
+check-hw3d-validate: PASS        all cases behave as specified (0 failing)
+```
+
+새 사례가 양방향을 증명한다:
+
+```
+ok  dstorg one byte past that (unaligned)          20   <- 정렬 판정
+ok  dstorg one aligned step past that               4   <- 범위 판정 (여전히 시험됨)
+ok  dstorg with dstmap set (system memory)         20
+ok  dstorg with dstacc set (AGP)                   20
+ok  zorg 64-aligned but not 128                    21
+ok  unaligned zorg, no triangle addresses depth     0   <- 조건부가 지켜진다
+ok  unaligned texorg, no triangle is textured       0
+```
+
+### 7.2 새 드라이버가 로드됐다는 **양성** 확인
+
+```
+OpenStepMGA W12: batch refused 17; reported once
+```
+
+**코드당 한 번 로깅이 실제로 동작한다.** 17 은 `E_TRICROSS` — 기존 검사이고,
+시험 하나가 의도적으로 유발한 것이다.
+
+> 창 베이스 검사가 로그를 안 남긴 것은 **정상**이다(정렬돼 있을 때는 침묵).
+> 그래서 그것으로는 로드를 확인할 수 없었고, 위 줄이 확인해 주었다.
+
+### 7.3 ★ **정렬 거부가 한 번도 없었다 — 추론이 측정이 됐다**
+
+```
+정렬 판정(20/21/22) 발생 횟수: 0
+```
+
+**W12 §1 이 "Mesa 가 정렬된 값만 보내기 때문일 것" 이라고 추론했던 것이
+이제 측정된 사실이다.** 회귀 전체에서 정렬 거부가 하나도 없었다.
+
+### 7.4 회귀 — 돈 것은 전부 통과, 못 돈 넷은 **기존 문제**
+
+| | |
+| --- | --- |
+| 돈 것 (11) | `tdm tib tdp trb town tnr tcu tuf tps tar tcw` — **전부 0 failing** |
+| 못 돈 것 (4) | `tpq ttex tdc tsa` — `a window will not map` |
+
+**제 변경 탓이 아니다.** 그 넷은 오프셋을 하드코딩한다:
+
+```
+COLOUR_ORG = 4 MiB = 4,194,304
+DEPTH_ORG  = 5 MiB = 5,242,880
+현재 VRAM 창       = [9,322,496, 29,360,128)   즉 8.89 MiB 부터
+```
+
+**둘 다 창 아래라 매핑이 올바르게 거부된다.** 더 작은 해상도 시절의 상수이고,
+1600×1200×4 = 7.68 MB 가 가시 영역을 차지하는 지금 모드에서는 성립할 수 없다.
+(`tdc` 가 `cmd 1 colour 0 depth 0` 으로 정확히 이것을 말한다 — 명령 창은
+매핑되고 VRAM 오프셋만 실패한다.)
+
+> **이것은 별건이다.** W12 와 무관하며, 고치려면 그 상수들을 드라이버가
+> 보고하는 창 시작에서 유도하게 해야 한다. **여기서는 고치지 않고 기록한다.**
+
+### 7.5 이 결과가 덮지 **못하는** 것
+
+못 돈 넷이 하필 **pitch·texture·depth·blendsat** 이다. 즉:
+
+- **`dstorg` 경로는 잘 덮였다** (돈 11 개가 전부 목적지를 쓴다)
+- **`zorg`·`texorg` 는 덜 덮였다** — 깊이·텍스처를 가장 많이 쓰는 시험들이 안 돌았다
+
+**정렬 거부 0 을 `dstorg` 에 대한 측정으로는 받되, `zorg`/`texorg` 에 대해서는
+"아직 덜 봤다" 로 남긴다.** 그 넷을 살리는 것이 다음 차례의 값어치 있는 일이다.
