@@ -10471,6 +10471,83 @@ releaseAndReturn:
                 osmgaD2Settle();
             }
         }
+
+        /* ---- T6: does a trapezoid draw between two WARP draws survive? --
+         *
+         * D2-2f showed an IDENTICAL context lives across two vertex
+         * submissions.  It showed nothing about a context with a trapezoid
+         * draw in the middle, and the trapezoid path writes DWGCTL,
+         * DSTORG, PITCH and the clip by MMIO -- every register the WARP
+         * state list also sets.
+         *
+         * The order is the review's: fence, suspend, quiesce, THEN the
+         * other tier.  A fence alone proves drawing finished; it does not
+         * prove WARP is idle, and leaving a started pipe running while
+         * another path reprograms its registers is the thing this test
+         * exists to refuse.
+         */
+        (void)osmgaStormWaitFifo(base, 1U);
+        osmgaW32(base, MGA_WIADDR2, MGA_WMODE_SUSPEND);
+        for (i = 0UL; i < OSMGA_S1_SPIN_LIMIT; i++) {
+            unsigned long st = osmgaR32(base, MGA_ENGSTATUS);
+            if ((st & (MGA_STATUS_WBUSY | MGA_STATUS_WBUSY1 |
+                       MGA_STATUS_DWGENGSTS)) == 0UL)
+                break;
+        }
+        if (i >= OSMGA_S1_SPIN_LIMIT) {
+            IOLog("OpenStepMGA M3/T6: WARP did not quiesce before the "
+                  "trapezoid draw -- nothing further will be programmed\n");
+            IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
+                  "REQUIRED ***\n");
+            goto unmapT;
+        }
+
+        /* The other tier, into the oracle surface so the WARP surface is
+         * left alone and a difference cannot be blamed on overdraw. */
+        if (!osmgaM3OracleTri(base, stride, OSMGA_M3_ORACLE,
+                              OSMGA_M3_COLOUR)) {
+            IOLog("OpenStepMGA M3/T6: the trapezoid draw did not finish\n");
+            osmgaD2Settle();
+            goto releaseAll;
+        }
+
+        /* Full reissue -- pipe, context, texture, global, clip.  Nothing
+         * is assumed to have survived. */
+        for (row = 0UL; row < OSMGA_M3_BLK; row++)
+            for (col = 0UL; col < OSMGA_M3_BLK; col++)
+                blkWa[row * stride + col] = OSMGA_S1_SENTINEL;
+        osmgaW32(base, MGA_ICLEAR, MGA_SOFTRAPICLR);
+        osmgaW32(base, MGA_WIADDR2,    MGA_WMODE_SUSPEND);
+        osmgaW32(base, MGA_WGETMSB,    MGA_WGETMSB_G400);
+        osmgaW32(base, MGA_WVRTXSZ,    MGA_WVRTXSZ_G400);
+        osmgaW32(base, MGA_WACCEPTSEQ, MGA_WACCEPTSEQ_G400);
+        osmgaW32(base, MGA_WMISC,      MGA_WMISC_WRITE);
+        if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
+                             osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
+                             dwgctlFlat, OSMGA_M3_WARP, OSMGA_M3_ZORG,
+                             (const OSMGAM3Tex *)0, "T6")) {
+            IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
+                  "REQUIRED ***\n");
+            goto unmapT;
+        }
+        osmgaM3BuildTri(vtx, OSMGA_M3_TRI_LO, OSMGA_M3_TRI_LO,
+                        OSMGA_M3_TRI_HI - OSMGA_M3_TRI_LO,
+                        OSMGA_M3_F32_HALF, OSMGA_M3_COLOUR);
+        if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys, OSMGA_D2C_VTX_DWORDS,
+                                 1, "T6", 0)) {
+            IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
+                  "REQUIRED ***\n");
+            goto unmapT;
+        }
+        /* The same triangle T0 drew, so the expected image is the one
+         * already agreed by both paths. */
+        if (osmgaM3CheckShape(blkWa, stride, OSMGA_M3_COLOUR, "T6") == 0UL)
+            IOLog("OpenStepMGA M3: T6 PASS -- WARP survives a trapezoid "
+                  "draw when the state is reissued in full\n");
+        else
+            IOLog("OpenStepMGA M3: T6 -- WARP did not come back correctly "
+                  "after the other tier, even with a full reissue\n");
+        osmgaD2Settle();
     } else {
         IOLog("OpenStepMGA M3: T0 did not pass -- T1 and T2 are not run\n");
         osmgaD2Settle();
