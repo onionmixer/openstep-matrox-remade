@@ -33,24 +33,24 @@ mkdir "$unpackRoot"
 (cd $unpackRoot; /usr/ucb/zcat $packageRoot/OpenStepMGARecoveryStaging.tar.Z | $installerTar xf -)
 if ($status != 0) exit 1
 
-if (! -r "$unpackRoot/DriverStaging/OpenStepMGAReplacementDisplay.config/OpenStepMGAReplacementDisplay_reloc" || \
-    ! -r "$unpackRoot/DriverStaging/OpenStepMGAReplacementDisplay.config/Default.table" || \
+if (! -r "$unpackRoot/DriverStaging/OSMGADisplay.config/OSMGADisplay_reloc" || \
+    ! -r "$unpackRoot/DriverStaging/OSMGADisplay.config/Default.table" || \
     ! -r "$unpackRoot/Tools/OpenStepMGARecoveryStaging-Intel") then
     echo "OPENSTEP_MGA_RECOVERY_STAGE_VERIFY_PAYLOAD=incomplete"
     exit 1
 endif
-if (-e "$unpackRoot/OpenStepMGAReplacementDisplay.config") then
+if (-e "$unpackRoot/OSMGADisplay.config") then
     echo "OPENSTEP_MGA_RECOVERY_STAGE_VERIFY_PAYLOAD=production-root-leak"
     exit 1
 endif
-grep 'Auto Detect IDs' "$unpackRoot/DriverStaging/OpenStepMGAReplacementDisplay.config/Default.table" > /dev/null
+grep 'Auto Detect IDs' "$unpackRoot/DriverStaging/OSMGADisplay.config/Default.table" > /dev/null
 if ($status == 0) then
     echo "OPENSTEP_MGA_RECOVERY_STAGE_VERIFY_PAYLOAD=matching-leak"
     exit 1
 endif
 # `file` deliberately omits the architecture subtype for preloaded files;
 # i386 classification is enforced by the payload marker/BOM below.
-file "$unpackRoot/DriverStaging/OpenStepMGAReplacementDisplay.config/OpenStepMGAReplacementDisplay_reloc" | grep 'Mach-O preloaded' > /dev/null
+file "$unpackRoot/DriverStaging/OSMGADisplay.config/OSMGADisplay_reloc" | grep 'Mach-O preloaded' > /dev/null
 if ($status != 0) then
     echo "OPENSTEP_MGA_RECOVERY_STAGE_VERIFY_PAYLOAD=non-i386-reloc"
     exit 1

@@ -1,7 +1,7 @@
 "Kernel Flags" = "";
 "Boot Graphics" = "Yes";
 "Version" = "4.00";
-"Active Drivers" = "SpaceSaver2Mouse Pro1000 SoundBlaster16PCI OpenStepMGAReplacementDisplay";
+"Active Drivers" = "SpaceSaver2Mouse Pro1000 SoundBlaster16PCI OSMGADisplay";
 "APM" = "Yes";
 "Instance" = "0";
 "Install Mode" = "No";

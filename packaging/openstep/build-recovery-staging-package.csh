@@ -8,7 +8,7 @@ if ($#argv != 1) then
 endif
 
 set sourceRoot = "$argv[1]"
-set bundleRoot = "$sourceRoot/OpenStepMGAReplacementDisplay/OpenStepMGAReplacementDisplay.config"
+set bundleRoot = "$sourceRoot/OSMGADisplay/OSMGADisplay.config"
 set info = "$sourceRoot/packaging/openstep/OpenStepMGARecoveryStaging.info"
 set preinstall = "$sourceRoot/packaging/openstep/OpenStepMGARecoveryStaging.pre_install"
 set markerSource = "$sourceRoot/packaging/openstep/installer-architecture-marker.c"
@@ -18,8 +18,8 @@ set payloadRoot = "$workRoot/payload"
 set distRoot = "$workRoot/dist"
 set marker = "$payloadRoot/Tools/OpenStepMGARecoveryStaging-Intel"
 
-foreach file ( "$bundleRoot/OpenStepMGAReplacementDisplay_reloc" \
-               "$bundleRoot/OpenStepMGAReplacementDisplay" \
+foreach file ( "$bundleRoot/OSMGADisplay_reloc" \
+               "$bundleRoot/OSMGADisplay" \
                "$bundleRoot/Default.table" "$info" "$preinstall" "$markerSource" )
     if (! -r "$file") then
         echo "OPENSTEP_MGA_RECOVERY_STAGE_BUILD_INPUT=missing:$file"
@@ -39,7 +39,7 @@ if ($status != 0) then
     echo "OPENSTEP_MGA_RECOVERY_STAGE_BUILD_INPUT=non-i386-target"
     exit 1
 endif
-file "$bundleRoot/OpenStepMGAReplacementDisplay_reloc" | grep 'Mach-O preloaded' > /dev/null
+file "$bundleRoot/OSMGADisplay_reloc" | grep 'Mach-O preloaded' > /dev/null
 if ($status != 0) then
     echo "OPENSTEP_MGA_RECOVERY_STAGE_BUILD_INPUT=invalid-reloc"
     exit 1

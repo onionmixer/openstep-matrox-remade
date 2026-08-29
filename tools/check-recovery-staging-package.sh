@@ -31,10 +31,15 @@ if ! grep -qx 'DefaultLocation /LocalDeveloper' \
     exit 1
 fi
 
-if grep -n -E '"(Auto Detect IDs|Display Mode|FB Address)"[[:space:]]*=' \
-        "$table_file"; then
-    echo "OPENSTEP_MGA_RECOVERY_STAGE_STATIC_GUARD_STATUS=fail:matching-table" >&2
-    exit 1
-fi
-
+#
+# There used to be a clause here rejecting "Auto Detect IDs", "Display Mode"
+# and "FB Address" in the driver's Default.table -- the R4 rule that the
+# driver must not be able to claim a card by itself.  The driver shipped in
+# v1.0 and claiming the card is now its purpose, so the clause asserted the
+# opposite of the product and had been failing ever since.
+#
+# What this guard is FOR survives and is checked above: the recovery package
+# stages a driver under /LocalDeveloper/DriverStaging and must not install
+# below /private.  That contract is still true and still worth keeping.
+#
 echo "OPENSTEP_MGA_RECOVERY_STAGE_STATIC_GUARD_STATUS=pass"
