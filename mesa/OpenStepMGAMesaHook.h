@@ -312,4 +312,12 @@ typedef struct {
 unsigned long OSMGAMesaHookVerdictCount(unsigned long verdict);
 const OSMGAMesaRefusal *OSMGAMesaHookLastRefusal(void);
 
+
+/* M20 -- the mirror's pixel budget against a narrowed one's.  Only moves
+ * when OSMGA_MESA_INST_AREA is on; see OSMGAMesaHookInstrument(). */
+unsigned long OSMGAMesaHookAreaAll(void);
+unsigned long OSMGAMesaHookAreaBox(void);
+unsigned long OSMGAMesaHookAreaFullBr(void);
+unsigned long OSMGAMesaHookAreaBoxBr(void);
+
 #endif /* OPENSTEP_MGA_MESA_HOOK_H */

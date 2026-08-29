@@ -364,6 +364,61 @@ OSMGAMesaHookDeltaRegs(unsigned long out[25])
 #define OSMGA_MESA_INST_TIME   1
 #define OSMGA_MESA_INST_DELTA  2
 #define OSMGA_MESA_INST_MASK   4
+#define OSMGA_MESA_INST_AREA   8
+
+/*
+ * M20 -- what would a mirror narrowed to the drawn rectangle actually copy?
+ *
+ * The question is whether that optimisation is worth DESIGNING, and the only
+ * honest way to answer it is to accumulate the rectangle a correct
+ * implementation would be entitled to copy, without copying anything
+ * differently.  The rectangle has to cover every writer, not just this back
+ * end's triangles -- and the span wrappers below already sit on the channel
+ * every other writer uses (the software rasteriser, glDrawPixels, glBitmap,
+ * points, lines), which is why `spanWrote` can be a boolean today.  Here it
+ * becomes a box.
+ *
+ * A whole-surface clear marks the bracket full, and so would anything this
+ * file cannot see -- and after the span wrappers there is nothing left that
+ * it cannot see, which is a finding rather than an assumption.
+ */
+static long          areaMinX, areaMaxX, areaMinY, areaMaxY;
+static int           areaValid, areaFull;
+static unsigned long areaBoxPixels;     /* what (B) would have copied      */
+static unsigned long areaAllPixels;     /* what the mirror does copy       */
+static unsigned long areaFullBrackets;  /* brackets (B) could not narrow   */
+static unsigned long areaBoxBrackets;
+
+/*
+ * A clear that the engine took writes the surface without a span and without
+ * a vertex, so it is invisible to both accumulators.  It also happens just
+ * BEFORE the bracket whose mirror has to deliver it -- the same ordering
+ * `uniformBracket` exists for -- so it is carried across as a one-shot and
+ * spent by the reset that opens the next bracket.
+ */
+static int areaPendingFull;
+
+static void
+osmgaAreaReset(void)
+{
+    areaValid = 0;
+    areaFull = areaPendingFull;
+    areaPendingFull = 0;
+}
+
+static void
+osmgaAreaAdd(long x0, long y0, long x1, long y1)
+{
+    if (!areaValid) {
+        areaMinX = x0; areaMaxX = x1; areaMinY = y0; areaMaxY = y1;
+        areaValid = 1;
+        return;
+    }
+    if (x0 < areaMinX) areaMinX = x0;
+    if (x1 > areaMaxX) areaMaxX = x1;
+    if (y0 < areaMinY) areaMinY = y0;
+    if (y1 > areaMaxY) areaMaxY = y1;
+}
 
 /* set by OSMGAMesaHookInstrument; see the note beside the submit site */
 static int hookInstrument;
@@ -2064,6 +2119,11 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         hookLastWin[nwin][1] = (float)VB->Win.data[idx][1];              \
         hookLastWin[nwin][2] = (float)VB->Win.data[idx][2];              \
         nwin = (nwin + 1) % 3;                                           \
+        if ((hookInstrument & OSMGA_MESA_INST_AREA) != 0)                \
+            osmgaAreaAdd((long)VB->Win.data[idx][0] - 1L,                \
+                         (long)VB->Win.data[idx][1] - 1L,                \
+                         (long)VB->Win.data[idx][0] + 1L,                \
+                         (long)VB->Win.data[idx][1] + 1L);               \
         (dst).x = osmgaFix((double)VB->Win.data[idx][0]);                \
         (dst).y = osmgaFix((double)VB->Win.data[idx][1]);                \
         (dst).z = (unsigned long)((zsnap =                               \
@@ -3141,6 +3201,8 @@ osmgaWriteRGBASpan(const GLcontext *ctx, GLuint n, GLint x, GLint y,
 {
     osmgaMesaFlushPending();
     spanWrote = 1;
+    if ((hookInstrument & OSMGA_MESA_INST_AREA) != 0)
+        osmgaAreaAdd((long)x, (long)y, (long)x + (long)n - 1L, (long)y);
     if (prevWriteRGBASpan) (*prevWriteRGBASpan)(ctx, n, x, y, rgba, mask);
 }
 
@@ -3150,6 +3212,8 @@ osmgaWriteRGBSpan(const GLcontext *ctx, GLuint n, GLint x, GLint y,
 {
     osmgaMesaFlushPending();
     spanWrote = 1;
+    if ((hookInstrument & OSMGA_MESA_INST_AREA) != 0)
+        osmgaAreaAdd((long)x, (long)y, (long)x + (long)n - 1L, (long)y);
     if (prevWriteRGBSpan) (*prevWriteRGBSpan)(ctx, n, x, y, rgb, mask);
 }
 
@@ -3159,6 +3223,8 @@ osmgaWriteMonoRGBASpan(const GLcontext *ctx, GLuint n, GLint x, GLint y,
 {
     osmgaMesaFlushPending();
     spanWrote = 1;
+    if ((hookInstrument & OSMGA_MESA_INST_AREA) != 0)
+        osmgaAreaAdd((long)x, (long)y, (long)x + (long)n - 1L, (long)y);
     if (prevWriteMonoRGBASpan) (*prevWriteMonoRGBASpan)(ctx, n, x, y, mask);
 }
 
@@ -3169,6 +3235,11 @@ osmgaWriteRGBAPixels(const GLcontext *ctx, GLuint n, const GLint x[],
 {
     osmgaMesaFlushPending();
     spanWrote = 1;
+    if ((hookInstrument & OSMGA_MESA_INST_AREA) != 0) {
+        GLuint i;
+        for (i = 0; i < n; i++)
+            osmgaAreaAdd((long)x[i], (long)y[i], (long)x[i], (long)y[i]);
+    }
     if (prevWriteRGBAPixels) (*prevWriteRGBAPixels)(ctx, n, x, y, rgba, mask);
 }
 
@@ -3178,6 +3249,11 @@ osmgaWriteMonoRGBAPixels(const GLcontext *ctx, GLuint n, const GLint x[],
 {
     osmgaMesaFlushPending();
     spanWrote = 1;
+    if ((hookInstrument & OSMGA_MESA_INST_AREA) != 0) {
+        GLuint i;
+        for (i = 0; i < n; i++)
+            osmgaAreaAdd((long)x[i], (long)y[i], (long)x[i], (long)y[i]);
+    }
     if (prevWriteMonoRGBAPixels)
         (*prevWriteMonoRGBAPixels)(ctx, n, x, y, mask);
 }
@@ -3263,6 +3339,7 @@ osmgaMesaSoil(GLcontext *ctx)
     osmgaMesaWrapSpans(ctx);
     spanWrote = 0;
     spanRead = 0;
+    osmgaAreaReset();
 
     /*
      * And the mark stays, unconditional, exactly as it was.  A bracket that
@@ -3332,6 +3409,45 @@ osmgaMesaMirror(GLcontext *ctx)
         return;
     }
     uniformBracket = 0;
+    /*
+     * M20's accounting, and the mirror is unchanged: this adds up what a
+     * narrowed mirror would have been entitled to copy, against what this
+     * one does copy.  The box is clamped to the surface and intersected
+     * with the scissor, which cannot have moved inside the bracket --
+     * glScissor is ASSERT_OUTSIDE_BEGIN_END_AND_FLUSH.
+     */
+    if ((hookInstrument & OSMGA_MESA_INST_AREA) != 0) {
+        unsigned long W = OSMGAMesaBufferWidth();
+        unsigned long H = OSMGAMesaBufferHeight();
+
+        areaAllPixels += W * H;
+        if (areaFull || !areaValid) {
+            /* !areaValid means nothing this file can see wrote, yet the
+             * mirror is running anyway -- so the honest charge is the
+             * whole surface, not zero. */
+            areaBoxPixels += W * H;
+            areaFullBrackets++;
+        } else {
+            long x0 = areaMinX, y0 = areaMinY, x1 = areaMaxX, y1 = areaMaxY;
+
+            if (ctx != 0 && ctx->Scissor.Enabled) {
+                if (ctx->Scissor.X > x0) x0 = (long)ctx->Scissor.X;
+                if (ctx->Scissor.Y > y0) y0 = (long)ctx->Scissor.Y;
+                if ((long)ctx->Scissor.X + (long)ctx->Scissor.Width - 1L < x1)
+                    x1 = (long)ctx->Scissor.X + (long)ctx->Scissor.Width - 1L;
+                if ((long)ctx->Scissor.Y + (long)ctx->Scissor.Height - 1L < y1)
+                    y1 = (long)ctx->Scissor.Y + (long)ctx->Scissor.Height - 1L;
+            }
+            if (x0 < 0L) x0 = 0L;
+            if (y0 < 0L) y0 = 0L;
+            if (x1 > (long)W - 1L) x1 = (long)W - 1L;
+            if (y1 > (long)H - 1L) y1 = (long)H - 1L;
+            if (x1 >= x0 && y1 >= y0)
+                areaBoxPixels += (unsigned long)(x1 - x0 + 1L)
+                               * (unsigned long)(y1 - y0 + 1L);
+            areaBoxBrackets++;
+        }
+    }
     hookMirrors++;
     OSMGAMesaBufferMirror();
 }
@@ -3532,6 +3648,7 @@ osmgaMesaClearOnEngine(GLcontext *ctx, GLbitfield mask, GLboolean all,
         return 0;
     }
     hookClearWhy = 0;
+    areaPendingFull = 1;
     OSMGAMesaBufferSoiled();
     /*
      * The surface now holds one value, and _mesa_Clear is about to open a
@@ -3696,6 +3813,17 @@ double OSMGAMesaHookLastWin(unsigned long v, unsigned long c)
     if (v > 2UL || c > 2UL) return 0.0;
     return (double)hookLastWin[v][c];
 }
+/*
+ * M20's four numbers.  areaAll is what the mirror copies; areaBox is what a
+ * mirror narrowed to the rectangle every writer reported would have copied;
+ * the two bracket counts say how much of the difference is real narrowing
+ * and how much is brackets nothing could narrow.
+ */
+unsigned long OSMGAMesaHookAreaAll(void)      { return areaAllPixels; }
+unsigned long OSMGAMesaHookAreaBox(void)      { return areaBoxPixels; }
+unsigned long OSMGAMesaHookAreaFullBr(void)   { return areaFullBrackets; }
+unsigned long OSMGAMesaHookAreaBoxBr(void)    { return areaBoxBrackets; }
+
 
 /*
  * The port telling us what its software clear would write.
@@ -3777,7 +3905,8 @@ void OSMGAMesaHookMeasureArm(int arm)
 }
 #endif /* OSMGA_MESA_TESTHOOKS */
 /*
- * A mask of OSMGA_MESA_INST_TIME, _DELTA and _MASK.  Pass 7 for all of it.
+ * A mask of OSMGA_MESA_INST_TIME, _DELTA, _MASK and _AREA.  Pass 15 for
+ * all of it.
  *
  * This used to translate 1 into all three, to keep the old switch's meaning
  * -- and that quietly destroyed the experiment it was written for.  A run

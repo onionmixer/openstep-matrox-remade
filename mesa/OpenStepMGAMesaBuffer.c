@@ -34,6 +34,7 @@ static void *bufBound;
 static void *bufApp;      /* what the application gave us */
 static unsigned long bufAppRow;  /* and how its rows are laid out */
 static int   bufDirty;
+static unsigned long bufCopies;   /* mirrors that got PAST the early return */
 static void *depthMapped;
 /*
  * Present mode: the caller has opted into ON-SCREEN delivery, and its own
@@ -440,6 +441,62 @@ OSMGAMesaBufferSoiled(void)
  * dropped.  What it can be is taken back, once the bracket is over and the
  * spans have said it never wrote anything.
  */
+/*
+ * How many mirrors actually copied.  The hook counts CALLS, and the guard
+ * above turns some of them away -- so a per-copy cost divided by the call
+ * count is a cost per copy only if the two numbers agree, and M19's
+ * arithmetic assumed they did without ever asking.
+ */
+/*
+ * TEST ONLY -- copy a box and nothing else, so the cost model can be
+ * measured instead of assumed.
+ *
+ * M20 found that a mirror narrowed to what each bracket drew would move
+ * 113 times fewer pixels on the teapot, and turned that into a claimed
+ * speed-up by ASSUMING the mirror's cost is linear in pixels.  The evidence
+ * for that was two full-surface sizes agreeing (146.722 ms at 512x384
+ * predicting 229.3 at 640x480 against 229.9 measured), which says nothing
+ * about a 52x52 box: a row-by-row copy has a per-ROW cost too, and 129
+ * small boxes are 129 x 52 rows.
+ *
+ * So this exists to be timed.  It reads the surface and writes the caller's
+ * own array -- the same two places the real mirror touches, in the same
+ * order -- and it leaves bufDirty exactly as it found it, so a test can call
+ * it without changing what the next real mirror does.
+ */
+void
+OSMGAMesaBufferMirrorBox(unsigned long x0, unsigned long y0,
+                         unsigned long x1, unsigned long y1)
+{
+    const unsigned long *src;
+    unsigned long *dst;
+    unsigned long y;
+
+    if (bufPresent || bufMapped == 0 || bufApp == 0)
+        return;
+    if (x1 >= bufWidth)  x1 = bufWidth - 1UL;
+    if (y1 >= bufHeight) y1 = bufHeight - 1UL;
+    if (x0 > x1 || y0 > y1)
+        return;
+
+    src = (const unsigned long *)bufMapped;
+    dst = (unsigned long *)bufApp;
+    for (y = y0; y <= y1; y++) {
+        const unsigned long *s = src + y * bufStride + x0;
+        unsigned long *d = dst + y * bufAppRow + x0;
+        unsigned long x;
+
+        for (x = x0; x <= x1; x++)
+            *d++ = *s++;
+    }
+}
+
+unsigned long
+OSMGAMesaBufferCopies(void)
+{
+    return bufCopies;
+}
+
 int
 OSMGAMesaBufferIsDirty(void)
 {
@@ -517,6 +574,7 @@ OSMGAMesaBufferMirror(void)
     if (bufMapped == 0 || bufApp == 0 || !bufDirty)
         return;
     bufDirty = 0;
+    bufCopies++;
 
     /*
      * Row by row, because the surface is laid out at the display's stride

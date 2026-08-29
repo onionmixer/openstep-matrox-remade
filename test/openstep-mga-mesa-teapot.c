@@ -62,6 +62,12 @@
 #define OSMGAMesaHookSoftware()        0UL
 #define OSMGAMesaHookUnsupported()     0UL
 #define OSMGAMesaHookReplayed()        0UL
+#define OSMGAMesaHookAreaAll()         0UL
+#define OSMGAMesaHookAreaBox()         0UL
+#define OSMGAMesaHookAreaFullBr()      0UL
+#define OSMGAMesaHookAreaBoxBr()       0UL
+#define OSMGAMesaBufferCopies()        0UL
+#define OSMGAMesaHookInstrument(n)     ((void)(n))
 #endif
 
 /* patchdata, cpdata, tex and teapot(), cut from the Mesa tree at build time */
@@ -245,6 +251,7 @@ main(int argc, char **argv)
     unsigned long drawn0, drawn1, soft0, soft1, unsup0, unsup1;
     unsigned long batches0;
     unsigned long mir0, mir1;
+    unsigned long copies0, areaAll0, areaBox0, areaBoxBr0, areaFullBr0;
     const char *out = (argc > 1) ? argv[1] : "/tmp/teapot.tiff";
     int forceSoft = (argc > 2 && strcmp(argv[2], "soft") == 0);
     /*
@@ -318,7 +325,20 @@ main(int argc, char **argv)
     if (forceSoft)
         OSMGAMesaHookForceSoftware(1);
     batches0 = OSMGAMesaHookBatches();
+    /*
+     * AREA only, deliberately: TIME puts a gettimeofday on every submission
+     * and this run is being timed.  AREA is a handful of comparisons per
+     * vertex against a mirror that costs 228 ms, so it cannot move the
+     * answer it is here to measure -- and the timing is printed anyway, so
+     * the claim is checkable rather than asserted.
+     */
+    OSMGAMesaHookInstrument(8);
     mir0 = OSMGAMesaHookMirrors();
+    copies0 = OSMGAMesaBufferCopies();
+    areaAll0 = OSMGAMesaHookAreaAll();
+    areaBox0 = OSMGAMesaHookAreaBox();
+    areaBoxBr0 = OSMGAMesaHookAreaBoxBr();
+    areaFullBr0 = OSMGAMesaHookAreaFullBr();
     drawn0 = OSMGAMesaHookDrawn();
     soft0  = OSMGAMesaHookSoftware();
     unsup0 = OSMGAMesaHookUnsupported();
@@ -366,7 +386,25 @@ main(int argc, char **argv)
     (void)mir0; (void)mir1; (void)drawn0; (void)drawn1;
     (void)soft0; (void)soft1; (void)unsup0; (void)unsup1; (void)batches0;
 #else
-    printf("   surface walked back     : %lu times\n", mir1 - mir0);
+    /*
+     * M20: the mirror turns some of its own calls away (the surface may not
+     * be dirty), so the call count is not a copy count -- and M19's cost per
+     * mirror assumed it was.  Print both, always.
+     */
+    printf("   surface walked back     : %lu times   (%lu of them copied)\n",
+           mir1 - mir0, OSMGAMesaBufferCopies() - copies0);
+    if (OSMGAMesaHookAreaAll() > areaAll0) {
+        unsigned long all = OSMGAMesaHookAreaAll() - areaAll0;
+        unsigned long box = OSMGAMesaHookAreaBox() - areaBox0;
+
+        printf("   mirror pixel budget     : %lu copied, %lu if narrowed to"
+               " the drawn box\n", all, box);
+        printf("   narrowing would save    : %lu%%   (%lu brackets narrowed,"
+               " %lu could not be)\n",
+               all ? (unsigned long)(100UL - (box * 100UL) / all) : 0UL,
+               OSMGAMesaHookAreaBoxBr() - areaBoxBr0,
+               OSMGAMesaHookAreaFullBr() - areaFullBr0);
+    }
     printf("   source triangles drawn  : %lu\n", drawn1 - drawn0);
     printf("   submissions             : %lu   (batching: %lu sources per"
            " submission)\n", OSMGAMesaHookBatches() - batches0,

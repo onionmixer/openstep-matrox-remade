@@ -85,6 +85,9 @@ unsigned long OSMGAMesaBufferDepthOrigin(void);
  * time, so calling it often is cheap when it is not needed.
  */
 void OSMGAMesaBufferMirror(void);
+unsigned long OSMGAMesaBufferCopies(void);
+void OSMGAMesaBufferMirrorBox(unsigned long x0, unsigned long y0,
+                              unsigned long x1, unsigned long y1);
 
 /*
  * Deliver a surface known to hold one value by writing that value, instead
