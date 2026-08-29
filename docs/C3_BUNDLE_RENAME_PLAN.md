@@ -233,3 +233,52 @@ check-bom-overlap    PASS
 BRE 라 아무것도 안 나왔고, 잠깐 드라이버가 안 떴다고 생각했다.  `tail` 로
 직접 보고서야 멀쩡한 것을 알았다.  **도구가 답을 못 찾은 것과 답이 없는
 것은 다르다.**
+
+## 13. 원인은 tar 가 아니었다 — `DiskName` 이었다
+
+운영자가 남긴 오류:
+
+```
+Can't open package /private/tmp/pkgout/OSMGADisplay.pkg
+(file OSMGADisplay.info contains no DiskName field).
+```
+
+**Installer 는 페이로드를 읽는 데까지 가지도 않았다.**  `.info` 에
+`DiskName` 이 없어 거절한 것이고, 워크스페이스의 다른 모든 패키지에는
+그 키가 있다 — Mesa 넷, 가속 하나.  드라이버 것만 없었고, 첫 패키징
+커밋부터 그랬다.
+
+그리고 **나는 그것을 보고도 지나쳤다.**  증상을 좁히던 중 두 `.info` 를
+나란히 놓고 키 차이를 세었고, 가속 쪽에만 `DiskName` 이 있는 것을 적어
+놓고서 "둘 다 그럴듯하다" 며 넘어갔다.  그 줄이 답이었다.
+
+### 그러면 bigtar 작업은 헛일이었나 — 아니다, 그러나 원인은 아니었다
+
+두 가지를 갈라 적는다:
+
+```
+증상의 원인          .info 에 DiskName 이 없다        <- 이것이 "안 열림"
+따로 있던 결함       포장이 installer_bigtar 로 쓰고
+                     검증기가 같은 도구로 읽었다.
+                     Installer 의 installer_tar 는 그것에서 행한다
+```
+
+뒤엣것은 실재한다 — 재현했다(180 초 timeout, 두 번).  다만 그것은 **열린
+뒤 설치할 때** 부딪혔을 결함이고, 운영자는 거기까지 가지 못했다.
+`DiskName` 만 넣었으면 열렸을 것이고, **그 다음에 행이 났을 것이다.**
+
+내가 잘못한 것은 고친 내용이 아니라 **인과를 확인하지 않고 단정한 것**이다.
+"Installer 가 installer_tar 를 쓰면 그 행이 곧 안 열림이다" 라고 적었는데,
+그 앞의 "쓰면" 을 검증한 적이 없다.
+
+### 재발 방지
+
+검증기가 `.info` 의 필수 키를 이름으로 검사한다:
+
+```
+info keys
+  ok   Title / Version / Description / DefaultLocation / DiskName
+```
+
+파일이 그럴듯해 보이는 것과 Installer 가 받아들이는 것은 다르고,
+그 차이를 사람 눈에 맡겼던 것이 이 결함이 오래 산 이유다.

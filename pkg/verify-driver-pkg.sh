@@ -53,6 +53,24 @@ while [ ! -f /tmp/_drvpkg_done ]; do
     fi
 done
 
+#
+# The .info keys Installer needs before it will even OPEN the package.
+#
+# DiskName was missing from this package from the first packaging commit,
+# and Installer answers "contains no DiskName field" and refuses -- without
+# ever reading the payload.  Every other package in this workspace had it;
+# this one did not, and nothing checked.  So the check is here, by key name,
+# rather than trusting that the file looks right.
+#
+echo "info keys"
+for k in Title Version Description DefaultLocation DiskName; do
+    if grep "^$k " "$PKG/$NAME.info" > /dev/null; then
+        note "ok   $k"
+    else
+        bad "$k missing from $NAME.info -- Installer will refuse to open it"
+    fi
+done
+
 echo "payload"
 for f in "${NAME}_reloc" "$NAME" Default.table Instance0.table Display.modes \
          English.lproj/Localizable.strings; do
