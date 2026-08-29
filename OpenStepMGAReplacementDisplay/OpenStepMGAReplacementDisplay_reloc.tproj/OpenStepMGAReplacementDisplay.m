@@ -11152,7 +11152,33 @@ osmgaWarpFenceAndStop(vm_address_t base, const char *label)
         simple_lock(&stormLock); stormBusy = NO; simple_unlock(&stormLock);
         return IO_R_RESOURCE;
     }
+
+    /*
+     * warp_init, which this path did not do and the harness always does.
+     *
+     * Measured: without it the very first GENERAL list never completed --
+     * the submission loop spun out with the verdict already OK and 134
+     * dwords encoded, so validation and encoding were fine and the engine
+     * simply never ran the list.
+     *
+     * Once per batch rather than once per driver.  It is six MMIO writes,
+     * and T6 showed that a trapezoid draw between two WARP batches needs
+     * the whole state reissued -- so assuming these survive somebody
+     * else's drawing would be assuming exactly what T6 measured false.
+     */
     osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
+    osmgaW32(mmioBase, MGA_WIADDR2,    MGA_WMODE_SUSPEND);
+    osmgaW32(mmioBase, MGA_WGETMSB,    MGA_WGETMSB_G400);
+    osmgaW32(mmioBase, MGA_WVRTXSZ,    MGA_WVRTXSZ_G400);
+    osmgaW32(mmioBase, MGA_WACCEPTSEQ, MGA_WACCEPTSEQ_G400);
+    osmgaW32(mmioBase, MGA_WMISC,      MGA_WMISC_WRITE);
+    if (osmgaR32(mmioBase, MGA_WMISC) != MGA_WMISC_EXPECTED) {
+        IOLog("OpenStepMGA WARP: warp_init did not settle, WMISC %08lx\n",
+              osmgaR32(mmioBase, MGA_WMISC));
+        stormBlitFailed = YES;
+        simple_lock(&stormLock); stormBusy = NO; simple_unlock(&stormLock);
+        return IO_R_RESOURCE;
+    }
 
     for (r = 0UL; r < nr && !failed; r++) {
         const OSMGAHW3DRun *run = &osmgaHW3DSnap.warp.run[r];
@@ -11176,7 +11202,16 @@ osmgaWarpFenceAndStop(vm_address_t base, const char *label)
                 (status & MGA_STATUS_ENDPRDMASTS) != 0UL)
                 break;
         }
-        if (spins >= OSMGA_S1_SPIN_LIMIT) { failed = 1; break; }
+        if (spins >= OSMGA_S1_SPIN_LIMIT) {
+            /* Say WHERE.  The first run of this path timed out here with
+             * nothing in the log but "did not complete", and the cause --
+             * a missing warp_init -- was invisible from that. */
+            IOLog("OpenStepMGA WARP: run %lu state list did not complete, "
+                  "PRIMADDRESS %08x wanted %08lx, STATUS %08lx\n",
+                  r, primAfter, listEnd, status);
+            failed = 1;
+            break;
+        }
         osmgaW32(mmioBase, MGA_ICLEAR, MGA_SOFTRAPICLR);
 
         osmgaW32(mmioBase, MGA_PRIMADDRESS, vs | MGA_DMA_VERTEX);
@@ -11186,7 +11221,13 @@ osmgaWarpFenceAndStop(vm_address_t base, const char *label)
             if (((unsigned long)primAfter & ~3UL) == ve)
                 break;
         }
-        if (spins >= OSMGA_S1_SPIN_LIMIT) { failed = 1; break; }
+        if (spins >= OSMGA_S1_SPIN_LIMIT) {
+            IOLog("OpenStepMGA WARP: run %lu vertices not consumed, "
+                  "PRIMADDRESS %08x wanted %08lx, STATUS %08lx\n",
+                  r, primAfter, ve, osmgaR32(mmioBase, MGA_ENGSTATUS));
+            failed = 1;
+            break;
+        }
     }
 
     if (!failed && !osmgaWarpFenceAndStop(mmioBase, "submit"))
