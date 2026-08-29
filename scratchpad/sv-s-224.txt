@@ -1,0 +1,8 @@
+# sliver off 224/256
+# counters drawn=0 warp=0 traps=0 software=0
+# win 0 0 0
+# win 1 0 0
+# win 2 0 0
+P 202 70
+P 201 133
+P 201 134

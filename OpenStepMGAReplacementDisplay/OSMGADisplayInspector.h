@@ -51,6 +51,7 @@
 {
     id stormSwitch;    /* "Storm 2D Test" */
     id mmapSwitch;     /* "VRAM Mmap" */
+    id warpSwitch;     /* "WARP 3D" */
     id grayMatrix;     /* "Gray Levels": tags 0..3 = 256, 16, 4, 2 */
     id vramMatrix;     /* "MGA Memory Size": tags 0..1 = 16, 32 */
     id statusMode;     /* which mode the line below is talking about */
@@ -60,6 +61,7 @@
 - setTable:(NXStringTable *)instance;
 - toggleStorm:sender;
 - toggleMmap:sender;
+- toggleWarp:sender;
 - grayChanged:sender;
 - vramChanged:sender;
 

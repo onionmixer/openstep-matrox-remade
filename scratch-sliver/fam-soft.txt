@@ -1,0 +1,4751 @@
+# family scratch-sliver/family.txt  480 triangles
+T 0 drawn 0 warp 0 traps 0 soft 0
+V 0 0 0 0
+V 0 1 0 0
+V 0 2 0 0
+P 0 160 88
+P 0 160 89
+P 0 160 90
+P 0 160 91
+P 0 160 92
+P 0 160 93
+P 0 160 94
+P 0 160 95
+P 0 160 96
+P 0 160 97
+P 0 160 98
+P 0 160 99
+P 0 160 100
+P 0 160 101
+P 0 160 102
+P 0 160 103
+P 0 160 104
+P 0 160 105
+P 0 160 106
+P 0 160 107
+P 0 160 108
+P 0 160 109
+P 0 160 110
+P 0 160 111
+P 0 160 112
+P 0 160 113
+P 0 160 114
+P 0 160 115
+P 0 160 116
+P 0 160 117
+P 0 160 118
+P 0 160 119
+P 0 160 120
+P 0 160 121
+P 0 160 122
+P 0 160 123
+P 0 160 124
+P 0 160 125
+P 0 160 126
+P 0 160 127
+P 0 160 128
+P 0 160 129
+P 0 160 130
+P 0 160 131
+P 0 160 132
+P 0 160 133
+P 0 160 134
+P 0 160 135
+P 0 160 136
+P 0 160 137
+P 0 160 138
+P 0 160 139
+P 0 160 140
+P 0 160 141
+P 0 160 142
+P 0 160 143
+P 0 160 144
+P 0 160 145
+P 0 160 146
+P 0 160 147
+P 0 160 148
+P 0 160 149
+P 0 160 150
+P 0 160 151
+P 0 160 152
+T 1 drawn 0 warp 0 traps 0 soft 0
+V 1 0 0 0
+V 1 1 0 0
+V 1 2 0 0
+T 2 drawn 0 warp 0 traps 0 soft 0
+V 2 0 0 0
+V 2 1 0 0
+V 2 2 0 0
+T 3 drawn 0 warp 0 traps 0 soft 0
+V 3 0 0 0
+V 3 1 0 0
+V 3 2 0 0
+T 4 drawn 0 warp 0 traps 0 soft 0
+V 4 0 0 0
+V 4 1 0 0
+V 4 2 0 0
+T 5 drawn 0 warp 0 traps 0 soft 0
+V 5 0 0 0
+V 5 1 0 0
+V 5 2 0 0
+T 6 drawn 0 warp 0 traps 0 soft 0
+V 6 0 0 0
+V 6 1 0 0
+V 6 2 0 0
+T 7 drawn 0 warp 0 traps 0 soft 0
+V 7 0 0 0
+V 7 1 0 0
+V 7 2 0 0
+T 8 drawn 0 warp 0 traps 0 soft 0
+V 8 0 0 0
+V 8 1 0 0
+V 8 2 0 0
+T 9 drawn 0 warp 0 traps 0 soft 0
+V 9 0 0 0
+V 9 1 0 0
+V 9 2 0 0
+T 10 drawn 0 warp 0 traps 0 soft 0
+V 10 0 0 0
+V 10 1 0 0
+V 10 2 0 0
+T 11 drawn 0 warp 0 traps 0 soft 0
+V 11 0 0 0
+V 11 1 0 0
+V 11 2 0 0
+T 12 drawn 0 warp 0 traps 0 soft 0
+V 12 0 0 0
+V 12 1 0 0
+V 12 2 0 0
+T 13 drawn 0 warp 0 traps 0 soft 0
+V 13 0 0 0
+V 13 1 0 0
+V 13 2 0 0
+T 14 drawn 0 warp 0 traps 0 soft 0
+V 14 0 0 0
+V 14 1 0 0
+V 14 2 0 0
+T 15 drawn 0 warp 0 traps 0 soft 0
+V 15 0 0 0
+V 15 1 0 0
+V 15 2 0 0
+T 16 drawn 0 warp 0 traps 0 soft 0
+V 16 0 0 0
+V 16 1 0 0
+V 16 2 0 0
+T 17 drawn 0 warp 0 traps 0 soft 0
+V 17 0 0 0
+V 17 1 0 0
+V 17 2 0 0
+T 18 drawn 0 warp 0 traps 0 soft 0
+V 18 0 0 0
+V 18 1 0 0
+V 18 2 0 0
+T 19 drawn 0 warp 0 traps 0 soft 0
+V 19 0 0 0
+V 19 1 0 0
+V 19 2 0 0
+T 20 drawn 0 warp 0 traps 0 soft 0
+V 20 0 0 0
+V 20 1 0 0
+V 20 2 0 0
+T 21 drawn 0 warp 0 traps 0 soft 0
+V 21 0 0 0
+V 21 1 0 0
+V 21 2 0 0
+T 22 drawn 0 warp 0 traps 0 soft 0
+V 22 0 0 0
+V 22 1 0 0
+V 22 2 0 0
+P 22 140 120
+P 22 141 120
+P 22 142 120
+P 22 143 120
+P 22 144 120
+P 22 145 120
+P 22 146 120
+P 22 147 120
+P 22 148 120
+P 22 149 120
+P 22 150 120
+P 22 151 120
+P 22 152 120
+P 22 153 120
+P 22 154 120
+P 22 155 120
+P 22 156 120
+P 22 157 120
+P 22 158 120
+P 22 159 120
+P 22 160 120
+P 22 161 120
+P 22 162 120
+P 22 163 120
+P 22 164 120
+P 22 165 120
+P 22 166 120
+P 22 167 120
+P 22 168 120
+P 22 169 120
+P 22 170 120
+P 22 171 120
+P 22 172 120
+P 22 173 120
+P 22 174 120
+P 22 175 120
+P 22 176 120
+P 22 177 120
+P 22 178 120
+P 22 179 120
+T 23 drawn 0 warp 0 traps 0 soft 0
+V 23 0 0 0
+V 23 1 0 0
+V 23 2 0 0
+T 24 drawn 0 warp 0 traps 0 soft 0
+V 24 0 0 0
+V 24 1 0 0
+V 24 2 0 0
+T 25 drawn 0 warp 0 traps 0 soft 0
+V 25 0 0 0
+V 25 1 0 0
+V 25 2 0 0
+T 26 drawn 0 warp 0 traps 0 soft 0
+V 26 0 0 0
+V 26 1 0 0
+V 26 2 0 0
+T 27 drawn 0 warp 0 traps 0 soft 0
+V 27 0 0 0
+V 27 1 0 0
+V 27 2 0 0
+T 28 drawn 0 warp 0 traps 0 soft 0
+V 28 0 0 0
+V 28 1 0 0
+V 28 2 0 0
+T 29 drawn 0 warp 0 traps 0 soft 0
+V 29 0 0 0
+V 29 1 0 0
+V 29 2 0 0
+T 30 drawn 0 warp 0 traps 0 soft 0
+V 30 0 0 0
+V 30 1 0 0
+V 30 2 0 0
+T 31 drawn 0 warp 0 traps 0 soft 0
+V 31 0 0 0
+V 31 1 0 0
+V 31 2 0 0
+T 32 drawn 0 warp 0 traps 0 soft 0
+V 32 0 0 0
+V 32 1 0 0
+V 32 2 0 0
+T 33 drawn 0 warp 0 traps 0 soft 0
+V 33 0 0 0
+V 33 1 0 0
+V 33 2 0 0
+T 34 drawn 0 warp 0 traps 0 soft 0
+V 34 0 0 0
+V 34 1 0 0
+V 34 2 0 0
+T 35 drawn 0 warp 0 traps 0 soft 0
+V 35 0 0 0
+V 35 1 0 0
+V 35 2 0 0
+P 35 156 110
+T 36 drawn 0 warp 0 traps 0 soft 0
+V 36 0 0 0
+V 36 1 0 0
+V 36 2 0 0
+T 37 drawn 0 warp 0 traps 0 soft 0
+V 37 0 0 0
+V 37 1 0 0
+V 37 2 0 0
+T 38 drawn 0 warp 0 traps 0 soft 0
+V 38 0 0 0
+V 38 1 0 0
+V 38 2 0 0
+T 39 drawn 0 warp 0 traps 0 soft 0
+V 39 0 0 0
+V 39 1 0 0
+V 39 2 0 0
+T 40 drawn 0 warp 0 traps 0 soft 0
+V 40 0 0 0
+V 40 1 0 0
+V 40 2 0 0
+T 41 drawn 0 warp 0 traps 0 soft 0
+V 41 0 0 0
+V 41 1 0 0
+V 41 2 0 0
+T 42 drawn 0 warp 0 traps 0 soft 0
+V 42 0 0 0
+V 42 1 0 0
+V 42 2 0 0
+P 42 117 120
+P 42 118 120
+P 42 119 120
+P 42 120 120
+P 42 121 120
+P 42 122 120
+P 42 123 120
+P 42 124 120
+P 42 125 120
+P 42 126 120
+P 42 127 120
+P 42 128 120
+P 42 129 120
+P 42 130 120
+P 42 131 120
+P 42 132 120
+P 42 133 120
+P 42 134 120
+P 42 135 120
+P 42 136 120
+P 42 137 120
+P 42 138 120
+P 42 139 120
+P 42 140 120
+P 42 141 120
+P 42 142 120
+P 42 143 120
+P 42 144 120
+P 42 145 120
+P 42 146 120
+P 42 147 120
+P 42 148 120
+P 42 149 120
+P 42 150 120
+P 42 151 120
+P 42 152 120
+P 42 153 120
+P 42 154 120
+P 42 155 120
+P 42 156 120
+P 42 157 120
+P 42 158 120
+P 42 159 120
+P 42 160 120
+P 42 161 120
+P 42 162 120
+P 42 163 120
+P 42 164 120
+P 42 165 120
+P 42 166 120
+P 42 167 120
+P 42 168 120
+P 42 169 120
+P 42 170 120
+P 42 171 120
+P 42 172 120
+P 42 173 120
+P 42 174 120
+P 42 175 120
+P 42 176 120
+P 42 177 120
+P 42 178 120
+P 42 179 120
+P 42 180 120
+P 42 181 120
+P 42 182 120
+P 42 183 120
+P 42 184 120
+P 42 185 120
+P 42 186 120
+P 42 187 120
+P 42 188 120
+P 42 189 120
+P 42 190 120
+P 42 191 120
+P 42 192 120
+P 42 193 120
+P 42 194 120
+P 42 195 120
+P 42 196 120
+P 42 197 120
+P 42 198 120
+P 42 199 120
+P 42 200 120
+P 42 201 120
+P 42 202 120
+P 42 203 120
+T 43 drawn 0 warp 0 traps 0 soft 0
+V 43 0 0 0
+V 43 1 0 0
+V 43 2 0 0
+T 44 drawn 0 warp 0 traps 0 soft 0
+V 44 0 0 0
+V 44 1 0 0
+V 44 2 0 0
+T 45 drawn 0 warp 0 traps 0 soft 0
+V 45 0 0 0
+V 45 1 0 0
+V 45 2 0 0
+P 45 170 124
+T 46 drawn 0 warp 0 traps 0 soft 0
+V 46 0 0 0
+V 46 1 0 0
+V 46 2 0 0
+T 47 drawn 0 warp 0 traps 0 soft 0
+V 47 0 0 0
+V 47 1 0 0
+V 47 2 0 0
+T 48 drawn 0 warp 0 traps 0 soft 0
+V 48 0 0 0
+V 48 1 0 0
+V 48 2 0 0
+T 49 drawn 0 warp 0 traps 0 soft 0
+V 49 0 0 0
+V 49 1 0 0
+V 49 2 0 0
+T 50 drawn 0 warp 0 traps 0 soft 0
+V 50 0 0 0
+V 50 1 0 0
+V 50 2 0 0
+T 51 drawn 0 warp 0 traps 0 soft 0
+V 51 0 0 0
+V 51 1 0 0
+V 51 2 0 0
+T 52 drawn 0 warp 0 traps 0 soft 0
+V 52 0 0 0
+V 52 1 0 0
+V 52 2 0 0
+T 53 drawn 0 warp 0 traps 0 soft 0
+V 53 0 0 0
+V 53 1 0 0
+V 53 2 0 0
+T 54 drawn 0 warp 0 traps 0 soft 0
+V 54 0 0 0
+V 54 1 0 0
+V 54 2 0 0
+T 55 drawn 0 warp 0 traps 0 soft 0
+V 55 0 0 0
+V 55 1 0 0
+V 55 2 0 0
+T 56 drawn 0 warp 0 traps 0 soft 0
+V 56 0 0 0
+V 56 1 0 0
+V 56 2 0 0
+T 57 drawn 0 warp 0 traps 0 soft 0
+V 57 0 0 0
+V 57 1 0 0
+V 57 2 0 0
+T 58 drawn 0 warp 0 traps 0 soft 0
+V 58 0 0 0
+V 58 1 0 0
+V 58 2 0 0
+T 59 drawn 0 warp 0 traps 0 soft 0
+V 59 0 0 0
+V 59 1 0 0
+V 59 2 0 0
+T 60 drawn 0 warp 0 traps 0 soft 0
+V 60 0 0 0
+V 60 1 0 0
+V 60 2 0 0
+T 61 drawn 0 warp 0 traps 0 soft 0
+V 61 0 0 0
+V 61 1 0 0
+V 61 2 0 0
+T 62 drawn 0 warp 0 traps 0 soft 0
+V 62 0 0 0
+V 62 1 0 0
+V 62 2 0 0
+P 62 155 120
+P 62 156 120
+P 62 157 120
+P 62 158 120
+P 62 159 120
+P 62 160 120
+P 62 161 120
+P 62 162 120
+P 62 163 120
+P 62 164 120
+T 63 drawn 0 warp 0 traps 0 soft 0
+V 63 0 0 0
+V 63 1 0 0
+V 63 2 0 0
+T 64 drawn 0 warp 0 traps 0 soft 0
+V 64 0 0 0
+V 64 1 0 0
+V 64 2 0 0
+T 65 drawn 0 warp 0 traps 0 soft 0
+V 65 0 0 0
+V 65 1 0 0
+V 65 2 0 0
+T 66 drawn 0 warp 0 traps 0 soft 0
+V 66 0 0 0
+V 66 1 0 0
+V 66 2 0 0
+T 67 drawn 0 warp 0 traps 0 soft 0
+V 67 0 0 0
+V 67 1 0 0
+V 67 2 0 0
+T 68 drawn 0 warp 0 traps 0 soft 0
+V 68 0 0 0
+V 68 1 0 0
+V 68 2 0 0
+T 69 drawn 0 warp 0 traps 0 soft 0
+V 69 0 0 0
+V 69 1 0 0
+V 69 2 0 0
+T 70 drawn 0 warp 0 traps 0 soft 0
+V 70 0 0 0
+V 70 1 0 0
+V 70 2 0 0
+T 71 drawn 0 warp 0 traps 0 soft 0
+V 71 0 0 0
+V 71 1 0 0
+V 71 2 0 0
+T 72 drawn 0 warp 0 traps 0 soft 0
+V 72 0 0 0
+V 72 1 0 0
+V 72 2 0 0
+T 73 drawn 0 warp 0 traps 0 soft 0
+V 73 0 0 0
+V 73 1 0 0
+V 73 2 0 0
+T 74 drawn 0 warp 0 traps 0 soft 0
+V 74 0 0 0
+V 74 1 0 0
+V 74 2 0 0
+T 75 drawn 0 warp 0 traps 0 soft 0
+V 75 0 0 0
+V 75 1 0 0
+V 75 2 0 0
+T 76 drawn 0 warp 0 traps 0 soft 0
+V 76 0 0 0
+V 76 1 0 0
+V 76 2 0 0
+T 77 drawn 0 warp 0 traps 0 soft 0
+V 77 0 0 0
+V 77 1 0 0
+V 77 2 0 0
+T 78 drawn 0 warp 0 traps 0 soft 0
+V 78 0 0 0
+V 78 1 0 0
+V 78 2 0 0
+T 79 drawn 0 warp 0 traps 0 soft 0
+V 79 0 0 0
+V 79 1 0 0
+V 79 2 0 0
+T 80 drawn 0 warp 0 traps 0 soft 0
+V 80 0 0 0
+V 80 1 0 0
+V 80 2 0 0
+T 81 drawn 0 warp 0 traps 0 soft 0
+V 81 0 0 0
+V 81 1 0 0
+V 81 2 0 0
+T 82 drawn 0 warp 0 traps 0 soft 0
+V 82 0 0 0
+V 82 1 0 0
+V 82 2 0 0
+P 82 140 120
+P 82 141 120
+P 82 142 120
+P 82 143 120
+P 82 144 120
+P 82 145 120
+P 82 146 120
+P 82 147 120
+P 82 148 120
+P 82 149 120
+P 82 150 120
+P 82 151 120
+P 82 152 120
+P 82 153 120
+P 82 154 120
+P 82 155 120
+P 82 156 120
+P 82 157 120
+P 82 158 120
+P 82 159 120
+P 82 160 120
+P 82 161 120
+P 82 162 120
+P 82 163 120
+P 82 164 120
+P 82 165 120
+P 82 166 120
+P 82 167 120
+P 82 168 120
+P 82 169 120
+P 82 170 120
+P 82 171 120
+P 82 172 120
+P 82 173 120
+P 82 174 120
+P 82 175 120
+P 82 176 120
+P 82 177 120
+P 82 178 120
+P 82 179 120
+T 83 drawn 0 warp 0 traps 0 soft 0
+V 83 0 0 0
+V 83 1 0 0
+V 83 2 0 0
+T 84 drawn 0 warp 0 traps 0 soft 0
+V 84 0 0 0
+V 84 1 0 0
+V 84 2 0 0
+T 85 drawn 0 warp 0 traps 0 soft 0
+V 85 0 0 0
+V 85 1 0 0
+V 85 2 0 0
+P 85 170 124
+T 86 drawn 0 warp 0 traps 0 soft 0
+V 86 0 0 0
+V 86 1 0 0
+V 86 2 0 0
+T 87 drawn 0 warp 0 traps 0 soft 0
+V 87 0 0 0
+V 87 1 0 0
+V 87 2 0 0
+T 88 drawn 0 warp 0 traps 0 soft 0
+V 88 0 0 0
+V 88 1 0 0
+V 88 2 0 0
+T 89 drawn 0 warp 0 traps 0 soft 0
+V 89 0 0 0
+V 89 1 0 0
+V 89 2 0 0
+T 90 drawn 0 warp 0 traps 0 soft 0
+V 90 0 0 0
+V 90 1 0 0
+V 90 2 0 0
+T 91 drawn 0 warp 0 traps 0 soft 0
+V 91 0 0 0
+V 91 1 0 0
+V 91 2 0 0
+T 92 drawn 0 warp 0 traps 0 soft 0
+V 92 0 0 0
+V 92 1 0 0
+V 92 2 0 0
+T 93 drawn 0 warp 0 traps 0 soft 0
+V 93 0 0 0
+V 93 1 0 0
+V 93 2 0 0
+T 94 drawn 0 warp 0 traps 0 soft 0
+V 94 0 0 0
+V 94 1 0 0
+V 94 2 0 0
+T 95 drawn 0 warp 0 traps 0 soft 0
+V 95 0 0 0
+V 95 1 0 0
+V 95 2 0 0
+P 95 156 110
+T 96 drawn 0 warp 0 traps 0 soft 0
+V 96 0 0 0
+V 96 1 0 0
+V 96 2 0 0
+T 97 drawn 0 warp 0 traps 0 soft 0
+V 97 0 0 0
+V 97 1 0 0
+V 97 2 0 0
+T 98 drawn 0 warp 0 traps 0 soft 0
+V 98 0 0 0
+V 98 1 0 0
+V 98 2 0 0
+T 99 drawn 0 warp 0 traps 0 soft 0
+V 99 0 0 0
+V 99 1 0 0
+V 99 2 0 0
+T 100 drawn 0 warp 0 traps 0 soft 0
+V 100 0 0 0
+V 100 1 0 0
+V 100 2 0 0
+T 101 drawn 0 warp 0 traps 0 soft 0
+V 101 0 0 0
+V 101 1 0 0
+V 101 2 0 0
+T 102 drawn 0 warp 0 traps 0 soft 0
+V 102 0 0 0
+V 102 1 0 0
+V 102 2 0 0
+P 102 117 120
+P 102 118 120
+P 102 119 120
+P 102 120 120
+P 102 121 120
+P 102 122 120
+P 102 123 120
+P 102 124 120
+P 102 125 120
+P 102 126 120
+P 102 127 120
+P 102 128 120
+P 102 129 120
+P 102 130 120
+P 102 131 120
+P 102 132 120
+P 102 133 120
+P 102 134 120
+P 102 135 120
+P 102 136 120
+P 102 137 120
+P 102 138 120
+P 102 139 120
+P 102 140 120
+P 102 141 120
+P 102 142 120
+P 102 143 120
+P 102 144 120
+P 102 145 120
+P 102 146 120
+P 102 147 120
+P 102 148 120
+P 102 149 120
+P 102 150 120
+P 102 151 120
+P 102 152 120
+P 102 153 120
+P 102 154 120
+P 102 155 120
+P 102 156 120
+P 102 157 120
+P 102 158 120
+P 102 159 120
+P 102 160 120
+P 102 161 120
+P 102 162 120
+P 102 163 120
+P 102 164 120
+P 102 165 120
+P 102 166 120
+P 102 167 120
+P 102 168 120
+P 102 169 120
+P 102 170 120
+P 102 171 120
+P 102 172 120
+P 102 173 120
+P 102 174 120
+P 102 175 120
+P 102 176 120
+P 102 177 120
+P 102 178 120
+P 102 179 120
+P 102 180 120
+P 102 181 120
+P 102 182 120
+P 102 183 120
+P 102 184 120
+P 102 185 120
+P 102 186 120
+P 102 187 120
+P 102 188 120
+P 102 189 120
+P 102 190 120
+P 102 191 120
+P 102 192 120
+P 102 193 120
+P 102 194 120
+P 102 195 120
+P 102 196 120
+P 102 197 120
+P 102 198 120
+P 102 199 120
+P 102 200 120
+P 102 201 120
+P 102 202 120
+P 102 203 120
+T 103 drawn 0 warp 0 traps 0 soft 0
+V 103 0 0 0
+V 103 1 0 0
+V 103 2 0 0
+T 104 drawn 0 warp 0 traps 0 soft 0
+V 104 0 0 0
+V 104 1 0 0
+V 104 2 0 0
+T 105 drawn 0 warp 0 traps 0 soft 0
+V 105 0 0 0
+V 105 1 0 0
+V 105 2 0 0
+P 105 170 124
+T 106 drawn 0 warp 0 traps 0 soft 0
+V 106 0 0 0
+V 106 1 0 0
+V 106 2 0 0
+T 107 drawn 0 warp 0 traps 0 soft 0
+V 107 0 0 0
+V 107 1 0 0
+V 107 2 0 0
+T 108 drawn 0 warp 0 traps 0 soft 0
+V 108 0 0 0
+V 108 1 0 0
+V 108 2 0 0
+T 109 drawn 0 warp 0 traps 0 soft 0
+V 109 0 0 0
+V 109 1 0 0
+V 109 2 0 0
+T 110 drawn 0 warp 0 traps 0 soft 0
+V 110 0 0 0
+V 110 1 0 0
+V 110 2 0 0
+T 111 drawn 0 warp 0 traps 0 soft 0
+V 111 0 0 0
+V 111 1 0 0
+V 111 2 0 0
+T 112 drawn 0 warp 0 traps 0 soft 0
+V 112 0 0 0
+V 112 1 0 0
+V 112 2 0 0
+P 112 151 99
+T 113 drawn 0 warp 0 traps 0 soft 0
+V 113 0 0 0
+V 113 1 0 0
+V 113 2 0 0
+T 114 drawn 0 warp 0 traps 0 soft 0
+V 114 0 0 0
+V 114 1 0 0
+V 114 2 0 0
+P 114 172 149
+T 115 drawn 0 warp 0 traps 0 soft 0
+V 115 0 0 0
+V 115 1 0 0
+V 115 2 0 0
+T 116 drawn 0 warp 0 traps 0 soft 0
+V 116 0 0 0
+V 116 1 0 0
+V 116 2 0 0
+T 117 drawn 0 warp 0 traps 0 soft 0
+V 117 0 0 0
+V 117 1 0 0
+V 117 2 0 0
+T 118 drawn 0 warp 0 traps 0 soft 0
+V 118 0 0 0
+V 118 1 0 0
+V 118 2 0 0
+T 119 drawn 0 warp 0 traps 0 soft 0
+V 119 0 0 0
+V 119 1 0 0
+V 119 2 0 0
+T 120 drawn 0 warp 0 traps 0 soft 0
+V 120 0 0 0
+V 120 1 0 0
+V 120 2 0 0
+T 121 drawn 0 warp 0 traps 0 soft 0
+V 121 0 0 0
+V 121 1 0 0
+V 121 2 0 0
+T 122 drawn 0 warp 0 traps 0 soft 0
+V 122 0 0 0
+V 122 1 0 0
+V 122 2 0 0
+P 122 155 120
+P 122 156 120
+P 122 157 120
+P 122 158 120
+P 122 159 120
+P 122 160 120
+P 122 161 120
+P 122 162 120
+P 122 163 120
+P 122 164 120
+T 123 drawn 0 warp 0 traps 0 soft 0
+V 123 0 0 0
+V 123 1 0 0
+V 123 2 0 0
+T 124 drawn 0 warp 0 traps 0 soft 0
+V 124 0 0 0
+V 124 1 0 0
+V 124 2 0 0
+T 125 drawn 0 warp 0 traps 0 soft 0
+V 125 0 0 0
+V 125 1 0 0
+V 125 2 0 0
+T 126 drawn 0 warp 0 traps 0 soft 0
+V 126 0 0 0
+V 126 1 0 0
+V 126 2 0 0
+T 127 drawn 0 warp 0 traps 0 soft 0
+V 127 0 0 0
+V 127 1 0 0
+V 127 2 0 0
+T 128 drawn 0 warp 0 traps 0 soft 0
+V 128 0 0 0
+V 128 1 0 0
+V 128 2 0 0
+T 129 drawn 0 warp 0 traps 0 soft 0
+V 129 0 0 0
+V 129 1 0 0
+V 129 2 0 0
+T 130 drawn 0 warp 0 traps 0 soft 0
+V 130 0 0 0
+V 130 1 0 0
+V 130 2 0 0
+T 131 drawn 0 warp 0 traps 0 soft 0
+V 131 0 0 0
+V 131 1 0 0
+V 131 2 0 0
+T 132 drawn 0 warp 0 traps 0 soft 0
+V 132 0 0 0
+V 132 1 0 0
+V 132 2 0 0
+T 133 drawn 0 warp 0 traps 0 soft 0
+V 133 0 0 0
+V 133 1 0 0
+V 133 2 0 0
+T 134 drawn 0 warp 0 traps 0 soft 0
+V 134 0 0 0
+V 134 1 0 0
+V 134 2 0 0
+T 135 drawn 0 warp 0 traps 0 soft 0
+V 135 0 0 0
+V 135 1 0 0
+V 135 2 0 0
+T 136 drawn 0 warp 0 traps 0 soft 0
+V 136 0 0 0
+V 136 1 0 0
+V 136 2 0 0
+T 137 drawn 0 warp 0 traps 0 soft 0
+V 137 0 0 0
+V 137 1 0 0
+V 137 2 0 0
+T 138 drawn 0 warp 0 traps 0 soft 0
+V 138 0 0 0
+V 138 1 0 0
+V 138 2 0 0
+T 139 drawn 0 warp 0 traps 0 soft 0
+V 139 0 0 0
+V 139 1 0 0
+V 139 2 0 0
+T 140 drawn 0 warp 0 traps 0 soft 0
+V 140 0 0 0
+V 140 1 0 0
+V 140 2 0 0
+T 141 drawn 0 warp 0 traps 0 soft 0
+V 141 0 0 0
+V 141 1 0 0
+V 141 2 0 0
+T 142 drawn 0 warp 0 traps 0 soft 0
+V 142 0 0 0
+V 142 1 0 0
+V 142 2 0 0
+P 142 140 120
+P 142 141 120
+P 142 142 120
+P 142 143 120
+P 142 144 120
+P 142 145 120
+P 142 146 120
+P 142 147 120
+P 142 148 120
+P 142 149 120
+P 142 150 120
+P 142 151 120
+P 142 152 120
+P 142 153 120
+P 142 154 120
+P 142 155 120
+P 142 156 120
+P 142 157 120
+P 142 158 120
+P 142 159 120
+P 142 160 120
+P 142 161 120
+P 142 162 120
+P 142 163 120
+P 142 164 120
+P 142 165 120
+P 142 166 120
+P 142 167 120
+P 142 168 120
+P 142 169 120
+P 142 170 120
+P 142 171 120
+P 142 172 120
+P 142 173 120
+P 142 174 120
+P 142 175 120
+P 142 176 120
+P 142 177 120
+P 142 178 120
+P 142 179 120
+T 143 drawn 0 warp 0 traps 0 soft 0
+V 143 0 0 0
+V 143 1 0 0
+V 143 2 0 0
+T 144 drawn 0 warp 0 traps 0 soft 0
+V 144 0 0 0
+V 144 1 0 0
+V 144 2 0 0
+T 145 drawn 0 warp 0 traps 0 soft 0
+V 145 0 0 0
+V 145 1 0 0
+V 145 2 0 0
+P 145 170 124
+T 146 drawn 0 warp 0 traps 0 soft 0
+V 146 0 0 0
+V 146 1 0 0
+V 146 2 0 0
+T 147 drawn 0 warp 0 traps 0 soft 0
+V 147 0 0 0
+V 147 1 0 0
+V 147 2 0 0
+T 148 drawn 0 warp 0 traps 0 soft 0
+V 148 0 0 0
+V 148 1 0 0
+V 148 2 0 0
+T 149 drawn 0 warp 0 traps 0 soft 0
+V 149 0 0 0
+V 149 1 0 0
+V 149 2 0 0
+T 150 drawn 0 warp 0 traps 0 soft 0
+V 150 0 0 0
+V 150 1 0 0
+V 150 2 0 0
+T 151 drawn 0 warp 0 traps 0 soft 0
+V 151 0 0 0
+V 151 1 0 0
+V 151 2 0 0
+T 152 drawn 0 warp 0 traps 0 soft 0
+V 152 0 0 0
+V 152 1 0 0
+V 152 2 0 0
+T 153 drawn 0 warp 0 traps 0 soft 0
+V 153 0 0 0
+V 153 1 0 0
+V 153 2 0 0
+P 153 159 118
+T 154 drawn 0 warp 0 traps 0 soft 0
+V 154 0 0 0
+V 154 1 0 0
+V 154 2 0 0
+T 155 drawn 0 warp 0 traps 0 soft 0
+V 155 0 0 0
+V 155 1 0 0
+V 155 2 0 0
+P 155 156 110
+T 156 drawn 0 warp 0 traps 0 soft 0
+V 156 0 0 0
+V 156 1 0 0
+V 156 2 0 0
+T 157 drawn 0 warp 0 traps 0 soft 0
+V 157 0 0 0
+V 157 1 0 0
+V 157 2 0 0
+T 158 drawn 0 warp 0 traps 0 soft 0
+V 158 0 0 0
+V 158 1 0 0
+V 158 2 0 0
+T 159 drawn 0 warp 0 traps 0 soft 0
+V 159 0 0 0
+V 159 1 0 0
+V 159 2 0 0
+T 160 drawn 0 warp 0 traps 0 soft 0
+V 160 0 0 0
+V 160 1 0 0
+V 160 2 0 0
+T 161 drawn 0 warp 0 traps 0 soft 0
+V 161 0 0 0
+V 161 1 0 0
+V 161 2 0 0
+T 162 drawn 0 warp 0 traps 0 soft 0
+V 162 0 0 0
+V 162 1 0 0
+V 162 2 0 0
+P 162 117 120
+P 162 118 120
+P 162 119 120
+P 162 120 120
+P 162 121 120
+P 162 122 120
+P 162 123 120
+P 162 124 120
+P 162 125 120
+P 162 126 120
+P 162 127 120
+P 162 128 120
+P 162 129 120
+P 162 130 120
+P 162 131 120
+P 162 132 120
+P 162 133 120
+P 162 134 120
+P 162 135 120
+P 162 136 120
+P 162 137 120
+P 162 138 120
+P 162 139 120
+P 162 140 120
+P 162 141 120
+P 162 142 120
+P 162 143 120
+P 162 144 120
+P 162 145 120
+P 162 146 120
+P 162 147 120
+P 162 148 120
+P 162 149 120
+P 162 150 120
+P 162 151 120
+P 162 152 120
+P 162 153 120
+P 162 154 120
+P 162 155 120
+P 162 156 120
+P 162 157 120
+P 162 158 120
+P 162 159 120
+P 162 160 120
+P 162 161 120
+P 162 162 120
+P 162 163 120
+P 162 164 120
+P 162 165 120
+P 162 166 120
+P 162 167 120
+P 162 168 120
+P 162 169 120
+P 162 170 120
+P 162 171 120
+P 162 172 120
+P 162 173 120
+P 162 174 120
+P 162 175 120
+P 162 176 120
+P 162 177 120
+P 162 178 120
+P 162 179 120
+P 162 180 120
+P 162 181 120
+P 162 182 120
+P 162 183 120
+P 162 184 120
+P 162 185 120
+P 162 186 120
+P 162 187 120
+P 162 188 120
+P 162 189 120
+P 162 190 120
+P 162 191 120
+P 162 192 120
+P 162 193 120
+P 162 194 120
+P 162 195 120
+P 162 196 120
+P 162 197 120
+P 162 198 120
+P 162 199 120
+P 162 200 120
+P 162 201 120
+P 162 202 120
+P 162 203 120
+T 163 drawn 0 warp 0 traps 0 soft 0
+V 163 0 0 0
+V 163 1 0 0
+V 163 2 0 0
+T 164 drawn 0 warp 0 traps 0 soft 0
+V 164 0 0 0
+V 164 1 0 0
+V 164 2 0 0
+P 164 180 128
+T 165 drawn 0 warp 0 traps 0 soft 0
+V 165 0 0 0
+V 165 1 0 0
+V 165 2 0 0
+P 165 170 124
+T 166 drawn 0 warp 0 traps 0 soft 0
+V 166 0 0 0
+V 166 1 0 0
+V 166 2 0 0
+T 167 drawn 0 warp 0 traps 0 soft 0
+V 167 0 0 0
+V 167 1 0 0
+V 167 2 0 0
+T 168 drawn 0 warp 0 traps 0 soft 0
+V 168 0 0 0
+V 168 1 0 0
+V 168 2 0 0
+T 169 drawn 0 warp 0 traps 0 soft 0
+V 169 0 0 0
+V 169 1 0 0
+V 169 2 0 0
+T 170 drawn 0 warp 0 traps 0 soft 0
+V 170 0 0 0
+V 170 1 0 0
+V 170 2 0 0
+T 171 drawn 0 warp 0 traps 0 soft 0
+V 171 0 0 0
+V 171 1 0 0
+V 171 2 0 0
+T 172 drawn 0 warp 0 traps 0 soft 0
+V 172 0 0 0
+V 172 1 0 0
+V 172 2 0 0
+P 172 151 99
+T 173 drawn 0 warp 0 traps 0 soft 0
+V 173 0 0 0
+V 173 1 0 0
+V 173 2 0 0
+P 173 159 118
+T 174 drawn 0 warp 0 traps 0 soft 0
+V 174 0 0 0
+V 174 1 0 0
+V 174 2 0 0
+T 175 drawn 0 warp 0 traps 0 soft 0
+V 175 0 0 0
+V 175 1 0 0
+V 175 2 0 0
+T 176 drawn 0 warp 0 traps 0 soft 0
+V 176 0 0 0
+V 176 1 0 0
+V 176 2 0 0
+T 177 drawn 0 warp 0 traps 0 soft 0
+V 177 0 0 0
+V 177 1 0 0
+V 177 2 0 0
+T 178 drawn 0 warp 0 traps 0 soft 0
+V 178 0 0 0
+V 178 1 0 0
+V 178 2 0 0
+T 179 drawn 0 warp 0 traps 0 soft 0
+V 179 0 0 0
+V 179 1 0 0
+V 179 2 0 0
+T 180 drawn 0 warp 0 traps 0 soft 0
+V 180 0 0 0
+V 180 1 0 0
+V 180 2 0 0
+T 181 drawn 0 warp 0 traps 0 soft 0
+V 181 0 0 0
+V 181 1 0 0
+V 181 2 0 0
+T 182 drawn 0 warp 0 traps 0 soft 0
+V 182 0 0 0
+V 182 1 0 0
+V 182 2 0 0
+P 182 155 120
+P 182 156 120
+P 182 157 120
+P 182 158 120
+P 182 159 120
+P 182 160 120
+P 182 161 120
+P 182 162 120
+P 182 163 120
+P 182 164 120
+T 183 drawn 0 warp 0 traps 0 soft 0
+V 183 0 0 0
+V 183 1 0 0
+V 183 2 0 0
+T 184 drawn 0 warp 0 traps 0 soft 0
+V 184 0 0 0
+V 184 1 0 0
+V 184 2 0 0
+T 185 drawn 0 warp 0 traps 0 soft 0
+V 185 0 0 0
+V 185 1 0 0
+V 185 2 0 0
+T 186 drawn 0 warp 0 traps 0 soft 0
+V 186 0 0 0
+V 186 1 0 0
+V 186 2 0 0
+T 187 drawn 0 warp 0 traps 0 soft 0
+V 187 0 0 0
+V 187 1 0 0
+V 187 2 0 0
+P 187 162 121
+T 188 drawn 0 warp 0 traps 0 soft 0
+V 188 0 0 0
+V 188 1 0 0
+V 188 2 0 0
+T 189 drawn 0 warp 0 traps 0 soft 0
+V 189 0 0 0
+V 189 1 0 0
+V 189 2 0 0
+T 190 drawn 0 warp 0 traps 0 soft 0
+V 190 0 0 0
+V 190 1 0 0
+V 190 2 0 0
+T 191 drawn 0 warp 0 traps 0 soft 0
+V 191 0 0 0
+V 191 1 0 0
+V 191 2 0 0
+T 192 drawn 0 warp 0 traps 0 soft 0
+V 192 0 0 0
+V 192 1 0 0
+V 192 2 0 0
+T 193 drawn 0 warp 0 traps 0 soft 0
+V 193 0 0 0
+V 193 1 0 0
+V 193 2 0 0
+P 193 159 118
+T 194 drawn 0 warp 0 traps 0 soft 0
+V 194 0 0 0
+V 194 1 0 0
+V 194 2 0 0
+T 195 drawn 0 warp 0 traps 0 soft 0
+V 195 0 0 0
+V 195 1 0 0
+V 195 2 0 0
+T 196 drawn 0 warp 0 traps 0 soft 0
+V 196 0 0 0
+V 196 1 0 0
+V 196 2 0 0
+T 197 drawn 0 warp 0 traps 0 soft 0
+V 197 0 0 0
+V 197 1 0 0
+V 197 2 0 0
+T 198 drawn 0 warp 0 traps 0 soft 0
+V 198 0 0 0
+V 198 1 0 0
+V 198 2 0 0
+T 199 drawn 0 warp 0 traps 0 soft 0
+V 199 0 0 0
+V 199 1 0 0
+V 199 2 0 0
+T 200 drawn 0 warp 0 traps 0 soft 0
+V 200 0 0 0
+V 200 1 0 0
+V 200 2 0 0
+T 201 drawn 0 warp 0 traps 0 soft 0
+V 201 0 0 0
+V 201 1 0 0
+V 201 2 0 0
+T 202 drawn 0 warp 0 traps 0 soft 0
+V 202 0 0 0
+V 202 1 0 0
+V 202 2 0 0
+P 202 140 120
+P 202 141 120
+P 202 142 120
+P 202 143 120
+P 202 144 120
+P 202 145 120
+P 202 146 120
+P 202 147 120
+P 202 148 120
+P 202 149 120
+P 202 150 120
+P 202 151 120
+P 202 152 120
+P 202 153 120
+P 202 154 120
+P 202 155 120
+P 202 156 120
+P 202 157 120
+P 202 158 120
+P 202 159 120
+P 202 160 120
+P 202 161 120
+P 202 162 120
+P 202 163 120
+P 202 164 120
+P 202 165 120
+P 202 166 120
+P 202 167 120
+P 202 168 120
+P 202 169 120
+P 202 170 120
+P 202 171 120
+P 202 172 120
+P 202 173 120
+P 202 174 120
+P 202 175 120
+P 202 176 120
+P 202 177 120
+P 202 178 120
+P 202 179 120
+T 203 drawn 0 warp 0 traps 0 soft 0
+V 203 0 0 0
+V 203 1 0 0
+V 203 2 0 0
+T 204 drawn 0 warp 0 traps 0 soft 0
+V 204 0 0 0
+V 204 1 0 0
+V 204 2 0 0
+P 204 151 116
+T 205 drawn 0 warp 0 traps 0 soft 0
+V 205 0 0 0
+V 205 1 0 0
+V 205 2 0 0
+P 205 170 124
+T 206 drawn 0 warp 0 traps 0 soft 0
+V 206 0 0 0
+V 206 1 0 0
+V 206 2 0 0
+T 207 drawn 0 warp 0 traps 0 soft 0
+V 207 0 0 0
+V 207 1 0 0
+V 207 2 0 0
+P 207 162 121
+T 208 drawn 0 warp 0 traps 0 soft 0
+V 208 0 0 0
+V 208 1 0 0
+V 208 2 0 0
+T 209 drawn 0 warp 0 traps 0 soft 0
+V 209 0 0 0
+V 209 1 0 0
+V 209 2 0 0
+T 210 drawn 0 warp 0 traps 0 soft 0
+V 210 0 0 0
+V 210 1 0 0
+V 210 2 0 0
+T 211 drawn 0 warp 0 traps 0 soft 0
+V 211 0 0 0
+V 211 1 0 0
+V 211 2 0 0
+T 212 drawn 0 warp 0 traps 0 soft 0
+V 212 0 0 0
+V 212 1 0 0
+V 212 2 0 0
+P 212 163 128
+T 213 drawn 0 warp 0 traps 0 soft 0
+V 213 0 0 0
+V 213 1 0 0
+V 213 2 0 0
+P 213 159 118
+T 214 drawn 0 warp 0 traps 0 soft 0
+V 214 0 0 0
+V 214 1 0 0
+V 214 2 0 0
+T 215 drawn 0 warp 0 traps 0 soft 0
+V 215 0 0 0
+V 215 1 0 0
+V 215 2 0 0
+P 215 156 110
+T 216 drawn 0 warp 0 traps 0 soft 0
+V 216 0 0 0
+V 216 1 0 0
+V 216 2 0 0
+T 217 drawn 0 warp 0 traps 0 soft 0
+V 217 0 0 0
+V 217 1 0 0
+V 217 2 0 0
+T 218 drawn 0 warp 0 traps 0 soft 0
+V 218 0 0 0
+V 218 1 0 0
+V 218 2 0 0
+T 219 drawn 0 warp 0 traps 0 soft 0
+V 219 0 0 0
+V 219 1 0 0
+V 219 2 0 0
+T 220 drawn 0 warp 0 traps 0 soft 0
+V 220 0 0 0
+V 220 1 0 0
+V 220 2 0 0
+T 221 drawn 0 warp 0 traps 0 soft 0
+V 221 0 0 0
+V 221 1 0 0
+V 221 2 0 0
+T 222 drawn 0 warp 0 traps 0 soft 0
+V 222 0 0 0
+V 222 1 0 0
+V 222 2 0 0
+P 222 117 120
+P 222 118 120
+P 222 119 120
+P 222 120 120
+P 222 121 120
+P 222 122 120
+P 222 123 120
+P 222 124 120
+P 222 125 120
+P 222 126 120
+P 222 127 120
+P 222 128 120
+P 222 129 120
+P 222 130 120
+P 222 131 120
+P 222 132 120
+P 222 133 120
+P 222 134 120
+P 222 135 120
+P 222 136 120
+P 222 137 120
+P 222 138 120
+P 222 139 120
+P 222 140 120
+P 222 141 120
+P 222 142 120
+P 222 143 120
+P 222 144 120
+P 222 145 120
+P 222 146 120
+P 222 147 120
+P 222 148 120
+P 222 149 120
+P 222 150 120
+P 222 151 120
+P 222 152 120
+P 222 153 120
+P 222 154 120
+P 222 155 120
+P 222 156 120
+P 222 157 120
+P 222 158 120
+P 222 159 120
+P 222 160 120
+P 222 161 120
+P 222 162 120
+P 222 163 120
+P 222 164 120
+P 222 165 120
+P 222 166 120
+P 222 167 120
+P 222 168 120
+P 222 169 120
+P 222 170 120
+P 222 171 120
+P 222 172 120
+P 222 173 120
+P 222 174 120
+P 222 175 120
+P 222 176 120
+P 222 177 120
+P 222 178 120
+P 222 179 120
+P 222 180 120
+P 222 181 120
+P 222 182 120
+P 222 183 120
+P 222 184 120
+P 222 185 120
+P 222 186 120
+P 222 187 120
+P 222 188 120
+P 222 189 120
+P 222 190 120
+P 222 191 120
+P 222 192 120
+P 222 193 120
+P 222 194 120
+P 222 195 120
+P 222 196 120
+P 222 197 120
+P 222 198 120
+P 222 199 120
+P 222 200 120
+P 222 201 120
+P 222 202 120
+P 222 203 120
+T 223 drawn 0 warp 0 traps 0 soft 0
+V 223 0 0 0
+V 223 1 0 0
+V 223 2 0 0
+T 224 drawn 0 warp 0 traps 0 soft 0
+V 224 0 0 0
+V 224 1 0 0
+V 224 2 0 0
+P 224 151 116
+P 224 180 128
+T 225 drawn 0 warp 0 traps 0 soft 0
+V 225 0 0 0
+V 225 1 0 0
+V 225 2 0 0
+P 225 141 112
+P 225 170 124
+T 226 drawn 0 warp 0 traps 0 soft 0
+V 226 0 0 0
+V 226 1 0 0
+V 226 2 0 0
+P 226 131 108
+P 226 172 125
+T 227 drawn 0 warp 0 traps 0 soft 0
+V 227 0 0 0
+V 227 1 0 0
+V 227 2 0 0
+P 227 162 121
+P 227 191 133
+T 228 drawn 0 warp 0 traps 0 soft 0
+V 228 0 0 0
+V 228 1 0 0
+V 228 2 0 0
+T 229 drawn 0 warp 0 traps 0 soft 0
+V 229 0 0 0
+V 229 1 0 0
+V 229 2 0 0
+T 230 drawn 0 warp 0 traps 0 soft 0
+V 230 0 0 0
+V 230 1 0 0
+V 230 2 0 0
+T 231 drawn 0 warp 0 traps 0 soft 0
+V 231 0 0 0
+V 231 1 0 0
+V 231 2 0 0
+T 232 drawn 0 warp 0 traps 0 soft 0
+V 232 0 0 0
+V 232 1 0 0
+V 232 2 0 0
+P 232 151 99
+P 232 158 116
+P 232 163 128
+T 233 drawn 0 warp 0 traps 0 soft 0
+V 233 0 0 0
+V 233 1 0 0
+V 233 2 0 0
+P 233 147 89
+P 233 159 118
+T 234 drawn 0 warp 0 traps 0 soft 0
+V 234 0 0 0
+V 234 1 0 0
+V 234 2 0 0
+P 234 155 108
+P 234 172 149
+T 235 drawn 0 warp 0 traps 0 soft 0
+V 235 0 0 0
+V 235 1 0 0
+V 235 2 0 0
+P 235 168 139
+T 236 drawn 0 warp 0 traps 0 soft 0
+V 236 0 0 0
+V 236 1 0 0
+V 236 2 0 0
+T 237 drawn 0 warp 0 traps 0 soft 0
+V 237 0 0 0
+V 237 1 0 0
+V 237 2 0 0
+T 238 drawn 0 warp 0 traps 0 soft 0
+V 238 0 0 0
+V 238 1 0 0
+V 238 2 0 0
+T 239 drawn 0 warp 0 traps 0 soft 0
+V 239 0 0 0
+V 239 1 0 0
+V 239 2 0 0
+T 240 drawn 0 warp 0 traps 0 soft 0
+V 240 0 0 0
+V 240 1 0 0
+V 240 2 0 0
+T 241 drawn 0 warp 0 traps 0 soft 0
+V 241 0 0 0
+V 241 1 0 0
+V 241 2 0 0
+T 242 drawn 0 warp 0 traps 0 soft 0
+V 242 0 0 0
+V 242 1 0 0
+V 242 2 0 0
+P 242 155 120
+P 242 156 120
+P 242 157 120
+P 242 158 120
+P 242 159 120
+P 242 160 120
+P 242 161 120
+P 242 162 120
+P 242 163 120
+P 242 164 120
+T 243 drawn 0 warp 0 traps 0 soft 0
+V 243 0 0 0
+V 243 1 0 0
+V 243 2 0 0
+T 244 drawn 0 warp 0 traps 0 soft 0
+V 244 0 0 0
+V 244 1 0 0
+V 244 2 0 0
+T 245 drawn 0 warp 0 traps 0 soft 0
+V 245 0 0 0
+V 245 1 0 0
+V 245 2 0 0
+T 246 drawn 0 warp 0 traps 0 soft 0
+V 246 0 0 0
+V 246 1 0 0
+V 246 2 0 0
+T 247 drawn 0 warp 0 traps 0 soft 0
+V 247 0 0 0
+V 247 1 0 0
+V 247 2 0 0
+P 247 162 121
+T 248 drawn 0 warp 0 traps 0 soft 0
+V 248 0 0 0
+V 248 1 0 0
+V 248 2 0 0
+T 249 drawn 0 warp 0 traps 0 soft 0
+V 249 0 0 0
+V 249 1 0 0
+V 249 2 0 0
+T 250 drawn 0 warp 0 traps 0 soft 0
+V 250 0 0 0
+V 250 1 0 0
+V 250 2 0 0
+T 251 drawn 0 warp 0 traps 0 soft 0
+V 251 0 0 0
+V 251 1 0 0
+V 251 2 0 0
+T 252 drawn 0 warp 0 traps 0 soft 0
+V 252 0 0 0
+V 252 1 0 0
+V 252 2 0 0
+T 253 drawn 0 warp 0 traps 0 soft 0
+V 253 0 0 0
+V 253 1 0 0
+V 253 2 0 0
+P 253 159 118
+T 254 drawn 0 warp 0 traps 0 soft 0
+V 254 0 0 0
+V 254 1 0 0
+V 254 2 0 0
+T 255 drawn 0 warp 0 traps 0 soft 0
+V 255 0 0 0
+V 255 1 0 0
+V 255 2 0 0
+T 256 drawn 0 warp 0 traps 0 soft 0
+V 256 0 0 0
+V 256 1 0 0
+V 256 2 0 0
+T 257 drawn 0 warp 0 traps 0 soft 0
+V 257 0 0 0
+V 257 1 0 0
+V 257 2 0 0
+T 258 drawn 0 warp 0 traps 0 soft 0
+V 258 0 0 0
+V 258 1 0 0
+V 258 2 0 0
+T 259 drawn 0 warp 0 traps 0 soft 0
+V 259 0 0 0
+V 259 1 0 0
+V 259 2 0 0
+T 260 drawn 0 warp 0 traps 0 soft 0
+V 260 0 0 0
+V 260 1 0 0
+V 260 2 0 0
+T 261 drawn 0 warp 0 traps 0 soft 0
+V 261 0 0 0
+V 261 1 0 0
+V 261 2 0 0
+T 262 drawn 0 warp 0 traps 0 soft 0
+V 262 0 0 0
+V 262 1 0 0
+V 262 2 0 0
+P 262 140 120
+P 262 141 120
+P 262 142 120
+P 262 143 120
+P 262 144 120
+P 262 145 120
+P 262 146 120
+P 262 147 120
+P 262 148 120
+P 262 149 120
+P 262 150 120
+P 262 151 120
+P 262 152 120
+P 262 153 120
+P 262 154 120
+P 262 155 120
+P 262 156 120
+P 262 157 120
+P 262 158 120
+P 262 159 120
+P 262 160 120
+P 262 161 120
+P 262 162 120
+P 262 163 120
+P 262 164 120
+P 262 165 120
+P 262 166 120
+P 262 167 120
+P 262 168 120
+P 262 169 120
+P 262 170 120
+P 262 171 120
+P 262 172 120
+P 262 173 120
+P 262 174 120
+P 262 175 120
+P 262 176 120
+P 262 177 120
+P 262 178 120
+P 262 179 120
+T 263 drawn 0 warp 0 traps 0 soft 0
+V 263 0 0 0
+V 263 1 0 0
+V 263 2 0 0
+T 264 drawn 0 warp 0 traps 0 soft 0
+V 264 0 0 0
+V 264 1 0 0
+V 264 2 0 0
+P 264 151 116
+P 264 163 121
+T 265 drawn 0 warp 0 traps 0 soft 0
+V 265 0 0 0
+V 265 1 0 0
+V 265 2 0 0
+P 265 153 117
+P 265 165 122
+P 265 170 124
+T 266 drawn 0 warp 0 traps 0 soft 0
+V 266 0 0 0
+V 266 1 0 0
+V 266 2 0 0
+P 266 155 118
+P 266 172 125
+T 267 drawn 0 warp 0 traps 0 soft 0
+V 267 0 0 0
+V 267 1 0 0
+V 267 2 0 0
+P 267 162 121
+T 268 drawn 0 warp 0 traps 0 soft 0
+V 268 0 0 0
+V 268 1 0 0
+V 268 2 0 0
+T 269 drawn 0 warp 0 traps 0 soft 0
+V 269 0 0 0
+V 269 1 0 0
+V 269 2 0 0
+T 270 drawn 0 warp 0 traps 0 soft 0
+V 270 0 0 0
+V 270 1 0 0
+V 270 2 0 0
+T 271 drawn 0 warp 0 traps 0 soft 0
+V 271 0 0 0
+V 271 1 0 0
+V 271 2 0 0
+T 272 drawn 0 warp 0 traps 0 soft 0
+V 272 0 0 0
+V 272 1 0 0
+V 272 2 0 0
+P 272 158 116
+P 272 163 128
+T 273 drawn 0 warp 0 traps 0 soft 0
+V 273 0 0 0
+V 273 1 0 0
+V 273 2 0 0
+P 273 159 118
+T 274 drawn 0 warp 0 traps 0 soft 0
+V 274 0 0 0
+V 274 1 0 0
+V 274 2 0 0
+P 274 155 108
+P 274 162 125
+T 275 drawn 0 warp 0 traps 0 soft 0
+V 275 0 0 0
+V 275 1 0 0
+V 275 2 0 0
+P 275 156 110
+P 275 158 115
+P 275 163 127
+T 276 drawn 0 warp 0 traps 0 soft 0
+V 276 0 0 0
+V 276 1 0 0
+V 276 2 0 0
+T 277 drawn 0 warp 0 traps 0 soft 0
+V 277 0 0 0
+V 277 1 0 0
+V 277 2 0 0
+T 278 drawn 0 warp 0 traps 0 soft 0
+V 278 0 0 0
+V 278 1 0 0
+V 278 2 0 0
+T 279 drawn 0 warp 0 traps 0 soft 0
+V 279 0 0 0
+V 279 1 0 0
+V 279 2 0 0
+T 280 drawn 0 warp 0 traps 0 soft 0
+V 280 0 0 0
+V 280 1 0 0
+V 280 2 0 0
+T 281 drawn 0 warp 0 traps 0 soft 0
+V 281 0 0 0
+V 281 1 0 0
+V 281 2 0 0
+T 282 drawn 0 warp 0 traps 0 soft 0
+V 282 0 0 0
+V 282 1 0 0
+V 282 2 0 0
+P 282 117 120
+P 282 118 120
+P 282 119 120
+P 282 120 120
+P 282 121 120
+P 282 122 120
+P 282 123 120
+P 282 124 120
+P 282 125 120
+P 282 126 120
+P 282 127 120
+P 282 128 120
+P 282 129 120
+P 282 130 120
+P 282 131 120
+P 282 132 120
+P 282 133 120
+P 282 134 120
+P 282 135 120
+P 282 136 120
+P 282 137 120
+P 282 138 120
+P 282 139 120
+P 282 140 120
+P 282 141 120
+P 282 142 120
+P 282 143 120
+P 282 144 120
+P 282 145 120
+P 282 146 120
+P 282 147 120
+P 282 148 120
+P 282 149 120
+P 282 150 120
+P 282 151 120
+P 282 152 120
+P 282 153 120
+P 282 154 120
+P 282 155 120
+P 282 156 120
+P 282 157 120
+P 282 158 120
+P 282 159 120
+P 282 160 120
+P 282 161 120
+P 282 162 120
+P 282 163 120
+P 282 164 120
+P 282 165 120
+P 282 166 120
+P 282 167 120
+P 282 168 120
+P 282 169 120
+P 282 170 120
+P 282 171 120
+P 282 172 120
+P 282 173 120
+P 282 174 120
+P 282 175 120
+P 282 176 120
+P 282 177 120
+P 282 178 120
+P 282 179 120
+P 282 180 120
+P 282 181 120
+P 282 182 120
+P 282 183 120
+P 282 184 120
+P 282 185 120
+P 282 186 120
+P 282 187 120
+P 282 188 120
+P 282 189 120
+P 282 190 120
+P 282 191 120
+P 282 192 120
+P 282 193 120
+P 282 194 120
+P 282 195 120
+P 282 196 120
+P 282 197 120
+P 282 198 120
+P 282 199 120
+P 282 200 120
+P 282 201 120
+P 282 202 120
+P 282 203 120
+T 283 drawn 0 warp 0 traps 0 soft 0
+V 283 0 0 0
+V 283 1 0 0
+V 283 2 0 0
+T 284 drawn 0 warp 0 traps 0 soft 0
+V 284 0 0 0
+V 284 1 0 0
+V 284 2 0 0
+P 284 151 116
+P 284 163 121
+P 284 180 128
+T 285 drawn 0 warp 0 traps 0 soft 0
+V 285 0 0 0
+V 285 1 0 0
+V 285 2 0 0
+P 285 141 112
+P 285 153 117
+P 285 165 122
+P 285 170 124
+P 285 182 129
+T 286 drawn 0 warp 0 traps 0 soft 0
+V 286 0 0 0
+V 286 1 0 0
+V 286 2 0 0
+P 286 131 108
+P 286 143 113
+P 286 155 118
+P 286 172 125
+T 287 drawn 0 warp 0 traps 0 soft 0
+V 287 0 0 0
+V 287 1 0 0
+V 287 2 0 0
+P 287 145 114
+P 287 157 119
+P 287 162 121
+P 287 174 126
+P 287 191 133
+T 288 drawn 0 warp 0 traps 0 soft 0
+V 288 0 0 0
+V 288 1 0 0
+V 288 2 0 0
+T 289 drawn 0 warp 0 traps 0 soft 0
+V 289 0 0 0
+V 289 1 0 0
+V 289 2 0 0
+T 290 drawn 0 warp 0 traps 0 soft 0
+V 290 0 0 0
+V 290 1 0 0
+V 290 2 0 0
+T 291 drawn 0 warp 0 traps 0 soft 0
+V 291 0 0 0
+V 291 1 0 0
+V 291 2 0 0
+T 292 drawn 0 warp 0 traps 0 soft 0
+V 292 0 0 0
+V 292 1 0 0
+V 292 2 0 0
+P 292 151 99
+P 292 158 116
+P 292 163 128
+T 293 drawn 0 warp 0 traps 0 soft 0
+V 293 0 0 0
+V 293 1 0 0
+V 293 2 0 0
+P 293 147 89
+P 293 154 106
+P 293 159 118
+P 293 161 123
+P 293 166 135
+P 293 171 147
+T 294 drawn 0 warp 0 traps 0 soft 0
+V 294 0 0 0
+V 294 1 0 0
+V 294 2 0 0
+P 294 155 108
+P 294 157 113
+P 294 162 125
+P 294 167 137
+P 294 172 149
+T 295 drawn 0 warp 0 traps 0 soft 0
+V 295 0 0 0
+V 295 1 0 0
+V 295 2 0 0
+P 295 151 98
+P 295 158 115
+P 295 163 127
+P 295 168 139
+T 296 drawn 0 warp 0 traps 0 soft 0
+V 296 0 0 0
+V 296 1 0 0
+V 296 2 0 0
+T 297 drawn 0 warp 0 traps 0 soft 0
+V 297 0 0 0
+V 297 1 0 0
+V 297 2 0 0
+T 298 drawn 0 warp 0 traps 0 soft 0
+V 298 0 0 0
+V 298 1 0 0
+V 298 2 0 0
+T 299 drawn 0 warp 0 traps 0 soft 0
+V 299 0 0 0
+V 299 1 0 0
+V 299 2 0 0
+T 300 drawn 0 warp 0 traps 0 soft 0
+V 300 0 0 0
+V 300 1 0 0
+V 300 2 0 0
+T 301 drawn 0 warp 0 traps 0 soft 0
+V 301 0 0 0
+V 301 1 0 0
+V 301 2 0 0
+T 302 drawn 0 warp 0 traps 0 soft 0
+V 302 0 0 0
+V 302 1 0 0
+V 302 2 0 0
+P 302 155 120
+P 302 156 120
+P 302 157 120
+P 302 158 120
+P 302 159 120
+P 302 160 120
+P 302 161 120
+P 302 162 120
+P 302 163 120
+P 302 164 120
+T 303 drawn 0 warp 0 traps 0 soft 0
+V 303 0 0 0
+V 303 1 0 0
+V 303 2 0 0
+T 304 drawn 0 warp 0 traps 0 soft 0
+V 304 0 0 0
+V 304 1 0 0
+V 304 2 0 0
+P 304 158 119
+P 304 163 121
+T 305 drawn 0 warp 0 traps 0 soft 0
+V 305 0 0 0
+V 305 1 0 0
+V 305 2 0 0
+P 305 160 120
+T 306 drawn 0 warp 0 traps 0 soft 0
+V 306 0 0 0
+V 306 1 0 0
+V 306 2 0 0
+T 307 drawn 0 warp 0 traps 0 soft 0
+V 307 0 0 0
+V 307 1 0 0
+V 307 2 0 0
+P 307 162 121
+T 308 drawn 0 warp 0 traps 0 soft 0
+V 308 0 0 0
+V 308 1 0 0
+V 308 2 0 0
+T 309 drawn 0 warp 0 traps 0 soft 0
+V 309 0 0 0
+V 309 1 0 0
+V 309 2 0 0
+T 310 drawn 0 warp 0 traps 0 soft 0
+V 310 0 0 0
+V 310 1 0 0
+V 310 2 0 0
+T 311 drawn 0 warp 0 traps 0 soft 0
+V 311 0 0 0
+V 311 1 0 0
+V 311 2 0 0
+T 312 drawn 0 warp 0 traps 0 soft 0
+V 312 0 0 0
+V 312 1 0 0
+V 312 2 0 0
+P 312 158 116
+P 312 160 121
+T 313 drawn 0 warp 0 traps 0 soft 0
+V 313 0 0 0
+V 313 1 0 0
+V 313 2 0 0
+P 313 159 118
+T 314 drawn 0 warp 0 traps 0 soft 0
+V 314 0 0 0
+V 314 1 0 0
+V 314 2 0 0
+T 315 drawn 0 warp 0 traps 0 soft 0
+V 315 0 0 0
+V 315 1 0 0
+V 315 2 0 0
+P 315 160 120
+T 316 drawn 0 warp 0 traps 0 soft 0
+V 316 0 0 0
+V 316 1 0 0
+V 316 2 0 0
+T 317 drawn 0 warp 0 traps 0 soft 0
+V 317 0 0 0
+V 317 1 0 0
+V 317 2 0 0
+T 318 drawn 0 warp 0 traps 0 soft 0
+V 318 0 0 0
+V 318 1 0 0
+V 318 2 0 0
+T 319 drawn 0 warp 0 traps 0 soft 0
+V 319 0 0 0
+V 319 1 0 0
+V 319 2 0 0
+T 320 drawn 0 warp 0 traps 0 soft 0
+V 320 0 0 0
+V 320 1 0 0
+V 320 2 0 0
+T 321 drawn 0 warp 0 traps 0 soft 0
+V 321 0 0 0
+V 321 1 0 0
+V 321 2 0 0
+T 322 drawn 0 warp 0 traps 0 soft 0
+V 322 0 0 0
+V 322 1 0 0
+V 322 2 0 0
+P 322 140 120
+P 322 141 120
+P 322 142 120
+P 322 143 120
+P 322 144 120
+P 322 145 120
+P 322 146 120
+P 322 147 120
+P 322 148 120
+P 322 149 120
+P 322 150 120
+P 322 151 120
+P 322 152 120
+P 322 153 120
+P 322 154 120
+P 322 155 120
+P 322 156 120
+P 322 157 120
+P 322 158 120
+P 322 159 120
+P 322 160 120
+P 322 161 120
+P 322 162 120
+P 322 163 120
+P 322 164 120
+P 322 165 120
+P 322 166 120
+P 322 167 120
+P 322 168 120
+P 322 169 120
+P 322 170 120
+P 322 171 120
+P 322 172 120
+P 322 173 120
+P 322 174 120
+P 322 175 120
+P 322 176 120
+P 322 177 120
+P 322 178 120
+P 322 179 120
+T 323 drawn 0 warp 0 traps 0 soft 0
+V 323 0 0 0
+V 323 1 0 0
+V 323 2 0 0
+T 324 drawn 0 warp 0 traps 0 soft 0
+V 324 0 0 0
+V 324 1 0 0
+V 324 2 0 0
+P 324 151 116
+P 324 158 119
+P 324 163 121
+T 325 drawn 0 warp 0 traps 0 soft 0
+V 325 0 0 0
+V 325 1 0 0
+V 325 2 0 0
+P 325 153 117
+P 325 160 120
+P 325 165 122
+P 325 170 124
+T 326 drawn 0 warp 0 traps 0 soft 0
+V 326 0 0 0
+V 326 1 0 0
+V 326 2 0 0
+P 326 155 118
+P 326 162 121
+P 326 167 123
+P 326 172 125
+T 327 drawn 0 warp 0 traps 0 soft 0
+V 327 0 0 0
+V 327 1 0 0
+V 327 2 0 0
+P 327 157 119
+P 327 162 121
+P 327 174 126
+T 328 drawn 0 warp 0 traps 0 soft 0
+V 328 0 0 0
+V 328 1 0 0
+V 328 2 0 0
+T 329 drawn 0 warp 0 traps 0 soft 0
+V 329 0 0 0
+V 329 1 0 0
+V 329 2 0 0
+T 330 drawn 0 warp 0 traps 0 soft 0
+V 330 0 0 0
+V 330 1 0 0
+V 330 2 0 0
+T 331 drawn 0 warp 0 traps 0 soft 0
+V 331 0 0 0
+V 331 1 0 0
+V 331 2 0 0
+T 332 drawn 0 warp 0 traps 0 soft 0
+V 332 0 0 0
+V 332 1 0 0
+V 332 2 0 0
+P 332 158 116
+P 332 160 121
+P 332 163 128
+T 333 drawn 0 warp 0 traps 0 soft 0
+V 333 0 0 0
+V 333 1 0 0
+V 333 2 0 0
+P 333 154 106
+P 333 159 118
+P 333 161 123
+T 334 drawn 0 warp 0 traps 0 soft 0
+V 334 0 0 0
+V 334 1 0 0
+V 334 2 0 0
+P 334 155 108
+P 334 157 113
+P 334 159 118
+P 334 162 125
+T 335 drawn 0 warp 0 traps 0 soft 0
+V 335 0 0 0
+V 335 1 0 0
+V 335 2 0 0
+P 335 156 110
+P 335 158 115
+P 335 160 120
+P 335 163 127
+T 336 drawn 0 warp 0 traps 0 soft 0
+V 336 0 0 0
+V 336 1 0 0
+V 336 2 0 0
+T 337 drawn 0 warp 0 traps 0 soft 0
+V 337 0 0 0
+V 337 1 0 0
+V 337 2 0 0
+T 338 drawn 0 warp 0 traps 0 soft 0
+V 338 0 0 0
+V 338 1 0 0
+V 338 2 0 0
+T 339 drawn 0 warp 0 traps 0 soft 0
+V 339 0 0 0
+V 339 1 0 0
+V 339 2 0 0
+T 340 drawn 0 warp 0 traps 0 soft 0
+V 340 0 0 0
+V 340 1 0 0
+V 340 2 0 0
+T 341 drawn 0 warp 0 traps 0 soft 0
+V 341 0 0 0
+V 341 1 0 0
+V 341 2 0 0
+T 342 drawn 0 warp 0 traps 0 soft 0
+V 342 0 0 0
+V 342 1 0 0
+V 342 2 0 0
+P 342 117 120
+P 342 118 120
+P 342 119 120
+P 342 120 120
+P 342 121 120
+P 342 122 120
+P 342 123 120
+P 342 124 120
+P 342 125 120
+P 342 126 120
+P 342 127 120
+P 342 128 120
+P 342 129 120
+P 342 130 120
+P 342 131 120
+P 342 132 120
+P 342 133 120
+P 342 134 120
+P 342 135 120
+P 342 136 120
+P 342 137 120
+P 342 138 120
+P 342 139 120
+P 342 140 120
+P 342 141 120
+P 342 142 120
+P 342 143 120
+P 342 144 120
+P 342 145 120
+P 342 146 120
+P 342 147 120
+P 342 148 120
+P 342 149 120
+P 342 150 120
+P 342 151 120
+P 342 152 120
+P 342 153 120
+P 342 154 120
+P 342 155 120
+P 342 156 120
+P 342 157 120
+P 342 158 120
+P 342 159 120
+P 342 160 120
+P 342 161 120
+P 342 162 120
+P 342 163 120
+P 342 164 120
+P 342 165 120
+P 342 166 120
+P 342 167 120
+P 342 168 120
+P 342 169 120
+P 342 170 120
+P 342 171 120
+P 342 172 120
+P 342 173 120
+P 342 174 120
+P 342 175 120
+P 342 176 120
+P 342 177 120
+P 342 178 120
+P 342 179 120
+P 342 180 120
+P 342 181 120
+P 342 182 120
+P 342 183 120
+P 342 184 120
+P 342 185 120
+P 342 186 120
+P 342 187 120
+P 342 188 120
+P 342 189 120
+P 342 190 120
+P 342 191 120
+P 342 192 120
+P 342 193 120
+P 342 194 120
+P 342 195 120
+P 342 196 120
+P 342 197 120
+P 342 198 120
+P 342 199 120
+P 342 200 120
+P 342 201 120
+P 342 202 120
+P 342 203 120
+T 343 drawn 0 warp 0 traps 0 soft 0
+V 343 0 0 0
+V 343 1 0 0
+V 343 2 0 0
+T 344 drawn 0 warp 0 traps 0 soft 0
+V 344 0 0 0
+V 344 1 0 0
+V 344 2 0 0
+P 344 134 109
+P 344 146 114
+P 344 151 116
+P 344 158 119
+P 344 163 121
+P 344 170 124
+P 344 175 126
+P 344 180 128
+P 344 192 133
+T 345 drawn 0 warp 0 traps 0 soft 0
+V 345 0 0 0
+V 345 1 0 0
+V 345 2 0 0
+P 345 136 110
+P 345 141 112
+P 345 148 115
+P 345 153 117
+P 345 160 120
+P 345 165 122
+P 345 170 124
+P 345 177 127
+P 345 182 129
+T 346 drawn 0 warp 0 traps 0 soft 0
+V 346 0 0 0
+V 346 1 0 0
+V 346 2 0 0
+P 346 131 108
+P 346 143 113
+P 346 150 116
+P 346 155 118
+P 346 162 121
+P 346 167 123
+P 346 172 125
+P 346 184 130
+T 347 drawn 0 warp 0 traps 0 soft 0
+V 347 0 0 0
+V 347 1 0 0
+V 347 2 0 0
+P 347 133 109
+P 347 145 114
+P 347 152 117
+P 347 157 119
+P 347 162 121
+P 347 169 124
+P 347 174 126
+P 347 191 133
+T 348 drawn 0 warp 0 traps 0 soft 0
+V 348 0 0 0
+V 348 1 0 0
+V 348 2 0 0
+T 349 drawn 0 warp 0 traps 0 soft 0
+V 349 0 0 0
+V 349 1 0 0
+V 349 2 0 0
+T 350 drawn 0 warp 0 traps 0 soft 0
+V 350 0 0 0
+V 350 1 0 0
+V 350 2 0 0
+T 351 drawn 0 warp 0 traps 0 soft 0
+V 351 0 0 0
+V 351 1 0 0
+V 351 2 0 0
+T 352 drawn 0 warp 0 traps 0 soft 0
+V 352 0 0 0
+V 352 1 0 0
+V 352 2 0 0
+P 352 146 87
+P 352 151 99
+P 352 153 104
+P 352 155 109
+P 352 158 116
+P 352 160 121
+P 352 163 128
+P 352 165 133
+P 352 170 145
+T 353 drawn 0 warp 0 traps 0 soft 0
+V 353 0 0 0
+V 353 1 0 0
+V 353 2 0 0
+P 353 147 89
+P 353 154 106
+P 353 156 111
+P 353 158 116
+P 353 159 118
+P 353 161 123
+P 353 163 128
+P 353 166 135
+P 353 171 147
+T 354 drawn 0 warp 0 traps 0 soft 0
+V 354 0 0 0
+V 354 1 0 0
+V 354 2 0 0
+P 354 150 96
+P 354 155 108
+P 354 157 113
+P 354 159 118
+P 354 162 125
+P 354 164 130
+P 354 167 137
+P 354 172 149
+T 355 drawn 0 warp 0 traps 0 soft 0
+V 355 0 0 0
+V 355 1 0 0
+V 355 2 0 0
+P 355 151 98
+P 355 153 103
+P 355 158 115
+P 355 160 120
+P 355 163 127
+P 355 165 132
+P 355 168 139
+P 355 170 144
+T 356 drawn 0 warp 0 traps 0 soft 0
+V 356 0 0 0
+V 356 1 0 0
+V 356 2 0 0
+T 357 drawn 0 warp 0 traps 0 soft 0
+V 357 0 0 0
+V 357 1 0 0
+V 357 2 0 0
+T 358 drawn 0 warp 0 traps 0 soft 0
+V 358 0 0 0
+V 358 1 0 0
+V 358 2 0 0
+T 359 drawn 0 warp 0 traps 0 soft 0
+V 359 0 0 0
+V 359 1 0 0
+V 359 2 0 0
+T 360 drawn 0 warp 0 traps 0 soft 0
+V 360 0 0 0
+V 360 1 0 0
+V 360 2 0 0
+T 361 drawn 0 warp 0 traps 0 soft 0
+V 361 0 0 0
+V 361 1 0 0
+V 361 2 0 0
+P 361 158 120
+P 361 159 120
+P 361 160 120
+P 361 161 120
+P 361 162 120
+T 362 drawn 0 warp 0 traps 0 soft 0
+V 362 0 0 0
+V 362 1 0 0
+V 362 2 0 0
+P 362 155 120
+P 362 156 120
+P 362 157 120
+P 362 158 120
+P 362 159 120
+P 362 160 120
+P 362 161 120
+P 362 162 120
+P 362 163 120
+P 362 164 120
+T 363 drawn 0 warp 0 traps 0 soft 0
+V 363 0 0 0
+V 363 1 0 0
+V 363 2 0 0
+T 364 drawn 0 warp 0 traps 0 soft 0
+V 364 0 0 0
+V 364 1 0 0
+V 364 2 0 0
+P 364 158 119
+P 364 160 120
+P 364 163 121
+T 365 drawn 0 warp 0 traps 0 soft 0
+V 365 0 0 0
+V 365 1 0 0
+V 365 2 0 0
+P 365 160 120
+T 366 drawn 0 warp 0 traps 0 soft 0
+V 366 0 0 0
+V 366 1 0 0
+V 366 2 0 0
+P 366 159 120
+P 366 162 121
+T 367 drawn 0 warp 0 traps 0 soft 0
+V 367 0 0 0
+V 367 1 0 0
+V 367 2 0 0
+P 367 157 119
+P 367 159 120
+P 367 162 121
+T 368 drawn 0 warp 0 traps 0 soft 0
+V 368 0 0 0
+V 368 1 0 0
+V 368 2 0 0
+T 369 drawn 0 warp 0 traps 0 soft 0
+V 369 0 0 0
+V 369 1 0 0
+V 369 2 0 0
+T 370 drawn 0 warp 0 traps 0 soft 0
+V 370 0 0 0
+V 370 1 0 0
+V 370 2 0 0
+T 371 drawn 0 warp 0 traps 0 soft 0
+V 371 0 0 0
+V 371 1 0 0
+V 371 2 0 0
+T 372 drawn 0 warp 0 traps 0 soft 0
+V 372 0 0 0
+V 372 1 0 0
+V 372 2 0 0
+P 372 158 116
+P 372 159 119
+P 372 160 121
+T 373 drawn 0 warp 0 traps 0 soft 0
+V 373 0 0 0
+V 373 1 0 0
+V 373 2 0 0
+P 373 159 118
+P 373 160 121
+P 373 161 123
+T 374 drawn 0 warp 0 traps 0 soft 0
+V 374 0 0 0
+V 374 1 0 0
+V 374 2 0 0
+P 374 159 118
+P 374 160 121
+T 375 drawn 0 warp 0 traps 0 soft 0
+V 375 0 0 0
+V 375 1 0 0
+V 375 2 0 0
+P 375 160 120
+T 376 drawn 0 warp 0 traps 0 soft 0
+V 376 0 0 0
+V 376 1 0 0
+V 376 2 0 0
+T 377 drawn 0 warp 0 traps 0 soft 0
+V 377 0 0 0
+V 377 1 0 0
+V 377 2 0 0
+T 378 drawn 0 warp 0 traps 0 soft 0
+V 378 0 0 0
+V 378 1 0 0
+V 378 2 0 0
+T 379 drawn 0 warp 0 traps 0 soft 0
+V 379 0 0 0
+V 379 1 0 0
+V 379 2 0 0
+P 379 160 118
+P 379 160 119
+P 379 160 120
+P 379 160 121
+P 379 160 122
+T 380 drawn 0 warp 0 traps 0 soft 0
+V 380 0 0 0
+V 380 1 0 0
+V 380 2 0 0
+T 381 drawn 0 warp 0 traps 0 soft 0
+V 381 0 0 0
+V 381 1 0 0
+V 381 2 0 0
+P 381 150 120
+P 381 151 120
+P 381 152 120
+P 381 153 120
+P 381 154 120
+P 381 155 120
+P 381 156 120
+P 381 157 120
+P 381 158 120
+P 381 159 120
+P 381 160 120
+P 381 161 120
+P 381 162 120
+P 381 163 120
+P 381 164 120
+P 381 165 120
+P 381 166 120
+P 381 167 120
+P 381 168 120
+P 381 169 120
+T 382 drawn 0 warp 0 traps 0 soft 0
+V 382 0 0 0
+V 382 1 0 0
+V 382 2 0 0
+P 382 140 120
+P 382 141 120
+P 382 142 120
+P 382 143 120
+P 382 144 120
+P 382 145 120
+P 382 146 120
+P 382 147 120
+P 382 148 120
+P 382 149 120
+P 382 150 120
+P 382 151 120
+P 382 152 120
+P 382 153 120
+P 382 154 120
+P 382 155 120
+P 382 156 120
+P 382 157 120
+P 382 158 120
+P 382 159 120
+P 382 160 120
+P 382 161 120
+P 382 162 120
+P 382 163 120
+P 382 164 120
+P 382 165 120
+P 382 166 120
+P 382 167 120
+P 382 168 120
+P 382 169 120
+P 382 170 120
+P 382 171 120
+P 382 172 120
+P 382 173 120
+P 382 174 120
+P 382 175 120
+P 382 176 120
+P 382 177 120
+P 382 178 120
+P 382 179 120
+T 383 drawn 0 warp 0 traps 0 soft 0
+V 383 0 0 0
+V 383 1 0 0
+V 383 2 0 0
+T 384 drawn 0 warp 0 traps 0 soft 0
+V 384 0 0 0
+V 384 1 0 0
+V 384 2 0 0
+P 384 146 114
+P 384 151 116
+P 384 153 117
+P 384 155 118
+P 384 158 119
+P 384 160 120
+P 384 163 121
+P 384 165 122
+P 384 170 124
+P 384 175 126
+T 385 drawn 0 warp 0 traps 0 soft 0
+V 385 0 0 0
+V 385 1 0 0
+V 385 2 0 0
+P 385 148 115
+P 385 153 117
+P 385 155 118
+P 385 157 119
+P 385 160 120
+P 385 162 121
+P 385 165 122
+P 385 167 123
+P 385 170 124
+P 385 172 125
+T 386 drawn 0 warp 0 traps 0 soft 0
+V 386 0 0 0
+V 386 1 0 0
+V 386 2 0 0
+P 386 143 113
+P 386 150 116
+P 386 155 118
+P 386 157 119
+P 386 159 120
+P 386 162 121
+P 386 164 122
+P 386 167 123
+P 386 169 124
+P 386 172 125
+T 387 drawn 0 warp 0 traps 0 soft 0
+V 387 0 0 0
+V 387 1 0 0
+V 387 2 0 0
+P 387 145 114
+P 387 152 117
+P 387 154 118
+P 387 157 119
+P 387 159 120
+P 387 161 121
+P 387 162 121
+P 387 164 122
+P 387 166 123
+P 387 169 124
+P 387 174 126
+T 388 drawn 0 warp 0 traps 0 soft 0
+V 388 0 0 0
+V 388 1 0 0
+V 388 2 0 0
+T 389 drawn 0 warp 0 traps 0 soft 0
+V 389 0 0 0
+V 389 1 0 0
+V 389 2 0 0
+T 390 drawn 0 warp 0 traps 0 soft 0
+V 390 0 0 0
+V 390 1 0 0
+V 390 2 0 0
+T 391 drawn 0 warp 0 traps 0 soft 0
+V 391 0 0 0
+V 391 1 0 0
+V 391 2 0 0
+T 392 drawn 0 warp 0 traps 0 soft 0
+V 392 0 0 0
+V 392 1 0 0
+V 392 2 0 0
+P 392 153 104
+P 392 155 109
+P 392 157 114
+P 392 158 116
+P 392 158 117
+P 392 159 119
+P 392 160 121
+P 392 161 124
+P 392 162 126
+P 392 163 128
+P 392 165 133
+T 393 drawn 0 warp 0 traps 0 soft 0
+V 393 0 0 0
+V 393 1 0 0
+V 393 2 0 0
+P 393 154 106
+P 393 156 111
+P 393 157 114
+P 393 158 116
+P 393 159 118
+P 393 159 119
+P 393 160 121
+P 393 161 123
+P 393 162 126
+P 393 163 128
+P 393 166 135
+T 394 drawn 0 warp 0 traps 0 soft 0
+V 394 0 0 0
+V 394 1 0 0
+V 394 2 0 0
+P 394 155 108
+P 394 156 111
+P 394 157 113
+P 394 158 116
+P 394 159 118
+P 394 160 121
+P 394 161 123
+P 394 162 125
+P 394 163 128
+P 394 164 130
+P 394 167 137
+T 395 drawn 0 warp 0 traps 0 soft 0
+V 395 0 0 0
+V 395 1 0 0
+V 395 2 0 0
+P 395 155 108
+P 395 156 110
+P 395 157 113
+P 395 158 115
+P 395 159 118
+P 395 160 120
+P 395 161 123
+P 395 162 125
+P 395 163 127
+P 395 165 132
+T 396 drawn 0 warp 0 traps 0 soft 0
+V 396 0 0 0
+V 396 1 0 0
+V 396 2 0 0
+T 397 drawn 0 warp 0 traps 0 soft 0
+V 397 0 0 0
+V 397 1 0 0
+V 397 2 0 0
+T 398 drawn 0 warp 0 traps 0 soft 0
+V 398 0 0 0
+V 398 1 0 0
+V 398 2 0 0
+T 399 drawn 0 warp 0 traps 0 soft 0
+V 399 0 0 0
+V 399 1 0 0
+V 399 2 0 0
+P 399 160 111
+P 399 160 112
+P 399 160 113
+P 399 160 114
+P 399 160 115
+P 399 160 116
+P 399 160 117
+P 399 160 118
+P 399 160 119
+P 399 160 120
+P 399 160 121
+P 399 160 122
+P 399 160 123
+P 399 160 124
+P 399 160 125
+P 399 160 126
+P 399 160 127
+P 399 160 128
+P 399 160 129
+P 399 160 130
+T 400 drawn 0 warp 0 traps 0 soft 0
+V 400 0 0 0
+V 400 1 0 0
+V 400 2 0 0
+T 401 drawn 0 warp 0 traps 0 soft 0
+V 401 0 0 0
+V 401 1 0 0
+V 401 2 0 0
+P 401 138 120
+P 401 139 120
+P 401 140 120
+P 401 141 120
+P 401 142 120
+P 401 143 120
+P 401 144 120
+P 401 145 120
+P 401 146 120
+P 401 147 120
+P 401 148 120
+P 401 149 120
+P 401 150 120
+P 401 151 120
+P 401 152 120
+P 401 153 120
+P 401 154 120
+P 401 155 120
+P 401 156 120
+P 401 157 120
+P 401 158 120
+P 401 159 120
+P 401 160 120
+P 401 161 120
+P 401 162 120
+P 401 163 120
+P 401 164 120
+P 401 165 120
+P 401 166 120
+P 401 167 120
+P 401 168 120
+P 401 169 120
+P 401 170 120
+P 401 171 120
+P 401 172 120
+P 401 173 120
+P 401 174 120
+P 401 175 120
+P 401 176 120
+P 401 177 120
+P 401 178 120
+P 401 179 120
+P 401 180 120
+P 401 181 120
+T 402 drawn 0 warp 0 traps 0 soft 0
+V 402 0 0 0
+V 402 1 0 0
+V 402 2 0 0
+P 402 117 120
+P 402 118 120
+P 402 119 120
+P 402 120 120
+P 402 121 120
+P 402 122 120
+P 402 123 120
+P 402 124 120
+P 402 125 120
+P 402 126 120
+P 402 127 120
+P 402 128 120
+P 402 129 120
+P 402 130 120
+P 402 131 120
+P 402 132 120
+P 402 133 120
+P 402 134 120
+P 402 135 120
+P 402 136 120
+P 402 137 120
+P 402 138 120
+P 402 139 120
+P 402 140 120
+P 402 141 120
+P 402 142 120
+P 402 143 120
+P 402 144 120
+P 402 145 120
+P 402 146 120
+P 402 147 120
+P 402 148 120
+P 402 149 120
+P 402 150 120
+P 402 151 120
+P 402 152 120
+P 402 153 120
+P 402 154 120
+P 402 155 120
+P 402 156 120
+P 402 157 120
+P 402 158 120
+P 402 159 120
+P 402 160 120
+P 402 161 120
+P 402 162 120
+P 402 163 120
+P 402 164 120
+P 402 165 120
+P 402 166 120
+P 402 167 120
+P 402 168 120
+P 402 169 120
+P 402 170 120
+P 402 171 120
+P 402 172 120
+P 402 173 120
+P 402 174 120
+P 402 175 120
+P 402 176 120
+P 402 177 120
+P 402 178 120
+P 402 179 120
+P 402 180 120
+P 402 181 120
+P 402 182 120
+P 402 183 120
+P 402 184 120
+P 402 185 120
+P 402 186 120
+P 402 187 120
+P 402 188 120
+P 402 189 120
+P 402 190 120
+P 402 191 120
+P 402 192 120
+P 402 193 120
+P 402 194 120
+P 402 195 120
+P 402 196 120
+P 402 197 120
+P 402 198 120
+P 402 199 120
+P 402 200 120
+P 402 201 120
+P 402 202 120
+P 402 203 120
+T 403 drawn 0 warp 0 traps 0 soft 0
+V 403 0 0 0
+V 403 1 0 0
+V 403 2 0 0
+T 404 drawn 0 warp 0 traps 0 soft 0
+V 404 0 0 0
+V 404 1 0 0
+V 404 2 0 0
+P 404 122 104
+P 404 134 109
+P 404 141 112
+P 404 146 114
+P 404 148 115
+P 404 151 116
+P 404 153 117
+P 404 155 118
+P 404 158 119
+P 404 160 120
+P 404 162 121
+P 404 163 121
+P 404 165 122
+P 404 167 123
+P 404 170 124
+P 404 172 125
+P 404 175 126
+P 404 177 127
+P 404 180 128
+P 404 182 129
+P 404 187 131
+P 404 192 133
+T 405 drawn 0 warp 0 traps 0 soft 0
+V 405 0 0 0
+V 405 1 0 0
+V 405 2 0 0
+P 405 124 105
+P 405 136 110
+P 405 141 112
+P 405 143 113
+P 405 148 115
+P 405 150 116
+P 405 153 117
+P 405 155 118
+P 405 157 119
+P 405 160 120
+P 405 162 121
+P 405 165 122
+P 405 167 123
+P 405 170 124
+P 405 172 125
+P 405 174 126
+P 405 177 127
+P 405 179 128
+P 405 182 129
+P 405 184 130
+P 405 189 132
+P 405 194 134
+T 406 drawn 0 warp 0 traps 0 soft 0
+V 406 0 0 0
+V 406 1 0 0
+V 406 2 0 0
+P 406 126 106
+P 406 131 108
+P 406 138 111
+P 406 143 113
+P 406 145 114
+P 406 150 116
+P 406 152 117
+P 406 155 118
+P 406 157 119
+P 406 159 120
+P 406 162 121
+P 406 164 122
+P 406 167 123
+P 406 169 124
+P 406 172 125
+P 406 174 126
+P 406 179 128
+P 406 184 130
+T 407 drawn 0 warp 0 traps 0 soft 0
+V 407 0 0 0
+V 407 1 0 0
+V 407 2 0 0
+P 407 121 104
+P 407 133 109
+P 407 140 112
+P 407 145 114
+P 407 147 115
+P 407 152 117
+P 407 154 118
+P 407 157 119
+P 407 159 120
+P 407 161 121
+P 407 162 121
+P 407 164 122
+P 407 166 123
+P 407 169 124
+P 407 171 125
+P 407 174 126
+P 407 176 127
+P 407 181 129
+P 407 186 131
+P 407 191 133
+T 408 drawn 0 warp 0 traps 0 soft 0
+V 408 0 0 0
+V 408 1 0 0
+V 408 2 0 0
+T 409 drawn 0 warp 0 traps 0 soft 0
+V 409 0 0 0
+V 409 1 0 0
+V 409 2 0 0
+T 410 drawn 0 warp 0 traps 0 soft 0
+V 410 0 0 0
+V 410 1 0 0
+V 410 2 0 0
+T 411 drawn 0 warp 0 traps 0 soft 0
+V 411 0 0 0
+V 411 1 0 0
+V 411 2 0 0
+T 412 drawn 0 warp 0 traps 0 soft 0
+V 412 0 0 0
+V 412 1 0 0
+V 412 2 0 0
+P 412 146 87
+P 412 148 92
+P 412 150 97
+P 412 151 99
+P 412 152 102
+P 412 153 104
+P 412 154 107
+P 412 155 109
+P 412 156 112
+P 412 157 114
+P 412 158 116
+P 412 158 117
+P 412 159 119
+P 412 160 121
+P 412 161 124
+P 412 162 126
+P 412 163 128
+P 412 164 131
+P 412 165 133
+P 412 167 138
+P 412 170 145
+P 412 175 157
+T 413 drawn 0 warp 0 traps 0 soft 0
+V 413 0 0 0
+V 413 1 0 0
+V 413 2 0 0
+P 413 147 89
+P 413 149 94
+P 413 151 99
+P 413 153 104
+P 413 154 106
+P 413 155 109
+P 413 156 111
+P 413 157 114
+P 413 158 116
+P 413 159 118
+P 413 159 119
+P 413 160 121
+P 413 161 123
+P 413 162 126
+P 413 163 128
+P 413 165 133
+P 413 166 135
+P 413 168 140
+P 413 171 147
+P 413 173 152
+T 414 drawn 0 warp 0 traps 0 soft 0
+V 414 0 0 0
+V 414 1 0 0
+V 414 2 0 0
+P 414 150 96
+P 414 152 101
+P 414 154 106
+P 414 155 108
+P 414 156 111
+P 414 157 113
+P 414 158 116
+P 414 159 118
+P 414 160 121
+P 414 161 123
+P 414 162 125
+P 414 163 128
+P 414 164 130
+P 414 166 135
+P 414 167 137
+P 414 169 142
+P 414 172 149
+P 414 174 154
+T 415 drawn 0 warp 0 traps 0 soft 0
+V 415 0 0 0
+V 415 1 0 0
+V 415 2 0 0
+P 415 146 86
+P 415 148 91
+P 415 150 96
+P 415 151 98
+P 415 152 101
+P 415 153 103
+P 415 154 106
+P 415 155 108
+P 415 156 111
+P 415 157 113
+P 415 158 115
+P 415 158 116
+P 415 159 118
+P 415 160 120
+P 415 161 123
+P 415 162 125
+P 415 163 127
+P 415 164 130
+P 415 165 132
+P 415 167 137
+P 415 168 139
+P 415 170 144
+P 415 175 156
+T 416 drawn 0 warp 0 traps 0 soft 0
+V 416 0 0 0
+V 416 1 0 0
+V 416 2 0 0
+T 417 drawn 0 warp 0 traps 0 soft 0
+V 417 0 0 0
+V 417 1 0 0
+V 417 2 0 0
+T 418 drawn 0 warp 0 traps 0 soft 0
+V 418 0 0 0
+V 418 1 0 0
+V 418 2 0 0
+T 419 drawn 0 warp 0 traps 0 soft 0
+V 419 0 0 0
+V 419 1 0 0
+V 419 2 0 0
+P 419 160 100
+P 419 160 101
+P 419 160 102
+P 419 160 103
+P 419 160 104
+P 419 160 105
+P 419 160 106
+P 419 160 107
+P 419 160 108
+P 419 160 109
+P 419 160 110
+P 419 160 111
+P 419 160 112
+P 419 160 113
+P 419 160 114
+P 419 160 115
+P 419 160 116
+P 419 160 117
+P 419 160 118
+P 419 160 119
+P 419 160 120
+P 419 160 121
+P 419 160 122
+P 419 160 123
+P 419 160 124
+P 419 160 125
+P 419 160 126
+P 419 160 127
+P 419 160 128
+P 419 160 129
+P 419 160 130
+P 419 160 131
+P 419 160 132
+P 419 160 133
+P 419 160 134
+P 419 160 135
+P 419 160 136
+P 419 160 137
+P 419 160 138
+P 419 160 139
+P 419 160 140
+P 419 160 141
+P 419 160 142
+T 420 drawn 0 warp 0 traps 0 soft 0
+V 420 0 0 0
+V 420 1 0 0
+V 420 2 0 0
+P 420 157 120
+P 420 158 120
+P 420 159 120
+P 420 160 120
+P 420 161 120
+T 421 drawn 0 warp 0 traps 0 soft 0
+V 421 0 0 0
+V 421 1 0 0
+V 421 2 0 0
+P 421 156 120
+P 421 157 120
+P 421 158 120
+P 421 159 120
+P 421 160 120
+P 421 161 120
+P 421 162 120
+P 421 163 120
+T 422 drawn 0 warp 0 traps 0 soft 0
+V 422 0 0 0
+V 422 1 0 0
+V 422 2 0 0
+P 422 155 120
+P 422 156 120
+P 422 157 120
+P 422 158 120
+P 422 159 120
+P 422 160 120
+P 422 161 120
+P 422 162 120
+P 422 163 120
+P 422 164 120
+T 423 drawn 0 warp 0 traps 0 soft 0
+V 423 0 0 0
+V 423 1 0 0
+V 423 2 0 0
+P 423 159 121
+P 423 160 121
+P 423 161 121
+T 424 drawn 0 warp 0 traps 0 soft 0
+V 424 0 0 0
+V 424 1 0 0
+V 424 2 0 0
+P 424 157 119
+P 424 158 119
+P 424 159 120
+P 424 160 120
+P 424 163 121
+T 425 drawn 0 warp 0 traps 0 soft 0
+V 425 0 0 0
+V 425 1 0 0
+V 425 2 0 0
+P 425 157 119
+P 425 159 120
+P 425 160 120
+P 425 162 121
+T 426 drawn 0 warp 0 traps 0 soft 0
+V 426 0 0 0
+V 426 1 0 0
+V 426 2 0 0
+P 426 157 119
+P 426 159 120
+P 426 161 121
+P 426 162 121
+T 427 drawn 0 warp 0 traps 0 soft 0
+V 427 0 0 0
+V 427 1 0 0
+V 427 2 0 0
+P 427 157 119
+P 427 159 120
+P 427 160 121
+P 427 161 121
+P 427 162 121
+T 428 drawn 0 warp 0 traps 0 soft 0
+V 428 0 0 0
+V 428 1 0 0
+V 428 2 0 0
+P 428 158 119
+P 428 159 120
+P 428 160 121
+T 429 drawn 0 warp 0 traps 0 soft 0
+V 429 0 0 0
+V 429 1 0 0
+V 429 2 0 0
+P 429 159 120
+P 429 160 121
+T 430 drawn 0 warp 0 traps 0 soft 0
+V 430 0 0 0
+V 430 1 0 0
+V 430 2 0 0
+P 430 159 120
+P 430 160 121
+T 431 drawn 0 warp 0 traps 0 soft 0
+V 431 0 0 0
+V 431 1 0 0
+V 431 2 0 0
+P 431 159 120
+P 431 160 121
+T 432 drawn 0 warp 0 traps 0 soft 0
+V 432 0 0 0
+V 432 1 0 0
+V 432 2 0 0
+P 432 158 116
+P 432 159 119
+P 432 159 120
+P 432 160 121
+P 432 160 122
+T 433 drawn 0 warp 0 traps 0 soft 0
+V 433 0 0 0
+V 433 1 0 0
+V 433 2 0 0
+P 433 159 118
+P 433 159 119
+P 433 159 120
+P 433 160 121
+P 433 161 123
+T 434 drawn 0 warp 0 traps 0 soft 0
+V 434 0 0 0
+V 434 1 0 0
+V 434 2 0 0
+P 434 159 118
+P 434 159 119
+P 434 159 120
+P 434 160 121
+P 434 161 123
+T 435 drawn 0 warp 0 traps 0 soft 0
+V 435 0 0 0
+V 435 1 0 0
+V 435 2 0 0
+P 435 159 118
+P 435 160 120
+P 435 160 121
+P 435 161 123
+T 436 drawn 0 warp 0 traps 0 soft 0
+V 436 0 0 0
+V 436 1 0 0
+V 436 2 0 0
+P 436 159 118
+P 436 159 119
+P 436 159 120
+P 436 159 121
+P 436 159 122
+T 437 drawn 0 warp 0 traps 0 soft 0
+V 437 0 0 0
+V 437 1 0 0
+V 437 2 0 0
+P 437 159 119
+P 437 159 120
+P 437 159 121
+T 438 drawn 0 warp 0 traps 0 soft 0
+V 438 0 0 0
+V 438 1 0 0
+V 438 2 0 0
+P 438 159 120
+T 439 drawn 0 warp 0 traps 0 soft 0
+V 439 0 0 0
+V 439 1 0 0
+V 439 2 0 0
+P 439 160 117
+P 439 160 118
+P 439 160 119
+P 439 160 120
+P 439 160 121
+P 439 160 122
+P 439 160 123
+P 439 160 124
+T 440 drawn 0 warp 0 traps 0 soft 0
+V 440 0 0 0
+V 440 1 0 0
+V 440 2 0 0
+P 440 150 120
+P 440 151 120
+P 440 152 120
+P 440 153 120
+P 440 154 120
+P 440 155 120
+P 440 156 120
+P 440 157 120
+P 440 158 120
+P 440 159 120
+P 440 160 120
+P 440 161 120
+P 440 162 120
+P 440 163 120
+P 440 164 120
+P 440 165 120
+P 440 166 120
+P 440 167 120
+P 440 168 120
+P 440 169 120
+T 441 drawn 0 warp 0 traps 0 soft 0
+V 441 0 0 0
+V 441 1 0 0
+V 441 2 0 0
+P 441 145 120
+P 441 146 120
+P 441 147 120
+P 441 148 120
+P 441 149 120
+P 441 150 120
+P 441 151 120
+P 441 152 120
+P 441 153 120
+P 441 154 120
+P 441 155 120
+P 441 156 120
+P 441 157 120
+P 441 158 120
+P 441 159 120
+P 441 160 120
+P 441 161 120
+P 441 162 120
+P 441 163 120
+P 441 164 120
+P 441 165 120
+P 441 166 120
+P 441 167 120
+P 441 168 120
+P 441 169 120
+P 441 170 120
+P 441 171 120
+P 441 172 120
+P 441 173 120
+P 441 174 120
+T 442 drawn 0 warp 0 traps 0 soft 0
+V 442 0 0 0
+V 442 1 0 0
+V 442 2 0 0
+P 442 140 120
+P 442 141 120
+P 442 142 120
+P 442 143 120
+P 442 144 120
+P 442 145 120
+P 442 146 120
+P 442 147 120
+P 442 148 120
+P 442 149 120
+P 442 150 120
+P 442 151 120
+P 442 152 120
+P 442 153 120
+P 442 154 120
+P 442 155 120
+P 442 156 120
+P 442 157 120
+P 442 158 120
+P 442 159 120
+P 442 160 120
+P 442 161 120
+P 442 162 120
+P 442 163 120
+P 442 164 120
+P 442 165 120
+P 442 166 120
+P 442 167 120
+P 442 168 120
+P 442 169 120
+P 442 170 120
+P 442 171 120
+P 442 172 120
+P 442 173 120
+P 442 174 120
+P 442 175 120
+P 442 176 120
+P 442 177 120
+P 442 178 120
+P 442 179 120
+T 443 drawn 0 warp 0 traps 0 soft 0
+V 443 0 0 0
+V 443 1 0 0
+V 443 2 0 0
+P 443 156 121
+P 443 157 121
+P 443 158 121
+P 443 159 121
+P 443 160 121
+P 443 161 121
+P 443 162 121
+P 443 163 121
+P 443 164 121
+P 443 165 121
+T 444 drawn 0 warp 0 traps 0 soft 0
+V 444 0 0 0
+V 444 1 0 0
+V 444 2 0 0
+P 444 146 114
+P 444 148 115
+P 444 150 116
+P 444 151 116
+P 444 152 117
+P 444 153 117
+P 444 155 118
+P 444 157 119
+P 444 158 119
+P 444 159 120
+P 444 160 120
+P 444 161 121
+P 444 162 121
+P 444 163 121
+P 444 164 122
+P 444 165 122
+P 444 167 123
+P 444 170 124
+P 444 172 125
+P 444 175 126
+T 445 drawn 0 warp 0 traps 0 soft 0
+V 445 0 0 0
+V 445 1 0 0
+V 445 2 0 0
+P 445 148 115
+P 445 150 116
+P 445 152 117
+P 445 153 117
+P 445 154 118
+P 445 155 118
+P 445 156 119
+P 445 157 119
+P 445 158 120
+P 445 159 120
+P 445 160 120
+P 445 161 121
+P 445 162 121
+P 445 164 122
+P 445 165 122
+P 445 166 123
+P 445 167 123
+P 445 169 124
+P 445 170 124
+P 445 172 125
+T 446 drawn 0 warp 0 traps 0 soft 0
+V 446 0 0 0
+V 446 1 0 0
+V 446 2 0 0
+P 446 143 113
+P 446 150 116
+P 446 152 117
+P 446 154 118
+P 446 155 118
+P 446 156 119
+P 446 157 119
+P 446 158 120
+P 446 159 120
+P 446 160 121
+P 446 161 121
+P 446 162 121
+P 446 163 122
+P 446 164 122
+P 446 166 123
+P 446 167 123
+P 446 169 124
+P 446 172 125
+P 446 174 126
+T 447 drawn 0 warp 0 traps 0 soft 0
+V 447 0 0 0
+V 447 1 0 0
+V 447 2 0 0
+P 447 145 114
+P 447 147 115
+P 447 149 116
+P 447 152 117
+P 447 154 118
+P 447 156 119
+P 447 157 119
+P 447 158 120
+P 447 159 120
+P 447 160 121
+P 447 161 121
+P 447 162 121
+P 447 163 122
+P 447 164 122
+P 447 165 123
+P 447 166 123
+P 447 168 124
+P 447 169 124
+P 447 171 125
+P 447 174 126
+T 448 drawn 0 warp 0 traps 0 soft 0
+V 448 0 0 0
+V 448 1 0 0
+V 448 2 0 0
+P 448 155 116
+P 448 156 117
+P 448 157 118
+P 448 158 119
+P 448 159 120
+P 448 160 121
+P 448 161 122
+P 448 162 123
+P 448 163 124
+T 449 drawn 0 warp 0 traps 0 soft 0
+V 449 0 0 0
+V 449 1 0 0
+V 449 2 0 0
+P 449 156 117
+P 449 157 118
+P 449 158 119
+P 449 159 120
+P 449 160 121
+P 449 161 122
+P 449 162 123
+P 449 163 124
+T 450 drawn 0 warp 0 traps 0 soft 0
+V 450 0 0 0
+V 450 1 0 0
+V 450 2 0 0
+P 450 156 117
+P 450 157 118
+P 450 158 119
+P 450 159 120
+P 450 160 121
+P 450 161 122
+P 450 162 123
+P 450 163 124
+T 451 drawn 0 warp 0 traps 0 soft 0
+V 451 0 0 0
+V 451 1 0 0
+V 451 2 0 0
+P 451 156 117
+P 451 157 118
+P 451 158 119
+P 451 159 120
+P 451 160 121
+P 451 161 122
+P 451 162 123
+P 451 163 124
+T 452 drawn 0 warp 0 traps 0 soft 0
+V 452 0 0 0
+V 452 1 0 0
+V 452 2 0 0
+P 452 153 104
+P 452 154 107
+P 452 155 109
+P 452 156 112
+P 452 157 114
+P 452 157 115
+P 452 158 116
+P 452 158 117
+P 452 158 118
+P 452 159 119
+P 452 159 120
+P 452 160 121
+P 452 160 122
+P 452 161 124
+P 452 161 125
+P 452 162 126
+P 452 162 127
+P 452 163 128
+P 452 163 129
+P 452 164 131
+P 452 165 133
+T 453 drawn 0 warp 0 traps 0 soft 0
+V 453 0 0 0
+V 453 1 0 0
+V 453 2 0 0
+P 453 154 106
+P 453 155 109
+P 453 156 111
+P 453 156 112
+P 453 157 114
+P 453 157 115
+P 453 158 116
+P 453 158 117
+P 453 159 118
+P 453 159 119
+P 453 159 120
+P 453 160 121
+P 453 160 122
+P 453 161 123
+P 453 161 124
+P 453 162 126
+P 453 163 128
+P 453 164 131
+P 453 165 133
+P 453 166 135
+T 454 drawn 0 warp 0 traps 0 soft 0
+V 454 0 0 0
+V 454 1 0 0
+V 454 2 0 0
+P 454 154 106
+P 454 155 108
+P 454 156 111
+P 454 157 113
+P 454 157 114
+P 454 158 116
+P 454 158 117
+P 454 159 118
+P 454 159 119
+P 454 159 120
+P 454 160 121
+P 454 160 122
+P 454 161 123
+P 454 161 124
+P 454 162 125
+P 454 162 126
+P 454 163 128
+P 454 164 130
+P 454 166 135
+P 454 167 137
+T 455 drawn 0 warp 0 traps 0 soft 0
+V 455 0 0 0
+V 455 1 0 0
+V 455 2 0 0
+P 455 155 108
+P 455 156 110
+P 455 156 111
+P 455 157 113
+P 455 157 114
+P 455 158 115
+P 455 158 116
+P 455 159 118
+P 455 159 119
+P 455 160 120
+P 455 160 121
+P 455 160 122
+P 455 161 123
+P 455 161 124
+P 455 162 125
+P 455 162 126
+P 455 163 127
+P 455 163 128
+P 455 164 130
+P 455 165 132
+T 456 drawn 0 warp 0 traps 0 soft 0
+V 456 0 0 0
+V 456 1 0 0
+V 456 2 0 0
+P 456 159 110
+P 456 159 111
+P 456 159 112
+P 456 159 113
+P 456 159 114
+P 456 159 115
+P 456 159 116
+P 456 159 117
+P 456 159 118
+P 456 159 119
+P 456 159 120
+P 456 159 121
+P 456 159 122
+P 456 159 123
+P 456 159 124
+P 456 159 125
+P 456 159 126
+P 456 159 127
+P 456 159 128
+P 456 159 129
+T 457 drawn 0 warp 0 traps 0 soft 0
+V 457 0 0 0
+V 457 1 0 0
+V 457 2 0 0
+P 457 159 115
+P 457 159 116
+P 457 159 117
+P 457 159 118
+P 457 159 119
+P 457 159 120
+P 457 159 121
+P 457 159 122
+P 457 159 123
+P 457 159 124
+T 458 drawn 0 warp 0 traps 0 soft 0
+V 458 0 0 0
+V 458 1 0 0
+V 458 2 0 0
+P 458 159 120
+T 459 drawn 0 warp 0 traps 0 soft 0
+V 459 0 0 0
+V 459 1 0 0
+V 459 2 0 0
+P 459 160 106
+P 459 160 107
+P 459 160 108
+P 459 160 109
+P 459 160 110
+P 459 160 111
+P 459 160 112
+P 459 160 113
+P 459 160 114
+P 459 160 115
+P 459 160 116
+P 459 160 117
+P 459 160 118
+P 459 160 119
+P 459 160 120
+P 459 160 121
+P 459 160 122
+P 459 160 123
+P 459 160 124
+P 459 160 125
+P 459 160 126
+P 459 160 127
+P 459 160 128
+P 459 160 129
+P 459 160 130
+P 459 160 131
+P 459 160 132
+P 459 160 133
+P 459 160 134
+P 459 160 135
+T 460 drawn 0 warp 0 traps 0 soft 0
+V 460 0 0 0
+V 460 1 0 0
+V 460 2 0 0
+P 460 138 120
+P 460 139 120
+P 460 140 120
+P 460 141 120
+P 460 142 120
+P 460 143 120
+P 460 144 120
+P 460 145 120
+P 460 146 120
+P 460 147 120
+P 460 148 120
+P 460 149 120
+P 460 150 120
+P 460 151 120
+P 460 152 120
+P 460 153 120
+P 460 154 120
+P 460 155 120
+P 460 156 120
+P 460 157 120
+P 460 158 120
+P 460 159 120
+P 460 160 120
+P 460 161 120
+P 460 162 120
+P 460 163 120
+P 460 164 120
+P 460 165 120
+P 460 166 120
+P 460 167 120
+P 460 168 120
+P 460 169 120
+P 460 170 120
+P 460 171 120
+P 460 172 120
+P 460 173 120
+P 460 174 120
+P 460 175 120
+P 460 176 120
+P 460 177 120
+P 460 178 120
+P 460 179 120
+P 460 180 120
+P 460 181 120
+T 461 drawn 0 warp 0 traps 0 soft 0
+V 461 0 0 0
+V 461 1 0 0
+V 461 2 0 0
+P 461 128 120
+P 461 129 120
+P 461 130 120
+P 461 131 120
+P 461 132 120
+P 461 133 120
+P 461 134 120
+P 461 135 120
+P 461 136 120
+P 461 137 120
+P 461 138 120
+P 461 139 120
+P 461 140 120
+P 461 141 120
+P 461 142 120
+P 461 143 120
+P 461 144 120
+P 461 145 120
+P 461 146 120
+P 461 147 120
+P 461 148 120
+P 461 149 120
+P 461 150 120
+P 461 151 120
+P 461 152 120
+P 461 153 120
+P 461 154 120
+P 461 155 120
+P 461 156 120
+P 461 157 120
+P 461 158 120
+P 461 159 120
+P 461 160 120
+P 461 161 120
+P 461 162 120
+P 461 163 120
+P 461 164 120
+P 461 165 120
+P 461 166 120
+P 461 167 120
+P 461 168 120
+P 461 169 120
+P 461 170 120
+P 461 171 120
+P 461 172 120
+P 461 173 120
+P 461 174 120
+P 461 175 120
+P 461 176 120
+P 461 177 120
+P 461 178 120
+P 461 179 120
+P 461 180 120
+P 461 181 120
+P 461 182 120
+P 461 183 120
+P 461 184 120
+P 461 185 120
+P 461 186 120
+P 461 187 120
+P 461 188 120
+P 461 189 120
+P 461 190 120
+P 461 191 120
+P 461 192 120
+T 462 drawn 0 warp 0 traps 0 soft 0
+V 462 0 0 0
+V 462 1 0 0
+V 462 2 0 0
+P 462 117 120
+P 462 118 120
+P 462 119 120
+P 462 120 120
+P 462 121 120
+P 462 122 120
+P 462 123 120
+P 462 124 120
+P 462 125 120
+P 462 126 120
+P 462 127 120
+P 462 128 120
+P 462 129 120
+P 462 130 120
+P 462 131 120
+P 462 132 120
+P 462 133 120
+P 462 134 120
+P 462 135 120
+P 462 136 120
+P 462 137 120
+P 462 138 120
+P 462 139 120
+P 462 140 120
+P 462 141 120
+P 462 142 120
+P 462 143 120
+P 462 144 120
+P 462 145 120
+P 462 146 120
+P 462 147 120
+P 462 148 120
+P 462 149 120
+P 462 150 120
+P 462 151 120
+P 462 152 120
+P 462 153 120
+P 462 154 120
+P 462 155 120
+P 462 156 120
+P 462 157 120
+P 462 158 120
+P 462 159 120
+P 462 160 120
+P 462 161 120
+P 462 162 120
+P 462 163 120
+P 462 164 120
+P 462 165 120
+P 462 166 120
+P 462 167 120
+P 462 168 120
+P 462 169 120
+P 462 170 120
+P 462 171 120
+P 462 172 120
+P 462 173 120
+P 462 174 120
+P 462 175 120
+P 462 176 120
+P 462 177 120
+P 462 178 120
+P 462 179 120
+P 462 180 120
+P 462 181 120
+P 462 182 120
+P 462 183 120
+P 462 184 120
+P 462 185 120
+P 462 186 120
+P 462 187 120
+P 462 188 120
+P 462 189 120
+P 462 190 120
+P 462 191 120
+P 462 192 120
+P 462 193 120
+P 462 194 120
+P 462 195 120
+P 462 196 120
+P 462 197 120
+P 462 198 120
+P 462 199 120
+P 462 200 120
+P 462 201 120
+P 462 202 120
+P 462 203 120
+T 463 drawn 0 warp 0 traps 0 soft 0
+V 463 0 0 0
+V 463 1 0 0
+V 463 2 0 0
+P 463 150 121
+P 463 151 121
+P 463 152 121
+P 463 153 121
+P 463 154 121
+P 463 155 121
+P 463 156 121
+P 463 157 121
+P 463 158 121
+P 463 159 121
+P 463 160 121
+P 463 161 121
+P 463 162 121
+P 463 163 121
+P 463 164 121
+P 463 165 121
+P 463 166 121
+P 463 167 121
+P 463 168 121
+P 463 169 121
+P 463 170 121
+P 463 171 121
+T 464 drawn 0 warp 0 traps 0 soft 0
+V 464 0 0 0
+V 464 1 0 0
+V 464 2 0 0
+P 464 122 104
+P 464 129 107
+P 464 131 108
+P 464 134 109
+P 464 136 110
+P 464 138 111
+P 464 141 112
+P 464 143 113
+P 464 145 114
+P 464 146 114
+P 464 147 115
+P 464 148 115
+P 464 150 116
+P 464 151 116
+P 464 152 117
+P 464 153 117
+P 464 154 118
+P 464 155 118
+P 464 156 119
+P 464 157 119
+P 464 158 119
+P 464 159 120
+P 464 160 120
+P 464 161 121
+P 464 162 121
+P 464 163 121
+P 464 164 122
+P 464 165 122
+P 464 166 123
+P 464 167 123
+P 464 169 124
+P 464 170 124
+P 464 171 125
+P 464 172 125
+P 464 174 126
+P 464 175 126
+P 464 177 127
+P 464 179 128
+P 464 180 128
+P 464 182 129
+P 464 184 130
+P 464 187 131
+P 464 189 132
+P 464 192 133
+T 465 drawn 0 warp 0 traps 0 soft 0
+V 465 0 0 0
+V 465 1 0 0
+V 465 2 0 0
+P 465 124 105
+P 465 131 108
+P 465 133 109
+P 465 136 110
+P 465 138 111
+P 465 140 112
+P 465 141 112
+P 465 142 113
+P 465 143 113
+P 465 145 114
+P 465 147 115
+P 465 148 115
+P 465 149 116
+P 465 150 116
+P 465 152 117
+P 465 153 117
+P 465 154 118
+P 465 155 118
+P 465 156 119
+P 465 157 119
+P 465 158 120
+P 465 159 120
+P 465 160 120
+P 465 161 121
+P 465 162 121
+P 465 163 122
+P 465 164 122
+P 465 165 122
+P 465 166 123
+P 465 167 123
+P 465 168 124
+P 465 169 124
+P 465 170 124
+P 465 171 125
+P 465 172 125
+P 465 174 126
+P 465 176 127
+P 465 177 127
+P 465 179 128
+P 465 181 129
+P 465 182 129
+P 465 184 130
+P 465 189 132
+P 465 194 134
+T 466 drawn 0 warp 0 traps 0 soft 0
+V 466 0 0 0
+V 466 1 0 0
+V 466 2 0 0
+P 466 126 106
+P 466 131 108
+P 466 133 109
+P 466 135 110
+P 466 138 111
+P 466 140 112
+P 466 142 113
+P 466 143 113
+P 466 144 114
+P 466 145 114
+P 466 147 115
+P 466 149 116
+P 466 150 116
+P 466 151 117
+P 466 152 117
+P 466 153 118
+P 466 154 118
+P 466 155 118
+P 466 156 119
+P 466 157 119
+P 466 158 120
+P 466 159 120
+P 466 160 121
+P 466 161 121
+P 466 162 121
+P 466 163 122
+P 466 164 122
+P 466 165 123
+P 466 166 123
+P 466 167 123
+P 466 168 124
+P 466 169 124
+P 466 171 125
+P 466 172 125
+P 466 173 126
+P 466 174 126
+P 466 176 127
+P 466 178 128
+P 466 179 128
+P 466 181 129
+P 466 184 130
+P 466 186 131
+P 466 191 133
+P 466 196 135
+T 467 drawn 0 warp 0 traps 0 soft 0
+V 467 0 0 0
+V 467 1 0 0
+V 467 2 0 0
+P 467 121 104
+P 467 128 107
+P 467 133 109
+P 467 135 110
+P 467 137 111
+P 467 140 112
+P 467 142 113
+P 467 144 114
+P 467 145 114
+P 467 146 115
+P 467 147 115
+P 467 149 116
+P 467 151 117
+P 467 152 117
+P 467 153 118
+P 467 154 118
+P 467 155 119
+P 467 156 119
+P 467 157 119
+P 467 158 120
+P 467 159 120
+P 467 160 121
+P 467 161 121
+P 467 162 121
+P 467 162 122
+P 467 163 122
+P 467 164 122
+P 467 165 123
+P 467 166 123
+P 467 168 124
+P 467 169 124
+P 467 170 125
+P 467 171 125
+P 467 173 126
+P 467 174 126
+P 467 175 127
+P 467 176 127
+P 467 178 128
+P 467 181 129
+P 467 183 130
+P 467 186 131
+P 467 188 132
+P 467 191 133
+P 467 193 134
+T 468 drawn 0 warp 0 traps 0 soft 0
+V 468 0 0 0
+V 468 1 0 0
+V 468 2 0 0
+P 468 150 111
+P 468 151 112
+P 468 152 113
+P 468 153 114
+P 468 154 115
+P 468 155 116
+P 468 156 117
+P 468 157 118
+P 468 158 119
+P 468 159 120
+P 468 160 121
+P 468 161 122
+P 468 162 123
+P 468 163 124
+P 468 164 125
+P 468 165 126
+P 468 166 127
+P 468 167 128
+P 468 168 129
+T 469 drawn 0 warp 0 traps 0 soft 0
+V 469 0 0 0
+V 469 1 0 0
+V 469 2 0 0
+P 469 151 112
+P 469 152 113
+P 469 153 114
+P 469 154 115
+P 469 155 116
+P 469 156 117
+P 469 157 118
+P 469 158 119
+P 469 159 120
+P 469 160 121
+P 469 161 122
+P 469 162 123
+P 469 163 124
+P 469 164 125
+P 469 165 126
+P 469 166 127
+P 469 167 128
+P 469 168 129
+T 470 drawn 0 warp 0 traps 0 soft 0
+V 470 0 0 0
+V 470 1 0 0
+V 470 2 0 0
+P 470 151 112
+P 470 152 113
+P 470 153 114
+P 470 154 115
+P 470 155 116
+P 470 156 117
+P 470 157 118
+P 470 158 119
+P 470 159 120
+P 470 160 121
+P 470 161 122
+P 470 162 123
+P 470 163 124
+P 470 164 125
+P 470 165 126
+P 470 166 127
+P 470 167 128
+P 470 168 129
+T 471 drawn 0 warp 0 traps 0 soft 0
+V 471 0 0 0
+V 471 1 0 0
+V 471 2 0 0
+P 471 151 112
+P 471 152 113
+P 471 153 114
+P 471 154 115
+P 471 155 116
+P 471 156 117
+P 471 157 118
+P 471 158 119
+P 471 159 120
+P 471 160 121
+P 471 161 122
+P 471 162 123
+P 471 163 124
+P 471 164 125
+P 471 165 126
+P 471 166 127
+P 471 167 128
+P 471 168 129
+T 472 drawn 0 warp 0 traps 0 soft 0
+V 472 0 0 0
+V 472 1 0 0
+V 472 2 0 0
+P 472 146 87
+P 472 147 90
+P 472 148 92
+P 472 149 95
+P 472 150 97
+P 472 151 99
+P 472 151 100
+P 472 152 102
+P 472 153 104
+P 472 153 105
+P 472 154 107
+P 472 154 108
+P 472 155 109
+P 472 155 110
+P 472 156 112
+P 472 156 113
+P 472 157 114
+P 472 157 115
+P 472 158 116
+P 472 158 117
+P 472 158 118
+P 472 159 119
+P 472 159 120
+P 472 160 121
+P 472 160 122
+P 472 160 123
+P 472 161 124
+P 472 161 125
+P 472 162 126
+P 472 162 127
+P 472 163 128
+P 472 163 129
+P 472 164 131
+P 472 164 132
+P 472 165 133
+P 472 165 134
+P 472 166 136
+P 472 167 138
+P 472 168 141
+P 472 169 143
+P 472 170 145
+P 472 171 148
+P 472 172 150
+P 472 175 157
+T 473 drawn 0 warp 0 traps 0 soft 0
+V 473 0 0 0
+V 473 1 0 0
+V 473 2 0 0
+P 473 146 87
+P 473 147 89
+P 473 148 92
+P 473 149 94
+P 473 150 97
+P 473 151 99
+P 473 152 102
+P 473 153 104
+P 473 153 105
+P 473 154 106
+P 473 154 107
+P 473 155 109
+P 473 155 110
+P 473 156 111
+P 473 156 112
+P 473 157 114
+P 473 157 115
+P 473 158 116
+P 473 158 117
+P 473 158 118
+P 473 159 118
+P 473 159 119
+P 473 159 120
+P 473 160 121
+P 473 160 122
+P 473 161 123
+P 473 161 124
+P 473 161 125
+P 473 162 126
+P 473 162 127
+P 473 163 128
+P 473 163 129
+P 473 164 131
+P 473 165 133
+P 473 165 134
+P 473 166 135
+P 473 166 136
+P 473 167 138
+P 473 168 140
+P 473 169 143
+P 473 170 145
+P 473 171 147
+P 473 172 150
+P 473 173 152
+T 474 drawn 0 warp 0 traps 0 soft 0
+V 474 0 0 0
+V 474 1 0 0
+V 474 2 0 0
+P 474 145 84
+P 474 147 89
+P 474 149 94
+P 474 150 96
+P 474 151 99
+P 474 152 101
+P 474 152 102
+P 474 153 104
+P 474 154 106
+P 474 154 107
+P 474 155 108
+P 474 155 109
+P 474 156 111
+P 474 156 112
+P 474 157 113
+P 474 157 114
+P 474 157 115
+P 474 158 116
+P 474 158 117
+P 474 159 118
+P 474 159 119
+P 474 159 120
+P 474 160 121
+P 474 160 122
+P 474 161 123
+P 474 161 124
+P 474 162 125
+P 474 162 126
+P 474 162 127
+P 474 163 128
+P 474 163 129
+P 474 164 130
+P 474 164 131
+P 474 165 133
+P 474 166 135
+P 474 166 136
+P 474 167 137
+P 474 167 138
+P 474 168 140
+P 474 169 142
+P 474 170 145
+P 474 171 147
+P 474 172 149
+P 474 174 154
+T 475 drawn 0 warp 0 traps 0 soft 0
+V 475 0 0 0
+V 475 1 0 0
+V 475 2 0 0
+P 475 146 86
+P 475 148 91
+P 475 150 96
+P 475 151 98
+P 475 151 99
+P 475 152 101
+P 475 153 103
+P 475 153 104
+P 475 154 106
+P 475 155 108
+P 475 155 109
+P 475 156 111
+P 475 156 112
+P 475 157 113
+P 475 157 114
+P 475 158 115
+P 475 158 116
+P 475 158 117
+P 475 159 118
+P 475 159 119
+P 475 160 120
+P 475 160 121
+P 475 160 122
+P 475 161 123
+P 475 161 124
+P 475 162 125
+P 475 162 126
+P 475 163 127
+P 475 163 128
+P 475 164 130
+P 475 164 131
+P 475 165 132
+P 475 165 133
+P 475 166 135
+P 475 167 137
+P 475 167 138
+P 475 168 139
+P 475 168 140
+P 475 169 142
+P 475 170 144
+P 475 171 147
+P 475 172 149
+P 475 175 156
+T 476 drawn 0 warp 0 traps 0 soft 0
+V 476 0 0 0
+V 476 1 0 0
+V 476 2 0 0
+P 476 159 98
+P 476 159 99
+P 476 159 100
+P 476 159 101
+P 476 159 102
+P 476 159 103
+P 476 159 104
+P 476 159 105
+P 476 159 106
+P 476 159 107
+P 476 159 108
+P 476 159 109
+P 476 159 110
+P 476 159 111
+P 476 159 112
+P 476 159 113
+P 476 159 114
+P 476 159 115
+P 476 159 116
+P 476 159 117
+P 476 159 118
+P 476 159 119
+P 476 159 120
+P 476 159 121
+P 476 159 122
+P 476 159 123
+P 476 159 124
+P 476 159 125
+P 476 159 126
+P 476 159 127
+P 476 159 128
+P 476 159 129
+P 476 159 130
+P 476 159 131
+P 476 159 132
+P 476 159 133
+P 476 159 134
+P 476 159 135
+P 476 159 136
+P 476 159 137
+P 476 159 138
+P 476 159 139
+P 476 159 140
+P 476 159 141
+T 477 drawn 0 warp 0 traps 0 soft 0
+V 477 0 0 0
+V 477 1 0 0
+V 477 2 0 0
+P 477 159 109
+P 477 159 110
+P 477 159 111
+P 477 159 112
+P 477 159 113
+P 477 159 114
+P 477 159 115
+P 477 159 116
+P 477 159 117
+P 477 159 118
+P 477 159 119
+P 477 159 120
+P 477 159 121
+P 477 159 122
+P 477 159 123
+P 477 159 124
+P 477 159 125
+P 477 159 126
+P 477 159 127
+P 477 159 128
+P 477 159 129
+P 477 159 130
+T 478 drawn 0 warp 0 traps 0 soft 0
+V 478 0 0 0
+V 478 1 0 0
+V 478 2 0 0
+P 478 159 120
+T 479 drawn 0 warp 0 traps 0 soft 0
+V 479 0 0 0
+V 479 1 0 0
+V 479 2 0 0
+P 479 160 88
+P 479 160 89
+P 479 160 90
+P 479 160 91
+P 479 160 92
+P 479 160 93
+P 479 160 94
+P 479 160 95
+P 479 160 96
+P 479 160 97
+P 479 160 98
+P 479 160 99
+P 479 160 100
+P 479 160 101
+P 479 160 102
+P 479 160 103
+P 479 160 104
+P 479 160 105
+P 479 160 106
+P 479 160 107
+P 479 160 108
+P 479 160 109
+P 479 160 110
+P 479 160 111
+P 479 160 112
+P 479 160 113
+P 479 160 114
+P 479 160 115
+P 479 160 116
+P 479 160 117
+P 479 160 118
+P 479 160 119
+P 479 160 120
+P 479 160 121
+P 479 160 122
+P 479 160 123
+P 479 160 124
+P 479 160 125
+P 479 160 126
+P 479 160 127
+P 479 160 128
+P 479 160 129
+P 479 160 130
+P 479 160 131
+P 479 160 132
+P 479 160 133
+P 479 160 134
+P 479 160 135
+P 479 160 136
+P 479 160 137
+P 479 160 138
+P 479 160 139
+P 479 160 140
+P 479 160 141
+P 479 160 142
+P 479 160 143
+P 479 160 144
+P 479 160 145
+P 479 160 146
+P 479 160 147
+P 479 160 148
+P 479 160 149
+P 479 160 150
+P 479 160 151
+P 479 160 152

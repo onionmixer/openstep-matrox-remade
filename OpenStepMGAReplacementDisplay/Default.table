@@ -14,6 +14,16 @@
  *                    arena and measures it; no engine register is written.
  *   WARP Test     -- D2 WARP configuration probe; writes two registers and
  *                    reads one back, draws nothing.
+ *   WARP 3D       -- which tier draws, once the 3D path is on.  NOT the
+ *                    same thing as "WARP Test" above, which is a register
+ *                    probe that draws nothing.  This one is a PREFERENCE:
+ *                    the kernel reports it and never acts on it, because
+ *                    the engine takes either kind of batch.  "No" here, and
+ *                    the reason is not caution about the hardware -- WARP
+ *                    is measurably faster -- but that on near-degenerate
+ *                    slivers it diverges further from software than the
+ *                    trapezoid tier, and nothing was found that separates
+ *                    the shapes it gets wrong from the ones it does not.
  *   Mesa Acceleration -- enable the 3D client path.  "No" is enforced and not
  *                    merely advertised: the submit parameter refuses and the
  *                    HW3D tests are skipped.  It does NOT quiet the other
@@ -44,6 +54,7 @@
 "Storm 2D Test" = "No";
 "VRAM Mmap" = "No";
 "Mesa Acceleration" = "No";
+"WARP 3D" = "No";
 "DMA Ring Test" = "No";
 "WARP Test" = "No";
 "Raster Test" = "No";

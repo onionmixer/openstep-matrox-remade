@@ -74,7 +74,13 @@ LABEL_SUPERVIEW = '2'    # its superview there
 # topping out at 140, GROW = 154 gives 9 + 154 - 140 = 23 again -- the same
 # spacing the panel already has, rather than an invented figure.  GROW = 138
 # would leave 7, which is not the same panel.
-GROW = 154
+#
+# C2 added a third switch row.  The rule above is what decided the numbers
+# rather than taste: with the WARP row at y=44 and everything above it lifted
+# by one row's 20 px, the topmost edge goes 140 -> 160, so GROW has to go
+# 154 -> 174 for (9 + GROW) - top to stay 23.  Computed, not chosen.
+#
+GROW = 174
 SW_W, SW_H = 340, 15
 #
 # The two switch constants were NAMED the wrong way round: Y_STORM held the
@@ -82,8 +88,8 @@ SW_W, SW_H = 340, 15
 # were wrong, which is the sort of thing that puts the next row in the wrong
 # place.  Renamed to what they are.
 #
-Y_CAPTION, Y_MMAP, Y_STORM, Y_GRAY = 6, 24, 44, 66
-Y_VRAM, Y_STATUS_MODE, Y_STATUS_BRIEF = 88, 110, 126
+Y_CAPTION, Y_MMAP, Y_WARP, Y_STORM, Y_GRAY = 6, 24, 44, 64, 86
+Y_VRAM, Y_STATUS_MODE, Y_STATUS_BRIEF = 108, 130, 146
 VRAM_LABEL_X, VRAM_LABEL_W = 12, 96
 VRAM_MATRIX_X = 112
 VRAM_TITLES = ('8', '16', '32')
@@ -172,6 +178,15 @@ add_switch('Run Storm 2D engine self-test at boot', Y_STORM,
            'stormSwitch', 'toggleStorm:')
 add_switch('Publish offscreen VRAM as a character device', Y_MMAP,
            'mmapSwitch', 'toggleMmap:')
+#
+# The label is short because it has to be: the control is 340 px and its
+# image and gap take about 20, so the text has about 320 of Helvetica 12.
+# The sentence this row deserves -- "faster, but it differs on sliver
+# triangles" -- estimates at 420 and would have been clipped exactly where
+# the warning is.  The caveat stays, in the words that fit.
+#
+add_switch('Use WARP 3D (may differ on sliver triangles)', Y_WARP,
+           'warpSwitch', 'toggleWarp:')
 
 # ------------------------------------------------------- radio matrices
 # The template's matrix has two cells laid out vertically; extra cells are

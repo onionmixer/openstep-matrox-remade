@@ -766,37 +766,66 @@ static triangle_func savedTriangle;
 static int pendMode = OSMGA_MESA_PEND_NONE;
 
 /*
- * THE WARP TIER IS OFF UNTIL SOMEBODY ASKS.
+ * WHICH TIER DRAWS, AND WHO DECIDES.
  *
- * Nothing yet says the two tiers draw the same picture -- that is what the
- * mixed-tier A/B is for -- so a build that shipped with this on could
- * change what applications see before anyone had compared them.
+ * Off unless asked for.  Not because the two tiers are unknown to each
+ * other -- they have been compared at length since, and on ordinary geometry
+ * they agree -- but because on near-degenerate slivers WARP diverges further
+ * than the trapezoid tier does, and no quantity was found that separates the
+ * shapes it gets wrong from the ones it gets right.  A threshold built on
+ * one would refuse correct triangles and admit wrong ones, so the tier stays
+ * a decision somebody makes rather than a rule the driver applies.
  *
- * A library switch and not an instance-table one, deliberately: no
- * capability advertises WARP, so a kernel-side key would leave the hook
- * building version 10 batches that the kernel then refuses, which is
- * repeated replay wearing the costume of an opt-in.
+ * TWO PLACES CAN ASK, and the order matters.
  *
- * And NOT OSMGA_MESA_ACCEL, which turns the VRAM and depth setup off
- * altogether: an A/B between the tiers has to hold everything else equal,
- * and that switch does not.
+ *   OSMGA_MESA_WARP        the environment.  Wins whenever it is PRESENT,
+ *                          including when it says 0 -- that is an explicit
+ *                          "use the trapezoid tier" and has to be able to
+ *                          override the machine's setting, because every
+ *                          measurement and sweep in this project selects a
+ *                          tier this way.  A configuration that could
+ *                          silently win would leave a run timing the other
+ *                          tier and saying nothing.
+ *   the capability word    Configure.app's "WARP 3D" checkbox, carried by
+ *                          the kernel in CAP_WARP_PREFERRED.  Consulted only
+ *                          when the variable is absent.
  *
- * Sampled once, on first use.  It is read where a flush is legal, and the
- * value cannot change under pending work.
+ * An earlier version of this comment said WARP had to be a library switch
+ * because "no capability advertises WARP, so a kernel-side key would leave
+ * the hook building version 10 batches that the kernel then refuses".  That
+ * was true when it was written and every clause of it is now false: the
+ * kernel takes those batches, and one now advertises the preference.
+ *
+ * Sampled once, from the probe that succeeded -- see osmgaMesaWarpSample.
+ * Resting on the fact that the only caller happens to run after the probe
+ * would be resting on a call order rather than on a decision.
  */
 #define OSMGA_MESA_WARP_ENV "OSMGA_MESA_WARP"
 static int warpTier = -1;            /* -1 not yet sampled */
 
+static void
+osmgaMesaWarpSample(unsigned long capFlags)
+{
+    const char *v = getenv(OSMGA_MESA_WARP_ENV);
+
+    if (v != 0 && *v != '\0') {
+        warpTier = (*v == '1' || *v == 'y' || *v == 'Y' ||
+                    *v == 't' || *v == 'T') ? 1 : 0;
+        return;
+    }
+    warpTier = ((capFlags & OSMGA_HW3D_CAP_WARP_PREFERRED) != 0UL) ? 1 : 0;
+}
+
 static int
 osmgaMesaWarpWanted(void)
 {
-    if (warpTier < 0) {
-        const char *v = getenv(OSMGA_MESA_WARP_ENV);
-
-        warpTier = (v != 0 && (*v == '1' || *v == 'y' || *v == 'Y' ||
-                               *v == 't' || *v == 'T')) ? 1 : 0;
-    }
-    return warpTier;
+    /*
+     * Nought if nobody has sampled yet.  That cannot happen through the
+     * drawing path -- the chooser samples before it installs a triangle
+     * function -- and if some future path arrives earlier, the answer it
+     * gets is the shipped default rather than a stale one.
+     */
+    return (warpTier > 0);
 }
 
 static unsigned long pendTraps;      /* trapezoids already in batch->tri[] */
@@ -2892,6 +2921,16 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
 
     OSMGAMesaProbeRun(&probe);
     if (probe.verdict != OSMGA_PROBE_HARDWARE) return NULL;
+
+    /*
+     * The tier, decided here because this is the first place that has both
+     * halves of the answer: the environment, and a capability word from a
+     * probe that succeeded.  Sampling it where it is USED would work today
+     * only because the only user runs after this function -- which is a call
+     * order, not a decision, and call orders change.
+     */
+    if (warpTier < 0)
+        osmgaMesaWarpSample(probe.caps[OSMGA_HW3D_CAP_FLAGS]);
 
     /*
      * Refuse everything that is not ordinary rendering.  In feedback and

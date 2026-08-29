@@ -42,8 +42,17 @@ python3 "$root/OpenStepMGAReplacementDisplay/nib-src/build-inspector-nib.py" \
     "$ws/openstep-spacesaver2ps2/ref/nibtemplates/radio-template-BusLogicIntrInspector.xml" \
     "$out"
 
-# The three files the bundle ships.  data.classes and data.dependency come
-# from the stock nib unchanged -- only data.nib is rebuilt.
+# The three files the bundle ships, and only data.nib is rebuilt here.
+#
+# data.dependency does come from the stock nib unchanged.  data.classes DOES
+# NOT, and this comment used to say it did: the stock one declares
+# IODisplayInspector and knows nothing of ours, while the shipped one
+# declares OSMGADisplayInspector with every outlet and action the grafted
+# controls connect to.  It is maintained BY HAND alongside the inspector's
+# .h and .m, and re-copying it from the stock nib would silently break every
+# connection -- an outlet that fails to connect is nil, and messages to nil
+# say nothing.  Checked: `grep -c OSMGADisplayInspector` on the stock copy
+# answers 0.
 dst="$root/OpenStepMGAReplacementDisplay/English.lproj/DisplayInspector.nib"
 cp "$out/data.nib" "$dst/data.nib"
 echo "rebuild-inspector-nib: PASS $(stat -c%s "$dst/data.nib") bytes -> $dst"

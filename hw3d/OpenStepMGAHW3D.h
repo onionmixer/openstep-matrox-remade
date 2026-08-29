@@ -1200,6 +1200,21 @@ typedef int OSMGAHW3DSplitCheck[
 #define OSMGA_HW3D_CAP_READY    0x00000008UL /* linear mode, engine usable */
 
 /*
+ * The operator would rather the WARP setup engine drew the triangles.
+ *
+ * A PREFERENCE, and named as one.  The engine's WARP path does not appear or
+ * disappear with this bit -- the kernel takes either kind of batch whatever
+ * it says -- so it is deliberately not called CAP_WARP, which would read as
+ * "this card cannot do WARP" when the checkbox is off.  It is not in
+ * CAP_REQUIRED for the same reason: nothing about acceleration depends on it.
+ *
+ * An old library ignores the bit and behaves as it always did; a new library
+ * against an old kernel reads nought, which is the safe answer because
+ * nought is the setting WARP already ships with.
+ */
+#define OSMGA_HW3D_CAP_WARP_PREFERRED 0x00000010UL
+
+/*
  * All four are required before the backend may accelerate.  ENABLED alone is
  * not enough: without the VRAM window there is nowhere to put a batch, and
  * without the command window there is no list to submit.

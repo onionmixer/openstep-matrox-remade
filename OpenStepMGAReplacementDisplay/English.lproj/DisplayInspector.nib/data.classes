@@ -47,6 +47,7 @@ OSMGADisplayInspector = {
 	"grayChanged:" = "grayChanged:"; 
 	"toggleMmap:" = "toggleMmap:"; 
 	"toggleStorm:" = "toggleStorm:"; 
+	"toggleWarp:" = "toggleWarp:"; 
 	"vramChanged:" = "vramChanged:"; 
     }; 
     OUTLETS = {
@@ -56,6 +57,7 @@ OSMGADisplayInspector = {
 	statusMode = statusMode; 
 	stormSwitch = stormSwitch; 
 	vramMatrix = vramMatrix; 
+	warpSwitch = warpSwitch; 
     }; 
     SUPERCLASS = IODisplayInspector; 
 };

@@ -1,0 +1,29 @@
+# tiercost mesh /ndrv/openstep-matrox-remade/scratch-mesh/mesh16.txt  row churn  triangles 512  drawn/layer 512  layers 1  frames 25  warmup 4
+# work  source 512/frame  drawn 12800  warp 12800  traps 0  software 0  declined 0
+# submits 12825  dwords 1717200  per frame 513.00 submits  68688 dwords
+# frame us  min 44784  p25 44830  median 44864  p75 44893  max 44972
+F 0 44784
+F 1 44799
+F 2 44804
+F 3 44811
+F 4 44820
+F 5 44828
+F 6 44830
+F 7 44837
+F 8 44843
+F 9 44853
+F 10 44855
+F 11 44859
+F 12 44864
+F 13 44866
+F 14 44867
+F 15 44868
+F 16 44868
+F 17 44888
+F 18 44893
+F 19 44907
+F 20 44922
+F 21 44932
+F 22 44935
+F 23 44935
+F 24 44972

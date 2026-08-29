@@ -15,10 +15,18 @@
  *                       display-only installation should not carry that
  *                       hazard, so it is OFF here and turned on by whoever
  *                       installs the acceleration package.
- *   "Mesa Acceleration" only reports a capability -- the library is what
- *                       declines -- so it cannot break the display either
- *                       way.  OFF here for the same reason: this package
- *                       alone is a 2D display driver.
+ *   "Mesa Acceleration" gates the 3D client path -- three submission sites
+ *                       refuse when it is off.  (An older note here said it
+ *                       only reported a capability; that was true when it
+ *                       was written.)  OFF here because this package alone
+ *                       is a 2D display driver.
+ *   "WARP 3D"           which tier draws, once acceleration is on.  This one
+ *                       really is report-only: the kernel carries it to the
+ *                       library and never acts on it, the engine taking
+ *                       either kind of batch.  OFF because WARP diverges
+ *                       further from software on sliver triangles and no
+ *                       rule separates those from the rest -- so it is the
+ *                       operator's decision, not the package's.
  *
  *   "Storm 2D Test", "DMA Ring Test", "WARP Test" are diagnostics and stay
  *                       OFF, as they already are in Default.table.
@@ -52,6 +60,7 @@
 "Storm 2D Test" = "No";
 "VRAM Mmap" = "No";
 "Mesa Acceleration" = "No";
+"WARP 3D" = "No";
 "DMA Ring Test" = "No";
 "WARP Test" = "No";
 "Raster Test" = "No";

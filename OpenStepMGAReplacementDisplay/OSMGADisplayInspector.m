@@ -9,6 +9,7 @@
 #define KEY_GRAY    "Gray Levels"
 #define KEY_VRAMSIZE "MGA Memory Size"
 #define KEY_MESA    "Mesa Acceleration"
+#define KEY_WARP    "WARP 3D"
 
 /*
  * The driver decides with osmgaTextContains(value, "Yes") -- a
@@ -172,6 +173,7 @@ osmgaVramTagFor(const char *value)
 
     [stormSwitch setIntValue:osmgaFlagIsOn([table valueForStringKey:KEY_STORM])];
     [mmapSwitch setIntValue:osmgaFlagIsOn([table valueForStringKey:KEY_MMAP])];
+    [warpSwitch setIntValue:osmgaFlagIsOn([table valueForStringKey:KEY_WARP])];
     [grayMatrix selectCellWithTag:
 	osmgaGrayTagFor([table valueForStringKey:KEY_GRAY],
 			[table valueForStringKey:"Display Mode"])];
@@ -203,6 +205,28 @@ osmgaVramTagFor(const char *value)
 - toggleMmap:sender
 {
     [self storeFlag:KEY_MMAP on:[sender intValue] ? YES : NO];
+    [self refreshStatus];
+    return self;
+}
+
+/*
+ * Which tier draws, and it is the only switch here that changes a PICTURE
+ * rather than whether a facility exists.
+ *
+ * WARP is faster -- measured on this hardware, 53.7 fps against 40.6 for a
+ * spinning teapot -- and on ordinary geometry the two tiers agree.  On
+ * near-degenerate slivers WARP diverges further from software than the
+ * trapezoid tier does, and no quantity was found that tells the shapes it
+ * gets wrong from the ones it gets right, so this cannot be decided for the
+ * operator.  Hence a switch, defaulting off, with the caveat in the label.
+ *
+ * It does not turn 3D on by itself: "Mesa Acceleration" and the VRAM window
+ * still have to be there, and when they are not this preference is carried
+ * to a library that is not accelerating anything.
+ */
+- toggleWarp:sender
+{
+    [self storeFlag:KEY_WARP on:[sender intValue] ? YES : NO];
     [self refreshStatus];
     return self;
 }

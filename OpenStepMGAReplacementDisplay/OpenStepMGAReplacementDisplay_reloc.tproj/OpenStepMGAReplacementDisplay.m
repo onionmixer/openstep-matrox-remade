@@ -2435,6 +2435,17 @@ static unsigned long osmgaMmapFbPhysical;
 static int osmgaMmapRegistered;              /* class-level, register once */
 static int osmgaMesaAccelEnabled;             /* M1-3a: Configure.app switch */
 /*
+ * C2: the operator's tier preference, reported and never acted on here.
+ *
+ * Unlike osmgaMesaAccelEnabled -- which despite an older comment above its
+ * read really does gate, at three submission sites -- this one gates
+ * NOTHING in the kernel, and cannot: the engine takes a WARP batch and a
+ * trapezoid batch alike, so there is nothing here to refuse.  Which kind
+ * gets built is decided in the library, and all this does is carry the
+ * checkbox to it.
+ */
+static int osmgaWarpPreferred;
+/*
  * M1-3a: the ioctl handler is a plain C function with no instance, and the
  * state it must report lives in instance variables.  Rather than mirror that
  * state into file scope, where the copy could fall behind, keep the instance
@@ -4032,15 +4043,37 @@ static IODisplayInfo osmgaModeTemplate = {
                           : (const char *)[ct valueForStringKey:
                                               "Mesa Acceleration"];
 
-        /* M1-3a: read it here but gate nothing here.  Unlike "VRAM Mmap",
-         * which decides whether a device is published at all, this switch is
-         * only reported through the capability parameter -- the library is
-         * what declines to accelerate.  Keeping the driver's behaviour
-         * identical either way means the switch cannot break the display. */
+        /*
+         * M1-3a wrote here that this switch gates nothing and is only
+         * reported, the library being what declines.  THAT IS NO LONGER
+         * TRUE and the correction belongs where the reader is: three
+         * submission paths refuse outright when it is off (the two HW3D
+         * entry points and the boot-time raster probe).  It is still read
+         * here and still reported through the capability word; it simply
+         * does more than the comment used to say.
+         */
         osmgaMesaAccelEnabled =
             (accel != 0 && osmgaTextContains(accel, "Yes")) ? 1 : 0;
         IOLog("OpenStepMGA M1-3a: Mesa acceleration switch is %s\n",
               osmgaMesaAccelEnabled ? "Yes" : "No");
+
+        /*
+         * C2: and which tier the operator would rather have.  This one IS
+         * report-only, and not by restraint -- the engine takes either kind
+         * of batch, so the kernel has nothing to refuse.  The library reads
+         * it out of the capability word and decides; an environment variable
+         * still overrides it, because that is what every measurement in this
+         * project uses to select a tier.
+         */
+        {
+            const char *warp = (ct == nil) ? 0
+                             : (const char *)[ct valueForStringKey:"WARP 3D"];
+
+            osmgaWarpPreferred =
+                (warp != 0 && osmgaTextContains(warp, "Yes")) ? 1 : 0;
+            IOLog("OpenStepMGA C2: WARP 3D preference is %s\n",
+                  osmgaWarpPreferred ? "Yes" : "No");
+        }
         osmgaCopyConfigValue(osmgaCfgDisplayMode,
                              (unsigned int)sizeof(osmgaCfgDisplayMode),
                              (ct == nil) ? 0
@@ -5631,6 +5664,8 @@ unmap:
     }
     if (osmgaMesaAccelEnabled)
         flags |= OSMGA_HW3D_CAP_ENABLED;
+    if (osmgaWarpPreferred)
+        flags |= OSMGA_HW3D_CAP_WARP_PREFERRED;
 
     capsOut[OSMGA_HW3D_CAP_MAGIC]   = (unsigned)OSMGA_HW3D_MAGIC;
     capsOut[OSMGA_HW3D_CAP_VERSION] = (unsigned)OSMGA_HW3D_VERSION;

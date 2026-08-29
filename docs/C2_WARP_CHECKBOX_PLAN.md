@@ -130,3 +130,41 @@ Use the WARP setup engine for 3D (faster; differs on sliver triangles)
 config 키를 커널이 읽고, `caps[FLAGS]` 비트로 유저랜드에 알리고, 유저랜드가
 쓴다.  WARP 비트는 그 경로를 쓰되 **커널 쪽 게이트는 두지 않는다** —
 커널은 두 형식을 다 받으므로 거절할 것이 없기 때문이다.
+
+---
+
+## 8. 시행 — 재부팅 전에 확인한 것
+
+빌드: 라이브러리 PASS, 드라이버 `BUILD_EXIT=0`(537,952 바이트), 설치
+`INSTALL_OK`(Active Drivers 손대지 않음, 인스턴스 표 보존).
+
+nib 은 정규 경로(`tools/rebuild-inspector-nib.sh`)로 다시 만들었고
+5,082 → **5,341 바이트**, 세 곳이 일치한다:
+
+```
+warpSwitch   nib 커넥터 1,  data.classes 1,  소스(.h/.m) 2
+toggleWarp   nib 커넥터 1,  data.classes 1,  소스(.h/.m) 2
+```
+
+**지금 돌고 있는 커널은 아직 옛 드라이버**이므로, 이것이 codex 가 물은
+"신 라이브러리 + 구 커널" 조합 그대로다.  여섯 조합 중 **셋이 여기서
+검증된다**:
+
+```
+env 없음, cap 없음    submissions 193  -> 사다리꼴   (안전한 기본값)
+env=1,    cap 없음    submissions 128  -> WARP       (기존 옵트인 유지)
+env=0,    cap 없음    submissions 193  -> 사다리꼴   (명시적 강제, 새 동작)
+```
+
+빠른 회귀 `PROBLEM` 0 건.
+
+남은 셋(`cap 있음` 쪽 세 줄)은 새 커널이 실려야 잴 수 있다.
+
+## 9. 도중에 고친 것 — nib 을 지키는 주석
+
+`tools/rebuild-inspector-nib.sh` 가 *"data.classes 와 data.dependency 는
+stock nib 에서 그대로 온다"* 고 적고 있었다.  **`data.classes` 는 아니다** —
+확인: stock 사본에 `OSMGADisplayInspector` 가 **0 번** 나온다.  손으로
+관리되는 파일이고, 그 말을 믿고 stock 에서 다시 복사하면 **모든 outlet
+연결이 조용히 끊긴다**(연결 실패한 outlet 은 nil 이고 nil 에 보낸 메시지는
+아무 말도 하지 않는다).  주석을 사실로 고쳤다.

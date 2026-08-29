@@ -14,6 +14,7 @@
 "Storm 2D Test" = "No";
 "VRAM Mmap" = "Yes";
 "Mesa Acceleration" = "Yes";
+"WARP 3D" = "No";
 "DMA Ring Test" = "No";
 "WARP Test" = "No";
 "Raster Test" = "Yes";
