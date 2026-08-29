@@ -48,6 +48,28 @@ unsigned long OSMGAMesaHookWarp(void);
  * counts what the tier DREW and so cannot speak for a run in which every
  * batch was refused -- which is the run a fallback test needs. */
 unsigned long OSMGAMesaHookWarpTried(void);
+/* The largest WARP batch ever submitted, in the allocator's own units.
+ * Counting input triangles cannot answer the run question: a run ends
+ * when dwgctl or alphactrl moves, which no triangle count sees. */
+unsigned long OSMGAMesaHookWarpVtxMax(void);
+unsigned long OSMGAMesaHookWarpRunMax(void);
+/*
+ * Test only: lower the WARP batch capacities so the full-batch path can
+ * run at all.  Mesa's immediate buffer flushes at seventy-two triangles
+ * and the largest batch measured is sixty-four, against a capacity of
+ * two hundred and forty, so "full, flush, reset, retry" has never
+ * executed from immediate-mode GL.  Nought, or a value above the real
+ * capacity, leaves that dimension alone: this can only make a batch
+ * smaller.  It moves the THRESHOLD and nothing else -- the buffers, the
+ * encoder, the submission, the reset and the retry are the production
+ * ones -- so it tests that path's control flow and says nothing about
+ * the physical 720-vertex boundary, which needs a bigger frontend.
+ *
+ * It also RESETS the maxima above, because a new cap is a new
+ * measurement and carrying the previous regime's numbers forward would
+ * let a capped run report the uncapped one's.
+ */
+void OSMGAMesaHookWarpCap(unsigned long vtx, unsigned long runs);
 /* How many clears the engine took, and why the last one was declined --
  * nought when it was taken.  The codes are read off the source; they exist
  * so a clear that quietly does nothing can say which gate stopped it. */

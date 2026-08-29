@@ -43,6 +43,36 @@ static unsigned long hookWarp;
  * cannot even say the tier was involved.  This is that statement.
  */
 static unsigned long hookWarpTried;
+/*
+ * The largest WARP batch ever submitted, in the allocator's OWN units.
+ *
+ * Counting input triangles and dividing is not the same question: a clipped
+ * VB is never batched (the gate submits it immediately), but the run count
+ * depends on how often dwgctl or alphactrl moved, which no triangle count
+ * can say.  Both capacities have to be watched in the units they are
+ * spent in.
+ */
+static unsigned long hookWarpVtxMax, hookWarpRunMax;
+/*
+ * Test only: a capacity SMALLER than the real one, so the full-batch path
+ * can run.
+ *
+ * Measured: Mesa's immediate buffer is VB_MAX = 216 + VB_START vertices and
+ * gl_Begin flushes at it, so a batch never exceeds seventy-two triangles
+ * and the largest actually seen is sixty-four -- a quarter of WARP's 240.
+ * The full-batch branch (return FULL, flush, reset, retry the same source)
+ * therefore cannot execute from immediate-mode GL at all, and untested
+ * error handling is where this kind of defect lives.
+ *
+ * This lowers the ADMISSION limit and nothing else: the real buffers,
+ * encoder, submission, reset and retry all run, so the branch taken is the
+ * production one.  What it cannot establish is the physical 720-vertex
+ * boundary -- descriptor sizes, counter widths, microcode behaviour on a
+ * large packet.  That needs a bigger frontend or a direct harness, and this
+ * is not a substitute for it.
+ */
+static unsigned long hookWarpVtxCap = OSMGA_HW3D_MAX_VTX;
+static unsigned long hookWarpRunCap = OSMGA_HW3D_MAX_RUN;
 static unsigned long hookDeclined;
 /* Triangles this back end could not draw and handed to the software path. */
 static unsigned long hookSoftware;
@@ -1068,6 +1098,10 @@ osmgaMesaFlushWarp(void)
     wb->magic = hookInjectRefusal ? (OSMGA_HW3D_MAGIC ^ 1UL)
                                   : OSMGA_HW3D_MAGIC;
     hookWarpTried += nsrc;
+    if ((unsigned long)wb->vtxCount > hookWarpVtxMax)
+        hookWarpVtxMax = (unsigned long)wb->vtxCount;
+    if ((unsigned long)wb->runCount > hookWarpRunMax)
+        hookWarpRunMax = (unsigned long)wb->runCount;
 
     /*
      * Timed the way version 9 times, and behind the same switch.
@@ -1281,6 +1315,8 @@ osmgaMesaWarpTriangle(GLcontext *ctx, struct vertex_buffer *VB,
 
     if (osmgaMesaPendEmpty()) {
         OSMGAMesaWarpReset(&warpBuild, wb);
+        OSMGAMesaWarpCapacity(&warpBuild, hookWarpVtxCap,
+                              hookWarpRunCap);
         pendMode   = OSMGA_MESA_PEND_WARP;
         pendCtx    = ctx;
         pendVB     = (void *)VB;
@@ -1307,6 +1343,8 @@ osmgaMesaWarpTriangle(GLcontext *ctx, struct vertex_buffer *VB,
         if (wb == 0)
             return 0;
         OSMGAMesaWarpReset(&warpBuild, wb);
+        OSMGAMesaWarpCapacity(&warpBuild, hookWarpVtxCap,
+                              hookWarpRunCap);
         pendMode   = OSMGA_MESA_PEND_WARP;
         pendCtx    = ctx;
         pendVB     = (void *)VB;
@@ -3670,6 +3708,21 @@ unsigned long OSMGAMesaHookUniformArmed(void) { return hookUniformArmed; }
 unsigned long OSMGAMesaHookDrawn(void)    { return hookDrawn; }
 unsigned long OSMGAMesaHookWarp(void)     { return hookWarp; }
 unsigned long OSMGAMesaHookWarpTried(void) { return hookWarpTried; }
+unsigned long OSMGAMesaHookWarpVtxMax(void) { return hookWarpVtxMax; }
+unsigned long OSMGAMesaHookWarpRunMax(void) { return hookWarpRunMax; }
+void
+OSMGAMesaHookWarpCap(unsigned long vtx, unsigned long runs)
+{
+    osmgaMesaFlushPending();
+    /* A new cap is a new measurement: the maxima below describe batches
+     * built under the capacity in force, and carrying the old regime's
+     * numbers forward would let a capped run report the uncapped one's. */
+    hookWarpVtxMax = hookWarpRunMax = 0UL;
+    hookWarpVtxCap = (vtx == 0UL || vtx > OSMGA_HW3D_MAX_VTX)
+                     ? OSMGA_HW3D_MAX_VTX : vtx;
+    hookWarpRunCap = (runs == 0UL || runs > OSMGA_HW3D_MAX_RUN)
+                     ? OSMGA_HW3D_MAX_RUN : runs;
+}
 unsigned long OSMGAMesaHookClears(void)   { return hookClears; }
 unsigned long OSMGAMesaHookMirrors(void)  { return hookMirrors; }
 int           OSMGAMesaHookClearWhy(void) { return hookClearWhy; }

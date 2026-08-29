@@ -29,7 +29,28 @@
  * was involved: hookWarp counts what the tier DREW and stays at nought when
  * every batch is refused, which is why hookWarpTried exists.
  *
- *   /tmp/wfb [triangles]
+ * A SECOND MODE tests the full-batch path, and it may not be combined with
+ * the first.  Lowering the capacity is the only way that path can run --
+ * Mesa's immediate buffer flushes at VB_MAX = 216 + VB_START vertices, so a
+ * batch reaches 213 vertices and ONE run against a capacity of 720 and
+ * sixteen -- but a lowered cap makes many small batches, and with injection
+ * on those are many consecutive refusals, so the backstop revokes before
+ * the path has been exercised.  Measured: 200 triangles at ten a batch are
+ * twenty batches against a limit of eight.
+ *
+ * So the capacity mode does not inject.  It draws normally with the cap
+ * lowered and compares against the SAME TIER uncapped.  That comparison
+ * needs no tolerance at all: the cap moves only where batches begin and
+ * end, so an identical picture is the whole claim, and any difference is a
+ * batching defect rather than a tier difference.
+ *
+ * The capacities reached are reported in the allocator's OWN units,
+ * vertices and runs, because counting input triangles cannot answer the run
+ * question: a run ends when dwgctl or alphactrl moves, and no triangle
+ * count sees that.
+ *
+ *   /tmp/wfb [triangles]                    the refusal test
+ *   /tmp/wfb [triangles] <vcap> <rcap>      the capacity test
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,6 +67,7 @@
 
 static unsigned long *app;
 static unsigned long *ref;
+static int churn;      /* toggle blending per triangle: a run boundary */
 
 /*
  * Overlapping triangles marching across the surface, each a little to the
@@ -61,8 +83,15 @@ scene(int n)
     glClear(GL_COLOR_BUFFER_BIT);
     for (i = 0; i < n; i++) {
         double x = 20.0 + (double)((i * 7) % 240);
+
         double y = 20.0 + (double)((i * 11) % 160);
 
+        if (churn) {
+            /* alphactrl moves with this, which is what ends a WARP run --
+             * and it is also GL state, which is what ends Mesa's vertex
+             * buffer.  Whether those two happen together is the question. */
+            if (i & 1) glDisable(GL_BLEND); else glEnable(GL_BLEND);
+        }
         glColor4ub((GLubyte)(40 + (i * 5) % 200),
                    (GLubyte)(30 + (i * 13) % 200),
                    (GLubyte)(50 + (i * 29) % 200),
@@ -81,12 +110,16 @@ main(int argc, char **argv)
 {
     OSMesaContext ctx;
     int n = (argc > 1) ? atoi(argv[1]) : NTRI;
+    unsigned long vcap = (argc > 2) ? (unsigned long)atol(argv[2]) : 0UL;
+    unsigned long rcap = (argc > 3) ? (unsigned long)atol(argv[3]) : 0UL;
+    /* argv[4] = "churn" toggles blending per triangle */
     unsigned long d0, wt0, rs0, dr0, dc0, rp0, v0;
     unsigned long drawn, tried, resc, drop, decl, repl, magics;
     long i, differ = 0;
     int bad = 0;
 
     if (n <= 0 || n > NTRI) n = NTRI;
+    churn = (argc > 4 && strcmp(argv[4], "churn") == 0);
     app = (unsigned long *)malloc((unsigned)(W * H) * sizeof(unsigned long));
     ref = (unsigned long *)malloc((unsigned)(W * H) * sizeof(unsigned long));
     if (!app || !ref) { printf("no room\n"); return 2; }
@@ -105,6 +138,55 @@ main(int argc, char **argv)
     glShadeModel(GL_FLAT);
     glClearColor(0x10/255.0f, 0x20/255.0f, 0x30/255.0f, 1.0f);
 
+    if (vcap != 0UL || rcap != 0UL) {
+        /*
+         * The capacity mode: draw uncapped, draw capped, compare.  No
+         * injection -- see the header for why the two cannot be combined.
+         */
+        long d2 = 0L;
+
+        printf("a lowered WARP capacity must not change the picture"
+               " (%d triangles%s, cap %lu vertices %lu runs)\n\n",
+               n, churn ? ", blending toggled per triangle" : "",
+               vcap, rcap);
+        scene(n);
+        memcpy(ref, app, (unsigned)(W * H) * sizeof(unsigned long));
+        printf("  %-40s %lu vertices, %lu runs\n", "uncapped batch reached",
+               OSMGAMesaHookWarpVtxMax(), OSMGAMesaHookWarpRunMax());
+        wt0 = OSMGAMesaHookWarpTried();
+        OSMGAMesaHookWarpCap(vcap, rcap);   /* also resets the maxima */
+        scene(n);
+        for (i = 0; i < (long)W * H; i++)
+            if (app[i] != ref[i]) d2++;
+        printf("  %-40s %lu\n", "sources into a WARP submission",
+               OSMGAMesaHookWarpTried() - wt0);
+        printf("  %-40s %lu vertices, %lu runs\n", "capped batch reached",
+               OSMGAMesaHookWarpVtxMax(), OSMGAMesaHookWarpRunMax());
+        printf("  %-40s %ld of %ld\n", "pixels differing from uncapped",
+               d2, (long)W * H);
+        if (OSMGAMesaHookWarpTried() - wt0 != (unsigned long)n) {
+            printf("      NOT TESTED: the capped pass put %lu sources"
+                   " through the tier, wanted %d\n",
+                   OSMGAMesaHookWarpTried() - wt0, n);
+            bad++;
+        }
+        if (vcap != 0UL && OSMGAMesaHookWarpVtxMax() > vcap) {
+            printf("      the vertex cap did not bind: %lu > %lu\n",
+                   OSMGAMesaHookWarpVtxMax(), vcap);
+            bad++;
+        }
+        if (rcap != 0UL && OSMGAMesaHookWarpRunMax() > rcap) {
+            printf("      the run cap did not bind: %lu > %lu\n",
+                   OSMGAMesaHookWarpRunMax(), rcap);
+            bad++;
+        }
+        if (d2 != 0L) { printf("      the picture moved: %ld pixels\n", d2);
+                        bad++; }
+        printf("\n%s\n", bad ? "WARPFALLBACK FAIL" : "WARPFALLBACK PASS");
+        OSMesaDestroyContext(ctx);
+        free(app); free(ref);
+        return bad ? 1 : 0;
+    }
     printf("a refused WARP batch must not change the picture (%d triangles,"
            " overlapping, blended)\n\n", n);
 
@@ -160,6 +242,9 @@ main(int argc, char **argv)
     printf("  %-40s %lu\n", "triangles the engine drew", drawn);
     printf("  %-40s %ld of %ld\n", "pixels differing from all-software",
            differ, (long)W * H);
+    printf("  %-40s %lu vertices, %lu runs\n",
+           "largest batch reached", OSMGAMesaHookWarpVtxMax(),
+           OSMGAMesaHookWarpRunMax());
 
     if (tried != (unsigned long)n) {
         printf("      NOT TESTED: %lu sources reached a WARP submission,"

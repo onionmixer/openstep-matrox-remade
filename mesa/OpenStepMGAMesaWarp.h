@@ -107,9 +107,32 @@ int OSMGAMesaBuildWarpVertex(const OSMGAMesaVertex *v,
 typedef struct {
     OSMGAHW3DWarpBatch *b;
     int                 open;      /* a run is being appended to */
+    /*
+     * The capacities this batch will actually use.
+     *
+     * Reset puts the real ones here, and a caller may lower them
+     * afterwards -- never raise them, since Reset has already clamped.
+     * That is the whole of the mechanism: the full condition, the flush,
+     * the reset and the retry are the production ones, and only the
+     * threshold moved.
+     *
+     * It exists because the full path cannot otherwise run.  Mesa's
+     * immediate buffer flushes at VB_MAX = 216 + VB_START vertices, so a
+     * batch never exceeds seventy-two triangles and the largest measured
+     * is sixty-four -- against a capacity of two hundred and forty.
+     */
+    unsigned long       vtxCap;
+    unsigned long       runCap;
 } OSMGAMesaWarpBuilder;
 
 void OSMGAMesaWarpReset(OSMGAMesaWarpBuilder *w, OSMGAHW3DWarpBatch *b);
+/*
+ * Lower this batch's capacities, after Reset.  A value of nought, or one
+ * above the real capacity, leaves that dimension alone -- so this can only
+ * ever make a batch smaller, never let one overrun the buffer.
+ */
+void OSMGAMesaWarpCapacity(OSMGAMesaWarpBuilder *w,
+                           unsigned long vtx, unsigned long runs);
 
 /*
  * Append one triangle under (dwgctl, alphactrl).  Returns 0, or

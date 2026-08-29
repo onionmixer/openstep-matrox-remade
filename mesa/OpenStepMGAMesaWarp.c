@@ -156,8 +156,10 @@ OSMGAMesaWarpReset(OSMGAMesaWarpBuilder *w, OSMGAHW3DWarpBatch *b)
 {
     if (w == 0)
         return;
-    w->b    = b;
-    w->open = 0;
+    w->b      = b;
+    w->open   = 0;
+    w->vtxCap = OSMGA_HW3D_MAX_VTX;
+    w->runCap = OSMGA_HW3D_MAX_RUN;
     if (b == 0)
         return;
     b->magic    = OSMGA_HW3D_MAGIC;
@@ -165,6 +167,18 @@ OSMGAMesaWarpReset(OSMGAMesaWarpBuilder *w, OSMGAHW3DWarpBatch *b)
     b->triCount = 0UL;            /* the other payload is not in use */
     b->runCount = 0U;
     b->vtxCount = 0U;
+}
+
+void
+OSMGAMesaWarpCapacity(OSMGAMesaWarpBuilder *w,
+                      unsigned long vtx, unsigned long runs)
+{
+    if (w == 0)
+        return;
+    if (vtx != 0UL && vtx < w->vtxCap)
+        w->vtxCap = vtx;
+    if (runs != 0UL && runs < w->runCap)
+        w->runCap = runs;
 }
 
 int
@@ -184,7 +198,7 @@ OSMGAMesaWarpAdd(OSMGAMesaWarpBuilder *w,
     b = w->b;
 
     n = (unsigned long)b->vtxCount;
-    if (n + 3UL > OSMGA_HW3D_MAX_VTX)
+    if (n + 3UL > w->vtxCap)
         return OSMGA_MESA_WARP_FULL;
 
     /*
@@ -200,7 +214,7 @@ OSMGAMesaWarpAdd(OSMGAMesaWarpBuilder *w,
             needRun = 0;
     }
     if (needRun) {
-        if ((unsigned long)b->runCount >= OSMGA_HW3D_MAX_RUN)
+        if ((unsigned long)b->runCount >= w->runCap)
             return OSMGA_MESA_WARP_FULL;
         run = &b->run[(unsigned long)b->runCount];
         run->dwgctl    = (osmga_u32)dwgctl;
