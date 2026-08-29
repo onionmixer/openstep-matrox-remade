@@ -11111,6 +11111,22 @@ osmgaWarpFenceAndStop(vm_address_t base, const char *label)
         unsigned long *rlist = list + r *
                                (OSMGA_HW3D_WARP_STATE_BYTES / 4UL);
 
+        /*
+         * The same merge version 9 does, and for the same reason: the
+         * client supplies opcode, access type and z mode, and every other
+         * bit comes from here, so bits it never reasoned about are not
+         * bits it can set.  The list builder writes what it is given --
+         * the qualification bands always handed it a COMPLETE value
+         * (MGA_DWGCTL_SLOPED(MGA_DWGCTL_GOURAUD)), so nothing there ever
+         * needed the merge and its absence here was invisible.
+         *
+         * What it cost: DWG_FIXED carries bop, and bop nought is the
+         * boolean operation ZERO.  A batch with the client bits alone
+         * drew every pixel of correct coverage in black -- geometry,
+         * clipping and the vertex path all right, colour identically
+         * nought.  The first mesh through this tier came out 52225 black
+         * pixels where the trapezoid tier draws 52224 coloured ones.
+         */
         osmgaWarpTexFromState(&osmgaHW3DSnap.warp.state,
                               (((unsigned long)run->dwgctl & 0xFUL) ==
                                OSMGA_HW3D_OPCODE_TEX) ? 1 : 0, &tex);
@@ -11119,7 +11135,9 @@ osmgaWarpFenceAndStop(vm_address_t base, const char *label)
                                        osmgaWarpPipeHeld[OSMGA_D2C_PIPE],
                                        dstP, cx0, cx1 - 1UL,
                                        cy0 * dstP, (cy1 - 1UL) * dstP,
-                                       (unsigned long)run->dwgctl,
+                                       OSMGA_HW3D_DWG_FIXED |
+                                       ((unsigned long)run->dwgctl &
+                                        OSMGA_HW3D_DWG_CLIENT),
                                        (unsigned long)run->alphactrl,
                                        osmgaHW3DSnap.warp.state.dstorg,
                                        osmgaHW3DSnap.warp.state.zorg,

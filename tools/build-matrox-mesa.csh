@@ -134,11 +134,26 @@ cc -m486 -O -c $accel -I$mesa_src/src -I$mesa_src/include \
    -o $out/osmesa.o $port_src/src/OSmesa/osmesa.c
 if ($status != 0) exit 1
 
-foreach f (OpenStepMGAMesaHook OpenStepMGAMesaProbe OpenStepMGAMesaTriangle OpenStepMGAMesaBuffer OpenStepMGAMesaTexArena OpenStepMGAMesaTexture)
+foreach f (OpenStepMGAMesaHook OpenStepMGAMesaProbe OpenStepMGAMesaTriangle OpenStepMGAMesaBuffer OpenStepMGAMesaTexArena OpenStepMGAMesaTexture OpenStepMGAMesaWarp)
     cc -m486 -O -c $accel $testhooks -I$mesa_src/src -I$mesa_src/include -I$mga_src/hw3d \
        -o $out/$f.o $mga_src/mesa/$f.c
     if ($status != 0) exit 1
 end
+
+# The shared contract, compiled into the library rather than duplicated.
+#
+# The hook decides whether the WARP tier will take a triangle by calling the
+# KERNEL's own osmgaHW3DValidatePrimState and osmgaHW3DWarpAdmits.  That is
+# deliberate: a second, userland copy of the admission rule is a copy that
+# drifts, and the failure it produces is the worst kind -- batches built and
+# then refused, which is replay wearing the costume of an opt-in.
+#
+# It lives in hw3d/ and not in mesa/, so it is compiled here and not in the
+# loop above.  It is portable C with no kernel headers; the no-hardware suite
+# already compiles it with this same cc.
+cc -m486 -O -c $accel $testhooks -I$mesa_src/src -I$mesa_src/include -I$mga_src/hw3d \
+   -o $out/OpenStepMGAHW3D.o $mga_src/hw3d/OpenStepMGAHW3D.c
+if ($status != 0) exit 1
 
 # One object, not three.  This ar truncates member names at fifteen
 # characters, and all three of ours begin with the same fifteen -- archived
@@ -147,7 +162,8 @@ end
 ld -r -o $out/osmgaccel.o $out/OpenStepMGAMesaHook.o \
     $out/OpenStepMGAMesaProbe.o $out/OpenStepMGAMesaTriangle.o \
     $out/OpenStepMGAMesaBuffer.o \
-    $out/OpenStepMGAMesaTexArena.o $out/OpenStepMGAMesaTexture.o
+    $out/OpenStepMGAMesaTexArena.o $out/OpenStepMGAMesaTexture.o \
+    $out/OpenStepMGAMesaWarp.o $out/OpenStepMGAHW3D.o
 if ($status != 0) exit 1
 
 ar r $out/libGL_mga.a $out/osmesa.o $out/osmgaccel.o
@@ -156,7 +172,7 @@ if ($status != 0) exit 1
 
 # Every symbol the back end must supply has to be present, or the library
 # links and simply never accelerates.
-foreach sym (OpenStepMesaAccelUpdateState OpenStepMesaAccelBuffer OpenStepMesaAccelDepthBuffer OpenStepMesaAccelReleaseBuffer OSMGAMesaProbeRun OSMGAMesaBuildTriangle OSMGAMesaProbeSubmit OSMGAMesaHookInjectRefusal)
+foreach sym (OpenStepMesaAccelUpdateState OpenStepMesaAccelBuffer OpenStepMesaAccelDepthBuffer OpenStepMesaAccelReleaseBuffer OSMGAMesaProbeRun OSMGAMesaBuildTriangle OSMGAMesaProbeSubmit OSMGAMesaHookInjectRefusal OSMGAMesaBuildWarpVertex OSMGAMesaWarpAdd osmgaHW3DWarpAdmits)
     nm $out/osmgaccel.o | grep "T _$sym" > /dev/null
     if ($status != 0) then
         echo "build-matrox-mesa: $sym is missing from the back end"
