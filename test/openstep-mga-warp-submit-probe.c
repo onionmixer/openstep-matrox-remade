@@ -21,6 +21,9 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/mman.h>
+#include <mach/mach.h>
 #include "OpenStepMGAMesaProbe.h"
 #include "OpenStepMGAHW3D.h"
 
@@ -140,6 +143,80 @@ fillWarp(OSMGAHW3DWarpBatch *w, unsigned long dstorg, unsigned long pitch,
     }
 }
 
+/*
+ * DID IT DRAW?
+ *
+ * The verdict says the submission completed; it does not say a pixel
+ * moved.  So the destination is mapped, painted with a sentinel, drawn
+ * into, and counted against the shape the qualification harness has
+ * agreed with the trapezoid path twice: a right triangle with legs of 48
+ * at (8,8), 1176 pixels, and nothing outside it touched.
+ */
+#define SENTINEL   0x5A5A5AUL
+#define TRI_LO     8UL
+#define TRI_LEG    48UL
+
+static unsigned long *surface;
+static unsigned long surfaceStride;
+
+static int
+mapSurface(unsigned long vramoff, unsigned long stride)
+{
+    vm_address_t addr = 0;
+    unsigned long need = 64UL * stride * 4UL;
+
+    if (vm_allocate(task_self(), &addr, (vm_size_t)need, TRUE) !=
+        KERN_SUCCESS)
+        return 0;
+    if ((int)mmap((caddr_t)addr, (int)need, PROT_READ | PROT_WRITE,
+                  MAP_SHARED, OSMGAMesaProbeDeviceFd(), (long)vramoff)
+        == -1) {
+        (void)vm_deallocate(task_self(), addr, (vm_size_t)need);
+        return 0;
+    }
+    surface       = (unsigned long *)addr;
+    surfaceStride = stride;
+    return 1;
+}
+
+static void
+paint(unsigned long v)
+{
+    unsigned long row, col;
+
+    for (row = 0UL; row < 64UL; row++)
+        for (col = 0UL; col < 64UL; col++)
+            surface[row * surfaceStride + col] = v;
+}
+
+static void
+checkShape(void)
+{
+    unsigned long row, col, drawn = 0UL, wrong = 0UL, outside = 0UL;
+
+    for (row = 0UL; row < 64UL; row++)
+        for (col = 0UL; col < 64UL; col++) {
+            unsigned long v = surface[row * surfaceStride + col] & 0xFFFFFFUL;
+            int inside = (row >= TRI_LO && row < TRI_LO + TRI_LEG &&
+                          col >= TRI_LO && col < TRI_LO + TRI_LEG &&
+                          (row - TRI_LO) + (col - TRI_LO) <= TRI_LEG - 1UL);
+
+            if (inside) {
+                if (v == (0xFFFF8040UL & 0xFFFFFFUL)) drawn++;
+                else wrong++;
+            } else if (v != SENTINEL) {
+                outside++;
+            }
+        }
+    printf("  drawn %lu of %lu, wrong %lu, outside touched %lu\n",
+           drawn, TRI_LEG * (TRI_LEG + 1UL) / 2UL, wrong, outside);
+    if (drawn != TRI_LEG * (TRI_LEG + 1UL) / 2UL || wrong != 0UL ||
+        outside != 0UL) {
+        printf("  FAIL: the picture is not the 1176 pixel triangle\n");
+        failures++;
+    }
+}
+
 int
 main(void)
 {
@@ -210,10 +287,18 @@ main(void)
            (unsigned long)OSMGA_HW3D_E_DSTORG);
 
     printf("4. version 10 live\n");
+    if (!mapSurface(dstorg, pitch)) {
+        printf("  FAIL: could not map the destination for readback\n");
+        failures++;
+    } else {
+        paint(SENTINEL);
+    }
     fillWarp(w, dstorg, pitch, 64UL, 64UL);
     memset(&r, 0, sizeof r);
     rc = OSMGAMesaProbeSubmit(&r);
     expect("v10 live", rc, &r, (unsigned long)OSMGA_HW3D_OK);
+    if (surface != 0)
+        checkShape();
 
     printf("5. version 9 control, after\n");
     v9control("v9 empty batch", dstorg, pitch);
