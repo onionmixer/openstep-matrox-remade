@@ -206,7 +206,7 @@ main(int argc, char **argv)
     int s = (shape[0] >= 'A' && shape[0] <= 'F') ? (shape[0] - 'A') : 0;
     int t;
     long x, y;
-    unsigned long d0, s0, x0, h0, w0;
+    unsigned long d0, s0, x0, h0, w0, w1;
 
     app = (unsigned long *)malloc((unsigned)(W * H) * sizeof(unsigned long));
     if (!app) { printf("no room\n"); return 2; }
@@ -225,6 +225,7 @@ main(int argc, char **argv)
     glClearColor(0x10/255.0f, 0x20/255.0f, 0x30/255.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     d0 = OSMGAMesaHookDrawn(); s0 = OSMGAMesaHookSoftware();
+    w1 = OSMGAMesaHookWarp();
     x0 = OSMGAMesaHookDeclined();
     h0 = OSMGAMesaHookHardState(); w0 = OSMGAMesaHookSoftState();
 
@@ -345,9 +346,15 @@ main(int argc, char **argv)
         printf("# v%ld %.7f %.7f\n", x, vx[s][x], vy[s][x]);
     for (x = 0; x < ntri[s]; x++)
         printf("# t%ld %d %d %d\n", x, tidx[s][x][0], tidx[s][x][1], tidx[s][x][2]);
-    printf("# counters drawn=%lu software=%lu declined=%lu\n",
+    /*
+     * warp is a SUBSET of drawn.  Both accelerated tiers are "the engine
+     * drew it", so drawn alone cannot tell a WARP run from one that asked
+     * for WARP and quietly got trapezoids, and this file's whole subject
+     * -- who owns the pixels along a shared edge -- is a per-tier answer.
+     */
+    printf("# counters drawn=%lu software=%lu declined=%lu warp=%lu\n",
            OSMGAMesaHookDrawn() - d0, OSMGAMesaHookSoftware() - s0,
-           OSMGAMesaHookDeclined() - x0);
+           OSMGAMesaHookDeclined() - x0, OSMGAMesaHookWarp() - w1);
     printf("# mode %s\n",
            (OSMGAMesaBufferOrigin() == 0UL) ? "software"
            : ((OSMGAMesaHookSoftware() - s0 != 0UL) ? "MIXED" : "hardware"));

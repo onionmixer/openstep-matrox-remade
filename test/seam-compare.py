@@ -85,10 +85,44 @@ def main(d):
             for (x, y), c in pp.items():
                 want = float(F(x, 1) / 4 + F(y, 1) / 4 + 120)
                 worst = max(worst, abs(c[0] - want))
+            #
+            # Which path actually drew, asked of every run this shape's
+            # verdict rests on -- not just the "both" one.  This file had
+            # no purity gate at all: acceleration being ON is not evidence
+            # the engine drew anything, because a refused batch is
+            # deliberately redrawn in software, and a seam measured on a
+            # software redraw is a fact about Mesa wearing the engine's
+            # name.
+            #
+            # And with two accelerated tiers, "the engine drew it" is no
+            # longer the whole question.  warp is a SUBSET of drawn, so
+            # the three cases separate: all of it, none of it, and mixed.
+            # A mixed arm is refused rather than judged -- the masks it
+            # compares would come from two different rasterisers.
+            #
+            tier = ""
+            if who == 'hw':
+                runs = [load(base % (who, m))[0]
+                        for m in (['solo%d' % (t + 1) for t in range(n)] +
+                                  ['both', 'rev', 'plane'])]
+                if any(r.get('software', 0) or r.get('declined', 0) or
+                       r.get('drawn', 0) == 0 for r in runs):
+                    fail.append("shape %s: the accelerated arm was not pure"
+                                % sh)
+                    tier = " | NOT PURE"
+                elif all('warp' in r for r in runs):
+                    if all(r['warp'] == r['drawn'] for r in runs):
+                        tier = " | WARP"
+                    elif all(r['warp'] == 0 for r in runs):
+                        tier = " | trapezoid"
+                    else:
+                        tier = " | MIXED TIERS"
+                        fail.append("shape %s: the accelerated arm is not "
+                                    "one tier throughout" % sh)
             print("   %s: per-triangle %-22s | owned twice %d | union gap %d"
-                  " | order-dependent %d | plane worst %.2f"
+                  " | order-dependent %d | plane worst %.2f%s"
                   % (who, ("exact" if not bad else "; ".join(bad)[:22]),
-                     dbl, gap, order, worst))
+                     dbl, gap, order, worst, tier))
             if who == 'hw':
                 if bad:   fail.append("shape %s: %s" % (sh, "; ".join(bad)))
                 if dbl:   fail.append("shape %s: %d pixels drawn twice" % (sh, dbl))
