@@ -38,7 +38,8 @@ for f in "$BUNDLE/${NAME}_reloc" "$BUNDLE/$NAME" \
          "$BUNDLE/Default.table" "$BUNDLE/Display.modes" \
          "$BUNDLE/English.lproj/Localizable.strings" \
          "$SRC/pkg/Instance0.release.table" "$SRC/pkg/$NAME.info" \
-         "$SRC/pkg/$NAME.pre_install" "$SRC/LICENSE" "$SRC/NOTICE"; do
+         "$SRC/pkg/$NAME.pre_install" "$SRC/pkg/$NAME.post_install" \
+         "$SRC/LICENSE" "$SRC/NOTICE"; do
     if [ ! -r "$f" ]; then
         echo "build-driver-pkg: missing input: $f" >&2
         exit 1
@@ -126,6 +127,12 @@ if [ -n "$long" ]; then
     exit 1
 fi
 
-cp "$SRC/pkg/$NAME.pre_install" "$OUT/$NAME.pkg/$NAME.pre_install"
-chmod 555 "$OUT/$NAME.pkg/$NAME.pre_install"
+#
+# BOTH hooks.  Only pre_install was copied here, so a post_install could be
+# written and never ship -- which is exactly the shape of defect this
+# package has already had twice.
+#
+cp "$SRC/pkg/$NAME.pre_install"  "$OUT/$NAME.pkg/$NAME.pre_install"
+cp "$SRC/pkg/$NAME.post_install" "$OUT/$NAME.pkg/$NAME.post_install"
+chmod 555 "$OUT/$NAME.pkg/$NAME.pre_install" "$OUT/$NAME.pkg/$NAME.post_install"
 echo "build-driver-pkg: PASS $OUT/$NAME.pkg (payload by package/installer_tar)"

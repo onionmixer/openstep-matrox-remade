@@ -1,7 +1,17 @@
 #!/bin/csh -f
-# The driver is i386 machine code and a G450 is a PCI card, so this package
-# has nothing to offer any other architecture.  Refuse rather than install
-# something that cannot run.
+# Refuse the wrong architecture, and put the machine's configuration
+# somewhere the payload cannot reach.
+#
+# R5 settled the rule: THE INSTALLER INSTALLS THE BUNDLE, IT DOES NOT INSTALL
+# THE CONFIGURATION.  tools/install-matrox-driver.sh has obeyed it for a
+# while; this path did not, and an operator installing through Installer.app
+# lost Location, the display mode and every switch -- which for a display
+# driver means a card it can no longer find.  Same package, two ways in, one
+# of them destructive.
+#
+# The stash is NOT in /tmp.  /tmp is emptied at boot, and the boot that
+# empties it is the one that would expose the damage.  It goes beside the
+# bundle instead, in a directory the payload does not write.
 
 if ($#argv != 2) then
     echo "FAILED (unexpected Installer arguments)"
@@ -10,8 +20,51 @@ endif
 
 set cpu = `/usr/bin/arch`
 if ("$cpu" != "i386") then
-    echo "OpenStepMGAReplacementDisplay installs only on Intel i386/i486 computers."
+    echo "OSMGADisplay installs only on Intel i386/i486 computers."
     exit 1
 endif
 
+# "/" would otherwise give //private/..., which POSIX reserves for special
+# interpretation even where this system happens not to.
+set prefix = "$argv[2]"
+if ("$prefix" == "/") set prefix = ""
+
+set drv = "${prefix}/private/Drivers/i386"
+set cfg = "$drv/OSMGADisplay.config"
+set stash = "$drv/OSMGADisplay.instances"
+
+#
+# A stash that is already there is the record of an install that did not
+# finish, and it is not ours to throw away -- it may hold the only copy of
+# the configuration.  Leave it, and say so.
+#
+if (-d "$stash") then
+    echo "OSMGADisplay: an earlier install left $stash"
+    echo "OSMGADisplay: it is kept; the tables in it are restored after this install"
+    exit 0
+endif
+
+if (! -d "$cfg") exit 0
+
+#
+# csh dies on a glob that matches nothing, so the set is built with ls and
+# tested, never globbed into a command.
+#
+set tables = `ls "$cfg" | grep '^Instance.*\.table$'`
+if ("$tables" == "") exit 0
+
+mkdir "$stash"
+if ($status != 0) then
+    echo "OSMGADisplay: could not make $stash -- refusing to install over"
+    echo "OSMGADisplay: a configuration that cannot be put back"
+    exit 1
+endif
+foreach t ($tables)
+    cp "$cfg/$t" "$stash/$t"
+    if ($status != 0) then
+        echo "OSMGADisplay: could not preserve $t -- refusing to install"
+        exit 1
+    endif
+end
+echo "OSMGADisplay: preserved $#tables instance table(s)"
 exit 0

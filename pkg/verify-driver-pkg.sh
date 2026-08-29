@@ -62,6 +62,23 @@ done
 # this one did not, and nothing checked.  So the check is here, by key name,
 # rather than trusting that the file looks right.
 #
+echo "install hooks"
+for h in pre_install post_install; do
+    if [ -x "$PKG/$NAME.$h" ]; then
+        note "ok   $h is present and executable"
+    else
+        bad "$h missing or not executable -- Installer would run nothing"
+    fi
+done
+# The one thing post_install exists for.  A hook that ships but does not
+# mention the stash is a hook that was replaced by something that forgot.
+if grep 'OSMGADisplay.instances' "$PKG/$NAME.post_install" > /dev/null; then
+    note "ok   post_install restores the preserved instance tables"
+else
+    bad "post_install does not touch the stash -- the operator's"
+    bad "configuration would be lost on every install"
+fi
+
 echo "info keys"
 for k in Title Version Description DefaultLocation DiskName; do
     if grep "^$k " "$PKG/$NAME.info" > /dev/null; then

@@ -1,0 +1,79 @@
+#!/bin/csh -f
+# Put the machine's instance tables back over the ones the payload wrote.
+#
+# THE ORDER IS THE DESIGN.  Every table is copied in and compared BEFORE any
+# of the payload's are removed, because the state to avoid above all others
+# is a bundle with no instance table at all: that is not a boot candidate,
+# and the machine comes up with no display.  A mixture of old and shipped
+# tables is survivable; none is not.
+#
+# It does not fake success.  A restore that fails and reports 0 turns a
+# driver that may not load into an Installer that said it worked.
+#
+# This does not make an interrupted install safe -- Installer rewrites the
+# live bundle and nothing here can make that atomic.  What it does is keep
+# the configuration recoverable: on any failure the stash is left in place.
+
+if ($#argv != 2) then
+    echo "FAILED (unexpected Installer arguments)"
+    exit 1
+endif
+
+set prefix = "$argv[2]"
+if ("$prefix" == "/") set prefix = ""
+
+set drv = "${prefix}/private/Drivers/i386"
+set cfg = "$drv/OSMGADisplay.config"
+set stash = "$drv/OSMGADisplay.instances"
+
+if (! -d "$stash") exit 0        # first install: the shipped table stays
+
+if (! -d "$cfg") then
+    echo "OSMGADisplay: $cfg is missing after extraction; $stash is kept"
+    exit 1
+endif
+
+set kept = `ls "$stash" | grep '^Instance.*\.table$'`
+if ("$kept" == "") then
+    rmdir "$stash"
+    exit 0
+endif
+
+#
+# Copy each one in and prove it arrived, byte for byte.  Under root a
+# readability test proves nothing, so the test is the copy itself.
+#
+foreach t ($kept)
+    cp "$stash/$t" "$cfg/$t"
+    if ($status != 0) then
+        echo "OSMGADisplay: could not restore $t; $stash is kept"
+        exit 1
+    endif
+    chmod 444 "$cfg/$t"
+    cmp -s "$stash/$t" "$cfg/$t"
+    if ($status != 0) then
+        echo "OSMGADisplay: $t did not survive the copy; $stash is kept"
+        exit 1
+    endif
+end
+
+#
+# Only now: the payload's tables that the machine did not have.  The
+# machine's SET is what counts -- a machine with only Instance1.table must
+# not silently gain an Instance0 from the package.
+#
+set present = `ls "$cfg" | grep '^Instance.*\.table$'`
+foreach t ($present)
+    set keep = 0
+    foreach k ($kept)
+        if ("$t" == "$k") set keep = 1
+    end
+    if ($keep == 0) then
+        rm -f "$cfg/$t"
+        echo "OSMGADisplay: removed $t, which this machine did not have"
+    endif
+end
+
+rm -rf "$stash"
+echo "OSMGADisplay: restored $#kept instance table(s)"
+exit 0
