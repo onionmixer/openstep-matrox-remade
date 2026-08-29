@@ -900,6 +900,9 @@ osmgaMesaCountRefusal(void)
  * is not a narrowing.
  */
 
+/* Forward: the WARP append and flush call it, and it calls the WARP flush. */
+static void osmgaMesaFlushPending(void);
+
 /*
  * ---- M11: the WARP arm ----
  *
@@ -1042,6 +1045,190 @@ osmgaMesaFlushWarp(void)
         }
     }
     pendInFlush = 0;
+}
+
+
+/*
+ * Try to put one source triangle into the WARP batch.
+ *
+ * Returns 1 when the tier took it -- the caller then builds no trapezoid
+ * -- and 0 to fall through, having left the pending state untouched.
+ *
+ * THE THREE REFUSALS, and only the first two happen here:
+ *
+ *   pre-admission   the state is outside the tier, or a vertex will not
+ *                   convert.  Any WARP work already queued is flushed
+ *                   FIRST, so this one source draws after it and before
+ *                   whatever follows -- the ordering the whole refusal
+ *                   machinery exists to keep.
+ *   full            flush, reset, and try the same source again.
+ *   kernel refusal  not here; osmgaMesaFlushWarp deals with it.
+ */
+static int
+osmgaMesaWarpTriangle(GLcontext *ctx, struct vertex_buffer *VB,
+                      OSMGAMesaVertex *a, OSMGAMesaVertex *b,
+                      OSMGAMesaVertex *c, const OSMGAMesaVertex *prov,
+                      unsigned long zmode, unsigned long blend,
+                      int texOn, const OSMGAMesaTex *tex,
+                      unsigned long texOrg, unsigned long texW,
+                      unsigned long texH, unsigned long texPitch,
+                      unsigned long texFlags, double zoffset,
+                      GLuint v0, GLuint v1, GLuint v2, GLuint pv)
+{
+    OSMGAHW3DWarpBatch *wb;
+    OSMGAHW3DVertex wv[3];
+    OSMGAHW3DState probeState;
+    unsigned long dwgctl;
+    int r;
+    int batchable = (VB->ClipOrMask == 0) &&
+                    (ctx->Driver.MultipassFunc == 0);
+
+    if (!osmgaMesaWarpWanted())
+        return 0;
+
+    /*
+     * The run key, from the same function the trapezoid builder uses.
+     * The hook has to know it BEFORE it picks a tier, and deriving it a
+     * second time here would let the two drift about what a run is.
+     */
+    dwgctl = OSMGAMesaDwgctl(zmode, ctx->Depth.Mask == GL_TRUE, texOn);
+
+    /*
+     * Enough state for the tier's admission rules, which look only at the
+     * texture.  The real state is filled at flush time from the same
+     * values.
+     */
+    memset(&probeState, 0, sizeof probeState);
+    if (texOn) {
+        probeState.texW     = texW;
+        probeState.texH     = texH;
+        probeState.texPitch = texPitch;
+        probeState.texFlags = texFlags;
+    }
+    if (!osmgaMesaWarpTakes(&probeState, dwgctl, blend))
+        goto declineOne;
+
+    /*
+     * Flat shading: WARP has no separate provoking-vertex argument, so all
+     * three carry the provoking colour.  The COLOUR only -- position,
+     * depth and texture coordinates stay each vertex's own.
+     */
+    if (prov != 0) {
+        a->r = b->r = c->r = prov->r;
+        a->g = b->g = c->g = prov->g;
+        a->b = b->b = c->b = prov->b;
+        a->a = b->a = c->a = prov->a;
+    }
+
+    /*
+     * The polygon offset goes in HERE, and it is the CALLER'S zoffset --
+     * Mesa's own expression, computed in the callback -- and not
+     * ctx->PolygonZoffset, which is the context field the replay records
+     * save and restore.  Using that one would have offset by whatever the
+     * context happened to hold rather than by what this triangle asked
+     * for.
+     *
+     * A vertex built without it draws unoffset, and a shifted plane that
+     * leaves the depth range is refused rather than clamped.
+     */
+    if (OSMGAMesaBuildWarpVertex(a, texOn ? tex : 0, zoffset, &wv[0]) != 0 ||
+        OSMGAMesaBuildWarpVertex(b, texOn ? tex : 0, zoffset, &wv[1]) != 0 ||
+        OSMGAMesaBuildWarpVertex(c, texOn ? tex : 0, zoffset, &wv[2]) != 0)
+        goto declineOne;
+
+    /* A different shape is pending, or a different context, or the
+     * texture object moved: submit what is there before adding to it. */
+    if (!osmgaMesaPendEmpty() &&
+        (pendMode != OSMGA_MESA_PEND_WARP ||
+         pendCtx != ctx || pendVB != (void *)VB ||
+         (texOn && pendHasTex &&
+          (pendTexOrg != texOrg || pendTexW != texW ||
+           pendTexH != texH || pendTexPitch != texPitch ||
+           pendTexFlags != texFlags)))) {
+        hookFlushKey++;
+        osmgaMesaFlushPending();
+    }
+
+    wb = (OSMGAHW3DWarpBatch *)OSMGAMesaProbeBatch();
+    if (wb == 0)
+        return 0;                    /* no window; the caller will cope */
+
+    if (osmgaMesaPendEmpty()) {
+        OSMGAMesaWarpReset(&warpBuild, wb);
+        pendMode   = OSMGA_MESA_PEND_WARP;
+        pendCtx    = ctx;
+        pendVB     = (void *)VB;
+        pendHasTex = 0;
+        pendVerts  = 0UL;
+    }
+    if (texOn && !pendHasTex) {
+        pendHasTex   = 1;
+        pendTexOrg   = texOrg;
+        pendTexW     = texW;
+        pendTexH     = texH;
+        pendTexPitch = texPitch;
+        pendTexFlags = texFlags;
+        /* tmr is NOT part of this key: the gradients are per-triangle
+         * geometry that the microcode computes from the vertices, so they
+         * are not batch state at all for this tier. */
+    }
+
+    r = OSMGAMesaWarpAdd(&warpBuild, dwgctl, blend, &wv[0], &wv[1], &wv[2]);
+    if (r == OSMGA_MESA_WARP_FULL) {
+        hookFlushFull++;
+        osmgaMesaFlushPending();
+        wb = (OSMGAHW3DWarpBatch *)OSMGAMesaProbeBatch();
+        if (wb == 0)
+            return 0;
+        OSMGAMesaWarpReset(&warpBuild, wb);
+        pendMode   = OSMGA_MESA_PEND_WARP;
+        pendCtx    = ctx;
+        pendVB     = (void *)VB;
+        pendHasTex = 0;
+        pendVerts  = 0UL;
+        if (texOn) {
+            pendHasTex   = 1;
+            pendTexOrg   = texOrg;
+            pendTexW     = texW;
+            pendTexH     = texH;
+            pendTexPitch = texPitch;
+            pendTexFlags = texFlags;
+        }
+        r = OSMGAMesaWarpAdd(&warpBuild, dwgctl, blend,
+                             &wv[0], &wv[1], &wv[2]);
+    }
+    if (r != 0)
+        return 0;                    /* it will not fit even empty */
+
+    pendVerts += 3UL;
+    pendSrc[pendSrcCount].v0   = v0;
+    pendSrc[pendSrcCount].v1   = v1;
+    pendSrc[pendSrcCount].v2   = v2;
+    pendSrc[pendSrcCount].pv   = pv;
+    pendSrc[pendSrcCount].zoff = ctx->PolygonZoffset;
+    pendSrc[pendSrcCount].cptr = VB->ColorPtr;
+    pendSrc[pendSrcCount].iptr = VB->IndexPtr;
+    pendSrc[pendSrcCount].spec = VB->Specular;
+    pendSrc[pendSrcCount].firstTrap = pendVerts - 3UL;   /* vertices here */
+    pendSrcCount++;
+
+    /*
+     * The two gates that must not defer: a clipping VB uses temporary
+     * vertices a later clip may overwrite, and a multipass context repeats
+     * the loop before RenderFinish.  Both submit this source at once.
+     */
+    if (!batchable)
+        osmgaMesaFlushPending();
+    return 1;
+
+declineOne:
+    /*
+     * The tier will not have this one.  Submit what is queued so this
+     * source draws after it, then let the caller build a trapezoid.
+     */
+    if (!osmgaMesaPendEmpty() && pendMode == OSMGA_MESA_PEND_WARP)
+        osmgaMesaFlushPending();
+    return 0;
 }
 
 static void
@@ -1619,6 +1806,20 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     unsigned long zmode, blend;
     double zoffset;
     unsigned long texOrg = 0UL, texW = 0UL, texH = 0UL, texPitch = 0UL;
+    /*
+     * The texture flags MINUS the perspective bit.
+     *
+     * Everything else here is a property of the texture object and the
+     * environment, so it is known before either tier builds anything.  The
+     * perspective bit is not: it comes from tmr[0][8], which the TRAPEZOID
+     * builder produces, so it is added below for that tier only.
+     *
+     * The WARP tier does not want it anyway.  Its state list never sets
+     * NOPERSPECTIVE, and the flag exists to clear that bit -- so for WARP
+     * it would be a flush key that varied with a value the tier does not
+     * use, which is the same mistake tmr would have been.
+     */
+    unsigned long texFlagsBase = 0UL;
     OSMGAMesaTex tex;
     long tmr[4][9];
     int texOn, nwin;
@@ -1952,6 +2153,46 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
          * the two things a caller can ask for.
          */
         a.a = b.a = c.a = prov.a;
+    }
+
+    /*
+     * The WARP tier first, when it is switched on and will have this
+     * primitive.  A 1 means it took the source and no trapezoid is built;
+     * a 0 leaves the pending state as it found it, having flushed any WARP
+     * work first so that what follows draws in source order.
+     */
+    /*
+     * The texture flags that do not depend on the trapezoid builder,
+     * computed here because the WARP tier needs them for its own flush key
+     * and never sees tmr.
+     */
+    if (texOn) {
+        const struct gl_texture_object *to =
+            ctx->Texture.Unit[0].CurrentD[2];
+        const struct gl_texture_image *ti = to->Image[to->BaseLevel];
+
+        texFlagsBase =
+            ((to->MagFilter == GL_LINEAR) ? OSMGA_HW3D_TEXF_BILIN : 0UL)
+            | ((to->MinFilter == GL_LINEAR)
+                 ? OSMGA_HW3D_TEXF_BILINMIN : 0UL)
+            | ((ti != 0 && ti->Format == GL_RGBA)
+               ? OSMGA_HW3D_TEXF_TEXALPHA : 0UL)
+            | ((ctx->Texture.Unit[0].EnvMode == GL_MODULATE)
+               ? OSMGA_HW3D_TEXF_MODULATE : 0UL)
+            | ((to->WrapS == GL_REPEAT) ? OSMGA_HW3D_TEXF_REPEATU : 0UL)
+            | ((to->WrapT == GL_REPEAT) ? OSMGA_HW3D_TEXF_REPEATV : 0UL);
+    }
+
+    if (osmgaMesaWarpTriangle(ctx, VB, &a, &b, &c,
+                              (ctx->Light.ShadeModel == GL_FLAT)
+                                  ? &prov : (const OSMGAMesaVertex *)0,
+                              zmode, blend, texOn,
+                              texOn ? &tex : (const OSMGAMesaTex *)0,
+                              texOrg, texW, texH, texPitch, texFlagsBase,
+                              zoffset, v0, v1, v2, pv))
+        return;
+
+    if (ctx->Light.ShadeModel == GL_FLAT) {
         if (OSMGA_ARM(2)) return;                /* arm D */
         n = OSMGAMesaBuildTriangleTex(&a, &b, &c, &prov, zmode,
                                       ctx->Depth.Mask == GL_TRUE, blend,
@@ -2053,23 +2294,9 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
      * are half of the compatibility key.  The comments that used to sit on
      * each term still hold; see the flush function for where they land.
      */
-    if (texOn) {
-        const struct gl_texture_object *to =
-            ctx->Texture.Unit[0].CurrentD[2];
-        const struct gl_texture_image *ti = to->Image[to->BaseLevel];
-
-        texFlagsL =
-            ((to->MagFilter == GL_LINEAR) ? OSMGA_HW3D_TEXF_BILIN : 0UL)
-            | ((to->MinFilter == GL_LINEAR)
-                 ? OSMGA_HW3D_TEXF_BILINMIN : 0UL)
-            | ((ti != 0 && ti->Format == GL_RGBA)
-               ? OSMGA_HW3D_TEXF_TEXALPHA : 0UL)
-            | ((ctx->Texture.Unit[0].EnvMode == GL_MODULATE)
-               ? OSMGA_HW3D_TEXF_MODULATE : 0UL)
-            | ((to->WrapS == GL_REPEAT) ? OSMGA_HW3D_TEXF_REPEATU : 0UL)
-            | ((to->WrapT == GL_REPEAT) ? OSMGA_HW3D_TEXF_REPEATV : 0UL)
-            | ((tmr[0][8] != 0L) ? OSMGA_HW3D_TEXF_PERSP : 0UL);
-    }
+    if (texOn)
+        texFlagsL = texFlagsBase
+                    | ((tmr[0][8] != 0L) ? OSMGA_HW3D_TEXF_PERSP : 0UL);
 
     /*
      * May this triangle JOIN a batch?  Not when the VB clips -- clipped

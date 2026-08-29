@@ -569,6 +569,41 @@ osmgaPerspPlanes(const OSMGAMesaVertex *a, const OSMGAMesaVertex *b,
     return 1;
 }
 
+/*
+ * DWGCTL from the drawing state, in one place.
+ *
+ * It is a pure function of the depth mode, whether depth is written, and
+ * whether the primitive is textured -- and both tiers need it: the
+ * trapezoid carries it per primitive and the WARP path uses it as a run
+ * key, which the hook has to know BEFORE it decides which tier to build
+ * for.  Deriving it twice would let the two drift, and the tiers would
+ * then disagree about what a run is.
+ *
+ * With no depth at all it is I with zmode nought, which is the engine's
+ * "always": a comparison that cannot fail, against an origin the kernel
+ * does not even hand over.  That is why depthWrite has nothing to say
+ * there, and why asking for GL_ALWAYS is not the same as asking for no
+ * depth -- the one still reads the buffer, and the other never does.
+ */
+unsigned long
+OSMGAMesaDwgctl(unsigned long zmode, int depthWrite, int textured)
+{
+    unsigned long d;
+
+    d = (zmode != OSMGA_MESA_ZMODE_NONE)
+            ? ((depthWrite ? OSMGA_TRI_DWGCTL_Z : OSMGA_TRI_DWGCTL) |
+               (zmode & OSMGA_MESA_ZMODE_MASK))
+            : OSMGA_TRI_DWGCTL;
+    /*
+     * The textured opcode, when there is a texture.  Getting the
+     * coordinates right and leaving the opcode alone would have been
+     * arithmetic nobody ever used.
+     */
+    if (textured)
+        d = (d & ~0xFUL) | OSMGA_HW3D_OPCODE_TEX;
+    return d;
+}
+
 static void
 osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
                const OSMGAMesaEdge *le, const OSMGAMesaEdge *re,
@@ -609,17 +644,7 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
      * here, and why asking for GL_ALWAYS is not the same as asking for no
      * depth -- the one still reads the buffer, and the other never does.
      */
-    t->dwgctl   = depthOn
-                  ? ((depthWrite ? OSMGA_TRI_DWGCTL_Z : OSMGA_TRI_DWGCTL) |
-                     (zmode & OSMGA_MESA_ZMODE_MASK))
-                  : OSMGA_TRI_DWGCTL;
-    /*
-     * The textured opcode, when there is a texture.  Getting the coordinates
-     * right and leaving the opcode alone would have been arithmetic nobody
-     * ever used.
-     */
-    if (tmr != 0)
-        t->dwgctl = (t->dwgctl & ~0xFUL) | OSMGA_HW3D_OPCODE_TEX;
+    t->dwgctl = OSMGAMesaDwgctl(zmode, depthWrite, tmr != 0);
     t->alphactrl = blend;
     t->y = y;
     t->h = h;

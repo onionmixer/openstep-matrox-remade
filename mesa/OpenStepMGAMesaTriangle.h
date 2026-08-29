@@ -252,6 +252,14 @@ typedef struct {
  * It is ignored when zmode is NONE: with no depth there is nothing to
  * write, and the access type is I either way.
  */
+/*
+ * DWGCTL from the drawing state.  Both tiers need it -- the trapezoid
+ * carries it per primitive, and the WARP path uses it as a run key that
+ * the hook must know before it chooses a tier.
+ */
+unsigned long OSMGAMesaDwgctl(unsigned long zmode, int depthWrite,
+                              int textured);
+
 int OSMGAMesaBuildTriangle(const OSMGAMesaVertex *a,
                            const OSMGAMesaVertex *b,
                            const OSMGAMesaVertex *c,
