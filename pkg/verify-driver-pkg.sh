@@ -134,6 +134,29 @@ for sw in "Raster Test" "VRAM Mmap" "Mesa Acceleration"; do
     fi
 done
 
+#
+# The names in the shipped table have to match the bundle, or the installed
+# driver is never loaded.  This was missed by the rename: the release table
+# still said OpenStepMGAReplacementDisplay while Active Drivers and the
+# bundle said OSMGADisplay, and installing the package quietly put that
+# mismatch on the machine.  Class Names is the exception and must NOT
+# follow -- it names the class compiled into the relocatable.
+#
+for k in "Driver Name" "Server Name"; do
+    if grep "\"$k\" = \"$NAME\"" "$D/Instance0.table" > /dev/null; then
+        note "ok   $k is $NAME"
+    else
+        bad "$k in the shipped table is not $NAME -- the installed driver"
+        bad "would not be the one Active Drivers names"
+    fi
+done
+if grep '"Class Names" = "OpenStepMGAReplacementDisplay"' \
+        "$D/Instance0.table" > /dev/null; then
+    note "ok   Class Names still names the compiled class"
+else
+    bad "Class Names must name the class in the relocatable, not the bundle"
+fi
+
 echo "architecture"
 if file "$D/${NAME}_reloc" | grep 'Mach-O preloaded' > /dev/null; then
     note "ok   relocatable is a preloaded Mach-O"

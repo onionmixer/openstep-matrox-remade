@@ -282,3 +282,50 @@ info keys
 
 파일이 그럴듯해 보이는 것과 Installer 가 받아들이는 것은 다르고,
 그 차이를 사람 눈에 맡겼던 것이 이 결함이 오래 산 이유다.
+
+## 14. 설치가 성공했고, 그러면서 **두 번째 결함**이 드러났다
+
+패키지가 정상적으로 열렸고 운영자가 둘 다 설치했다.  가속 쪽은 온전하다:
+
+```
+/LocalDeveloper/Libraries/libGL_mga.a    2,103,924 바이트
+/LocalDeveloper/Headers/                 OpenStepMGAHW3D.h, MesaBuffer.h, MesaHook.h
+설치본으로 링크한 teapot                  표면이 엔진의 것, WARP 128 제출, 카드 100%
+```
+
+그러나 드라이버 설치가 **인스턴스 표를 출하본으로 덮었고**, 그 출하본이
+아직 **옛 이름**을 담고 있었다:
+
+```
+설치 직후    "Driver Name" = "OpenStepMGAReplacementDisplay";   <- 낡음
+             "Location"    = "";
+             "Display Mode" = 1024x768,  WARP 3D No, Mesa No, Mmap No
+Active Drivers = "... OSMGADisplay"
+```
+
+**그 상태로 재부팅했으면 디스플레이 드라이버가 뜨지 않았을 것이다** —
+활성 목록은 `OSMGADisplay` 를 부르는데 그 번들의 표는 자기가
+`OpenStepMGAReplacementDisplay` 라고 말한다.  화면이 멀쩡했던 것은 이미
+메모리에 올라온 드라이버 덕분이지 디스크 상태 덕분이 아니다.
+
+`pkg/Instance0.release.table` 이 내 개명에서 빠진 파일이었다.  고쳤고,
+살아 있는 표는 이관본으로 되살렸다(28 줄, 1600x1200, 가속·WARP·mmap Yes).
+
+### 검증기가 이제 이것을 잡는다
+
+```
+ok   Driver Name is OSMGADisplay
+ok   Server Name is OSMGADisplay
+ok   Class Names still names the compiled class
+```
+
+이름 셋을 **각각** 검사한다 — 둘은 번들을 따라야 하고 하나는 따라서는 안
+된다.  "출하 표인지" 만 보던 기존 검사는 이 어긋남을 통과시켰다.
+
+### 그리고 남는 문제 하나 (아직 안 고쳤다)
+
+**패키지 설치가 운영자의 설정을 지운다.**  디스플레이 드라이버에서 그것은
+`Location` 이 비워진다는 뜻이고, 곧 카드를 못 찾는다는 뜻이다.  이번에는
+두 번 다 손으로 되살렸다.  설치 스크립트에는 보존 규칙이 있지만
+**Installer 경로에는 없다** — `post_install` 이 기존 표를 병합하게 하는
+것이 답일 텐데, 그것은 이 변경에 섞지 않고 따로 다룬다.

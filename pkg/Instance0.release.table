@@ -47,9 +47,16 @@
 "Title" = "OpenStep MGA Replacement Display";
 "Family" = "Display";
 "Instance" = "0";
-"Driver Name" = "OpenStepMGAReplacementDisplay";
+/*
+ * The bundle is OSMGADisplay and the Objective-C class inside it is still
+ * OpenStepMGAReplacementDisplay.  Class Names has to name the CLASS
+ * compiled into the relocatable; the other two follow the bundle.  They
+ * are allowed to differ -- the SpaceSaver2Mouse bundle in this workspace
+ * declares Class Names = SS2TrackPoint.
+ */
+"Driver Name" = "OSMGADisplay";
 "Class Names" = "OpenStepMGAReplacementDisplay";
-"Server Name" = "OpenStepMGAReplacementDisplay";
+"Server Name" = "OSMGADisplay";
 "Bus Type" = "PCI";
 "Auto Detect IDs" = "0x0525102B";
 "Display Mode" = "Height: 768 Width: 1024 Refresh: 60Hz ColorSpace: RGB:888/32";
