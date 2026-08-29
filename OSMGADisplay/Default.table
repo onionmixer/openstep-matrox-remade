@@ -38,7 +38,13 @@
  */
 "Title" = "OpenStep MGA Replacement Display";
 "Family" = "Display";
-"Version" = "0.5";
+/*
+ * The DRIVER's version, and what Configure.app shows beside its name.
+ * It sat at a development 0.5 through 1.0 and 1.1, so the panel named a
+ * version this driver never shipped as.  Held equal to the package's by
+ * pkg/verify-driver-pkg.sh.
+ */
+"Version" = "1.1";
 "Location" = "";
 "Instance" = "0";
 "Driver Name" = "OSMGADisplay";

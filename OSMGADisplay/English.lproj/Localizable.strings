@@ -1,19 +1,25 @@
 /*
  * What Configure.app shows for this driver.
  *
- * THE VERSION GOES HERE AND NOT IN "Title".  Title lives in the INSTANCE
- * table, and the install hooks preserve instance tables byte for byte, so a
- * version put there would be right on a fresh install and stale for ever
- * afterwards on an upgraded machine -- correct exactly where nobody is
- * upgrading.  This file is a bundle resource and is replaced every install.
+ * IT IS "Long Name" THAT REACHES THE SCREEN.  The version was put in the
+ * key above first, on the reasoning that Configure looks a driver up by its
+ * Server Name; the operator then reported the panel reading
+ *   "OpenStep MGA G450 replacement display driver, wit"
+ * -- 49 characters of a 73-character "Long Name", cut mid-word.  So that is
+ * the string that shows, and it was too long to reach its own version.
  *
- * The number is checked against pkg/OSMGADisplay.info by
- * pkg/verify-driver-pkg.sh, because two places holding one version is how a
- * package comes to say 1.2 while the panel says 1.1.  That check was tried
- * against a deliberately wrong number and it does fail.
+ * KEEP IT SHORT.  49 characters got through once, but the field is AppKit
+ * text in a proportional font, so what fits is a WIDTH and not a count --
+ * a wider string would be cut sooner.  32 characters leaves room to be
+ * wrong about that.  pkg/verify-driver-pkg.sh holds both strings to a
+ * budget so this cannot come back.
  *
- * Both strings said "staging" and "R4 fail-closed staging skeleton" until
- * 2026-08-29, three stages after that stopped being true.
+ * AND THE VERSION IS NOT IN HERE.  It was, briefly, and the operator then
+ * saw the panel show "v1.1" and "v0.5" side by side -- because Configure
+ * ALREADY has a version field, fed by "Version" in Default.table, and that
+ * had sat at a development 0.5 since before 1.0.  Two numbers on one panel
+ * is worse than the truncation it was meant to fix.  The version lives in
+ * the field built for it; this string is a name.
  */
-"OSMGADisplay" = "OpenStep MGA G450 Display (v1.1)";
-"Long Name" = "OpenStep MGA G450 replacement display driver, with Mesa 3.4.2 hardware 3D";
+"OSMGADisplay" = "OpenStep MGA G450 Display";
+"Long Name" = "OpenStep MGA G450 Display";

@@ -111,16 +111,37 @@ done
 # it prevents is a package that installs 1.2 while Configure says 1.1, which
 # nobody notices because both look right on their own.
 #
-echo "the version the panel shows"
+echo "the version Configure shows"
 v=`grep '^Version ' "$PKG/$NAME.info" | sed 's/^Version //'`
 if [ -z "$v" ]; then
     bad "no Version in $NAME.info to check the panel against"
-elif grep "(v$v)" "$D/English.lproj/Localizable.strings" > /dev/null; then
-    note "ok   Localizable.strings says (v$v), matching the package"
+elif grep "^\"Version\" = \"$v\";" "$D/Default.table" > /dev/null; then
+    note "ok   Default.table says $v, matching the package"
 else
-    bad "the panel string does not say (v$v) -- Configure would name a"
-    bad "different version from the one this package installs"
+    bad "Default.table's Version is not $v -- Configure shows that field"
+    bad "beside the driver's name, so the panel would name a version this"
+    bad "package is not"
 fi
+
+#
+# And it has to FIT.  Configure showed 49 characters of a 73-character
+# "Long Name" once, cut mid-word and taking the version with it -- a defect
+# only an eye can see, so without this it comes back.  The field is
+# proportional text and the real limit is a width, so the budget is well
+# under what got through: 40 characters, against the 32 the strings use.
+#
+awk -F'"' '/^"/ { if (length($4) > 40)
+        printf "TOOLONG %d %s\n", length($4), $2 }' \
+    "$D/English.lproj/Localizable.strings" > /tmp/_panellong
+if [ -s /tmp/_panellong ]; then
+    while read _ n k; do
+        bad "the panel string for $k is $n characters -- Configure truncates"
+        bad "and the version is what falls off the end"
+    done < /tmp/_panellong
+else
+    note "ok   every panel string is inside the 40-character budget"
+fi
+rm -f /tmp/_panellong
 
 echo "the mode list"
 if cmp -s "$SRC/OSMGADisplay/Display.modes" "$D/Display.modes"; then
