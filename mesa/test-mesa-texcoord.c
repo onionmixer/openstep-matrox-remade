@@ -313,7 +313,8 @@ main(void)
             static const double lo[] = { 0.0, 0.0, 0.0, 0.0, -0.9 };
             static const double hi[] = { 1.0, 2.0, 4.0, 7.9,  7.9 };
             double oka, gapa;
-            long okn, gapn, site1, site2, s31, s32, s33, site4, v13, vother, vex;
+            long okn, gapn, site1, site2, s31, s32, s33, site4, site5,
+                 v13, vother, vex;
             int band;
 
             for (band = 0; band < 5; band++) {
@@ -321,7 +322,7 @@ main(void)
                 seed = 20260830UL;
                 found = 0; built = 0;
                 oka = gapa = 0.0; okn = gapn = 0;
-                site1 = site2 = s31 = s32 = s33 = site4 = 0;
+                site1 = site2 = s31 = s32 = s33 = site4 = site5 = 0;
                 v13 = vother = vex = 0;
                 for (round = 0; round < 20000L; round++) {
                     for (k = 0; k < 3; k++) {
@@ -359,6 +360,7 @@ main(void)
                             else if (g_site == 32) s32++;
                             else if (g_site == 33) s33++;
                             else if (g_site == 4) site4++;
+                            else if (g_site == 5) site5++;
                             /*
                              * Not every refusal is a texture coordinate.
                              * Counting the verdicts apart keeps the site
@@ -378,8 +380,10 @@ main(void)
                        okn ? oka / (double)okn : 0.0,
                        gapn ? gapa / (double)gapn : 0.0);
                 printf("===   anchor %ld qbud %ld  slope-x %ld slope-dy %ld"
-                       " slope-vy %ld  rowends %ld  v13 %ld other %ld\n",
-                       site1, site2, s31, s32, s33, site4, v13, vother);
+                       " slope-vy %ld  rowends %ld emptyrow %ld"
+                       "  v13 %ld other %ld\n",
+                       site1, site2, s31, s32, s33, site4, site5,
+                       v13, vother);
                 (void)vex;
             }
         }

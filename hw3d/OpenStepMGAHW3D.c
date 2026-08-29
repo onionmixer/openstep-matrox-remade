@@ -1161,8 +1161,47 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                         if (row > 0L)
                             (void)osmgaHW3DStep(t, &lx, &rx, &lacc, &racc,
                                                 lsgn, rsgn, lim->clipX1);
-                        if (lx >= rx)
-                            continue;           /* no pixel on this row */
+                        if (lx >= rx) {
+                            /*
+                             * A row with nothing on it.  lx > rx was already
+                             * E_TRICROSS, so this is lx == rx exactly.
+                             *
+                             * No pixel is fetched here, and every check below
+                             * is about a fetched address, which is why this
+                             * row has always been skipped.  But the engine
+                             * does not skip it: the coordinate is carried
+                             * down the trapezoid by accumulation, and this
+                             * row's position is a value that accumulation
+                             * passes through on its way to the rows that do
+                             * draw.  Whether it saturates or wraps there is
+                             * not in the specification.
+                             *
+                             * So check where it sits.  Holding the empty
+                             * rows to the same range as the drawn ones makes
+                             * the whole trajectory bounded rather than just
+                             * its sampled points, and then the question does
+                             * not have to be answered.  The box already
+                             * includes these rows for exactly this reason --
+                             * the comment where it is built says so.
+                             *
+                             * Left edge only: an empty row has no other end.
+                             * The reach is deliberately NOT fed from here,
+                             * so the band the encoder picks is the same one
+                             * it picks today.
+                             */
+#ifdef OSMGA_HW3D_TEX_CHECK_EMPTY_ROWS
+                            ux  = t->tu0 + b->state.tmr[0] * (lx - lx0)
+                                  + b->state.tmr[1] * row;
+                            vx2 = t->tv0 + b->state.tmr[2] * (lx - lx0)
+                                  + b->state.tmr[3] * row;
+                            qa = osmgaHW3DQAt(b, t, persp, lx - lx0, row);
+                            if (!osmgaHW3DRatioOK(ux,  qa, roomHi) ||
+                                !osmgaHW3DRatioOK(vx2, qa, roomHi))
+                                { texBad = 1; texBadTri = i;
+                                  OSMGA_HW3D_TEXCOORD_SITE(5); }
+#endif
+                            continue;
+                        }
                         ux  = t->tu0 + b->state.tmr[0] * (lx - lx0)
                               + b->state.tmr[1] * row;
                         vx2 = t->tv0 + b->state.tmr[2] * (lx - lx0)
