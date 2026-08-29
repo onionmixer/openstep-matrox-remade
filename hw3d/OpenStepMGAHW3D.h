@@ -586,17 +586,39 @@ unsigned long osmgaHW3DWarpTexDim(unsigned long dim, unsigned long log2dim);
 /*
  * How far a SLOPE may carry a coordinate across a trapezoid's own bounding
  * box.  This is not the coordinate policy above -- a box corner is not a
- * pixel, and what the pixels are allowed is judged separately and exactly,
- * at the four corners and then at each drawn row's two ends.
+ * pixel, and what the pixels are allowed is judged separately and exactly:
+ * at the four corners, at each drawn row's two ends, and at each empty
+ * row's position.
  *
- * The default is the policy limit, which is what this bound has always
- * been, so nothing changes until somebody overrides it deliberately.  It
- * is named apart so that the question "what would a wider budget refuse?"
- * can be measured instead of argued.
+ * It was the policy limit, and that refused a great deal it had no cause
+ * to.  A slope is a coordinate span over a screen extent, so the barycentric
+ * solve dividing by a small area gives a sliver a steep one however small
+ * its coordinates are; the box then swings past the policy at corners no
+ * pixel occupies.  Measured over 19972 random built triangles, the policy
+ * as a slope bound refused 6054 of them and the exact checks that follow
+ * objected to two.
+ *
+ * Sixty-four repeats.  That takes the refusals to 548, keeps the slack on
+ * the extrapolation to a box corner rather than on any coordinate a texel
+ * is fetched at, and stays eight times nearer the magnification that was
+ * actually measured on the card than a budget large enough to matter for
+ * overflow would.
  */
 #ifndef OSMGA_HW3D_TEX_SLOPE_ROOM
-#define OSMGA_HW3D_TEX_SLOPE_ROOM OSMGA_HW3D_TEX_COORD_MAX
+#define OSMGA_HW3D_TEX_SLOPE_ROOM (64UL * OSMGA_HW3D_TEX_SPAN)
 #endif
+
+/*
+ * The row walk forms tu0 + slope*dx + slope*dy and then adds one more
+ * slope*dx to reach the row's far end.  The anchor is held to
+ * TEX_COORD_MAX before any of it, so the largest value it can build is
+ * TEX_COORD_MAX + 3 * SLOPE_ROOM, and a long here is four bytes.  Checked
+ * rather than asserted in a comment, because the budget is the thing most
+ * likely to be raised by somebody who has not re-done this arithmetic.
+ */
+typedef int OSMGAHW3DSlopeRoomCheck[
+    (OSMGA_HW3D_TEX_SLOPE_ROOM
+       <= ((2147483647UL - OSMGA_HW3D_TEX_COORD_MAX) / 3UL)) ? 1 : -1];
 
 /*
  * Here rather than beside the allowance itself, because the allowance is

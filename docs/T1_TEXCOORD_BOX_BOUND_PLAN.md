@@ -316,3 +316,62 @@ C1 이 요구한 반사실이며, 결과는 완화를 지지한다. 판정 13 �
 ### 회귀
 
 `test-hw3d-validate`, `test-hw3d-reach` 모두 빈 행 검사를 켠 채로 0 실패.
+
+## 13. 반영된 것 (스위치 뒤에서 기본값으로)
+
+### 13.1 `LONG_MIN` 구멍 (§11-2) — 닫음
+
+`tmr[4]/tmr[5]` 의 크기를 `-x` 로 취하던 것을, 크기를 만들지 않고 **양방향으로
+직접** 비교하도록 바꿨다. 한계는 양수 예산의 몫이므로 그것을 음수화하는 것은
+안전하다. 타깃 컴파일러에서 실증:
+
+```
+sizeof(long) = 4, LONG_MIN = -2147483648
+old: a4 = -2147483648, limit = 532676608, refused = NO
+new: refused = yes
+```
+
+옛 형태는 부정이 무효가 되어 값이 음수로 남고, `a4 > limit` 가 거짓이 되어
+**표현 가능한 가장 급한 분모 기울기가 통과**했다. 검사가 존재하는 이유인 바로
+그 값 하나를 admit 하고 있었다. 클라이언트가 주는 값이다.
+
+### 13.2 기본값 전환
+
+- `OSMGA_HW3D_TEX_SLOPE_ROOM` = `64 * TEX_SPAN` (2^26, 64 반복)
+- 빈 행 검사 = **켬** (탈출구는 `OSMGA_HW3D_TEX_SKIP_EMPTY_ROWS`)
+
+오버플로 논거는 주석이 아니라 **빌드가 검사**한다:
+
+```c
+typedef int OSMGAHW3DSlopeRoomCheck[
+    (OSMGA_HW3D_TEX_SLOPE_ROOM
+       <= ((2147483647UL - OSMGA_HW3D_TEX_COORD_MAX) / 3UL)) ? 1 : -1];
+```
+
+음성 시험 — `-DOSMGA_HW3D_TEX_SLOPE_ROOM=1073741824UL` (2^30, python 이 넘친다고
+한 값):
+
+```
+OpenStepMGAHW3D.h:621: size of array `OSMGAHW3DSlopeRoomCheck' is negative
+```
+
+### 13.3 기본값 그대로의 하네스 결과
+
+| 좌표 범위 | 빌드됨 | 판정13 | (전) |
+|---|---|---|---|
+| [0, 1] | 19972 | **47** | 455 |
+| [0, 2] | 19972 | 98 | 1027 |
+| [0, 4] | 19972 | 210 | 2254 |
+| [0, 7.9] | 19972 | 475 | 5194 |
+| [-0.9, 7.9] | 19972 | **548** | 6054 |
+
+스윕이 예측한 2^26 + 빈행켬 값과 정확히 일치한다.
+
+`test-hw3d-validate`, `test-hw3d-reach` 0 실패. 판정 13 을 기대하는 정책 사례
+둘("short enough that a corner leaves the allowance", "starting at the top and
+still rising")도 여전히 거절된다.
+
+### 13.4 다음
+
+실기: 드라이버 재빌드·설치·재부팅 후 GLQuake 640x480 30초. 기록할 것은
+revoked 수, site 별 거절 감소, 실제 software fallback 수, 화면 정확성 (C10).

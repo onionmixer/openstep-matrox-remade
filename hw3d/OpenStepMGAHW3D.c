@@ -1031,12 +1031,24 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                      */
                     long budget = ((1L << 30) - OSMGA_HW3D_Q_MAX) / 2L;
                     long dxlo = (long)bx0 - lx0, dxhi = (long)bx1 - lx0;
-                    long mdx, mrow;
-                    long a4 = (b->state.tmr[4] < 0L)
-                              ? -b->state.tmr[4] : b->state.tmr[4];
-                    long a5 = (b->state.tmr[5] < 0L)
-                              ? -b->state.tmr[5] : b->state.tmr[5];
+                    long mdx, mrow, lim4, lim5;
 
+                    /*
+                     * These used to take the magnitude of tmr[4] and tmr[5]
+                     * as -x and then compare it upward.  The client supplies
+                     * those two words, and negating LONG_MIN is undefined --
+                     * in practice it stays LONG_MIN, which is negative, so
+                     * the comparison went the wrong way and the STEEPEST
+                     * denominator slope representable passed as though it
+                     * were the smallest.  The one value the check exists to
+                     * refuse was the one value it admitted.
+                     *
+                     * So the bound is applied to the slope itself, in both
+                     * directions, and no magnitude is formed.  The limits
+                     * are quotients of a positive budget, so negating THEM
+                     * is safe.  dxlo and dxhi below are column differences
+                     * inside the clip rectangle and cannot reach LONG_MIN.
+                     */
                     if (dxlo < 0L) dxlo = -dxlo;
                     if (dxhi < 0L) dxhi = -dxhi;
                     mdx = (dxlo > dxhi) ? dxlo : dxhi;
@@ -1055,10 +1067,14 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                      * large -- the check would have been made and then the
                      * overflow taken anyway.
                      */
+                    lim4 = budget / mdx;
+                    lim5 = budget / mrow;
                     if (t->tq0 < OSMGA_HW3D_Q_MIN ||
                         t->tq0 > OSMGA_HW3D_Q_MAX ||
-                        a4 > budget / mdx ||
-                        a5 > budget / mrow) {
+                        b->state.tmr[4] >  lim4 ||
+                        b->state.tmr[4] < -lim4 ||
+                        b->state.tmr[5] >  lim5 ||
+                        b->state.tmr[5] < -lim5) {
                         if (badTri != 0)
                             *badTri = i;
                         OSMGA_HW3D_TEXCOORD_SITE(2);
@@ -1189,7 +1205,7 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                              * so the band the encoder picks is the same one
                              * it picks today.
                              */
-#ifdef OSMGA_HW3D_TEX_CHECK_EMPTY_ROWS
+#ifndef OSMGA_HW3D_TEX_SKIP_EMPTY_ROWS
                             ux  = t->tu0 + b->state.tmr[0] * (lx - lx0)
                                   + b->state.tmr[1] * row;
                             vx2 = t->tv0 + b->state.tmr[2] * (lx - lx0)
