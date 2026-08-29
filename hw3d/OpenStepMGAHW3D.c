@@ -1214,8 +1214,26 @@ osmgaHW3DValidateReachSite(const OSMGAHW3DBatch *b,
                              * The reach is deliberately NOT fed from here,
                              * so the band the encoder picks is the same one
                              * it picks today.
+                             *
+                             * OFF by default, and the reason is a
+                             * measurement.  It went in to close the one
+                             * question that could not be settled off the
+                             * card, and on the card it became the largest
+                             * single cause of refusal in the application it
+                             * was meant to help: 492 of GLQuake's 766
+                             * texture refusals, where the exact drawn-row
+                             * check beside it accounted for 212.
+                             *
+                             * It is only NEEDED while the slope budget is
+                             * wider than the coordinate policy, because the
+                             * box bound holds these rows implicitly at the
+                             * policy width and stops doing so above it.  The
+                             * budget is back at the policy, so the two go
+                             * back together -- neither is on, and no new
+                             * question about the engine's accumulator is
+                             * opened.
                              */
-#ifndef OSMGA_HW3D_TEX_SKIP_EMPTY_ROWS
+#ifdef OSMGA_HW3D_TEX_CHECK_EMPTY_ROWS
                             ux  = t->tu0 + b->state.tmr[0] * (lx - lx0)
                                   + b->state.tmr[1] * row;
                             vx2 = t->tv0 + b->state.tmr[2] * (lx - lx0)

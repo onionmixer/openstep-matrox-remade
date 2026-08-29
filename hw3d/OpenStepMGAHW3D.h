@@ -590,22 +590,21 @@ unsigned long osmgaHW3DWarpTexDim(unsigned long dim, unsigned long log2dim);
  * at the four corners, at each drawn row's two ends, and at each empty
  * row's position.
  *
- * It was the policy limit, and that refused a great deal it had no cause
- * to.  A slope is a coordinate span over a screen extent, so the barycentric
- * solve dividing by a small area gives a sliver a steep one however small
- * its coordinates are; the box then swings past the policy at corners no
- * pixel occupies.  Measured over 19972 random built triangles, the policy
- * as a slope bound refused 6054 of them and the exact checks that follow
- * objected to two.
+ * It was widened to sixty-four repeats once, on a measurement over 19972
+ * random built triangles where the policy used as a slope bound refused
+ * 6054 of them and the exact checks that follow objected to two.  The
+ * application it was widened FOR then refused just as often, and a counter
+ * per check said why: this bound had stopped nothing at all.  Zero of
+ * GLQuake's 766 texture refusals were any of its three clauses.
  *
- * Sixty-four repeats.  That takes the refusals to 548, keeps the slack on
- * the extrapolation to a box corner rather than on any coordinate a texel
- * is fetched at, and stays eight times nearer the magnification that was
- * actually measured on the card than a budget large enough to matter for
- * overflow would.
+ * So it is the policy limit again.  A random population drawn out of a box
+ * is not what a Quake level submits, and a change justified only by that
+ * population has no justification left once the real one is counted.  The
+ * override survives because the sweep behind it is worth being able to
+ * repeat, not because the wider value is wanted.
  */
 #ifndef OSMGA_HW3D_TEX_SLOPE_ROOM
-#define OSMGA_HW3D_TEX_SLOPE_ROOM (64UL * OSMGA_HW3D_TEX_SPAN)
+#define OSMGA_HW3D_TEX_SLOPE_ROOM OSMGA_HW3D_TEX_COORD_MAX
 #endif
 
 /*
