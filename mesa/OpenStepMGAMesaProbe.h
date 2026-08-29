@@ -15,7 +15,11 @@
 #ifndef OPENSTEP_MGA_MESA_PROBE_H
 #define OPENSTEP_MGA_MESA_PROBE_H
 
-#include "../hw3d/OpenStepMGAHW3D.h"
+/* By bare name, as OpenStepMGAMesaHook.h does.  A relative path works only
+ * in this tree: once the header is installed beside its siblings in a
+ * prefix's Headers there is no ../hw3d, and a shipped demo that includes
+ * this fails to compile.  In-tree builds pass -I../hw3d already. */
+#include "OpenStepMGAHW3D.h"
 
 typedef enum {
     OSMGA_PROBE_HARDWARE = 0,   /* accelerate */

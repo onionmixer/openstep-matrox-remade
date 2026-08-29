@@ -43,6 +43,8 @@ MESASRC="$MESA/upstream/Mesa-3.4.2"
 PREFIX=/tmp/_mgateapot/prefix
 T="$OUT/Examples/Mesa342/Teapot"
 W="$OUT/Examples/Mesa342/GLWindow"
+S="$OUT/Examples/Mesa342/SDLTeapot"
+SDLB=/tmp/SDL20/build/SDL-2.32.10-openstep
 
 if [ "`/usr/bin/arch`" != i386 ]; then
     echo "build-demos-overlay: the binaries are i386; build them on i386" >&2
@@ -66,7 +68,7 @@ done
 # find out that a header is missing from a package before a user does -- that
 # is how OpenStepMGAHW3D.h turned out to be required.
 rm -rf "$PREFIX" "$OUT"
-/bin/mkdirs "$PREFIX/Libraries" "$PREFIX/Headers/GL" "$T" "$W"
+/bin/mkdirs "$PREFIX/Libraries" "$PREFIX/Headers/GL" "$T" "$W" "$S"
 # The stock archive: from the Mesa tree when it has been built there, and
 # otherwise from this project's kept copy -- which is the same lookup
 # tools/build-matrox-mesa.csh makes, and which exists because the Mesa tree
@@ -82,6 +84,7 @@ cp "$SRC/build/mesa/libGL_mga.a" "$PREFIX/Libraries/"
 cp "$MESASRC/include/GL/gl.h" "$MESASRC/include/GL/glext.h" \
    "$MESASRC/include/GL/osmesa.h" "$PREFIX/Headers/GL/"
 cp "$SRC/mesa/OpenStepMGAMesaHook.h" "$SRC/mesa/OpenStepMGAMesaBuffer.h" \
+   "$SRC/mesa/OpenStepMGAMesaProbe.h" \
    "$SRC/hw3d/OpenStepMGAHW3D.h" "$PREFIX/Headers/"
 ranlib "$PREFIX/Libraries/libGL.a" "$PREFIX/Libraries/libGL_mga.a"
 
@@ -173,5 +176,73 @@ else
 fi
 
 rm -f "$W/teapot-geometry.h"
+
+#
+# And the SDL2 teapot -- SOURCE ONLY, unlike the two pairs above.
+#
+# It is the one demo here that needs a second product: SDL2, at the same
+# prefix, openstep.2 or later.  Shipping a prebuilt binary would put a
+# statically linked copy of one SDL2 release inside a Matrox package and tie
+# the two together at the version, which is exactly the coupling the overlay
+# comment above refuses for Mesa.  So the user builds it, and the script
+# beside it says plainly what it needs.
+#
+cp "$SRC/test/openstep-mga-sdl-teapot.c" "$SRC/examples/build-sdl-teapot.csh" \
+   "$SRC/examples/README_sdlteapot.md" "$S/"
+cp "$SRC/NOTICE" "$S/NOTICE"
+cp "$MESASRC/docs/COPYRIGHT" "$S/COPYRIGHT"
+cmp "$MESASRC/docs/COPYRIGHT" "$S/COPYRIGHT"
+chmod 555 "$S/build-sdl-teapot.csh"
+
+#
+# BUILT HERE IF SDL2 IS ON THIS MACHINE, and only as a check.
+#
+# The two pairs above are built by the very scripts that ship beside them, so
+# a script that has drifted from its source fails the packaging rather than
+# reaching a user.  This one gets the same protection when it can: if the
+# SDL2 project has been built on this machine, its archive and headers are
+# borrowed into the temporary prefix, the shipped script is run, and the
+# binaries are then DELETED -- they are a test result, not a payload.
+#
+# When SDL2 is not there the check is skipped LOUDLY.  A silent skip would
+# mean a broken build script could ship, which is the failure this whole
+# section exists to prevent.
+#
+if [ -r "$SDLB/libSDL2.a" ] && [ -r "$SDLB/include/SDL.h" ]; then
+    /bin/mkdirs "$PREFIX/Headers/SDL2"
+    cp "$SDLB/libSDL2.a" "$PREFIX/Libraries/"
+    # UNQUOTED on purpose.  This sh does not expand a glob in a word whose
+    # other part was quoted -- `cp "$SDLB"/include/*.h` passes the asterisk
+    # through literally and cp reports the pattern as a missing file.  The
+    # path is a fixed one under /tmp with no spaces in it.
+    cp $SDLB/include/*.h "$PREFIX/Headers/SDL2/"
+    cp "$SRC/../openstep-sdl20/port/openstep/src/video/openstep/SDL_openstepglpresent.h" \
+       "$PREFIX/Headers/SDL2/"
+    ranlib "$PREFIX/Libraries/libSDL2.a"
+    ( cd "$S" && csh -f build-sdl-teapot.csh "$PREFIX" "$MESASRC" )
+    for b in sdlteapot_sw sdlteapot_hybrid; do
+        if [ ! -x "$S/$b" ]; then
+            echo "build-demos-overlay: $b was not built" >&2
+            exit 1
+        fi
+    done
+    if nm "$S/sdlteapot_sw" | grep OSMGAMesaHook > /dev/null; then
+        echo "build-demos-overlay: sdlteapot_sw carries Matrox symbols" >&2
+        exit 1
+    fi
+    if nm "$S/sdlteapot_hybrid" | grep OSMGAMesaHook > /dev/null; then
+        :
+    else
+        echo "build-demos-overlay: sdlteapot_hybrid carries no Matrox symbols" >&2
+        exit 1
+    fi
+    rm -f "$S/sdlteapot_sw" "$S/sdlteapot_hybrid"
+    echo "build-demos-overlay: the SDL2 teapot builds from its shipped script"
+else
+    echo "build-demos-overlay: SDL2 NOT PRESENT -- the SDL2 teapot ships"
+    echo "build-demos-overlay: unchecked.  Build openstep-sdl20 and run again"
+    echo "build-demos-overlay: to have its build script verified."
+fi
+rm -f "$S/teapot-geometry.h"
 
 echo "build-demos-overlay: PASS $OUT"

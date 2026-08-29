@@ -59,11 +59,30 @@ for f in Examples/Mesa342/GLWindow/openstep-mga-glwin.m \
          Examples/Mesa342/GLWindow/glwin_sw \
          Examples/Mesa342/GLWindow/glwin_hybrid \
          Examples/Mesa342/Teapot/teapot_sw \
-         Examples/Mesa342/Teapot/teapot_hybrid; do
+         Examples/Mesa342/Teapot/teapot_hybrid \
+         Examples/Mesa342/SDLTeapot/openstep-mga-sdl-teapot.c \
+         Examples/Mesa342/SDLTeapot/build-sdl-teapot.csh \
+         Examples/Mesa342/SDLTeapot/README_sdlteapot.md; do
     if lsbom -s "$PKG/$NAME.bom" | grep "^\./$f\$" > /dev/null; then
         note "ok   the BOM owns $f"
     else
         bad "the BOM does not own $f"
+    fi
+done
+
+#
+# THE SDL2 TEAPOT SHIPS NO BINARY, and that is a rule rather than an
+# omission: it is the one demo needing a second product (SDL2) at the same
+# prefix, and a prebuilt one would put a statically linked copy of a
+# particular SDL2 release inside a Matrox package.  Asserted, so that adding
+# one later is a decision rather than an accident.
+#
+for f in Examples/Mesa342/SDLTeapot/sdlteapot_sw \
+         Examples/Mesa342/SDLTeapot/sdlteapot_hybrid; do
+    if lsbom -s "$PKG/$NAME.bom" | grep "^\./$f\$" > /dev/null; then
+        bad "the BOM owns $f -- the SDL2 demo ships source only"
+    else
+        note "ok   no $f, as intended"
     fi
 done
 
@@ -251,11 +270,14 @@ echo "the shipped sources are current"
 for pair in "Teapot README_teapot.md" "Teapot build-teapot.csh" \
             "Teapot openstep-mga-mesa-teapot.c" \
             "GLWindow README_glwin.md" "GLWindow build-glwin.csh" \
-            "GLWindow openstep-mga-glwin.m"; do
+            "GLWindow openstep-mga-glwin.m" \
+            "SDLTeapot README_sdlteapot.md" "SDLTeapot build-sdl-teapot.csh" \
+            "SDLTeapot openstep-mga-sdl-teapot.c"; do
     d=`echo "$pair" | awk '{print $1}'`
     f=`echo "$pair" | awk '{print $2}'`
     case "$f" in
-    openstep-mga-mesa-teapot.c|openstep-mga-glwin.m) srcf="$SRC/test/$f" ;;
+    openstep-mga-mesa-teapot.c|openstep-mga-glwin.m|openstep-mga-sdl-teapot.c)
+        srcf="$SRC/test/$f" ;;
     *)                                               srcf="$SRC/examples/$f" ;;
     esac
     if cmp -s "$srcf" "$UNPACK/Examples/Mesa342/$d/$f"; then

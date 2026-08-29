@@ -41,3 +41,4 @@ build/blend/
 # both are rebuildable from the repository and the second is 4.4 MB of
 # binaries.  They belong on a release page, not in history.
 release-assets/
+scratchpad/

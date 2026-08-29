@@ -40,6 +40,9 @@
 #include <sys/time.h>
 #include <SDL.h>
 #include <GL/gl.h>
+#if !defined(OSMGA_SDLTEAPOT_PLAIN)
+#include "SDL_openstepglpresent.h"
+#endif
 
 #ifdef OSMGA_SDLTEAPOT_PLAIN
 #define OSMGA_SDLTEAPOT_ACCEL 0
@@ -55,9 +58,11 @@
 #define OSMGAMesaHookMirrors()    0UL
 #else
 #define OSMGA_SDLTEAPOT_ACCEL 1
-#include "../mesa/OpenStepMGAMesaHook.h"
-#include "../mesa/OpenStepMGAMesaBuffer.h"
-#include "../mesa/OpenStepMGAMesaProbe.h"
+/* By bare name, as the offline teapot does: the shipped form finds these in
+ * the installed prefix's Headers, and the in-tree build passes -I../mesa. */
+#include "OpenStepMGAMesaHook.h"
+#include "OpenStepMGAMesaBuffer.h"
+#include "OpenStepMGAMesaProbe.h"
 #endif
 
 /* patchdata, cpdata and teapot(), cut from the Mesa tree at build time */
@@ -68,7 +73,10 @@
 static int W = 800;
 static int H = 600;
 #define WARMUP 20
-#define FRAMES 200
+/* 200 frames is a measurement, not a viewing.  At 55 fps that is under
+ * four seconds -- long enough for a number and too short for an eye, so
+ * the count opens up for someone who wants to watch it turn. */
+static int FRAMES = 200;
 
 static double
 now(void)
@@ -85,6 +93,37 @@ now(void)
  * row order; it is kept here so the picture matches, and culling stays off
  * with it because the winding reverses.
  */
+/*
+ * WHICH DELIVERY.  0 = SDL's swap, which walks the surface back into the
+ * caller's array and pushes that through AppKit.  1 = the driver's own
+ * VRAM-to-VRAM stamp, which never crosses the bus.
+ *
+ * One binary measures both because the comparison is the experiment; and it
+ * is a run-time choice rather than a build flag so the two numbers come from
+ * the same compiled scene.
+ */
+static int presentMode;
+
+/*
+ * The stamp CANNOT REVERSE ROWS, so the projection does -- exactly as the
+ * window demo in this suite does, and for the same reason.  SDL's swap can
+ * reverse and does, so it wants the ordinary one.  Getting this wrong is
+ * invisible in a frame rate and obvious on a screen.
+ */
+static void
+projection(void)
+{
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    if (presentMode == 1)
+        glFrustum(-1.0, 1.0, 0.75, -0.75, 2.0, 20.0);   /* the demo flips */
+    else
+        /* Mode 2 reverses the rows itself, and SDL's swap reverses too, so
+         * both want the ordinary projection.  Only the single blit does not. */
+        glFrustum(-1.0, 1.0, -0.75, 0.75, 2.0, 20.0);
+    glMatrixMode(GL_MODELVIEW);
+}
+
 static void
 setupScene(void)
 {
@@ -92,21 +131,7 @@ setupScene(void)
     GLfloat mamb[4], mdif[4], mspec[4];
 
     glViewport(0, 0, W, H);
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    /*
-     * A NORMAL frustum, unlike this project's own window demo.
-     *
-     * That one swaps top and bottom because its delivery is a blit that
-     * cannot reverse a row order, so the projection does it instead -- and
-     * it turns culling off to match, since the winding reverses with it.
-     * SDL2 does not need that: its backend calls
-     * OSMesaPixelStore(OSMESA_Y_UP, 0) and gets top-down rows already.
-     * Copying the swap as well as the scene put the teapot upside down,
-     * which is what the operator saw.
-     */
-    glFrustum(-1.0, 1.0, -0.75, 0.75, 2.0, 20.0);
-    glMatrixMode(GL_MODELVIEW);
+    projection();
     glLoadIdentity();
     glTranslatef(0.0f, -0.2f, -6.0f);
     glRotatef(-20.0f, 1.0f, 0.0f, 0.0f);
@@ -145,10 +170,121 @@ drawFrame(double angle)
 {
     glClear((GLbitfield)(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
     glPushMatrix();
+    /*
+     * A half turn about x, and it is the MODEL that needs it.
+     *
+     * The teapot() lifted from tea.c carries its own two rotations, chosen
+     * for that demo's coordinate system, and under this camera they leave
+     * the pot standing on its lid -- the offline teapot in this suite
+     * records the same thing, and uses the same normal frustum.
+     *
+     * Leaving it out is what the operator saw, and it was NOT the delivery:
+     * openstep-sdl-gl-orientation reports the same bitmap layout from the
+     * 2D path and the GL path, software and accelerated alike, so neither
+     * SDL nor this driver flips anything.
+     */
+    glRotatef(180.0f, 1.0f, 0.0f, 0.0f);
     glRotatef((float)(angle * 57.29578), 0.0f, 1.0f, 0.0f);
     teapot(4, 1.0, GL_FILL);
     glPopMatrix();
 }
+
+#if OSMGA_SDLTEAPOT_ACCEL
+/*
+ * Stamp the surface onto the screen where the window is.
+ *
+ * A PRESENT IS NOT WINDOW COMPOSITING.  The server does not know these
+ * pixels exist, so a stamp lands on top of whatever overlaps the rectangle:
+ * every guard below exists to keep it from landing somewhere it should not.
+ * The window demo in this suite reaches into AppKit for the same guards;
+ * this one has only SDL, and says plainly where that is weaker.
+ *
+ * Returns 0 if it presented, 1 if it deliberately stood down, -1 on refusal.
+ */
+static int
+stamp(SDL_Window *win, int screenH, int *lastX, int *lastY,
+      unsigned long *outVerdict)
+{
+    int wx = 0, wy = 0;
+    long dstX, dstY;
+    long pw = (long)W, ph = (long)H;
+    unsigned long srcX = 0UL, srcY = 0UL;
+    Uint32 flags = SDL_GetWindowFlags(win);
+
+    /* Not while hidden or minimised: the rectangle is somebody else's. */
+    if ((flags & SDL_WINDOW_MINIMIZED) || !(flags & SDL_WINDOW_SHOWN))
+        return 1;
+    /*
+     * And not while another application has the user.  True z-order is
+     * unenforceable here, but raising another window requires clicking it,
+     * which deactivates this one -- so stamping only while focused makes
+     * occlusion look like occlusion.
+     */
+    if (!(flags & SDL_WINDOW_INPUT_FOCUS))
+        return 1;
+
+    SDL_GetWindowPosition(win, &wx, &wy);
+    /*
+     * MOVED SINCE THE LAST FRAME: stand down for one frame.
+     *
+     * This is the weaker guard.  SDL's position is a cache updated when a
+     * move event is dispatched, while the window demo asks the server
+     * directly -- so a drag can still leave a stamp at the position being
+     * vacated for as long as the cache lags.  Named rather than hidden.
+     */
+    if (wx != *lastX || wy != *lastY) {
+        *lastX = wx; *lastY = wy;
+        return 1;
+    }
+
+    /*
+     * SDL's window position already counts from the TOP of the screen --
+     * the backend converts to AppKit's bottom-left origin when it places
+     * the window -- so the scanout destination needs no flip.
+     */
+    dstX = (long)wx;
+    dstY = (long)wy;
+
+    /* Off the edges: push the source in and shorten, rather than ask the
+     * kernel to refuse the whole thing. */
+    if (dstX < 0) { srcX = (unsigned long)(-dstX); pw += dstX; dstX = 0; }
+    if (dstY < 0) { srcY = (unsigned long)(-dstY); ph += dstY; dstY = 0; }
+    if (dstY + ph > (long)screenH) ph = (long)screenH - dstY;
+    if (pw <= 0 || ph <= 0)
+        return 1;
+
+    /*
+     * MODE 2: the same rectangle, one row at a time, in reverse.
+     *
+     * The stamp cannot flip rows and a LIBRARY cannot flip the projection --
+     * the projection belongs to the application -- so if SDL2 is ever to do
+     * this by itself, the flip has to happen somewhere else.  Row by row is
+     * the only place that needs no driver change, and this arm exists to
+     * find out what it costs: a kernel entry per row rather than per frame.
+     *
+     * Nobody in this project has measured the cost of one kernel entry, so
+     * the number is not guessed at here.
+     */
+    if (presentMode == 2) {
+        long r;
+
+        for (r = 0; r < ph; r++) {
+            if (OSMGAMesaBufferPresentRect(srcX, srcY + (unsigned long)r,
+                                           (unsigned long)pw, 1UL,
+                                           dstX, dstY + (ph - 1 - r),
+                                           outVerdict) != 0)
+                return -1;
+        }
+        return 0;
+    }
+
+    if (OSMGAMesaBufferPresentRect(srcX, srcY, (unsigned long)pw,
+                                   (unsigned long)ph, dstX, dstY,
+                                   outVerdict) != 0)
+        return -1;
+    return 0;
+}
+#endif /* OSMGA_SDLTEAPOT_ACCEL */
 
 int
 main(int argc, char **argv)
@@ -160,8 +296,19 @@ main(int argc, char **argv)
     double renderMs = 0.0, swapMs = 0.0, wall0, wall1;
     unsigned long d0, w0, p0, b0, s0, u0, r0, m0, c0;
     int i, quit = 0, resized = 0;
+    int screenH = 0, lastX = -1, lastY = -1;
+    unsigned long stampSkips = 0UL, verdict = 0UL;
+    int stampRefused = 0;
+    double presentMs = 0.0;
 
     if (argc >= 3) { W = atoi(argv[1]); H = atoi(argv[2]); }
+    {
+        const char *v = getenv("OSMGA_SDLTEAPOT_FRAMES");
+        if (v != 0 && *v != '\0') {
+            int n = atoi(v);
+            if (n > 0) FRAMES = n;
+        }
+    }
     if (W < 64 || H < 64) { printf("usage: %s [width height]\n", argv[0]); return 2; }
 #if OSMGA_SDLTEAPOT_ACCEL
 #define WHERE(what) printf("   %-24s: %s\n", what, \
@@ -193,13 +340,82 @@ main(int argc, char **argv)
      */
     WHERE("after CreateContext");
 
+#if OSMGA_SDLTEAPOT_ACCEL
+    {
+        const char *v = getenv("OSMGA_SDLTEAPOT_PRESENT");
+        SDL_DisplayMode dm;
+
+        /*
+         * Only with a surface to stamp.  Present mode declares the caller's
+         * array stale; asking for that when the picture lives in the
+         * caller's array would deliver nothing at all.
+         */
+        if (v != 0 && OSMGAMesaBufferOrigin()) {
+            if (*v == '3')
+                presentMode = 3;   /* SDL2 does it -- see below */
+            else if (*v == '2')
+                presentMode = 2;   /* this demo does it, row by row */
+            else if (*v == '1' || *v == 'y' || *v == 'Y')
+                presentMode = 1;   /* one blit, this demo flips its scene */
+            /*
+             * MODE 3 REGISTERS AND THEN FORGETS.
+             *
+             * The demo hands SDL2 the three driver functions and goes back
+             * to an ordinary SDL_GL_SwapWindow loop -- no present mode of
+             * its own, no rectangle arithmetic, no guards.  That is the
+             * whole claim being tested: that an application needs to know
+             * nothing beyond the registration.
+             *
+             * The struct is static on purpose.  SDL keeps the pointer, not
+             * a copy, so a struct on the stack would be a dangling one by
+             * the first swap.
+             */
+            if (presentMode == 3) {
+                static const SDL_OpenStepGLPresent hooks = {
+                    SDL_OPENSTEP_GLPRESENT_ABI,
+                    sizeof(SDL_OpenStepGLPresent),
+                    OSMGAMesaBufferOrigin,     /* signatures match exactly */
+                    OSMGAMesaBufferPresentMode,
+                    OSMGAMesaBufferPresentRect
+                };
+                SDL_SetWindowData(win, SDL_OPENSTEP_GLPRESENT_KEY,
+                                  (void *)&hooks);
+            } else if (presentMode) {
+                OSMGAMesaBufferPresentMode(1);
+            }
+        }
+        if (SDL_GetDesktopDisplayMode(0, &dm) == 0)
+            screenH = dm.h;
+        else
+            presentMode = 0;      /* no screen height, no clipping, no stamp */
+    }
+#endif
+
     setupScene();
+
+#if OSMGA_SDLTEAPOT_ACCEL
+#define DELIVER()                                                          \
+    do {                                                                   \
+        if (presentMode == 3) {                                            \
+            SDL_GL_SwapWindow(win);                                        \
+        } else if (presentMode) {                                          \
+            int rc = stamp(win, screenH, &lastX, &lastY, &verdict);        \
+            if (rc > 0) stampSkips++;                                      \
+            else if (rc < 0) { stampRefused = 1; quit = 1; }               \
+        } else {                                                           \
+            SDL_GL_SwapWindow(win);                                        \
+        }                                                                  \
+    } while (0)
+#else
+#define DELIVER() SDL_GL_SwapWindow(win)
+#endif
 
     /* Warm up before anything is counted: the first frames pay for the
      * surface claim, the first batch buffer and whatever AppKit does once. */
     for (i = 0; i < WARMUP; i++) {
         drawFrame(angle); angle += 0.05;
-        SDL_GL_SwapWindow(win);
+        glFinish();
+        DELIVER();
         while (SDL_PollEvent(&ev)) { if (ev.type == SDL_QUIT) quit = 1; }
     }
 
@@ -215,10 +431,11 @@ main(int argc, char **argv)
         drawFrame(angle); angle += 0.05;
         glFinish();
         t1 = now();
-        SDL_GL_SwapWindow(win);
+        DELIVER();
         t2 = now();
         renderMs += (t1 - t0) * 1000.0;
-        swapMs   += (t2 - t1) * 1000.0;
+        if (presentMode) presentMs += (t2 - t1) * 1000.0;
+        else             swapMs   += (t2 - t1) * 1000.0;
         while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_QUIT) quit = 1;
             if (ev.type == SDL_WINDOWEVENT &&
@@ -236,6 +453,14 @@ main(int argc, char **argv)
         const char *v = getenv("OSMGA_MESA_WARP");
         printf("   OSMGA_MESA_WARP         : %s\n",
                (v && *v) ? v : "unset -- the Configure setting decides");
+        printf("   delivery                : %s\n",
+               presentMode == 3
+                   ? "SDL2's own VRAM stamp (registered hooks)"
+                   : presentMode == 2
+                   ? "VRAM stamp, one row at a time (reversed)"
+                   : presentMode
+                       ? "the driver's VRAM stamp (no readback)"
+                       : "SDL swap -- the surface is read back every frame");
     }
     /*
      * "It ran the hybrid binary" is not evidence.  These four lines are.
@@ -272,6 +497,16 @@ main(int argc, char **argv)
 #endif
     printf("\n   where a frame goes, in milliseconds\n");
     printf("      render + finish      : %8.2f\n", renderMs / (double)i);
+#if OSMGA_SDLTEAPOT_ACCEL
+    if (presentMode) {
+        printf("      VRAM present (stamp) : %8.2f\n", presentMs / (double)i);
+        printf("      frames stood down    : %lu   (moved, hidden or "
+               "unfocused)\n", stampSkips);
+        if (stampRefused)
+            printf("      PRESENT REFUSED      : verdict %lu -- the run "
+                   "stopped there\n", verdict);
+    } else
+#endif
     printf("      SDL swap (AppKit)    : %8.2f\n", swapMs / (double)i);
     printf("      wall                 : %8.2f   (%.2f fps)\n",
            (wall1 - wall0) * 1000.0 / (double)i,

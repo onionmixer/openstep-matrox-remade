@@ -5,9 +5,33 @@ OPENSTEP 4.2의 Matrox G450 PCI VGA를 위한 새 DriverKit 디스플레이
 display driver를 고친 것이 아니라, 공개 하드웨어 자료와 공개 MGA 구현을
 근거로 새로 만든 `IOFrameBufferDisplay` 서브클래스다.
 
-**v1.0 릴리스**: [releases/tag/v1.0](https://github.com/onionmixer/openstep-matrox-remade/releases/tag/v1.0)
+**v1.2 릴리스**: [releases/tag/v1.2](https://github.com/onionmixer/openstep-matrox-remade/releases/tag/v1.2)
 — 설치용 `.pkg` 세 개와 SHA256SUMS. 설치와 복구 절차는
-[release-packaging/INSTALL.md](release-packaging/INSTALL.md)에 있다.
+[release-packaging/INSTALL.md](release-packaging/INSTALL.md)에 있고,
+변경 내역은 [RELEASE_NOTES_v1.2.md](RELEASE_NOTES_v1.2.md)에 있다.
+
+## SDL2 가속
+
+[SDL2 openstep.2](https://github.com/onionmixer/openstep-sdl2) 부터, SDL2
+프로그램이 이 카드로 그리고 **프레임이 시스템 메모리를 거치지 않은 채**
+화면에 올라간다.  응용은 드라이버의 present 함수 셋을 한 번 등록하고
+평범한 `SDL_GL_SwapWindow` 루프를 그대로 돈다.
+
+```c
+#include <SDL_openstepglpresent.h>
+
+static const SDL_OpenStepGLPresent hooks = {
+    SDL_OPENSTEP_GLPRESENT_ABI, sizeof(hooks),
+    OSMGAMesaBufferOrigin, OSMGAMesaBufferPresentMode,
+    OSMGAMesaBufferPresentRect
+};
+SDL_SetWindowData(window, SDL_OPENSTEP_GLPRESENT_KEY, (void *)&hooks);
+```
+
+800×600 주전자가 **0.54 → 43.9 fps**.  차이는 그리기가 아니라 되읽기다:
+가속된 프레임을 평범하게 전달하면 표면을 호출자 배열로 되읽어야 하고,
+그것이 프레임이 아니라 **원시 묶음마다** 돈다.  데모는 Demos 패키지의
+`Examples/Mesa342/SDLTeapot`에 소스로 들어 있다.
 
 ## 현재 상태 (2026-08-29)
 

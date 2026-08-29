@@ -35,6 +35,7 @@ fi
 for f in "$LIB" \
          "$SRC/mesa/OpenStepMGAMesaHook.h" \
          "$SRC/mesa/OpenStepMGAMesaBuffer.h" \
+         "$SRC/mesa/OpenStepMGAMesaProbe.h" \
          "$SRC/hw3d/OpenStepMGAHW3D.h" \
          "$MESADOCS/COPYRIGHT" "$MESADOCS/COPYING" "$MESADOCS/README" \
          "$SRC/release-packaging/PORT-NOTES.md" \
@@ -122,9 +123,15 @@ rm -rf "$STAGEPARENT" "$OUT/$NAME.pkg"
 
 cp "$LIB" "$STAGE/Libraries/libGL_mga.a"
 cp "$SRC/mesa/OpenStepMGAMesaHook.h" "$SRC/mesa/OpenStepMGAMesaBuffer.h" \
+   "$SRC/mesa/OpenStepMGAMesaProbe.h" \
    "$SRC/hw3d/OpenStepMGAHW3D.h" "$STAGE/Headers/"
 # OpenStepMGAHW3D.h is not optional: OpenStepMGAMesaHook.h includes it for
 # OSMGAHW3DTri, and a prefix with only the first two headers fails to build.
+#
+# OpenStepMGAMesaProbe.h joined them in 1.2.  A demo that reports whether the
+# card actually drew has to be able to ask WHY when it did not, and the
+# verdict is the probe's -- the SDL2 teapot needs it, and without it the
+# shipped build script fails on an installed prefix while working in-tree.
 
 # Mesa's terms travel with Mesa's code, byte for byte from the port's own
 # upstream tree -- copied and then compared, so a truncated copy cannot pass.
