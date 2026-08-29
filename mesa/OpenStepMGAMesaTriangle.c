@@ -389,6 +389,50 @@ osmgaEdgeRegs(const OSMGAMesaEdge *e, long r0, long s,
 }
 
 /*
+ * Does this edge lose its height at the subpixel resolution in force?
+ *
+ * osmgaEdgeRegs reduces every quantity by 8 - sub bits, and then divides by
+ * Q2 = 2 * M * HH.  An edge whose height is under one step of that
+ * resolution comes out with HH nought, Q2 nought, and osmgaCeilDiv -- whose
+ * own comment is "b > 0" -- divides by zero.  Measured, on this machine, as
+ * a SIGFPE that killed the process on a legal GL triangle: a horizontal
+ * base of forty pixels lying exactly on a sample row with the apex five
+ * thousandths of a pixel above it (M17 section 11).
+ *
+ * Guarding inside osmgaCeilDiv would be worse than the bug.  The same HH of
+ * nought makes osmgaFirstDrawn's walk increment 2*HH zero, and its loop
+ * "while (acc < 0) acc += dy" then never terminates -- so the crash would
+ * become a HANG, and on this machine a hang costs a reboot while a dead
+ * client costs nothing.
+ *
+ * Only edges that are actually WALKED matter.  The horizontal base of a
+ * flat-topped or flat-bottomed triangle is never handed to osmgaEdgeRegs --
+ * its trapezoid is the one that is skipped -- while the sub chooser above
+ * measures every vertex pair including that base.  Refusing on "any edge"
+ * would therefore de-accelerate ordinary wide flat-based triangles for an
+ * edge nothing ever walks.
+ */
+static int
+osmgaEdgeVanishes(long height, long sub)
+{
+    long h = (height < 0L) ? -height : height;
+
+    return (h >> (OSMGA_MESA_SUBBITS - sub)) == 0L;
+}
+
+/* Counted, so "this refuses hardly anything" is a number and not a claim,
+ * and kept apart from the builder's other refusals: each one of these
+ * flushes the pending batch before the software redraw, so the frequency
+ * alone would understate what it costs. */
+static unsigned long osmgaEdgeVanished = 0UL;
+
+unsigned long
+OSMGAMesaEdgeVanished(void)
+{
+    return osmgaEdgeVanished;
+}
+
+/*
  * How many rows at the top of this trapezoid draw nothing.
  *
  * A trapezoid that begins at an apex has an empty first row, and the depth
@@ -1351,6 +1395,11 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
         shortE.dee = m->x - t->x; shortE.height = m->y - t->y;
         le = (crossD < 0.0) ? &longE : &shortE;
         re = (crossD < 0.0) ? &shortE : &longE;
+        if (osmgaEdgeVanishes(longE.height, sub) ||
+            osmgaEdgeVanishes(shortE.height, sub)) {
+            osmgaEdgeVanished++;
+            return OSMGA_MESA_TRI_UNSUPPORTED;
+        }
         skip = osmgaFirstDrawn(le, re, rT, rM - rT, sub);
         if (skip < rM - rT) {
             osmgaTrapezoid(&out[n], rT + skip, rM - rT - skip, sub, le, re,
@@ -1373,6 +1422,11 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
         shortE.dee = lo->x - m->x; shortE.height = lo->y - m->y;
         le = (crossD < 0.0) ? &longE : &shortE;
         re = (crossD < 0.0) ? &shortE : &longE;
+        if (osmgaEdgeVanishes(longE.height, sub) ||
+            osmgaEdgeVanishes(shortE.height, sub)) {
+            osmgaEdgeVanished++;
+            return OSMGA_MESA_TRI_UNSUPPORTED;
+        }
         skip = osmgaFirstDrawn(le, re, rM, rL - rM, sub);
         if (skip < rL - rM) {
             osmgaTrapezoid(&out[n], rM + skip, rL - rM - skip, sub, le, re,

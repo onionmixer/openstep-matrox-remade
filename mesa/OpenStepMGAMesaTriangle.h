@@ -328,4 +328,13 @@ int OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
                               OSMGAHW3DTri *out,
                               long tmrOut[][9]);
 
+/*
+ * Triangles refused because a WALKED edge lost its height at the subpixel
+ * resolution in force -- which would otherwise divide by zero in the edge
+ * registers, and hang the row walk if that division were guarded instead.
+ * Counted apart from the builder's other refusals because each one flushes
+ * the pending batch before the software redraw.
+ */
+unsigned long OSMGAMesaEdgeVanished(void);
+
 #endif /* OPENSTEP_MGA_MESA_TRIANGLE_H */
