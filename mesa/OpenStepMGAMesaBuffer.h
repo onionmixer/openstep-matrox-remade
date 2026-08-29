@@ -88,9 +88,19 @@ void OSMGAMesaBufferMirror(void);
 unsigned long OSMGAMesaBufferCopies(void);
 void OSMGAMesaBufferMirrorNarrow(unsigned long x0, unsigned long y0,
                                  unsigned long x1, unsigned long y1);
+
+/*
+ * TEST ONLY, under the rule R20 set: a box copy exists to be TIMED, and the
+ * disagreement count reads the driver's surface against the caller's array.
+ * Neither is a feature -- one writes the caller's memory outside any
+ * contract and the other exposes internal state that would harden into ABI
+ * if it shipped.  The packaging script refuses a library defining them.
+ */
+#ifdef OSMGA_MESA_TESTHOOKS
 unsigned long OSMGAMesaBufferDisagree(void);
 void OSMGAMesaBufferMirrorBox(unsigned long x0, unsigned long y0,
                               unsigned long x1, unsigned long y1);
+#endif /* OSMGA_MESA_TESTHOOKS */
 
 /*
  * Deliver a surface known to hold one value by writing that value, instead

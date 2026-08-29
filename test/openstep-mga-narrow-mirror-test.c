@@ -251,25 +251,23 @@ main(void)
     }
 
     printf("the narrowed mirror, and whether each source in its box matters\n\n");
-    printf("   %-24s %5s %5s %10s   %s\n", "dropped from the box",
-           "narr", "full", "px lost", "verdict");
+    printf("   %-24s %5s %5s %6s %5s %10s   %s\n", "dropped from the box",
+           "narr", "full", "engine", "soft", "px lost", "verdict");
 
     for (i = 0; i < n; i++) {
-        unsigned long m0, m1, b0, b1, f0, f1, s0, s1, c0, c1, d0, d1;
+        unsigned long m0, m1, b0, b1, f0, f1, s0, s1, d0, d1;
 
         OSMGAMesaHookNarrowMirror(2);          /* narrow, and check it */
         OSMGAMesaHookAreaOmit(arms[i].omit);
         m0 = OSMGAMesaHookAreaMissed();
         b0 = OSMGAMesaHookAreaBoxBr(); f0 = OSMGAMesaHookAreaFullBr();
-        s0 = OSMGAMesaHookSoftware(); c0 = OSMGAMesaHookClears();
+        s0 = OSMGAMesaHookSoftware();
         d0 = OSMGAMesaHookDrawn();
         (*arms[i].draw)(i + 1);
         m1 = OSMGAMesaHookAreaMissed();
         b1 = OSMGAMesaHookAreaBoxBr(); f1 = OSMGAMesaHookAreaFullBr();
-        s1 = OSMGAMesaHookSoftware(); c1 = OSMGAMesaHookClears();
+        s1 = OSMGAMesaHookSoftware();
         d1 = OSMGAMesaHookDrawn();
-        printf("      [drawn %lu, soft %lu, engine clears %lu, why %d]\n",
-               d1 - d0, s1 - s0, c1 - c0, OSMGAMesaHookClearWhy());
 
         /*
          * Back to a full mirror for one pass, so the next arm starts from an
@@ -281,9 +279,9 @@ main(void)
         allArms(i + 20);
 
         if (b1 == b0) {
-            printf("   %-24s %5lu %5lu %10s   NOT TESTED -- nothing narrowed,"
-                   " so the box was never used\n",
-                   arms[i].what, b1 - b0, f1 - f0, "-");
+            printf("   %-24s %5lu %5lu %6lu %5lu %10s   NOT TESTED --"
+                   " nothing narrowed, so the box was never used\n",
+                   arms[i].what, b1 - b0, f1 - f0, d1 - d0, s1 - s0, "-");
             bad++;
             continue;
         }
@@ -298,21 +296,23 @@ main(void)
              * unreached rather than passed, because a guard nobody can
              * exercise is a guard nobody has tested.
              */
-            printf("   %-24s %5lu %5lu %10lu   NOT REACHED -- a clear's"
-                   " bracket has no other writer, so the empty box already\n"
-                   "   %-24s %5s %5s %10s   forces a full mirror; this guard"
-                   " covers a clear sharing a bracket with drawing\n",
-                   arms[i].what, b1 - b0, f1 - f0, m1 - m0, "", "", "", "");
+            printf("   %-24s %5lu %5lu %6lu %5lu %10lu   NOT REACHED --"
+                   " a clear's bracket has no other writer, so\n"
+                   "%56s   the empty box already forces a full mirror; this"
+                   " guard covers a clear\n%56s   sharing a bracket with"
+                   " drawing\n",
+                   arms[i].what, b1 - b0, f1 - f0, d1 - d0, s1 - s0, m1 - m0,
+                   "", "");
             continue;
         }
         if (arms[i].mustLose ? (m1 > m0) : (m1 == m0))
-            printf("   %-24s %5lu %5lu %10lu   %s\n", arms[i].what,
-                   b1 - b0, f1 - f0, m1 - m0,
+            printf("   %-24s %5lu %5lu %6lu %5lu %10lu   %s\n", arms[i].what,
+                   b1 - b0, f1 - f0, d1 - d0, s1 - s0, m1 - m0,
                    arms[i].mustLose ? "ok, it is needed"
                                     : "ok, nothing was missed");
         else {
-            printf("   %-24s %5lu %5lu %10lu   FAIL -- %s\n", arms[i].what,
-                   b1 - b0, f1 - f0, m1 - m0,
+            printf("   %-24s %5lu %5lu %6lu %5lu %10lu   FAIL -- %s\n",
+                   arms[i].what, b1 - b0, f1 - f0, d1 - d0, s1 - s0, m1 - m0,
                    arms[i].mustLose
                      ? "dropping it lost nothing, so this arm never reached"
                        " that writer"

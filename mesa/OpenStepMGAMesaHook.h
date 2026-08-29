@@ -315,10 +315,26 @@ const OSMGAMesaRefusal *OSMGAMesaHookLastRefusal(void);
 
 /* M20 -- the mirror's pixel budget against a narrowed one's.  Only moves
  * when OSMGA_MESA_INST_AREA is on; see OSMGAMesaHookInstrument(). */
-void OSMGAMesaHookNarrowMirror(int mode);   /* 0 off, 1 narrow, 2 + verify */
-void OSMGAMesaHookAreaOmit(unsigned long mask);
+/*
+ * Narrow the mirror to what the bracket drew.  0 leaves it alone, 1 narrows.
+ * Mode 2 also checks the box was enough, and that check exists only in a
+ * test build -- it reads the whole surface and the whole caller's array once
+ * per bracket, which is a verifier and not a feature; in a release library
+ * 2 behaves as 1.  The two counters below then stay at nought, which is why
+ * they need no gate of their own.
+ */
+void OSMGAMesaHookNarrowMirror(int mode);
 unsigned long OSMGAMesaHookAreaMissed(void);
 unsigned long OSMGAMesaHookAreaVerified(void);
+
+/*
+ * TEST ONLY: dropping a source from the dirty box makes the narrowed mirror
+ * lose pixels, silently, which is the class R20 named first to retire.  The
+ * packaging script refuses a library that defines it.
+ */
+#ifdef OSMGA_MESA_TESTHOOKS
+void OSMGAMesaHookAreaOmit(unsigned long mask);
+#endif /* OSMGA_MESA_TESTHOOKS */
 unsigned long OSMGAMesaHookAreaAll(void);
 unsigned long OSMGAMesaHookAreaBox(void);
 unsigned long OSMGAMesaHookAreaFullBr(void);

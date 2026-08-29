@@ -461,23 +461,6 @@ OSMGAMesaBufferSoiled(void)
  * arithmetic assumed they did without ever asking.
  */
 /*
- * TEST ONLY -- copy a box and nothing else, so the cost model can be
- * measured instead of assumed.
- *
- * M20 found that a mirror narrowed to what each bracket drew would move
- * 113 times fewer pixels on the teapot, and turned that into a claimed
- * speed-up by ASSUMING the mirror's cost is linear in pixels.  The evidence
- * for that was two full-surface sizes agreeing (146.722 ms at 512x384
- * predicting 229.3 at 640x480 against 229.9 measured), which says nothing
- * about a 52x52 box: a row-by-row copy has a per-ROW cost too, and 129
- * small boxes are 129 x 52 rows.
- *
- * So this exists to be timed.  It reads the surface and writes the caller's
- * own array -- the same two places the real mirror touches, in the same
- * order -- and it leaves bufDirty exactly as it found it, so a test can call
- * it without changing what the next real mirror does.
- */
-/*
  * The narrowed mirror: deliver the box this bracket wrote, and nothing else.
  *
  * It is the same copy as the full one and obeys the same guard, so a bracket
@@ -522,6 +505,25 @@ OSMGAMesaBufferMirrorNarrow(unsigned long x0, unsigned long y0,
     }
 }
 
+#ifdef OSMGA_MESA_TESTHOOKS
+
+/*
+ * TEST ONLY -- copy a box and nothing else, so the cost model can be
+ * measured instead of assumed.
+ *
+ * M20 found that a mirror narrowed to what each bracket drew would move
+ * 113 times fewer pixels on the teapot, and turned that into a claimed
+ * speed-up by ASSUMING the mirror's cost is linear in pixels.  The evidence
+ * for that was two full-surface sizes agreeing (146.722 ms at 512x384
+ * predicting 229.3 at 640x480 against 229.9 measured), which says nothing
+ * about a 52x52 box: a row-by-row copy has a per-ROW cost too, and 129
+ * small boxes are 129 x 52 rows.
+ *
+ * So this exists to be timed.  It reads the surface and writes the caller's
+ * own array -- the same two places the real mirror touches, in the same
+ * order -- and it leaves bufDirty exactly as it found it, so a test can call
+ * it without changing what the next real mirror does.
+ */
 /*
  * How many pixels of the application's array disagree with the surface.
  *
@@ -582,6 +584,8 @@ OSMGAMesaBufferMirrorBox(unsigned long x0, unsigned long y0,
             *d++ = *s++;
     }
 }
+#endif /* OSMGA_MESA_TESTHOOKS */
+
 
 unsigned long
 OSMGAMesaBufferCopies(void)

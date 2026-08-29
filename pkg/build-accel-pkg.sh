@@ -84,9 +84,18 @@ fi
 # arms B/C/D, each of which removes a stage of the submission and so draws
 # the wrong thing or nothing; SubmitDry sends an ioctl a shipped driver no
 # longer answers at all.  None of it is a feature.
+# Three more on 2026-08-29, from the narrowed mirror.  AreaOmit drops a
+# source from the dirty rectangle, so a caller loses pixels and is told
+# nothing -- the class R20 retired first.  MirrorBox writes the caller's
+# array outside any contract; it exists to be timed.  Disagree reads the
+# driver's surface against the caller's array, which is internal state that
+# would harden into ABI if it shipped.  OSMGAMesaHookNarrowMirror is NOT
+# here, for the reason InjectRefusal is not: it is the feature.
 for sym in OSMGAMesaHookInjectNamed OSMGAMesaHookInjectedNamed \
            OSMGAMesaHookMeasureArm OSMGAMesaHookDryStatus \
-           OSMGAMesaHookDryCount OSMGAMesaProbeSubmitDry; do
+           OSMGAMesaHookDryCount OSMGAMesaProbeSubmitDry \
+           OSMGAMesaHookAreaOmit OSMGAMesaBufferMirrorBox \
+           OSMGAMesaBufferDisagree; do
     if nm "$LIB" | grep "T _$sym\$" > /dev/null; then
         echo "build-accel-pkg: $LIB defines $sym -- that is the TEST" >&2
         echo "build-accel-pkg: flavour.  Build build/mesa without -test." >&2

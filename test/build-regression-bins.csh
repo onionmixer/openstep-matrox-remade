@@ -27,4 +27,24 @@ while ( $i <= $#bins )
 end
 cc -m486 -O -o /tmp/waits openstep-mga-hw3d-waits.m -lDriver >& /tmp/bb-waits.log
 echo "waits = $status"
+
+#
+# And the ones that call a TEST HOOK, which the release library does not
+# define.  R20's rule is that a hook whose misuse loses pixels must not ship,
+# so `-test` builds a second library beside the first and these link against
+# THAT one.  Building them against the release library fails at link, which
+# is the intended outcome rather than something to work around: it is how a
+# test that reaches for a gated symbol announces itself.
+#
+set LT = /ndrv/openstep-matrox-remade/build/mesa-test/libGL_mga.a
+set tbins = ( tnm mircost )
+set tsrcs = ( openstep-mga-narrow-mirror-test openstep-mga-mirror-cost )
+set i = 1
+while ( $i <= $#tbins )
+    set bin = $tbins[$i]
+    set src = $tsrcs[$i]
+    cc -m486 -O $I -o /tmp/$bin $src.c $LT -lm >& /tmp/bb-$bin.log
+    echo "$bin = $status"
+    @ i++
+end
 echo BUILDDONE

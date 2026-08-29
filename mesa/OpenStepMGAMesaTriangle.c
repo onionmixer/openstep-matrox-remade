@@ -833,6 +833,15 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
             tmr[4] = tmr[5] = tmr[8] = 0L;
             t->tq0 = OSMGA_HW3D_Q_ONE;
         }
+#ifdef OSMGA_MESA_TESTHOOKS
+        /*
+         * The dump M1-4D2 used to tell rounding from a span that starts
+         * outside the triangle.  That question is settled, and this is kept
+         * for the next one of its kind rather than deleted -- but it is a
+         * diagnostic, and it used to call getenv once per TEXTURED TRIANGLE
+         * in the shipping library.  Behind the test flag the release build
+         * has neither the call nor the code.
+         */
         if (tmr[8] != 0L && getenv("OSMGA_TMR_DUMP") != 0) {
             /*
              * Everything the walk needs, and the plane BEFORE rounding, so
@@ -862,6 +871,7 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
                     "#   int v %ld %ld %ld   q %ld %ld %ld\n",
                     t->tv0, tmr[2], tmr[3], t->tq0, tmr[4], tmr[5]);
         }
+#endif /* OSMGA_MESA_TESTHOOKS */
     }
 
     if (depthOn && zplane != 0) {

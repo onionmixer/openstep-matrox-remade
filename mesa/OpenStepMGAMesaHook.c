@@ -395,8 +395,18 @@ static int           hookNarrow;      /* 0 off, 1 narrow, 2 narrow + verify */
  * A guard that is never exercised is a guard nobody has tested, and the
  * verification would pass on a workload that never reaches it.
  *   1 vertices  2 spans  4 software triangles  8 lines  16 clear
+ *
+ * Nine places in the hot path read this, and none of them carries an #ifdef:
+ * outside a test build the name is a constant the compiler folds away, so
+ * the release library has neither the cost nor the symbol.  R20's rule is
+ * that a hook which can silently lose pixels must not ship, and dropping a
+ * source from the dirty box loses exactly that.
  */
+#ifdef OSMGA_MESA_TESTHOOKS
 static unsigned long areaOmit;
+#else
+#define areaOmit 0UL
+#endif
 static unsigned long areaMissed;      /* pixels a narrowed mirror lost      */
 static unsigned long areaVerified;    /* brackets the verifier looked at    */
 
@@ -3567,10 +3577,12 @@ osmgaMesaMirror(GLcontext *ctx)
      * accounted for.  It costs a full read of both, which is why it is a
      * mode and not a default.
      */
+#ifdef OSMGA_MESA_TESTHOOKS
     if (hookNarrow > 1) {
         areaMissed += OSMGAMesaBufferDisagree();
         areaVerified++;
     }
+#endif
 }
 
 /*
@@ -3954,6 +3966,7 @@ OSMGAMesaHookNarrowMirror(int mode)
     areaWanted = (mode != 0) || ((hookInstrument & OSMGA_MESA_INST_AREA) != 0);
 }
 
+#ifdef OSMGA_MESA_TESTHOOKS
 /* TEST ONLY -- drop a source from the box, so a test can show that leaving
  * it out actually loses pixels.  See areaOmit. */
 void
@@ -3961,6 +3974,7 @@ OSMGAMesaHookAreaOmit(unsigned long mask)
 {
     areaOmit = mask;
 }
+#endif /* OSMGA_MESA_TESTHOOKS */
 
 unsigned long OSMGAMesaHookAreaMissed(void)   { return areaMissed; }
 unsigned long OSMGAMesaHookAreaVerified(void) { return areaVerified; }
