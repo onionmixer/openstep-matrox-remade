@@ -115,6 +115,15 @@ for n in data.classes data.dependency data.nib; do
 done
 
 test -d "$OUT" || /bin/mkdirs "$OUT"
+#
+# post_install reads the identity-key transform out of the installed layout,
+# so it has to be IN the payload -- and copied HERE, before `package` walks
+# the stage.  Put after that call it lands in the stage but not in the BOM,
+# which is exactly what happened: the bom named it 0 times.
+#
+cp "$SRC/pkg/osmga-identity-keys.awk" "$STAGE/private/Drivers/i386/osmga-identity-keys.awk"
+chmod 444 "$STAGE/private/Drivers/i386/osmga-identity-keys.awk"
+
 "$PKGTOOL" "$STAGE" "$SRC/pkg/$NAME.info" -d "$OUT" < /dev/null
 
 # NOTHING may exceed installer_tar's limit, or `package` drops it in silence.
@@ -132,14 +141,6 @@ fi
 # written and never ship -- which is exactly the shape of defect this
 # package has already had twice.
 #
-#
-# post_install reads the identity-key transform out of the installed bundle,
-# so it has to be IN the bundle -- a hook that ships without the program it
-# runs is the same defect shape as a hook that is not shipped at all.
-#
-cp "$SRC/pkg/osmga-identity-keys.awk" "$STAGE/private/Drivers/i386/osmga-identity-keys.awk"
-chmod 444 "$STAGE/private/Drivers/i386/osmga-identity-keys.awk"
-
 cp "$SRC/pkg/$NAME.pre_install"  "$OUT/$NAME.pkg/$NAME.pre_install"
 cp "$SRC/pkg/$NAME.post_install" "$OUT/$NAME.pkg/$NAME.post_install"
 chmod 555 "$OUT/$NAME.pkg/$NAME.pre_install" "$OUT/$NAME.pkg/$NAME.post_install"

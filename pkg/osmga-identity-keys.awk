@@ -55,7 +55,16 @@ FILENAME ~ /Default\.table$/ {
         if (q > 1) key = substr($0, 2, q - 1)
     }
     if (key != "" && want[key] == 1) {
-        if (val[key] != "") bad = 1
+        #
+        # A REPEATED KEY IS NOT AUTOMATICALLY WRONG HERE.  OPENSTEP's own
+        # driver build appends "Server Name" to Default.table even when the
+        # source already declares it, so every built bundle carries that key
+        # twice -- found by this check refusing to run on the live machine.
+        # Two lines saying the same thing cost nothing and precedence never
+        # comes up; two saying different things is a real conflict and there
+        # is no way to know which the parser would take.
+        #
+        if (val[key] != "" && val[key] != $0) bad = 1
         val[key] = $0
     }
     next

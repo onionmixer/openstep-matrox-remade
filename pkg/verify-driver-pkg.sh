@@ -70,6 +70,16 @@ for h in pre_install post_install; do
         bad "$h missing or not executable -- Installer would run nothing"
     fi
 done
+# post_install runs a program out of the installed layout, so that program
+# has to be in the payload.  Checked with lsbom rather than grep on the .bom,
+# which is binary -- grepping it answered 0 with the file present.
+if lsbom "$PKG/$NAME.bom" | grep 'osmga-identity-keys.awk' > /dev/null; then
+    note "ok   the identity-key transform is in the payload"
+else
+    bad "osmga-identity-keys.awk is not in the BOM -- post_install would"
+    bad "fail and the machine would keep the old driver name and version"
+fi
+
 # The one thing post_install exists for.  A hook that ships but does not
 # mention the stash is a hook that was replaced by something that forgot.
 if grep 'OSMGADisplay.instances' "$PKG/$NAME.post_install" > /dev/null; then
