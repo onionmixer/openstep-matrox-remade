@@ -27,7 +27,23 @@
  * the same moment as the tier and so cannot state the scheduler's invariant
  * on its own.
  *
- *   /tmp/word [triangles]
+ * A SECOND CASE takes the production route instead, and needs no hook at
+ * all.  The policy refuses nothing today -- osmgaHW3DWarpAdmits returns OK
+ * for everything but a null pointer, since repeat and blending were both
+ * admitted once the hardware answered -- so the only way a real scene
+ * splits across the tiers is a vertex the BUILDER cannot convert.  rhw is
+ * qw times the texture's divisor and must land in [0.125, 128]; with an
+ * orthographic projection qw is one and it never bites, but under
+ * glFrustum qw is one over the eye depth, so triangles past eight units
+ * are refused and go down the trapezoid path while nearer ones do not.
+ *
+ * That case cannot switch tiers inside one process -- the tier is sampled
+ * once from the environment -- so it prints a winner map and two runs are
+ * compared on the host, which is how every other comparison in this tree
+ * works.
+ *
+ *   /tmp/word [triangles]            the hooked schedule, self-judging
+ *   /tmp/word persp [triangles]      the production route, dumps a map
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,6 +68,8 @@ static unsigned char *winA, *winB;
  * Overlapping opaque triangles.  The red channel carries the index times
  * STEP, so a pixel names its writer and a one-level shift cannot rename it.
  */
+static int perspMode;
+
 static void
 scene(int n, int alternate)
 {
@@ -61,14 +79,29 @@ scene(int n, int alternate)
     for (i = 0; i < n; i++) {
         double x = 10.0 + (double)((i * 5) % 250);
         double y = 10.0 + (double)((i * 9) % 170);
+        /* Eye depths from 2 to 62 in the perspective case: qw runs 0.5 down
+         * to 0.016, so the near ones convert and the far ones do not. */
+        double ez = 2.0 + (double)i;
 
         if (alternate)
             OSMGAMesaHookForceTrapezoid((i & 1) ? 1 : 0);
         glColor4ub((GLubyte)(4 + i * STEP), 0x40, 0x80, 255);
         glBegin(GL_TRIANGLES);
-          glVertex2d(x,        y);
-          glVertex2d(x + 52.0, y + 9.0);
-          glVertex2d(x + 11.0, y + 44.0);
+          if (perspMode) {
+              /* The same screen footprint at every depth: the frustum is
+               * set so that a unit at eye depth ez covers the same pixels,
+               * so the overlap -- and therefore the ordering question -- is
+               * the same as in the orthographic case. */
+              double s = ez / 8.0;
+
+              glVertex3d((x - 160.0) * s, (y - 120.0) * s, -ez);
+              glVertex3d((x + 52.0 - 160.0) * s, (y + 9.0 - 120.0) * s, -ez);
+              glVertex3d((x + 11.0 - 160.0) * s, (y + 44.0 - 120.0) * s, -ez);
+          } else {
+              glVertex2d(x,        y);
+              glVertex2d(x + 52.0, y + 9.0);
+              glVertex2d(x + 11.0, y + 44.0);
+          }
         glEnd();
         /*
          * And rasterise it now, while this triangle's tier is the one in
@@ -120,10 +153,15 @@ int
 main(int argc, char **argv)
 {
     OSMesaContext ctx;
-    int n = (argc > 1) ? atoi(argv[1]) : NTRI;
+    int argi = 1;
+    int n;
     unsigned long w0, t0, w1, t1;
     long i, differ = 0, covered = 0;
     int bad = 0;
+
+    perspMode = (argc > 1 && strcmp(argv[1], "persp") == 0);
+    if (perspMode) argi = 2;
+    n = (argc > argi) ? atoi(argv[argi]) : NTRI;
 
     /* The colour must stay inside a byte, and stay clear of the clear. */
     if (n <= 0 || n > (255 - 4) / STEP) n = (255 - 4) / STEP;
@@ -139,12 +177,39 @@ main(int argc, char **argv)
     }
     glViewport(0, 0, W, H);
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
-    glOrtho(0.0, (double)W, 0.0, (double)H, -1.0, 1.0);
+    if (perspMode)
+        /* At eye depth 8 a unit is a pixel, which is what the scaling in
+         * scene() is written against. */
+        glFrustum(-160.0 / 8.0, 160.0 / 8.0, -120.0 / 8.0, 120.0 / 8.0,
+                  1.0, 400.0);
+    else
+        glOrtho(0.0, (double)W, 0.0, (double)H, -1.0, 1.0);
     glMatrixMode(GL_MODELVIEW); glLoadIdentity();
     glDisable(GL_DEPTH_TEST); glDisable(GL_BLEND); glDisable(GL_DITHER);
     glDisable(GL_CULL_FACE); glDisable(GL_TEXTURE_2D); glDisable(GL_ALPHA_TEST);
     glShadeModel(GL_FLAT);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+
+    if (perspMode) {
+        /*
+         * The production route.  One run, one map; the comparison is
+         * between two PROCESSES, because the tier is sampled once from the
+         * environment and cannot be changed inside one.
+         */
+        w0 = OSMGAMesaHookWarp(); t0 = OSMGAMesaHookTraps();
+        i  = (long)OSMGAMesaHookSoftware();
+        scene(n, 0);
+        winners(winA, n);
+        printf("# persp %d triangles  warp %lu  trapezoids %lu  software %lu\n",
+               n, OSMGAMesaHookWarp() - w0, OSMGAMesaHookTraps() - t0,
+               OSMGAMesaHookSoftware() - (unsigned long)i);
+        for (i = 0; i < (long)W * H; i++)
+            if (winA[i] != 0xFF)
+                printf("O %ld %d\n", i, (int)winA[i]);
+        OSMesaDestroyContext(ctx);
+        free(app); free(winA); free(winB);
+        return 0;
+    }
 
     printf("mixing the tiers must not change who owns a pixel (%d opaque"
            " overlapping triangles, %d levels apart)\n\n", n, STEP);
