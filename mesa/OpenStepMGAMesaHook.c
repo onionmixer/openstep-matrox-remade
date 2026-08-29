@@ -1044,10 +1044,38 @@ osmgaMesaFlushWarp(void)
         osmgaMesaBatchUntextured(&wb->state);
     }
 
+    /*
+     * Timed the way version 9 times, and behind the same switch.
+     *
+     * The correctness counters were made to see this tier and the clock was
+     * not, so every WARP run reported nought microseconds in the ioctl --
+     * which would have made the tier look free in exactly the comparison it
+     * exists to win.  Same class as the counter blindness, missed at the
+     * same time.
+     *
+     * Behind the switch for the reason the switch exists: two
+     * gettimeofdays are 9 us of system call a submission, and this tier
+     * submits per RUN rather than per batch, so leaving it on would tax
+     * whichever arm submits more often -- which is the very thing being
+     * measured.
+     */
     memset(&res, 0, sizeof res);
-    rc = OSMGAMesaProbeSubmit(&res);
+    if ((hookInstrument & OSMGA_MESA_INST_TIME) != 0) {
+        struct timeval t0, t1;
+
+        gettimeofday(&t0, (struct timezone *)0);
+        rc = OSMGAMesaProbeSubmit(&res);
+        gettimeofday(&t1, (struct timezone *)0);
+        submitUs += (unsigned long)((t1.tv_sec - t0.tv_sec) * 1000000L +
+                                    (t1.tv_usec - t0.tv_usec));
+    } else {
+        rc = OSMGAMesaProbeSubmit(&res);
+    }
     submitCount++;
     submitDwords += res.dwords;
+    submitSpins += res.spins;
+    if (res.spins > submitSpinMax) submitSpinMax = res.spins;
+    if (res.spins != 0UL) submitSpun++;
 
     if (rc == 0) {
         /*
