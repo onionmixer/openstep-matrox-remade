@@ -21,6 +21,11 @@ extern unsigned long OSMGAMesaHookBatches(void);
 extern unsigned long OSMGAMesaHookUnsupported(void);
 extern unsigned long OSMGAMesaHookDeclined(void);
 extern unsigned long OSMGAMesaHookVerdictCount(unsigned long v);
+extern unsigned long OSMGAMesaHookWarp(void);
+extern unsigned long OSMGAMesaHookTraps(void);
+extern int OSMGAMesaBufferTextureArena(const void *ctx,
+                                      unsigned long *origin,
+                                      unsigned long *bytes);
 
 #define W 320
 #define H 240
@@ -245,7 +250,7 @@ main(int argc, char **argv)
 {
     OSMesaContext ctx;
     GLuint tex;
-    unsigned long d0, s0, p0, a0, t0;
+    unsigned long d0, s0, p0, a0, t0, w0;
     long drew;
 
     dumpMode = (argc > 1);
@@ -1337,6 +1342,7 @@ main(int argc, char **argv)
     glClear(GL_COLOR_BUFFER_BIT);
     d0 = OSMGAMesaHookBatches(); s0 = OSMGAMesaHookSoftware();
     t0 = OSMGAMesaHookTraps();
+    w0 = OSMGAMesaHookWarp();
     glBegin(GL_TRIANGLES);
       glTexCoord2f(0.0f, 0.0f); glVertex2d( 20.0,  30.0);
       glTexCoord2f(1.0f, 0.2f); glVertex2d(220.0,  70.0);
@@ -1356,10 +1362,28 @@ main(int argc, char **argv)
      * happening -- which is what its previous wording was written to avoid.
      * So the trapezoids are counted as well: one batch AND two of them.
      */
+    /*
+     * And on the WARP tier there IS no split.  The microcode does the setup,
+     * so a middle vertex costs nothing and the triangle goes out whole --
+     * so the trapezoid count is nought, not two, and asking for two is
+     * asking a question the tier has no answer to.
+     *
+     * The reason the count was there still has to be served: one batch
+     * alone would pass on the split never happening.  For this tier the
+     * equivalent is that the batch carried the triangle AS a WARP triangle
+     * and left no trapezoids behind -- and the picture check below, every
+     * pixel of it a texel of ours, is what says the whole triangle was
+     * actually drawn rather than half of it.
+     */
     say("a split triangle goes out as ONE batch",
         OSMGAMesaHookBatches() - d0 == 1UL, 0);
-    say("carrying both its trapezoids",
-        OSMGAMesaHookTraps() - t0 == 2UL, 0);
+    if (OSMGAMesaHookWarp() - w0 != 0UL)
+        say("and the WARP tier drew it whole, with no trapezoids",
+            OSMGAMesaHookWarp() - w0 == 1UL &&
+            OSMGAMesaHookTraps() - t0 == 0UL, 0);
+    else
+        say("carrying both its trapezoids",
+            OSMGAMesaHookTraps() - t0 == 2UL, 0);
     say("with nothing falling back", OSMGAMesaHookSoftware() - s0 == 0UL, 0);
     {
         long x, y, bad = 0, seen = 0;
@@ -1382,15 +1406,42 @@ main(int argc, char **argv)
         say("every pixel of it is still a texel", bad == 0, 0);
     }
 
-    /* 5. the arena, run out */
+    /*
+     * 5. the arena, run out.
+     *
+     * The count is DERIVED from the arena the driver actually granted, not
+     * fixed.  It used to be twenty-four, and twenty-four 256x256 textures
+     * are six megabytes: at 1600x1200 this card grants 19.1 MB of
+     * offscreen, so the arena did not run out and the case failed for the
+     * mode the machine happens to be in rather than for anything about the
+     * driver.  A test whose verdict depends on the display mode is not
+     * testing the driver.
+     *
+     * Each of these occupies 256 * 256 * 4 bytes -- the arena stores at 32
+     * bits per texel whatever the source format -- so the arena holds
+     * bytes/262144 of them, and one more than that must exhaust it.  The
+     * cap is there so a future card with an enormous grant cannot turn
+     * this into an all-day upload.
+     */
     {
-        GLuint big[24];
+#define OSMGA_FAT_BYTES (256UL * 256UL * 4UL)
+#define OSMGA_FAT_CAP   192
+        GLuint big[OSMGA_FAT_CAP];
         static GLubyte fat[256 * 256 * 3];
-        int k, ran = 0;
+        unsigned long aOrg = 0UL, aLen = 0UL;
+        int k, ran = 0, want;
+
+        if (!OSMGAMesaBufferTextureArena((const void *)ctx, &aOrg, &aLen))
+            aLen = 0UL;
+        want = (int)(aLen / OSMGA_FAT_BYTES) + 2;
+        if (want < 2)               want = 2;
+        if (want > OSMGA_FAT_CAP)   want = OSMGA_FAT_CAP;
+        printf("# arena %lu bytes, so %d of 256x256 at 32bpp should exhaust"
+               " it\n", aLen, want);
 
         memset(fat, 0x40, sizeof fat);
-        glGenTextures(24, big);
-        for (k = 0; k < 24; k++) {
+        glGenTextures(want, big);
+        for (k = 0; k < want; k++) {
             glBindTexture(GL_TEXTURE_2D, big[k]);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
@@ -1411,7 +1462,9 @@ main(int argc, char **argv)
             }
         }
         say("the arena does run out", ran, 0);
-        glDeleteTextures(24, big);
+        glDeleteTextures(want, big);
+#undef OSMGA_FAT_BYTES
+#undef OSMGA_FAT_CAP
     }
 
     /*
@@ -1615,6 +1668,18 @@ main(int argc, char **argv)
         }
     }
 
+    /*
+     * Which tier did the work, over the whole run.
+     *
+     * Every case above asks "did the engine draw it", and both accelerated
+     * tiers answer yes.  So a run with the WARP switch on that quietly fell
+     * back to trapezoids for every textured triangle would pass all of it
+     * and say nothing.  warp is a SUBSET of drawn, so the totals name the
+     * arm: all of it, none of it, or a mixture.
+     */
+    printf("\n# tiers over the whole run: drawn %lu  warp %lu  software %lu\n",
+           OSMGAMesaHookDrawn(), OSMGAMesaHookWarp(),
+           OSMGAMesaHookSoftware());
     printf("\n%s (%d failing)\n",
            failures ? "=== PROBLEM ===" : "=== nothing to report ===", failures);
     return failures ? 1 : 0;
