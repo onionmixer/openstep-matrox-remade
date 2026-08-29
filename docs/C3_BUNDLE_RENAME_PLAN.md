@@ -205,3 +205,31 @@ bundle's instance table is in use` 라고 말했고, 그 표의 `Location` 은
 그리고 첫 시도가 조용히 실패했다 — 긴 한 줄을 원격 셸에 보냈다가 터미널이
 엉켰고, `Location` 이 여전히 비어 있는 것을 보고서야 알았다.  **표를 읽어
 확인하지 않았으면 그대로 재부팅했을 것이다.**
+
+## 12. 재부팅 후 — 개명이 통했다
+
+```
+Aug 29 18:30:58  OpenStepMGAReplacementDisplay: linear mode ACTIVE 1600x1200 RGB:888/32
+Aug 29 18:30:58  offscreen window OPENED 9322496..29360128 (19568 KiB); full-screen GL
+Aug 29 18:30:53  M1-3a: Mesa acceleration switch is Yes
+Aug 29 18:30:53  C2: WARP 3D preference is Yes
+```
+
+**로그 접두사가 아직 옛 이름인 것은 옳다** — 그 문자열은 클래스 이름에서
+오고, 클래스는 일부러 안 바꿨다.  번들은 `OSMGADisplay` 이고 클래스는
+`OpenStepMGAReplacementDisplay` 이며, `Class Names` 가 그 클래스를 가리킨다.
+
+이관한 표가 그대로 읽혔다: 가속 켜짐, WARP 선호 켜짐, 1600x1200 복귀.
+teapot 이 **환경변수 없이 128 제출** — 체크박스 설정이 이관을 건너 살아남았다.
+
+```
+빠른 회귀            PROBLEM 0 건
+build-driver-pkg     PASS (payload by package/installer_tar)
+verify-driver-pkg    PASS
+check-bom-overlap    PASS
+```
+
+한 가지 자책할 것: 처음 로그를 볼 때 `grep "a|b|c"` 를 썼는데 이 `grep` 은
+BRE 라 아무것도 안 나왔고, 잠깐 드라이버가 안 떴다고 생각했다.  `tail` 로
+직접 보고서야 멀쩡한 것을 알았다.  **도구가 답을 못 찾은 것과 답이 없는
+것은 다르다.**
