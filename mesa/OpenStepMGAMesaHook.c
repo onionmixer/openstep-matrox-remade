@@ -8,6 +8,7 @@
  */
 
 #include <math.h>
+#include <stdlib.h>   /* getenv, for the WARP tier switch */
 #include <sys/time.h>   /* test-only submit timing; see osmgaMesaSubmitBatch */
 #include "glheader.h"
 #include "context.h"
@@ -21,6 +22,7 @@
 #include "OpenStepMGAMesaTriangle.h"
 #include "OpenStepMGAMesaBuffer.h"
 #include "OpenStepMGAMesaTexture.h"
+#include "OpenStepMGAMesaWarp.h"
 #include "OpenStepMGAMesaHook.h"
 
 
@@ -597,7 +599,90 @@ static triangle_func savedTriangle;
  * replays, and holds a guard, so a replayed software triangle that lands
  * back in these wrappers finds an empty batch instead of recursing.
  */
+/*
+ * HOW MANY SOURCES CAN BE PENDING.
+ *
+ * The trapezoid batch holds 180 primitives, so this was sized to that; a
+ * WARP batch holds 720 vertices, which is 240 triangles, and every one of
+ * those is a source with a replay record.  Sized to the trapezoid maximum
+ * it is written past at the 181st WARP source; sizing WARP down to match
+ * would cap its batches at three quarters of what they carry.  Sixty more
+ * records is about two kilobytes.
+ */
+#if (OSMGA_HW3D_MAX_VTX / 3UL) > OSMGA_HW3D_MAX_TRI
+#define OSMGA_MESA_MAX_PEND_SRC  (OSMGA_HW3D_MAX_VTX / 3UL)
+#else
+#define OSMGA_MESA_MAX_PEND_SRC  OSMGA_HW3D_MAX_TRI
+#endif
+
+/*
+ * WHICH SHAPE IS PENDING.
+ *
+ * The command window holds ONE versioned payload: the version 10
+ * validator refuses a WARP batch whose triCount is nonzero, and the WARP
+ * layout is a second structure at the same address rather than an
+ * extension of the first.  So pending work is trapezoids or vertices and
+ * never both, and a triangle wanting the other shape flushes first.
+ *
+ * That flush is not a cost of the design, it is the ordering: a source
+ * WARP cannot take must be drawn AFTER the WARP work already queued and
+ * BEFORE anything following it, or blending and equal-depth comparisons
+ * come out in the wrong order.
+ */
+#define OSMGA_MESA_PEND_NONE  0
+#define OSMGA_MESA_PEND_TRAP  1
+#define OSMGA_MESA_PEND_WARP  2
+static int pendMode = OSMGA_MESA_PEND_NONE;
+
+/*
+ * THE WARP TIER IS OFF UNTIL SOMEBODY ASKS.
+ *
+ * Nothing yet says the two tiers draw the same picture -- that is what the
+ * mixed-tier A/B is for -- so a build that shipped with this on could
+ * change what applications see before anyone had compared them.
+ *
+ * A library switch and not an instance-table one, deliberately: no
+ * capability advertises WARP, so a kernel-side key would leave the hook
+ * building version 10 batches that the kernel then refuses, which is
+ * repeated replay wearing the costume of an opt-in.
+ *
+ * And NOT OSMGA_MESA_ACCEL, which turns the VRAM and depth setup off
+ * altogether: an A/B between the tiers has to hold everything else equal,
+ * and that switch does not.
+ *
+ * Sampled once, on first use.  It is read where a flush is legal, and the
+ * value cannot change under pending work.
+ */
+#define OSMGA_MESA_WARP_ENV "OSMGA_MESA_WARP"
+static int warpTier = -1;            /* -1 not yet sampled */
+
+static int
+osmgaMesaWarpWanted(void)
+{
+    if (warpTier < 0) {
+        const char *v = getenv(OSMGA_MESA_WARP_ENV);
+
+        warpTier = (v != 0 && (*v == '1' || *v == 'y' || *v == 'Y' ||
+                               *v == 't' || *v == 'T')) ? 1 : 0;
+    }
+    return warpTier;
+}
+
 static unsigned long pendTraps;      /* trapezoids already in batch->tri[] */
+static unsigned long pendVerts;      /* vertices already in the WARP arm   */
+
+/*
+ * Is anything waiting?  Asked through the mode rather than through
+ * pendTraps, which is only one of the two shapes -- every test that used
+ * pendTraps alone would have called a full WARP batch empty.
+ */
+static int
+osmgaMesaPendEmpty(void)
+{
+    if (pendMode == OSMGA_MESA_PEND_WARP)
+        return pendVerts == 0UL;
+    return pendTraps == 0UL;
+}
 static unsigned long pendSrcCount;   /* source triangles those came from */
 /*
  * The indices, and the state a software redraw of them reads.
@@ -622,7 +707,7 @@ static struct {
                                     every flush happens BEFORE the append,
                                     and the append is one uninterrupted
                                     loop */
-} pendSrc[OSMGA_HW3D_MAX_TRI];
+} pendSrc[OSMGA_MESA_MAX_PEND_SRC];
 static GLcontext *pendCtx;
 static void *pendVB;
 static int pendHasTex;
@@ -814,6 +899,151 @@ osmgaMesaCountRefusal(void)
  * trapezoid, which may be the source's second: half a triangle drawn twice
  * is not a narrowing.
  */
+
+/*
+ * ---- M11: the WARP arm ----
+ *
+ * A SEPARATE function rather than a branch inside osmgaMesaFlushPending.
+ * That function's own comment calls draw order its spine, and its refusal
+ * narrowing is a recursion over trapezoid indices; threading a second
+ * shape through it would put both at risk to save a little duplication.
+ *
+ * What is shared is what matters: the replay records, the three gates, the
+ * reentrancy guard, the revoke-versus-fork distinction, and the bracket
+ * that puts the four context values back.
+ */
+static OSMGAMesaWarpBuilder warpBuild;
+
+/*
+ * Would the WARP tier take this primitive?
+ *
+ * Asked HERE, before anything is appended, because the assembler reports
+ * only FULL -- policy refusal happens in the kernel validator, and by then
+ * the batch is assembled and a refusal costs every source in it.  This is
+ * what makes case (a) a single-triangle fallback rather than a batch-wide
+ * one.
+ *
+ * The rules are the kernel's own functions, not a second copy of them.
+ */
+static int
+osmgaMesaWarpTakes(const OSMGAHW3DState *st, unsigned long dwgctl,
+                   unsigned long alphactrl)
+{
+    OSMGAHW3DRun probe;
+
+    probe.dwgctl    = (osmga_u32)dwgctl;
+    probe.alphactrl = (osmga_u32)alphactrl;
+    probe.first     = 0U;
+    probe.count     = 3U;
+    if (osmgaHW3DValidatePrimState(dwgctl, alphactrl) != OSMGA_HW3D_OK)
+        return 0;
+    if (osmgaHW3DWarpAdmits(st, &probe) != OSMGA_HW3D_OK)
+        return 0;
+    return 1;
+}
+
+/*
+ * Submit the assembled WARP batch, and deal with what comes back.
+ *
+ * THE BOUNDARY THAT MATTERS.  A refusal with a verdict happened BEFORE the
+ * kernel encoded anything, so the batch drew nothing and every source in
+ * it can be replayed in software -- in record order, which is the source
+ * order the trapezoid path's narrowing exists to preserve.  A failure with
+ * verdict OK happened after the doorbell and may have drawn PART of the
+ * batch; replaying then draws some triangles twice, and blending and
+ * equal-depth comparisons show it.  That case revokes and replays
+ * nothing, which is what the version 9 path does and what the kernel's own
+ * timeout policy says.
+ */
+static void
+osmgaMesaFlushWarp(void)
+{
+    OSMGAHW3DWarpBatch *wb;
+    OSMGAHW3DSubmitBlock res;
+    GLcontext *ctx;
+    unsigned long nsrc, i;
+    int rc;
+
+    pendInFlush = 1;
+    ctx  = pendCtx;
+    nsrc = pendSrcCount;
+    /* Detach FIRST: a replayed triangle re-entering sees an empty batch. */
+    pendVerts    = 0UL;
+    pendSrcCount = 0UL;
+    pendMode     = OSMGA_MESA_PEND_NONE;
+
+    wb = (OSMGAHW3DWarpBatch *)OSMGAMesaProbeBatch();
+    if (wb == 0 || ctx == 0) {
+        /* The same two situations the trapezoid arm tells apart: a revoke
+         * leaves the colour surface mapped and every pending source still
+         * drawable, a fork releases it and they must be dropped. */
+        if (ctx != 0 && OSMGAMesaBufferBoundTo(ctx->DriverCtx)) {
+            GLfloat       zoffWas = ctx->PolygonZoffset;
+            GLvector4ub  *cptrWas = ctx->VB->ColorPtr;
+            GLvector1ui  *iptrWas = ctx->VB->IndexPtr;
+            GLubyte     (*specWas)[4] = ctx->VB->Specular;
+
+            for (i = 0UL; i < nsrc; i++)
+                (void)osmgaMesaReplaySource(ctx, i);
+            hookRescued += nsrc;
+            ctx->PolygonZoffset = zoffWas;
+            ctx->VB->ColorPtr   = cptrWas;
+            ctx->VB->IndexPtr   = iptrWas;
+            ctx->VB->Specular   = specWas;
+        } else {
+            hookDropped += nsrc;
+        }
+        hookFlushOther++;
+        pendInFlush = 0;
+        return;
+    }
+
+    memset(&res, 0, sizeof res);
+    rc = OSMGAMesaProbeSubmit(&res);
+    submitCount++;
+    submitDwords += res.dwords;
+
+    if (rc != 0) {
+        hookDeclined++;
+        if (res.verdict < OSMGA_MESA_VERDICTS)
+            hookVerdictCount[res.verdict]++;
+        hookLastRefusal.status   = res.status;
+        hookLastRefusal.verdict  = res.verdict;
+        hookLastRefusal.triangle = res.triangle;   /* a RUN, for version 10 */
+        hookLastRefusal.triCount = (unsigned long)wb->vtxCount;
+        hookLastRefusal.dstWidth  = wb->state.dstWidth;
+        hookLastRefusal.dstHeight = wb->state.dstHeight;
+
+        if (res.verdict != (unsigned long)OSMGA_HW3D_OK) {
+            /* Refused before encoding: nothing was drawn.  Replay every
+             * source, in record order. */
+            GLfloat       zoffWas = ctx->PolygonZoffset;
+            GLvector4ub  *cptrWas = ctx->VB->ColorPtr;
+            GLvector1ui  *iptrWas = ctx->VB->IndexPtr;
+            GLubyte     (*specWas)[4] = ctx->VB->Specular;
+
+            for (i = 0UL; i < nsrc; i++)
+                (void)osmgaMesaReplaySource(ctx, i);
+            hookRescued += nsrc;
+            ctx->PolygonZoffset = zoffWas;
+            ctx->VB->ColorPtr   = cptrWas;
+            ctx->VB->IndexPtr   = iptrWas;
+            ctx->VB->Specular   = specWas;
+        } else {
+            /*
+             * The verdict was OK and it still failed, so the doorbell rang
+             * and part of this batch may be on the screen.  Replaying
+             * would draw those twice.  Give the tier up instead -- the
+             * kernel has already latched acceleration off for the same
+             * reason.
+             */
+            OSMGAMesaProbeRevoke("WARP submission failed after the doorbell");
+            hookDropped += nsrc;
+        }
+    }
+    pendInFlush = 0;
+}
+
 static void
 osmgaMesaFlushPending(void)
 {
@@ -822,8 +1052,12 @@ osmgaMesaFlushPending(void)
     GLcontext *ctx;
     unsigned long nsrc, ntraps, i;
 
-    if (pendTraps == 0UL || pendInFlush)
+    if (osmgaMesaPendEmpty() || pendInFlush)
         return;
+    if (pendMode == OSMGA_MESA_PEND_WARP) {
+        osmgaMesaFlushWarp();
+        return;
+    }
     pendInFlush = 1;
     ctx = pendCtx;
     ntraps = pendTraps;
@@ -1847,7 +2081,7 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
      */
     batchable = (VB->ClipOrMask == 0) && (ctx->Driver.MultipassFunc == 0);
 
-    if (pendTraps != 0UL) {
+    if (!osmgaMesaPendEmpty()) {
         int part = 0;
 
         if (pendCtx != ctx || pendVB != (void *)VB) {
@@ -1892,7 +2126,7 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         }
     }
 
-    if (pendTraps == 0UL) {
+    if (osmgaMesaPendEmpty()) {
         pendCtx = ctx;
         pendVB = (void *)VB;
         pendHasTex = 0;
@@ -2629,7 +2863,7 @@ osmgaMesaMirror(GLcontext *ctx)
      * software, all before the mirror looks at the surface -- otherwise the
      * copy would deliver a frame with its last triangles missing.
      */
-    if (pendTraps != 0UL)
+    if (!osmgaMesaPendEmpty())
         hookFlushBracket++;
     osmgaMesaFlushPending();
     /*
