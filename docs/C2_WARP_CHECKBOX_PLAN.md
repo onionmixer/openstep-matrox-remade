@@ -222,3 +222,20 @@ Display 드라이버 인스펙터에 세 번째 스위치가 보이나
 "Use WARP 3D (may differ on sliver triangles)" 가 잘리지 않고 들어가나
 껐다 켜면 Instance0.table 의 "WARP 3D" 가 따라 바뀌나
 ```
+
+## 12. 패널이 양방향으로 동작한다 — 운영자가 확인
+
+체크박스를 끄고 켜면 설치된 인스턴스 표가 따라 움직인다:
+
+```
+켬   "WARP 3D" = "Yes";     839 바이트
+끔   "WARP 3D" = "No";      838 바이트   (정확히 한 글자 차이)
+28 줄,  다른 키 25 개 전부 보존 -- Location, Version, Display Mode, Gray Levels 포함
+```
+
+`mtime` 이 부팅(17:35:47) 이후인 17:41 이므로 쓴 것은 Configure.app 이다.
+outlet 이 연결되지 않았다면 `warpSwitch` 는 nil 이고 `setIntValue:` 도
+`storeFlag:` 도 아무 일을 하지 않았을 것이다 — **아무 로그도 남기지 않고.**
+값이 두 방향으로 따라온다는 것이 그 연결의 증거다.
+
+**C2 완료.**
