@@ -869,6 +869,17 @@ typedef unsigned int osmga_u32;
  * rhw is qw * tq and tu0/tv0 are s/tq and t/tq -- the texture's own
  * denominator folded into the vertex weight, which is what the reference
  * does (mgavb.c) and what the vertex form has room for.
+ *
+ * diffuse is a packed byte per channel and there is nowhere in it to put
+ * half a level.  That is not a detail: the drawing engine DISCARDS the low
+ * fifteen bits of an interpolated colour rather than rounding them (see
+ * osmgaStartFixed in mesa/OpenStepMGAMesaTriangle.c, which adds half a
+ * level to its start to compensate), and a WARP start comes out of the
+ * microcode with no such compensation.  Measured: this tier's colour is
+ * nought or one level BELOW the trapezoid tier's, never more, constant
+ * across the triangle, and exactly equal on a channel whose plane takes
+ * integer values at integer points -- which is where a truncation has
+ * nothing to discard.  It is not correctable through this struct.
  */
 typedef struct {
     osmga_u32 x, y;

@@ -77,7 +77,7 @@ main(int argc, char **argv)
     OSMesaContext ctx;
     unsigned long *app;
     long x, y, i;
-    unsigned long d0, s0, u0, x0;
+    unsigned long d0, s0, u0, x0, w0;
     int sh = (argc > 1) ? (atoi(argv[1]) - 1) : 0;
     const long *vx, *vy;
     const int *vr, *vg, *vb, *va;
@@ -116,6 +116,7 @@ main(int argc, char **argv)
     s0 = OSMGAMesaHookSoftware();
     u0 = OSMGAMesaHookUnsupported();
     x0 = OSMGAMesaHookDeclined();
+    w0 = OSMGAMesaHookWarp();
 
     glBegin(GL_TRIANGLES);
       for (i = 0; i < 3; i++) {
@@ -132,9 +133,18 @@ main(int argc, char **argv)
     for (i = 0; i < 3; i++)
         printf("# vertex %ld  %ld %ld  rgba %d %d %d %d\n",
                i, vx[i], vy[i], vr[i], vg[i], vb[i], va[i]);
-    printf("# counters drawn=%lu software=%lu unsupported=%lu declined=%lu\n",
+    /*
+     * warp is a SUBSET of drawn.  This file asks WHERE a path evaluates
+     * the interpolation plane, and the two accelerated tiers compute their
+     * gradients in different places -- one in fixed point in this library,
+     * one in microcode from float vertices -- so the answer is per tier
+     * and the dump has to say which one it is.
+     */
+    printf("# counters drawn=%lu software=%lu unsupported=%lu declined=%lu"
+           " warp=%lu\n",
            OSMGAMesaHookDrawn() - d0, OSMGAMesaHookSoftware() - s0,
-           OSMGAMesaHookUnsupported() - u0, OSMGAMesaHookDeclined() - x0);
+           OSMGAMesaHookUnsupported() - u0, OSMGAMesaHookDeclined() - x0,
+           OSMGAMesaHookWarp() - w0);
     printf("# mode %s\n",
            (OSMGAMesaBufferOrigin() == 0UL) ? "software"
            : ((OSMGAMesaHookSoftware() - s0 != 0UL ||

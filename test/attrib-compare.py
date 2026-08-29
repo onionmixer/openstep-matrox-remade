@@ -81,12 +81,29 @@ def main(d):
     fail = []
     print("shape %s   split at y = %d\n" % (V, SPLIT))
 
-    print("== the engine drew the accelerated run ==")
+    print("== the engine drew the accelerated run, and which tier ==")
     ok = (mh['software'] == 0 and mh['declined'] == 0
           and mh['unsupported'] == 0 and mh['drawn'] > 0)
-    print("   %s drawn=%d software=%d unsupported=%d declined=%d%s"
+    #
+    # warp is a SUBSET of drawn: both accelerated tiers are "the engine drew
+    # it".  This file's whole subject is WHERE a path evaluates the plane,
+    # and the two tiers compute their gradients in different places, so an
+    # unnamed arm is an unreadable answer.  A mixed arm is refused rather
+    # than averaged.  Dumps written before the counter have no warp key and
+    # read as they did.
+    #
+    tier = ""
+    if 'warp' in mh:
+        if mh['warp'] == 0:            tier = "   trapezoid"
+        elif mh['warp'] == mh['drawn']: tier = "   WARP"
+        else:
+            tier = "   MIXED TIERS"
+            fail.append("the accelerated run drew %d on the engine of which "
+                        "%d were WARP; a mixed arm cannot be judged"
+                        % (mh['drawn'], mh['warp']))
+    print("   %s drawn=%d software=%d unsupported=%d declined=%d%s%s"
           % (mh['mode'], mh['drawn'], mh['software'], mh['unsupported'],
-             mh['declined'], "" if ok else "   <-- NOT PURE"))
+             mh['declined'], tier, "" if ok else "   <-- NOT PURE"))
     if not ok: fail.append("not a pure hardware run")
 
     print("\n== coverage first: colour is only comparable where both drew ==")
@@ -97,6 +114,18 @@ def main(d):
         print("   %-8s %4d pixels   missing %d  extra %d%s"
               % (name, len(px), len(miss), len(extra),
                  "   EXACT" if not miss and not extra else ""))
+        #
+        # And it is a failure, for the accelerated path.  This was printed
+        # and not counted, so a tier that lost or stole edge pixels could
+        # still be reported healthy: everything below compares colour on
+        # the INTERSECTION, which is exactly the set the divergence has
+        # already been removed from.  Software's divergence stays a fact
+        # about Mesa and not a verdict, the same as in seam-compare.
+        #
+        if name == "hardware" and (miss or extra):
+            fail.append("the accelerated path covered %d pixels the rule "
+                        "does not and missed %d it does" % (len(extra),
+                                                            len(miss)))
         if miss:
             ends = all(x in (ref[y][0], ref[y][1]) for (x, y) in miss)
             print("            missed: %s%s" % (sorted(miss)[:4],
