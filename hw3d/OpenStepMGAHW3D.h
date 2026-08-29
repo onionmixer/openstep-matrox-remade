@@ -1553,6 +1553,19 @@ int osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                            unsigned long *badTri, OSMGAHW3DTexReach *reach,
                            OSMGAHW3DTexBand *bands);
 
+/*
+ * The same, and it also says WHICH check refused.  Zero means no texture
+ * check spoke -- the verdict came from somewhere else, or there was none.
+ * The numbers are the file's own and are listed beside the macro that
+ * writes them.
+ */
+int osmgaHW3DValidateReachSite(const OSMGAHW3DBatch *b,
+                               const OSMGAHW3DLimits *lim,
+                               unsigned long *badTri,
+                               OSMGAHW3DTexReach *reach,
+                               OSMGAHW3DTexBand *bands,
+                               unsigned long *texSite);
+
 int osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                       unsigned long *badTri);
 

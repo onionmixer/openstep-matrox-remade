@@ -10,25 +10,21 @@
 #include "OpenStepMGAHW3D.h"
 
 /*
- * Three separate places in this file answer E_TEXCOORD, and they refuse
- * for three different reasons: the trapezoid's own texture anchor out of
- * range, the denominator's anchor or slope budget, and a row endpoint
- * whose reach leaves the band.  A verdict number cannot say which one
- * spoke, and the host-side harness that reproduces the builder's
- * disagreement with this file has to know -- only one of the three is a
- * candidate for changing.
+ * Several places in this file answer E_TEXCOORD and they refuse for
+ * different reasons -- the trapezoid's own texture anchor, the
+ * denominator's anchor and slope budget, a slope against one of the box's
+ * extents, a drawn row's two ends, an empty row's position.  A verdict
+ * number cannot say which one spoke, and knowing which is the difference
+ * between fixing the thing that refuses and guessing at it.
  *
- * Compiled out of the driver entirely.  A single shared global is the
- * wrong thing to carry into the kernel, where validation runs for
- * whoever asks and there is more than one asker; the harness is one
- * process running one case at a time and can hold it safely.
+ * It travels out through a caller-supplied pointer, not a global.  A
+ * global would be the wrong thing here: validation runs for whoever asks
+ * and there is more than one asker.  The macro expands inside the
+ * validator, so texSite is that function's own parameter and every site
+ * writes to the caller that asked.
  */
-#ifdef OSMGA_HW3D_TESTSITE
-long osmgaHW3DTestTexcoordSite = 0;
-#define OSMGA_HW3D_TEXCOORD_SITE(n) (osmgaHW3DTestTexcoordSite = (n))
-#else
-#define OSMGA_HW3D_TEXCOORD_SITE(n) ((void)0)
-#endif
+#define OSMGA_HW3D_TEXCOORD_SITE(n) \
+    do { if (texSite != 0) *texSite = (unsigned long)(n); } while (0)
 
 #define OSMGA_HW3D_DEPTH_BYTES  2UL    /* MACCESS leaves depth 16-bit */
 
@@ -355,8 +351,21 @@ int
 osmgaHW3DValidate(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                   unsigned long *badTri)
 {
-    return osmgaHW3DValidateReach(b, lim, badTri, (OSMGAHW3DTexReach *)0,
-                                  (OSMGAHW3DTexBand *)0);
+    return osmgaHW3DValidateReachSite(b, lim, badTri, (OSMGAHW3DTexReach *)0,
+                                      (OSMGAHW3DTexBand *)0,
+                                      (unsigned long *)0);
+}
+
+/*
+ * What everything that does not want the site still calls.
+ */
+int
+osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
+                       unsigned long *badTri, OSMGAHW3DTexReach *reach,
+                       OSMGAHW3DTexBand *bands)
+{
+    return osmgaHW3DValidateReachSite(b, lim, badTri, reach, bands,
+                                      (unsigned long *)0);
 }
 
 /*
@@ -564,9 +573,10 @@ osmgaHW3DValidateStateCommon(const OSMGAHW3DState *st,
 }
 
 int
-osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
-                       unsigned long *badTri, OSMGAHW3DTexReach *reach,
-                       OSMGAHW3DTexBand *bands)
+osmgaHW3DValidateReachSite(const OSMGAHW3DBatch *b,
+                           const OSMGAHW3DLimits *lim,
+                           unsigned long *badTri, OSMGAHW3DTexReach *reach,
+                           OSMGAHW3DTexBand *bands, unsigned long *texSite)
 {
     unsigned long i, rows, opcode;
     int anyDepth, anyTex;

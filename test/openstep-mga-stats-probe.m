@@ -31,6 +31,23 @@
 #define PROBE_PARAM   "OSMGAProbeBlit"
 #define PROBE_COUNT   6
 
+/*
+ * What the 3D validator said about the LAST batch it was given.  Worth
+ * reading from outside the client that submitted it: once the driver has
+ * revoked acceleration the client stops asking, so these four words are
+ * still standing at the refusal that caused it, and a tool that was not
+ * linked against the accelerated library can read them.
+ *
+ * On a refusal there are no dwords, so that slot carries which texture
+ * check refused instead.
+ */
+#define HW3D_PARAM    "OSMGAHW3DStatus"
+#define HW3D_COUNT    4
+
+static const char *hw3dName[HW3D_COUNT] = {
+    "verdict", "triangle", "dwords/site", "spins"
+};
+
 static const char *statName[STATS_COUNT] = {
     "statsVersion", "blitRequests", "blitOk", "blitNoop",
     "refusedDisabled", "refusedGeometry", "refusedBusy", "refusedPreExec",
@@ -123,6 +140,22 @@ main(int argc, char **argv)
                     objectNumber:objNum count:PROBE_COUNT];
         printf("OSMGA_PROBE_BLIT result=%d %s\n", (int)r,
                (r == IO_R_SUCCESS) ? "SUCCESS" : "refused/failed");
+    }
+
+    if (argc >= 2 && strcmp(argv[1], "hw3d") == 0) {
+        unsigned h[HW3D_COUNT];
+
+        count = HW3D_COUNT;
+        r = [master getIntValues:h forParameter:HW3D_PARAM
+                    objectNumber:objNum count:&count];
+        if (r != IO_R_SUCCESS) {
+            printf("OSMGA_PROBE_HW3D result=%d (failed)\n", (int)r);
+            return 1;
+        }
+        printf("OSMGA_PROBE_HW3D result=0 count=%u\n", count);
+        for (i = 0; i < (int)count && i < HW3D_COUNT; i++)
+            printf("  %-14s %u\n", hw3dName[i], h[i]);
+        return 0;
     }
 
     count = STATS_COUNT;

@@ -1034,7 +1034,7 @@ osmgaMesaGeometryVerdict(unsigned long verdict)
  * That backstop catches a driver refusing every attempted submission --
  * the narrowing loop's own bound is separate and smaller. */
 static void
-osmgaMesaCountRefusal(unsigned long verdict)
+osmgaMesaCountRefusal(unsigned long verdict, unsigned long site)
 {
     /*
      * The verdict travels with the count now.
@@ -1049,12 +1049,19 @@ osmgaMesaCountRefusal(unsigned long verdict)
      * CONSECUTIVE: the eight that trip the backstop are almost always the
      * same refusal repeating, and the last one is the cheapest to carry.
      */
-    static char why[80];
+    /*
+     * And WHICH check, when the verdict is a texture coordinate.  Thirteen
+     * is answered from five places that want different fixes, and the
+     * kernel puts the one that spoke in the slot the dword count occupies
+     * on a batch that was accepted.  Zero means no texture check spoke.
+     */
+    static char why[112];
 
     hookLastRefusalVerdict = verdict;
     if (++hookRefusedRun >= OSMGA_MESA_REFUSAL_LIMIT) {
-        sprintf(why, "the driver kept refusing batches; last verdict %lu",
-                verdict);
+        sprintf(why,
+                "the driver kept refusing batches; last verdict %lu site %lu",
+                verdict, site);
         OSMGAMesaProbeRevoke(why);
     }
 }
@@ -1313,7 +1320,7 @@ osmgaMesaFlushWarp(void)
             GLvector1ui  *iptrWas = ctx->VB->IndexPtr;
             GLubyte     (*specWas)[4] = ctx->VB->Specular;
 
-            osmgaMesaCountRefusal(res.verdict);
+            osmgaMesaCountRefusal(res.verdict, res.dwords);
             for (i = 0UL; i < nsrc; i++)
                 (void)osmgaMesaReplaySource(ctx, i);
             /* Both, and they are different questions: Replayed is "a
@@ -1722,7 +1729,7 @@ osmgaMesaFlushPending(void)
                  * exactly as the whole batch always did.  This one counts --
                  * it is the shape "the driver refused and we could not say
                  * which triangle", which is what the backstop is for. */
-                osmgaMesaCountRefusal(res.verdict);
+                osmgaMesaCountRefusal(res.verdict, res.dwords);
                 for (i = lo; i < nsrc; i++)
                     (void)osmgaMesaReplaySource(ctx, i);
                 hookReplayed += nsrc - lo;
@@ -1780,7 +1787,7 @@ osmgaMesaFlushPending(void)
                 } else {
                     /* A prefix that validated moments ago refusing now is
                      * nothing this map can reason about: software for it. */
-                    osmgaMesaCountRefusal(res.verdict);
+                    osmgaMesaCountRefusal(res.verdict, res.dwords);
                     for (i = lo; i < s2; i++)
                         (void)osmgaMesaReplaySource(ctx, i);
                     hookReplayed += s2 - lo;
@@ -1799,7 +1806,7 @@ osmgaMesaFlushPending(void)
                 int redrew = osmgaMesaReplaySource(ctx, s2);
 
                 if (!redrew || !osmgaMesaGeometryVerdict(res.verdict))
-                    osmgaMesaCountRefusal(res.verdict);
+                    osmgaMesaCountRefusal(res.verdict, res.dwords);
             }
             hookReplayed++;
             lo = s2 + 1UL;

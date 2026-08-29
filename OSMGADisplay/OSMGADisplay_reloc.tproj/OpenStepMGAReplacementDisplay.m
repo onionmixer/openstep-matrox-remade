@@ -6457,6 +6457,7 @@ refuse2:
     unsigned long epoch3, dstW3, dstH3, dstP3, settle3;
     int anyDepth3 = 0, overlap3 = 0;
     unsigned long *list3, listDwords3, badTri3 = 0UL;
+    unsigned long texSite3 = 0UL;
     unsigned long delay3, limit3;
     OSMGAHW3DTexReach reach3;
     int v3, rc3 = 0, preOK3 = 0, idleOK3 = 0, inject3 = 0, done3 = 0;
@@ -6695,11 +6696,18 @@ refuse2:
     lim.clipX1 = dstW3 - 1UL;
     lim.clipY1 = dstH3 - 1UL;
 
-    v3 = osmgaHW3DValidateReach(&osmgaHW3DSnap.v9, &lim, &badTri3,
-                               &reach3, osmgaHW3DBands);
+    v3 = osmgaHW3DValidateReachSite(&osmgaHW3DSnap.v9, &lim, &badTri3,
+                                    &reach3, osmgaHW3DBands, &texSite3);
     osmgaHW3DLast[0] = (unsigned)v3;
     osmgaHW3DLast[1] = (unsigned)badTri3;
-    osmgaHW3DLast[2] = 0U;
+    /*
+     * On a refusal there are no dwords, so slot two carries which texture
+     * check spoke instead.  The client reads it back as the dword count
+     * and prints it beside the verdict; a verdict alone cannot say whether
+     * the coordinate policy refused a texel address or a proxy for it
+     * refused a box corner, and those want opposite fixes.
+     */
+    osmgaHW3DLast[2] = (v3 == 0) ? 0U : (unsigned)texSite3;
     osmgaHW3DLast[3] = 0U;
     if (v3 != OSMGA_HW3D_OK) {
         /*

@@ -47,7 +47,6 @@ static double g_tq_a = 1.0, g_tq_b = 1.0, g_tq_c = 1.0;
  * refuse a triangle whose drawn pixels are all in range, four is a
  * measurement of those pixels saying they are not.
  */
-extern long osmgaHW3DTestTexcoordSite;
 static long g_site = 0;
 
 static int g_quiet = 0;
@@ -79,6 +78,7 @@ one(const char *name, double ax, double ay, double as, double at,
     OSMGAHW3DTri out[4];
     OSMGAMesaTex tex;
     OSMGAHW3DTexReach vreach;
+    unsigned long vsite;
     OSMGAHW3DTexBand vbands[OSMGA_HW3D_MAX_TRI];
     long tmr[4][9];
     int n, i;
@@ -150,7 +150,7 @@ one(const char *name, double ax, double ay, double as, double at,
             batch.state.tmr[2] = tmr[i][2]; batch.state.tmr[3] = tmr[i][3];
             batch.tri[0] = out[i];
             badTri = 0UL;
-            osmgaHW3DTestTexcoordSite = 0;
+            vsite = 0UL;
             /*
              * Through the SAME entry the kernel uses.  The three-argument
              * wrapper passes a null reach and a null band table, and the
@@ -160,9 +160,9 @@ one(const char *name, double ax, double ay, double as, double at,
              * never takes that shortcut and always walks.  A harness on the
              * wrapper is therefore measuring a path the card never sees.
              */
-            v = osmgaHW3DValidateReach(&batch, &lim, &badTri,
-                                       &vreach, vbands);
-            if (v != 0 && g_worst == 0) g_site = osmgaHW3DTestTexcoordSite;
+            v = osmgaHW3DValidateReachSite(&batch, &lim, &badTri,
+                                           &vreach, vbands, &vsite);
+            if (v != 0 && g_worst == 0) g_site = (long)vsite;
             if (v != 0 && g_worst == 0) g_worst = v;
             if (!g_quiet) printf("# validator trapezoid %d -> %d\n", i, v);
         }
