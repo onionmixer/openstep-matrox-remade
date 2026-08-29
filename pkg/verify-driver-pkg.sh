@@ -105,6 +105,23 @@ done
 # and that is not enough: a package built from a stale bundle ships an old
 # mode list and passes every other check here.  Compare it with the source and
 # assert the list is the complete product of the two tables.
+#
+# One version, two files.  The package's .info carries it and the panel's
+# string carries it, and nothing but this stops them drifting -- the failure
+# it prevents is a package that installs 1.2 while Configure says 1.1, which
+# nobody notices because both look right on their own.
+#
+echo "the version the panel shows"
+v=`grep '^Version ' "$PKG/$NAME.info" | sed 's/^Version //'`
+if [ -z "$v" ]; then
+    bad "no Version in $NAME.info to check the panel against"
+elif grep "(v$v)" "$D/English.lproj/Localizable.strings" > /dev/null; then
+    note "ok   Localizable.strings says (v$v), matching the package"
+else
+    bad "the panel string does not say (v$v) -- Configure would name a"
+    bad "different version from the one this package installs"
+fi
+
 echo "the mode list"
 if cmp -s "$SRC/OSMGADisplay/Display.modes" "$D/Display.modes"; then
     note "ok   Display.modes is byte-for-byte with the source copy"

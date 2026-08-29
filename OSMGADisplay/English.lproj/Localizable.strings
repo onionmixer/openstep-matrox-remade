@@ -1,2 +1,19 @@
-"OSMGADisplay" = "OpenStep MGA Replacement Display (staging)";
-"Long Name" = "OpenStep MGA Replacement Display — R4 fail-closed staging skeleton";
+/*
+ * What Configure.app shows for this driver.
+ *
+ * THE VERSION GOES HERE AND NOT IN "Title".  Title lives in the INSTANCE
+ * table, and the install hooks preserve instance tables byte for byte, so a
+ * version put there would be right on a fresh install and stale for ever
+ * afterwards on an upgraded machine -- correct exactly where nobody is
+ * upgrading.  This file is a bundle resource and is replaced every install.
+ *
+ * The number is checked against pkg/OSMGADisplay.info by
+ * pkg/verify-driver-pkg.sh, because two places holding one version is how a
+ * package comes to say 1.2 while the panel says 1.1.  That check was tried
+ * against a deliberately wrong number and it does fail.
+ *
+ * Both strings said "staging" and "R4 fail-closed staging skeleton" until
+ * 2026-08-29, three stages after that stopped being true.
+ */
+"OSMGADisplay" = "OpenStep MGA G450 Display (v1.1)";
+"Long Name" = "OpenStep MGA G450 replacement display driver, with Mesa 3.4.2 hardware 3D";
