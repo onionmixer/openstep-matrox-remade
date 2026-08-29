@@ -49,7 +49,13 @@
  * question: a run ends when dwgctl or alphactrl moves, and no triangle
  * count sees that.
  *
- *   /tmp/wfb [triangles]                    the refusal test
+ * A MODE picks what state the scene carries, because a replay has to bring
+ * back more than the vertices: Mesa reads texture, depth and blend state
+ * from the context when it redraws, and a blended-only fixture cannot say
+ * whether the textured or depth-tested cases survive.
+ *
+ *   /tmp/wfb [triangles]                    the refusal test, blended
+ *   /tmp/wfb [triangles] 0 0 blend|tex|depth
  *   /tmp/wfb [triangles] <vcap> <rcap>      the capacity test
  */
 #include <stdio.h>
@@ -67,6 +73,35 @@
 
 static unsigned long *app;
 static unsigned long *ref;
+static int modeTex, modeDepth;
+
+#define TD 16
+
+/* A texture whose texels differ in both axes and all three channels, so a
+ * replay that lost the binding could not land on the right colour. */
+static void
+maketex(void)
+{
+    static GLubyte px[TD][TD][3];
+    GLuint id;
+    int x, y;
+
+    for (y = 0; y < TD; y++)
+        for (x = 0; x < TD; x++) {
+            px[y][x][0] = (GLubyte)(x * 16);
+            px[y][x][1] = (GLubyte)(y * 16);
+            px[y][x][2] = (GLubyte)(255 - x * 8 - y * 8);
+        }
+    glGenTextures(1, &id);
+    glBindTexture(GL_TEXTURE_2D, id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, TD, TD, 0,
+                 GL_RGB, GL_UNSIGNED_BYTE, px);
+}
 static int churn;      /* toggle blending per triangle: a run boundary */
 
 /*
@@ -80,7 +115,8 @@ scene(int n)
 {
     int i;
 
-    glClear(GL_COLOR_BUFFER_BIT);
+    glClear(GL_COLOR_BUFFER_BIT |
+            (modeDepth ? GL_DEPTH_BUFFER_BIT : 0));
     for (i = 0; i < n; i++) {
         double x = 20.0 + (double)((i * 7) % 240);
 
@@ -97,9 +133,16 @@ scene(int n)
                    (GLubyte)(50 + (i * 29) % 200),
                    (GLubyte)(60 + (i * 3) % 160));
         glBegin(GL_TRIANGLES);
-          glVertex2d(x,        y);
-          glVertex2d(x + 46.0, y + 6.0);
-          glVertex2d(x + 8.0,  y + 38.0);
+          /* Depth walks with the index so the test is a real one: later
+           * triangles are nearer and must win, which a replay that lost the
+           * depth state would get wrong.  Comfortably separated, for the
+           * reason M15's depth row gives. */
+          if (modeTex) glTexCoord2d(x / (double)W, y / (double)H);
+          glVertex3d(x, y, 0.4 - (double)i * 0.7 / (double)n);
+          if (modeTex) glTexCoord2d((x + 46.0) / (double)W, y / (double)H);
+          glVertex3d(x + 46.0, y + 6.0, 0.4 - (double)i * 0.7 / (double)n);
+          if (modeTex) glTexCoord2d(x / (double)W, (y + 38.0) / (double)H);
+          glVertex3d(x + 8.0, y + 38.0, 0.4 - (double)i * 0.7 / (double)n);
         glEnd();
     }
     glFinish();
@@ -119,7 +162,9 @@ main(int argc, char **argv)
     int bad = 0;
 
     if (n <= 0 || n > NTRI) n = NTRI;
-    churn = (argc > 4 && strcmp(argv[4], "churn") == 0);
+    churn    = (argc > 4 && strcmp(argv[4], "churn") == 0);
+    modeTex  = (argc > 4 && strcmp(argv[4], "tex")   == 0);
+    modeDepth = (argc > 4 && strcmp(argv[4], "depth") == 0);
     app = (unsigned long *)malloc((unsigned)(W * H) * sizeof(unsigned long));
     ref = (unsigned long *)malloc((unsigned)(W * H) * sizeof(unsigned long));
     if (!app || !ref) { printf("no room\n"); return 2; }
@@ -136,6 +181,10 @@ main(int argc, char **argv)
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glShadeModel(GL_FLAT);
+    glClearDepth(1.0);
+    if (modeTex) { maketex(); glEnable(GL_TEXTURE_2D); }
+    if (modeDepth) { glEnable(GL_DEPTH_TEST); glDepthFunc(GL_LESS);
+                     glDepthMask(GL_TRUE); glDisable(GL_BLEND); }
     glClearColor(0x10/255.0f, 0x20/255.0f, 0x30/255.0f, 1.0f);
 
     if (vcap != 0UL || rcap != 0UL) {
@@ -188,7 +237,9 @@ main(int argc, char **argv)
         return bad ? 1 : 0;
     }
     printf("a refused WARP batch must not change the picture (%d triangles,"
-           " overlapping, blended)\n\n", n);
+           " overlapping, %s)\n\n", n,
+           modeTex ? "blended and textured"
+                   : (modeDepth ? "depth tested" : "blended"));
 
     /* 1. the reference: everything through Mesa's own rasteriser. */
     OSMGAMesaHookForceSoftware(1);
