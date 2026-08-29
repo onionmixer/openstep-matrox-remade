@@ -78,6 +78,7 @@ static unsigned long hookDeclined;
 static unsigned long hookSoftware;
 /* Consecutive refusals that never reached the engine. */
 static unsigned long hookRefusedRun;
+static unsigned long hookLastRefusalVerdict;
 /* Counted apart, because "this back end cannot express it" and "the kernel
  * refused the batch" are different things to have to fix. */
 static unsigned long hookUnsupported;
@@ -1033,10 +1034,29 @@ osmgaMesaGeometryVerdict(unsigned long verdict)
  * That backstop catches a driver refusing every attempted submission --
  * the narrowing loop's own bound is separate and smaller. */
 static void
-osmgaMesaCountRefusal(void)
+osmgaMesaCountRefusal(unsigned long verdict)
 {
-    if (++hookRefusedRun >= OSMGA_MESA_REFUSAL_LIMIT)
-        OSMGAMesaProbeRevoke("the driver kept refusing batches");
+    /*
+     * The verdict travels with the count now.
+     *
+     * "the driver kept refusing batches" said that acceleration had been
+     * given up and nothing about why, so anyone reading it had to guess
+     * which of a dozen checks refused -- and the answers differ completely:
+     * E_BUSY is a timing problem, E_GEOM is a shape this back end should not
+     * have sent, E_SRC is a surface that is not where it says it is.
+     *
+     * The last verdict is kept rather than all of them because the run is
+     * CONSECUTIVE: the eight that trip the backstop are almost always the
+     * same refusal repeating, and the last one is the cheapest to carry.
+     */
+    static char why[80];
+
+    hookLastRefusalVerdict = verdict;
+    if (++hookRefusedRun >= OSMGA_MESA_REFUSAL_LIMIT) {
+        sprintf(why, "the driver kept refusing batches; last verdict %lu",
+                verdict);
+        OSMGAMesaProbeRevoke(why);
+    }
 }
 
 /* How many times one flush may narrow before the remainder just goes to
@@ -1293,7 +1313,7 @@ osmgaMesaFlushWarp(void)
             GLvector1ui  *iptrWas = ctx->VB->IndexPtr;
             GLubyte     (*specWas)[4] = ctx->VB->Specular;
 
-            osmgaMesaCountRefusal();
+            osmgaMesaCountRefusal(res.verdict);
             for (i = 0UL; i < nsrc; i++)
                 (void)osmgaMesaReplaySource(ctx, i);
             /* Both, and they are different questions: Replayed is "a
@@ -1702,7 +1722,7 @@ osmgaMesaFlushPending(void)
                  * exactly as the whole batch always did.  This one counts --
                  * it is the shape "the driver refused and we could not say
                  * which triangle", which is what the backstop is for. */
-                osmgaMesaCountRefusal();
+                osmgaMesaCountRefusal(res.verdict);
                 for (i = lo; i < nsrc; i++)
                     (void)osmgaMesaReplaySource(ctx, i);
                 hookReplayed += nsrc - lo;
@@ -1760,7 +1780,7 @@ osmgaMesaFlushPending(void)
                 } else {
                     /* A prefix that validated moments ago refusing now is
                      * nothing this map can reason about: software for it. */
-                    osmgaMesaCountRefusal();
+                    osmgaMesaCountRefusal(res.verdict);
                     for (i = lo; i < s2; i++)
                         (void)osmgaMesaReplaySource(ctx, i);
                     hookReplayed += s2 - lo;
@@ -1779,7 +1799,7 @@ osmgaMesaFlushPending(void)
                 int redrew = osmgaMesaReplaySource(ctx, s2);
 
                 if (!redrew || !osmgaMesaGeometryVerdict(res.verdict))
-                    osmgaMesaCountRefusal();
+                    osmgaMesaCountRefusal(res.verdict);
             }
             hookReplayed++;
             lo = s2 + 1UL;
