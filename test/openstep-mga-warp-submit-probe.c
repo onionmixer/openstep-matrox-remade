@@ -50,16 +50,31 @@ expect(const char *what, int rc, const OSMGAHW3DSubmitBlock *r,
  * on the trapezoid builder.
  */
 static void
-v9control(const char *when)
+v9control(const char *when, unsigned long dstorg, unsigned long pitch)
 {
     OSMGAHW3DBatch *b = OSMGAMesaProbeBatch();
     OSMGAHW3DSubmitBlock r;
     int rc;
 
     if (b == 0) { printf("  no batch mapping\n"); failures++; return; }
+    /*
+     * The STATE too, not just the header.  The first run of this probe set
+     * only magic, version and the count, and the control failed with
+     * E_DSTPITCH -- against whatever the mapped buffer happened to hold.
+     * The control after it passed only because the version 10 fixture had
+     * filled the state by then, which is the same fixture bug wearing a
+     * pass.
+     */
+    memset(b, 0, sizeof *b);
     b->magic    = OSMGA_HW3D_MAGIC;
     b->version  = OSMGA_HW3D_VERSION;
     b->triCount = 0UL;
+    b->state.dstorg    = dstorg;
+    b->state.dstWidth  = 64UL;
+    b->state.dstHeight = 64UL;
+    b->state.dstPitch  = pitch;
+    b->state.zorg      = dstorg;
+    b->state.texorg    = dstorg;
     memset(&r, 0, sizeof r);
     rc = OSMGAMesaProbeSubmit(&r);
     expect(when, rc, &r, (unsigned long)OSMGA_HW3D_OK);
@@ -152,7 +167,7 @@ main(void)
            dstorg + p.caps[OSMGA_HW3D_CAP_VRAMLEN]);
 
     printf("1. version 9 control, before\n");
-    v9control("v9 empty batch");
+    v9control("v9 empty batch", dstorg, pitch);
 
     w = (OSMGAHW3DWarpBatch *)OSMGAMesaProbeBatch();
     if (w == 0) { printf("no batch mapping\n"); return 1; }
@@ -201,7 +216,7 @@ main(void)
     expect("v10 live", rc, &r, (unsigned long)OSMGA_HW3D_OK);
 
     printf("5. version 9 control, after\n");
-    v9control("v9 empty batch");
+    v9control("v9 empty batch", dstorg, pitch);
 
     printf("%s: %d failing\n",
            (failures == 0) ? "warp-submit PASS" : "warp-submit", failures);

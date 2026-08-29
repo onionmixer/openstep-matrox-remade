@@ -10971,8 +10971,6 @@ osmgaWarpFenceAndStop(vm_address_t base, const char *label)
         return IO_R_RESOURCE;
     if (osmgaMmapCmdVirt == 0 || osmgaMmapCmdPhysical == 0UL)
         return IO_R_RESOURCE;
-    if (!osmgaWarpUcodeResident)
-        return IO_R_UNSUPPORTED;      /* nothing has placed the microcode */
 
     /* The engine before the copy, for the reason version 9 gives: the
      * snapshot is one union and taking it outside the claim let a second
@@ -10984,6 +10982,42 @@ osmgaWarpFenceAndStop(vm_address_t base, const char *label)
     }
     stormBusy = YES;
     simple_unlock(&stormLock);
+
+    /*
+     * THE MICROCODE, placed here on first use.
+     *
+     * This path used to refuse when it was not resident, and the only
+     * things that ever placed it were the two test harnesses -- so once
+     * the boot-time qualification run was switched off, every version 10
+     * submission was refused before it read a single field.  Measured, not
+     * supposed: the five-test probe returned verdict 0xFFFFFFFF, which is
+     * NOT_RUN, on all four of its version 10 cases while version 9 went on
+     * working.  A production path must not depend on a test having run.
+     *
+     * Under the claim rather than before it, which is where the harness
+     * does it: this writes VRAM and engine registers, and the claim is
+     * what says nobody else is doing the same.
+     *
+     * Once only.  Unloading the driver is forbidden in this project, so
+     * the microcode's lifetime is the driver's.
+     */
+    if (!osmgaWarpUcodeResident) {
+        unsigned long pipePhys[OSMGA_WARP_PIPES];
+        unsigned long pipeOff[OSMGA_WARP_PIPES];
+
+        if (!osmgaWarpPlaceUcode(pipePhys, pipeOff, &osmgaWarpUcodeVirt,
+                                 &osmgaWarpUcodePhys,
+                                 &osmgaWarpUcodeBytes)) {
+            IOLog("OpenStepMGA WARP: could not place the microcode\n");
+            simple_lock(&stormLock); stormBusy = NO;
+            simple_unlock(&stormLock);
+            return IO_R_RESOURCE;
+        }
+        for (i = 0UL; i < OSMGA_WARP_PIPES; i++)
+            osmgaWarpPipeHeld[i] = pipePhys[i];
+        osmgaWarpUcodeResident = 1;
+        IOLog("OpenStepMGA WARP: microcode placed on first submission\n");
+    }
 
     batch = (OSMGAHW3DWarpBatch *)osmgaMmapCmdVirt;
     list  = (unsigned long *)((char *)osmgaMmapCmdVirt +
