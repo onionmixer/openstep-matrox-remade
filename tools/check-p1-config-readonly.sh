@@ -4,7 +4,7 @@
 set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-source_file="$script_dir/../OpenStepMGAProbe/OpenStepMGAProbe_reloc.tproj/OpenStepMGAProbe.m"
+source_file="$script_dir/../OSMGAProbe/OSMGAProbe_reloc.tproj/OpenStepMGAProbe.m"
 sanitized=$(mktemp "${TMPDIR:-/tmp}/openstep-mga-p1-source.XXXXXX")
 trap 'rm -f "$sanitized"' EXIT HUP INT TERM
 

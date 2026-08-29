@@ -1,13 +1,16 @@
-# OpenStepMGAService - P2 message-only control service.
+# OSMGAService - P2 message-only control service.
+#
+# The bundle is OSMGAService; the class inside it is still
+# OpenStepMGAService, which is what Class Names has to name.
 
-NAME = OpenStepMGAService
+NAME = OSMGAService
 
 PROJECTVERSION = 0.2
 LANGUAGE = English
 
 LOCAL_RESOURCES = Localizable.strings
 GLOBAL_RESOURCES = Default.table
-TOOLS = OpenStepMGAService_reloc.tproj
+TOOLS = OSMGAService_reloc.tproj
 
 OTHERSRCS = Makefile Makefile.preamble Makefile.postamble
 

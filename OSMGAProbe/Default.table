@@ -2,9 +2,9 @@
 "Family" = "Bus";
 "Instance" = "0";
 "Version" = "0.1";
-"Driver Name" = "OpenStepMGAProbe";
+"Driver Name" = "OSMGAProbe";
 "Class Names" = "OpenStepMGAProbe";
-"Server Name" = "OpenStepMGAProbe";
+"Server Name" = "OSMGAProbe";
 "IRQ Levels" = "";
 "DMA Channels" = "";
 "Memory Maps" = "";

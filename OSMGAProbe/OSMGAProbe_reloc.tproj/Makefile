@@ -1,8 +1,8 @@
 #
-# OpenStepMGAProbe_reloc - kernel-loadable read-only PCI probe.
+# OSMGAProbe_reloc - kernel-loadable read-only PCI probe.
 #
 
-NAME = OpenStepMGAProbe_reloc
+NAME = OSMGAProbe_reloc
 
 PROJECTVERSION = 0.1
 LANGUAGE = English

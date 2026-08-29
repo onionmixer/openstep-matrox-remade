@@ -1,6 +1,6 @@
-# OpenStepMGAService_reloc - generated MiG server plus P2.0 implementation.
+# OSMGAService_reloc - generated MiG server plus P2.0 implementation.
 
-NAME = OpenStepMGAService_reloc
+NAME = OSMGAService_reloc
 
 PROJECTVERSION = 0.2
 LANGUAGE = English

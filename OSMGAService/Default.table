@@ -2,9 +2,9 @@
 "Family" = "Bus";
 "Instance" = "0";
 "Version" = "0.2";
-"Driver Name" = "OpenStepMGAService";
+"Driver Name" = "OSMGAService";
 "Class Names" = "OpenStepMGAService";
-"Server Name" = "OpenStepMGAService";
+"Server Name" = "OSMGAService";
 "IRQ Levels" = "";
 "DMA Channels" = "";
 "Memory Maps" = "";

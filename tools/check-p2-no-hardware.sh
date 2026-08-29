@@ -11,8 +11,8 @@ set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
-service_root="$project_root/OpenStepMGAService"
-source_root="$service_root/OpenStepMGAService_reloc.tproj"
+service_root="$project_root/OSMGAService"
+source_root="$service_root/OSMGAService_reloc.tproj"
 sanitized=$(mktemp "${TMPDIR:-/tmp}/openstep-mga-p2-source.XXXXXX")
 trap 'rm -f "$sanitized"' EXIT HUP INT TERM
 
