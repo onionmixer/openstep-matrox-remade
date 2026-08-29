@@ -9,7 +9,7 @@
 set -e
 PKGDIR="${1:-/tmp/pkgout}"
 SRC="${2:-/ndrv/openstep-matrox-remade}"
-NAME=OpenStepMGAReplacementDisplay
+NAME=OSMGADisplay
 PKG="$PKGDIR/$NAME.pkg"
 UNPACK=/tmp/_mgadrvverify
 D="$UNPACK/private/Drivers/i386/$NAME.config"
@@ -23,12 +23,35 @@ note() { echo "  $1"; }
 bad()  { echo "  FAIL: $1"; echo "$1" >> "$FAILS"; }
 
 if [ ! -d "$PKG" ]; then echo "verify: no $PKG" >&2; exit 2; fi
-# Unpack with the SAME archiver the payload was written with.  The system
-# tar would silently skip the long-path nib entries on the way OUT as well,
-# and the verifier would then report a fault that is its own.
-BIGTAR=/NextAdmin/Installer.app/installer_bigtar
+# Unpack the way INSTALLER will, which is not the same thing as the way the
+# payload was written.
+#
+# This used to read the payload back with installer_bigtar, because that is
+# what wrote it -- and so the verifier passed on an archive Installer.app
+# hangs on.  Written wrong, checked with the same wrong tool, green.  The
+# check that matters is that installer_tar can consume it, so that is the
+# tool, and a timeout is on it because the failure mode is a hang and not an
+# error.
+TAR=/NextAdmin/Installer.app/installer_tar
 rm -rf "$UNPACK"; /bin/mkdirs "$UNPACK"
-( cd "$UNPACK" && /usr/ucb/zcat "$PKG/$NAME.tar.Z" | "$BIGTAR" xf - )
+#
+# A marker file rather than `kill -0` on the pid: this shell's kill writes
+# "No such process" where the reader can see it once the job has finished
+# normally, which makes a clean run look like a broken one.
+#
+rm -f /tmp/_drvpkg_done
+( cd "$UNPACK" && /usr/ucb/zcat "$PKG/$NAME.tar.Z" | "$TAR" xf - ; \
+  echo done > /tmp/_drvpkg_done ) &
+waited=0
+while [ ! -f /tmp/_drvpkg_done ]; do
+    sleep 1
+    waited=`expr $waited + 1`
+    if [ $waited -gt 60 ]; then
+        echo "verify: installer_tar did not finish in 60s -- this is the" >&2
+        echo "verify: long-path hang, and Installer.app would do the same" >&2
+        exit 1
+    fi
+done
 
 echo "payload"
 for f in "${NAME}_reloc" "$NAME" Default.table Instance0.table Display.modes \
@@ -48,7 +71,7 @@ done
 # mode list and passes every other check here.  Compare it with the source and
 # assert the list is the complete product of the two tables.
 echo "the mode list"
-if cmp -s "$SRC/OpenStepMGAReplacementDisplay/Display.modes" "$D/Display.modes"; then
+if cmp -s "$SRC/OSMGADisplay/Display.modes" "$D/Display.modes"; then
     note "ok   Display.modes is byte-for-byte with the source copy"
 else
     bad "Display.modes differs from the source -- rebuild the bundle"

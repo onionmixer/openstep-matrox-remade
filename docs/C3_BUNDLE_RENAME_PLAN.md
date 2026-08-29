@@ -155,3 +155,32 @@ verify-driver-pkg.sh  bigtar 로 읽는 것을 지우고 installer_tar 로 푼�
 ```
 
 별도 커밋: `OSMGAMesaAccel` 정체성 이관, 죽은 번들 둘.
+
+## 10. 1~3 단계 시행 결과
+
+```
+번들        OpenStepMGAReplacementDisplay -> OSMGADisplay
+클래스      OpenStepMGAReplacementDisplay  (그대로 -- Class Names 가 가리킨다)
+Driver Name / Server Name / Localizable 첫 키    -> OSMGADisplay
+```
+
+빌드 `BUILD_EXIT=0`, `OSMGADisplay.config/OSMGADisplay_reloc` 537,564 바이트.
+
+포장에서 **bigtar 를 지웠다.**  이제 페이로드는 `package` 자신의
+`installer_tar` 가 쓰고, 빌드가 100 자 이상 경로를 **규칙으로** 거절한다
+(오늘 긴 세 개를 나열하는 것이 아니라 — 다음에 길어질 것은 그 셋이 아니다).
+빌드에 "file name too long" 경고가 **하나도** 없다.
+
+그리고 검증기가 **Installer 가 쓰는 도구로** 읽는다.  아홉 항목이 전부
+나온다:
+
+```
+OSMGADisplay_reloc, OSMGADisplay, Default.table, Instance0.table,
+Display.modes, English.lproj/Localizable.strings,
+nib/data.classes, nib/data.dependency, nib/data.nib
+```
+
+`VERIFY_DRIVER_PKG=PASS`.
+
+도중에 검증기의 `kill -0` 대기가 **정상 종료한 작업에서 "No such process" 를
+찍어** 깨끗한 실행을 깨진 것처럼 보이게 했다.  표식 파일로 바꿨다.

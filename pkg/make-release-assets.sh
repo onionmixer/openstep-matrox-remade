@@ -22,7 +22,7 @@ dest="$root/release-assets"
 # claim it is ours.  The +mga.1 suffix inside the .info becomes -mga.1 here
 # because a '+' in a filename is an invitation to be mangled in transit.
 declare -A NAMES=(
-  [OpenStepMGAReplacementDisplay]="OpenStep-MGA-G450-${version}-i486-Display"
+  [OSMGADisplay]="OpenStep-MGA-G450-${version}-i486-Display"
   [OpenStepMGAMesaAccel]="OpenStep-MGA-G450-${version}-i486-MesaAccel"
   [OpenStepMesa342DemosMGA]="OpenStep-Mesa-3.4.2-openstep.1-mga.1-i486-Demos"
 )

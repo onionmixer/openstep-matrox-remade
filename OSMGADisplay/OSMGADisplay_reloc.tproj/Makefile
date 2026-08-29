@@ -2,7 +2,7 @@
 # OpenStepMGAReplacementDisplay_reloc - DriverKit display staging skeleton.
 #
 
-NAME = OpenStepMGAReplacementDisplay_reloc
+NAME = OSMGADisplay_reloc
 
 PROJECTVERSION = 0.1
 LANGUAGE = English

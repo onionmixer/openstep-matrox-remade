@@ -22,7 +22,7 @@ SRC="${1:-/ndrv/openstep-matrox-remade}"
 # directory is created below rather than assumed.
 OUT="${2:-/tmp/pkgout}"
 BUILDROOT="${3:-/usr/local/nxbuild}"
-NAME=OpenStepMGAReplacementDisplay
+NAME=OSMGADisplay
 PKGTOOL=/NextAdmin/Installer.app/package
 BUNDLE="$BUILDROOT/$NAME/$NAME.config"
 
@@ -56,22 +56,27 @@ fi
 # `package` builds the BOM from the stage's PARENT, so the stage needs a
 # private empty parent or every file beside it lands in the BOM.
 #
-# THE 100-CHARACTER PATH LIMIT.  `package` writes the payload with
-# installer_tar, which refuses any path over 100 characters -- it says "file
-# name too long" and carries on, so the archive is short three files and
-# nothing fails.  Our longest is 110:
-#   ./private/Drivers/i386/OpenStepMGAReplacementDisplay.config/English.lproj/DisplayInspector.nib/data.dependency
-# and nothing in it can be shortened: the install path is OPENSTEP's, the
-# lproj is the localisation convention, the nib is loaded by name, and the
-# bundle basename is the driver's own name.  (The sibling keyboard package
-# clears the limit at 91 only because its bundle name is 13 characters
-# shorter.)
+# THE 100-CHARACTER PATH LIMIT, and what it really cost.
 #
-# The answer is not to shorten anything.  Installer.app ships a SECOND
-# archiver, installer_bigtar, which writes the long-name format the same
-# Installer reads back; the SMInputKor project hit this with four nib files
-# and fixed it the same way.  So the payload is REBUILT with bigtar after
-# `package` has produced the .bom, the .info and the .sizes.
+# `package` writes the payload with installer_tar, which refuses any path
+# over 100 characters -- it says "file name too long" and carries on, so the
+# archive comes out short of files and nothing fails.  With the bundle named
+# OpenStepMGAReplacementDisplay the longest was 110:
+#   ./private/Drivers/i386/<29-char name>.config/English.lproj/DisplayInspector.nib/data.dependency
+#
+# This script used to answer that by REBUILDING the payload with the other
+# archiver Installer.app ships, installer_bigtar, on the reasoning that it
+# "writes the long-name format the same Installer reads back".  That reasoning
+# was never tested and it is wrong.  Measured on the machine: bigtar reads its
+# own archive back, the system tar reports a checksum error and lists nothing,
+# and INSTALLER_TAR HANGS ON IT -- 180 seconds, twice.  The operator's
+# Installer hung on exactly that, and the verifier had been reading the
+# payload back with bigtar too, so the packaging only ever agreed with itself.
+#
+# So the payload is `package`'s own again, and the bundle was shortened to
+# OSMGADisplay instead: 93 characters at the longest, seven to spare.  The
+# check below is a RULE rather than a list of the three paths that happened to
+# be long, because the next long one will not be one of those three.
 STAGEPARENT=/tmp/_mgadrvpkg
 STAGE="$STAGEPARENT/p"
 rm -rf "$STAGEPARENT" "$OUT/$NAME.pkg" "$OUT/$NAME.pkg.tar"
@@ -111,26 +116,16 @@ done
 test -d "$OUT" || /bin/mkdirs "$OUT"
 "$PKGTOOL" "$STAGE" "$SRC/pkg/$NAME.info" -d "$OUT" < /dev/null
 
-# Rebuild the payload with the long-name archiver, replacing the one
-# installer_tar wrote with three files missing.  The .bom, .info and .sizes
-# `package` produced are kept: only the archive was wrong.
-BIGTAR=/NextAdmin/Installer.app/installer_bigtar
-if [ ! -x "$BIGTAR" ]; then
-    echo "build-driver-pkg: $BIGTAR not found; the nib would be dropped" >&2
+# NOTHING may exceed installer_tar's limit, or `package` drops it in silence.
+# Checked against the stage rather than against a remembered list.
+long=`find "$STAGE" -print | sed "s|^$STAGE|.|" | awk 'length($0) >= 100'`
+if [ -n "$long" ]; then
+    echo "build-driver-pkg: these paths are 100 characters or more and" >&2
+    echo "build-driver-pkg: installer_tar would drop them silently:" >&2
+    echo "$long" >&2
     exit 1
 fi
-rm -f "$OUT/$NAME.pkg/$NAME.tar" "$OUT/$NAME.pkg/$NAME.tar.Z"
-( cd "$STAGE" && "$BIGTAR" cf "$OUT/$NAME.pkg/$NAME.tar" . )
-nibs=`"$BIGTAR" tf "$OUT/$NAME.pkg/$NAME.tar" | grep 'DisplayInspector.nib/' | wc -l`
-if [ "$nibs" -lt 3 ]; then
-    echo "build-driver-pkg: bigtar carried $nibs nib files, wanted 3" >&2
-    exit 1
-fi
-/usr/ucb/compress "$OUT/$NAME.pkg/$NAME.tar"
-# `package` leaves its own outputs read-only; the payload we rebuilt came out
-# 644, so put it back the way the rest of the package directory looks.
-chmod 444 "$OUT/$NAME.pkg/$NAME.tar.Z"
 
 cp "$SRC/pkg/$NAME.pre_install" "$OUT/$NAME.pkg/$NAME.pre_install"
 chmod 555 "$OUT/$NAME.pkg/$NAME.pre_install"
-echo "build-driver-pkg: PASS $OUT/$NAME.pkg (payload by installer_bigtar)"
+echo "build-driver-pkg: PASS $OUT/$NAME.pkg (payload by package/installer_tar)"

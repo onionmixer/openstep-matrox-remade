@@ -41,9 +41,9 @@
 "Version" = "0.5";
 "Location" = "";
 "Instance" = "0";
-"Driver Name" = "OpenStepMGAReplacementDisplay";
+"Driver Name" = "OSMGADisplay";
 "Class Names" = "OpenStepMGAReplacementDisplay";
-"Server Name" = "OpenStepMGAReplacementDisplay";
+"Server Name" = "OSMGADisplay";
 "Bus Type" = "PCI";
 "Auto Detect IDs" = "0x0525102B";
 "Display Mode" = "Height: 768 Width: 1024 Refresh: 60Hz ColorSpace: RGB:888/32";

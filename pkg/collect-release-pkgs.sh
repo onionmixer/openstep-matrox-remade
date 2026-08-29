@@ -18,7 +18,7 @@ DRVOUT="${2:-/tmp/pkgout}"
 MESADIST="${3:-/usr/local/mesastage/OpenStepMesa342/dist}"
 DEST="$SRC/build/release-pkgs"
 
-DRV=OpenStepMGAReplacementDisplay
+DRV=OSMGADisplay
 ACC=OpenStepMGAMesaAccel
 DEM=OpenStepMesa342DemosMGA
 

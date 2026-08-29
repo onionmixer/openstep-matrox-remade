@@ -1,5 +1,12 @@
 #
-# OpenStepMGAReplacementDisplay - driver bundle.
+# OSMGADisplay - driver bundle.
+#
+# The bundle is OSMGADisplay and the Objective-C class inside it is still
+# OpenStepMGAReplacementDisplay.  They are allowed to differ -- Class Names
+# has to name the class compiled into the relocatable, not the bundle -- and
+# the sibling SpaceSaver2Mouse bundle in this workspace does the same thing.
+# The bundle was shortened because installer_tar cannot store a path over
+# 100 characters and the nib inside ran to 110; see docs/C3.
 #
 # The bundle executable holds the Configure.app inspector
 # (OSMGADisplayInspector, old-AppKit code loaded inside Configure); the
@@ -8,7 +15,7 @@
 # subproject, so adding the inspector cannot affect the kernel build.
 #
 
-NAME = OpenStepMGAReplacementDisplay
+NAME = OSMGADisplay
 
 PROJECTVERSION = 0.1
 LANGUAGE = English
@@ -48,7 +55,7 @@ CFILES = OpenStepMGAWindowMath.c \
          OpenStepMGAEDID.c
 HFILES = OSMGADisplayInspector.h OpenStepMGAWindowMath.h \
          OpenStepMGAManualConfig.h OpenStepMGAEDID.h
-TOOLS = OpenStepMGAReplacementDisplay_reloc.tproj
+TOOLS = OSMGADisplay_reloc.tproj
 
 OTHERSRCS = Makefile Makefile.preamble Makefile.postamble README.md compat
 

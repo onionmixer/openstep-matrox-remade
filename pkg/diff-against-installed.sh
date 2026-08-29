@@ -11,7 +11,7 @@
 # rehearsal: an installer that reports success tells you it wrote files, not
 # which of your files it replaced.
 PKGDIR="${1:-/tmp/pkgout}"
-NAME=OpenStepMGAReplacementDisplay
+NAME=OSMGADisplay
 PKG="$PKGDIR/$NAME.pkg"
 UNPACK=/tmp/_mgadrvdiff
 LIVE=/private/Drivers/i386/$NAME.config
