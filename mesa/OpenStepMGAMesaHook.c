@@ -27,6 +27,13 @@
 
 
 static unsigned long hookDrawn;
+/*
+ * Of hookDrawn, the ones the WARP tier drew.  The split matters because a
+ * pure-hardware gate cannot tell a WARP run from one that fell back to
+ * trapezoids -- both are "the engine drew it" -- and a test that means to
+ * exercise this tier has to be able to insist on it.
+ */
+static unsigned long hookWarp;
 static unsigned long hookDeclined;
 /* Triangles this back end could not draw and handed to the software path. */
 static unsigned long hookSoftware;
@@ -781,7 +788,8 @@ static unsigned long hookInjectTrap;
 
 static int osmgaMesaSubmitBatch(GLcontext *ctx, OSMGAHW3DBatch *batch,
                                 OSMGAHW3DSubmitBlock *out);
-static void osmgaMesaBatchUntextured(OSMGAHW3DBatch *batch);
+static void osmgaMesaBatchUntextured(OSMGAHW3DState *st);
+static void osmgaMesaFillState(GLcontext *ctx, OSMGAHW3DState *st);
 static int osmgaMesaSoftly(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2,
                            GLuint pv);
 
@@ -1001,12 +1009,68 @@ osmgaMesaFlushWarp(void)
         return;
     }
 
+    /*
+     * The state, from the same two places version 9 asks.
+     *
+     * This used to be missing entirely, and the tier drew correctly anyway
+     * -- because the batch is a MAPPED BUFFER this library reuses, and the
+     * accelerated clear that ran moments earlier had left a correct
+     * destination, pitch, depth origin and scissor in it.  Inheritance is
+     * not a contract: a rebind with no clear between, or a scissor that
+     * moved, or a second texture, and the submission carries the previous
+     * one's answer.  The kernel would not catch it either -- it validates
+     * that the state is LEGAL, and an inherited state is perfectly legal
+     * and simply belongs to something else.
+     */
+    osmgaMesaFillState(ctx, &wb->state);
+    if (pendHasTex) {
+        wb->state.texorg    = pendTexOrg;
+        wb->state.texW      = pendTexW;
+        wb->state.texH      = pendTexH;
+        wb->state.texPitch  = pendTexPitch;
+        wb->state.texFormat = OSMGA_HW3D_TEXFMT_TW32;
+        wb->state.texFlags  = pendTexFlags;
+        /*
+         * tmr stays nought for this tier, and that is not an omission.
+         * The six are the trapezoid builder's texture gradients; WARP
+         * computes its own in microcode and the kernel's version 10 path
+         * never reads them.  Zeroed rather than left, because a field left
+         * alone in a mapped buffer keeps the last submission's value.
+         */
+        memset(wb->state.tmr, 0, sizeof wb->state.tmr);
+        wb->state.texBiasReqU = OSMGA_HW3D_TEX_BIAS_NONE;
+        wb->state.texBiasReqV = OSMGA_HW3D_TEX_BIAS_NONE;
+    } else {
+        osmgaMesaBatchUntextured(&wb->state);
+    }
+
     memset(&res, 0, sizeof res);
     rc = OSMGAMesaProbeSubmit(&res);
     submitCount++;
     submitDwords += res.dwords;
 
-    if (rc != 0) {
+    if (rc == 0) {
+        /*
+         * Counted here and only here -- after a submission the driver
+         * took, never when the work was queued.
+         *
+         * hookDrawn counts SOURCE TRIANGLES the engine drew, which is true
+         * of either tier, so it moves for this one too; every existing
+         * consumer reads it as "did the engine draw these" and keeps
+         * meaning that.  hookBatches counts SUBMISSIONS, which this is.
+         * hookWarp is the tier split, and it is what lets a test insist a
+         * run went through THIS tier rather than merely through hardware
+         * -- without it a WARP run that quietly fell back to trapezoids
+         * passes a pure-hardware gate.
+         *
+         * hookTraps stays trapezoid-only: there are no trapezoids here.
+         */
+        hookDrawn    += nsrc;
+        hookWarp     += nsrc;
+        hookBatches++;
+        hookRefusedRun = 0;
+        OSMGAMesaBufferSoiled();
+    } else {
         hookDeclined++;
         if (res.verdict < OSMGA_MESA_VERDICTS)
             hookVerdictCount[res.verdict]++;
@@ -1019,12 +1083,16 @@ osmgaMesaFlushWarp(void)
 
         if (res.verdict != (unsigned long)OSMGA_HW3D_OK) {
             /* Refused before encoding: nothing was drawn.  Replay every
-             * source, in record order. */
+             * source, in record order -- and count it against the
+             * backstop, which the trapezoid arm does and this one did not:
+             * a tier that is refused every time would otherwise replay for
+             * ever instead of giving acceleration up. */
             GLfloat       zoffWas = ctx->PolygonZoffset;
             GLvector4ub  *cptrWas = ctx->VB->ColorPtr;
             GLvector1ui  *iptrWas = ctx->VB->IndexPtr;
             GLubyte     (*specWas)[4] = ctx->VB->Specular;
 
+            osmgaMesaCountRefusal();
             for (i = 0UL; i < nsrc; i++)
                 (void)osmgaMesaReplaySource(ctx, i);
             hookRescued += nsrc;
@@ -1312,7 +1380,7 @@ osmgaMesaFlushPending(void)
         batch->state.texBiasReqU = OSMGA_HW3D_TEX_BIAS_NONE;
         batch->state.texBiasReqV = OSMGA_HW3D_TEX_BIAS_NONE;
     } else {
-        osmgaMesaBatchUntextured(batch);
+        osmgaMesaBatchUntextured(&batch->state);
     }
     {
         unsigned long lo = 0UL;      /* first source not yet dealt with    */
@@ -1655,15 +1723,15 @@ static int hookClearWhy;
  * two callers need it and a second copy would be a second thing to forget.
  */
 static void
-osmgaMesaBatchUntextured(OSMGAHW3DBatch *batch)
+osmgaMesaBatchUntextured(OSMGAHW3DState *st)
 {
-    batch->state.texorg = 0UL;
-    batch->state.texW = batch->state.texH = batch->state.texPitch = 0UL;
-    batch->state.texFormat = 0UL;
-    batch->state.texFlags = 0UL;
-    memset(batch->state.tmr, 0, sizeof batch->state.tmr);
-    batch->state.texBiasReqU = OSMGA_HW3D_TEX_BIAS_NONE;
-    batch->state.texBiasReqV = OSMGA_HW3D_TEX_BIAS_NONE;
+    st->texorg = 0UL;
+    st->texW = st->texH = st->texPitch = 0UL;
+    st->texFormat = 0UL;
+    st->texFlags = 0UL;
+    memset(st->tmr, 0, sizeof st->tmr);
+    st->texBiasReqU = OSMGA_HW3D_TEX_BIAS_NONE;
+    st->texBiasReqV = OSMGA_HW3D_TEX_BIAS_NONE;
 }
 
 /*
@@ -1685,25 +1753,38 @@ osmgaMesaBatchUntextured(OSMGAHW3DBatch *batch)
  * Returns 0 when the batch was taken, non-zero when it was refused, with
  * *out holding the driver's answer.
  */
-static int
-osmgaMesaSubmitBatch(GLcontext *ctx, OSMGAHW3DBatch *batch,
-                     OSMGAHW3DSubmitBlock *out)
+/*
+ * Where this submission draws, and what it is clipped to.
+ *
+ * A function and not four lines inside the trapezoid submit, because BOTH
+ * contracts need it and only one of them was getting it.  Version 10's
+ * flush went straight to OSMGAMesaProbeSubmit, so its state block held
+ * whatever the last version 9 submission had left in the same mapped
+ * buffer -- a destination, a pitch, a depth origin and a scissor belonging
+ * to some earlier surface.  It drew correctly on a mesh only because an
+ * accelerated clear had just put the right values there.
+ *
+ * That is the failure osmgaMesaBatchUntextured's own comment describes for
+ * the texture half: "a field left alone keeps what the last submission put
+ * there".  The destination half had no such function, so there was nothing
+ * to forget to call.  Now there is one, and both callers call it.
+ */
+static void
+osmgaMesaFillState(GLcontext *ctx, OSMGAHW3DState *st)
 {
-    OSMGAHW3DSubmitBlock res;
-
     /* Where the surface is, asked of the one place that decides it -- not
      * worked out again here, where it could disagree. */
-    batch->state.dstorg = OSMGAMesaBufferOrigin();
+    st->dstorg = OSMGAMesaBufferOrigin();
     /*
      * The destination is the drawing surface Mesa is working on, and saying
      * so is what lets the kernel clip to it: before the batch declared this,
      * the kernel clipped every submission to a fixed sixty-four by a hundred
      * and twenty, which no real surface fits inside.
      */
-    batch->state.dstWidth  = OSMGAMesaBufferWidth();
-    batch->state.dstHeight = OSMGAMesaBufferHeight();
-    batch->state.dstPitch  = OSMGAMesaBufferStride();
-    batch->state.zorg      = OSMGAMesaBufferDepthOrigin();
+    st->dstWidth  = OSMGAMesaBufferWidth();
+    st->dstHeight = OSMGAMesaBufferHeight();
+    st->dstPitch  = OSMGAMesaBufferStride();
+    st->zorg      = OSMGAMesaBufferDepthOrigin();
     /*
      * The scissor, written every submission for the same reason the bias
      * request is: the batch is a mapped buffer this library reuses field by
@@ -1716,20 +1797,29 @@ osmgaMesaSubmitBatch(GLcontext *ctx, OSMGAHW3DBatch *batch,
      * driver to stay safe.
      */
     if (ctx->Scissor.Enabled) {
-        batch->state.scissorOn = 1UL;
-        batch->state.scissorX = (long)ctx->Scissor.X;
-        batch->state.scissorY = (long)ctx->Scissor.Y;
-        batch->state.scissorW = (ctx->Scissor.Width > 0)
-                                ? (unsigned long)ctx->Scissor.Width : 0UL;
-        batch->state.scissorH = (ctx->Scissor.Height > 0)
-                                ? (unsigned long)ctx->Scissor.Height : 0UL;
+        st->scissorOn = 1UL;
+        st->scissorX = (long)ctx->Scissor.X;
+        st->scissorY = (long)ctx->Scissor.Y;
+        st->scissorW = (ctx->Scissor.Width > 0)
+                       ? (unsigned long)ctx->Scissor.Width : 0UL;
+        st->scissorH = (ctx->Scissor.Height > 0)
+                       ? (unsigned long)ctx->Scissor.Height : 0UL;
     } else {
-        batch->state.scissorOn = 0UL;
-        batch->state.scissorX = 0L;
-        batch->state.scissorY = 0L;
-        batch->state.scissorW = 0UL;
-        batch->state.scissorH = 0UL;
+        st->scissorOn = 0UL;
+        st->scissorX = 0L;
+        st->scissorY = 0L;
+        st->scissorW = 0UL;
+        st->scissorH = 0UL;
     }
+}
+
+static int
+osmgaMesaSubmitBatch(GLcontext *ctx, OSMGAHW3DBatch *batch,
+                     OSMGAHW3DSubmitBlock *out)
+{
+    OSMGAHW3DSubmitBlock res;
+
+    osmgaMesaFillState(ctx, &batch->state);
     {
         struct timeval t0, t1;
         int rc;
@@ -3313,7 +3403,7 @@ osmgaMesaClearOnEngine(GLcontext *ctx, GLbitfield mask, GLboolean all,
      */
     for (i = 0; i < n0 + n1; i++)
         batch->tri[i] = built[i];
-    osmgaMesaBatchUntextured(batch);
+    osmgaMesaBatchUntextured(&batch->state);
     hookClears++;
     if (osmgaMesaSubmitBatch(ctx, batch, &res) != 0) {
         /*
@@ -3520,6 +3610,7 @@ OSMGAMesaHookFlushCounts(unsigned long out[4])
 }
 unsigned long OSMGAMesaHookUniformArmed(void) { return hookUniformArmed; }
 unsigned long OSMGAMesaHookDrawn(void)    { return hookDrawn; }
+unsigned long OSMGAMesaHookWarp(void)     { return hookWarp; }
 unsigned long OSMGAMesaHookClears(void)   { return hookClears; }
 unsigned long OSMGAMesaHookMirrors(void)  { return hookMirrors; }
 int           OSMGAMesaHookClearWhy(void) { return hookClearWhy; }

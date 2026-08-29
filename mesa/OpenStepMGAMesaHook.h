@@ -40,6 +40,10 @@ void OpenStepMesaAccelUpdateState(struct gl_context *ctx, int rowLength,
  * silently never fires looks exactly like one that works.
  */
 unsigned long OSMGAMesaHookDrawn(void);
+/* Of those, the ones the WARP tier drew.  "The engine drew it" and "THIS
+ * tier drew it" are different questions, and a gate on the first passes a
+ * run that fell back to trapezoids. */
+unsigned long OSMGAMesaHookWarp(void);
 /* How many clears the engine took, and why the last one was declined --
  * nought when it was taken.  The codes are read off the source; they exist
  * so a clear that quietly does nothing can say which gate stopped it. */
