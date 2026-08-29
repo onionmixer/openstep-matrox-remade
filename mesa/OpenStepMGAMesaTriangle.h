@@ -95,6 +95,17 @@ typedef struct {
  */
 typedef struct {
     unsigned long w, h;         /* texels */
+    /*
+     * Whether each axis wraps by repeating.  The builder needs to know
+     * because it may take a whole number of repeats off a coordinate to
+     * bring it into the range the engine can carry, and s and s - K sample
+     * the same texel only where the axis repeats.  A clamped axis must be
+     * left exactly where it is.
+     *
+     * Zero means "do not", which is what a caller that has not heard of
+     * these fields leaves behind.
+     */
+    unsigned long repeatU, repeatV;
 } OSMGAMesaTex;
 
 /*

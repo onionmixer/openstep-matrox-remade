@@ -2551,6 +2551,14 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
                ? OSMGA_HW3D_TEXF_MODULATE : 0UL)
             | ((to->WrapS == GL_REPEAT) ? OSMGA_HW3D_TEXF_REPEATU : 0UL)
             | ((to->WrapT == GL_REPEAT) ? OSMGA_HW3D_TEXF_REPEATV : 0UL);
+
+        /*
+         * And the same two facts to the builder, which takes whole texture
+         * repeats off a coordinate that has run too far -- and may only do
+         * so on an axis that repeats.
+         */
+        tex.repeatU = (to->WrapS == GL_REPEAT) ? 1UL : 0UL;
+        tex.repeatV = (to->WrapT == GL_REPEAT) ? 1UL : 0UL;
     }
 
     if (osmgaMesaWarpTriangle(ctx, VB, &a, &b, &c,

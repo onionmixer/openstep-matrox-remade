@@ -12,6 +12,7 @@
  *   cc -O -Wall -I../hw3d -o /tmp/tc test-mesa-texcoord.c OpenStepMGAMesaTriangle.c
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "OpenStepMGAMesaTriangle.h"
 
@@ -88,6 +89,12 @@ one(const char *name, double ax, double ay, double as, double at,
     vert(&c, cx, cy, cs, ct);
     a.tq = g_tq_a; b.tq = g_tq_b; c.tq = g_tq_c;
     tex.w = tw; tex.h = th;
+    /* Both axes repeat, which is what re-basing needs; a case that wants a
+     * clamped axis sets these itself. */
+    /* OSMGA_NO_REBASE turns the axes clamped, which is how the builder is
+     * told not to re-base -- the before picture, measured rather than
+     * reasoned about. */
+    tex.repeatU = tex.repeatV = (getenv("OSMGA_NO_REBASE") != 0) ? 0UL : 1UL;
     memset(tmr, 0, sizeof tmr);
 
     n = OSMGAMesaBuildTriangleTex(&a, &b, &c, (const OSMGAMesaVertex *)0,
@@ -310,14 +317,24 @@ main(void)
              * about the SIZE of the coordinate or about something the
              * builder does at any size.
              */
-            static const double lo[] = { 0.0, 0.0, 0.0, 0.0, -0.9 };
-            static const double hi[] = { 1.0, 2.0, 4.0, 7.9,  7.9 };
+            /*
+             * The last three bands are the ones re-basing exists for: a
+             * Quake face tiles a texture dozens of times, so its
+             * coordinates sit far from nought while spanning very little.
+             * A band whose SPAN is eight or less should come back inside
+             * the window whatever its offset; the one that spans 200
+             * should not, and should still fall to software cleanly.
+             */
+            static const double lo[] = { 0.0, 0.0, 0.0, 0.0, -0.9,
+                                         100.0, 100.0,   0.0 };
+            static const double hi[] = { 1.0, 2.0, 4.0, 7.9,  7.9,
+                                         101.0, 107.0, 200.0 };
             double oka, gapa;
             long okn, gapn, site1, site2, s31, s32, s33, site4, site5,
                  v13, vother, vex;
             int band;
 
-            for (band = 0; band < 5; band++) {
+            for (band = 0; band < 8; band++) {
                 double span = hi[band] - lo[band];
                 seed = 20260830UL;
                 found = 0; built = 0;

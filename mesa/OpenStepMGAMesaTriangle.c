@@ -979,6 +979,40 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
     }
 }
 
+/*
+ * How many whole texture repeats to take off a coordinate, so that what is
+ * left fits the window the engine is held to.
+ *
+ * That window is not symmetric: the kernel takes a coordinate from one
+ * repeat below nought to eight above it, nine wide.  So a triangle whose
+ * own coordinates span S repeats has an interval of whole numbers
+ * 9 - S long to choose from, and any span of eight or less always contains
+ * one.  Choosing the middle of that interval is not the same as choosing
+ * the value that leaves the most room at both ends, and it is the room
+ * that matters, because everything after this rounds: solving for equal
+ * slack gives (lo + hi - 7) / 2, and the nearest whole number to that,
+ * held inside the interval, is what this returns.
+ *
+ * Nought back means no whole number will do and the caller should leave
+ * the coordinate alone -- the range check below will then refuse it and it
+ * will be drawn in software, which is what happens today.
+ */
+static int
+osmgaMesaRebaseK(double lo, double hi, double *k)
+{
+    double klo = ceil(hi - 8.0);
+    double khi = floor(lo + 1.0);
+    double want;
+
+    if (klo > khi)
+        return 0;
+    want = floor((lo + hi - 7.0) / 2.0 + 0.5);
+    if (want < klo) want = klo;
+    if (want > khi) want = khi;
+    *k = want;
+    return 1;
+}
+
 int
 OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
                        const OSMGAMesaVertex *b,
@@ -1184,6 +1218,57 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
          */
         if (!(a->tq > 0.0) || !(b->tq > 0.0) || !(c->tq > 0.0))
             return OSMGA_MESA_TRI_UNSUPPORTED;
+
+        /*
+         * TAKE THE WHOLE REPEATS OFF, where the axis repeats and the
+         * texture's own q is one everywhere.
+         *
+         * A Quake level tiles a texture many times across a large face:
+         * two thirds of the faces in the maps this was measured against
+         * reach past eight repeats and the worst reaches 223, so the
+         * kernel refuses them at the pixels they actually draw.  What it
+         * is refusing is the SIZE of the number and not the texel it
+         * names, and under GL_REPEAT a whole number of repeats does not
+         * change the texel: the engine wraps by masking, which is why a
+         * repeating axis is required to be a power of two, and on a power
+         * of two the scale above is exactly one repeat.
+         *
+         * Only where tq is one.  With a projective texture q the amount to
+         * subtract differs per vertex, and the branch below that spots a
+         * constant denominator emits the raw numerators with the q plane
+         * switched off -- nothing downstream would divide that per-vertex
+         * difference back out, and the picture would move.  Quake's
+         * perspective comes from w and not from the texture, so this costs
+         * nothing here; the projective case can be done later, deliberately.
+         *
+         * Before the range check, before the planes, before any rounding.
+         */
+        if (a->tq == 1.0 && b->tq == 1.0 && c->tq == 1.0) {
+            double k;
+
+            if (tex->repeatU != 0UL) {
+                lo = hi = ua / us;
+                if (ub / us < lo) lo = ub / us;
+                if (ub / us > hi) hi = ub / us;
+                if (uc / us < lo) lo = uc / us;
+                if (uc / us > hi) hi = uc / us;
+                if ((lo < 0.0 || hi > 8.0) &&
+                    osmgaMesaRebaseK(lo, hi, &k) && k != 0.0) {
+                    ua -= k * us; ub -= k * us; uc -= k * us;
+                }
+            }
+            if (tex->repeatV != 0UL) {
+                lo = hi = va / vs;
+                if (vb / vs < lo) lo = vb / vs;
+                if (vb / vs > hi) hi = vb / vs;
+                if (vc / vs < lo) lo = vc / vs;
+                if (vc / vs > hi) hi = vc / vs;
+                if ((lo < 0.0 || hi > 8.0) &&
+                    osmgaMesaRebaseK(lo, hi, &k) && k != 0.0) {
+                    va -= k * vs; vb -= k * vs; vc -= k * vs;
+                }
+            }
+        }
 
         /*
          * The COORDINATE, which is s/q and not s.
