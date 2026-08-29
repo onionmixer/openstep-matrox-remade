@@ -44,6 +44,10 @@ unsigned long OSMGAMesaHookDrawn(void);
  * tier drew it" are different questions, and a gate on the first passes a
  * run that fell back to trapezoids. */
 unsigned long OSMGAMesaHookWarp(void);
+/* Sources that entered a WARP submission, whatever became of it.  Warp()
+ * counts what the tier DREW and so cannot speak for a run in which every
+ * batch was refused -- which is the run a fallback test needs. */
+unsigned long OSMGAMesaHookWarpTried(void);
 /* How many clears the engine took, and why the last one was declined --
  * nought when it was taken.  The codes are read off the source; they exist
  * so a clear that quietly does nothing can say which gate stopped it. */

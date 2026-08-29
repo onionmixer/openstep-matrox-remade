@@ -182,6 +182,7 @@ main(void)
 
     for (n = 0; n < (int)(sizeof cases / sizeof cases[0]); n++) {
         unsigned long rh, rr, rs;
+        unsigned long warp0 = OSMGAMesaHookWarp();
         int dh, dr, ds;
 
         dh = depthAt(0.5, 0.5, cases[n].f, cases[n].u, PATH_HW,     &rh);
@@ -190,7 +191,32 @@ main(void)
 
         printf("  %-26s %8d %8d %8d  %lu\n",
                cases[n].what, dh, dr, ds, rr);
-        if (dh != ds) { printf("      hw differs from software\n"); bad++; }
+        /*
+         * The engine against software, with the WARP tier's one code.
+         *
+         * This file's subject is what a REFUSED batch replays with, and the
+         * replay must match software EXACTLY on either tier -- it is
+         * software.  The accelerated column is a control, and on the WARP
+         * tier it is one code low by construction: the engine truncates a
+         * depth where the trapezoid tier pre-adds half a code, measured in
+         * M12 section 9.3 and unfixable through the vertex format.  So the
+         * control is allowed that one code and nothing more, and only on
+         * the tier that has it -- an arm that drew no WARP triangles gets
+         * no allowance at all.
+         */
+        {
+            int slack = (OSMGAMesaHookWarp() != warp0) ? 1 : 0;
+            int d = dh - ds;
+
+            if (d > slack || d < -slack) {
+                printf("      hw differs from software by %d%s\n", d,
+                       slack ? " (more than the tier's one code)" : "");
+                bad++;
+            } else if (d != 0) {
+                printf("      hw is %d from software -- the WARP tier's"
+                       " known code\n", d);
+            }
+        }
         if (dr != ds) { printf("      REPLAY differs from software\n"); bad++; }
         if (cases[n].u != 0.0f && rr == 0UL) {
             printf("      NOT TESTED: nothing was replayed\n");

@@ -34,6 +34,15 @@ static unsigned long hookDrawn;
  * exercise this tier has to be able to insist on it.
  */
 static unsigned long hookWarp;
+/*
+ * Sources that went INTO a WARP submission, whatever became of it.
+ *
+ * hookWarp counts what the tier drew, so it moves only after a submission
+ * the driver took -- which makes it useless for the one test that matters
+ * most here: a run in which EVERY batch is refused reports warp 0 and
+ * cannot even say the tier was involved.  This is that statement.
+ */
+static unsigned long hookWarpTried;
 static unsigned long hookDeclined;
 /* Triangles this back end could not draw and handed to the software path. */
 static unsigned long hookSoftware;
@@ -1045,6 +1054,22 @@ osmgaMesaFlushWarp(void)
     }
 
     /*
+     * The magic, spoiled on purpose when a test asks for it -- the same
+     * one line version 9 has, in the same place, for the same reason.
+     * Without it OSMGAMesaHookInjectRefusal simply does not reach this
+     * tier, and the demonstration the header calls "the clearest this
+     * project has that the fallback is exact" cannot be run on it.
+     *
+     * Fourth time the WARP flush turned out to be missing machinery the
+     * version 9 flush has: the correctness counters were the first, the
+     * submission timing the second, this the third, and hookReplayed
+     * below the fourth.
+     */
+    wb->magic = hookInjectRefusal ? (OSMGA_HW3D_MAGIC ^ 1UL)
+                                  : OSMGA_HW3D_MAGIC;
+    hookWarpTried += nsrc;
+
+    /*
      * Timed the way version 9 times, and behind the same switch.
      *
      * The correctness counters were made to see this tier and the clock was
@@ -1123,6 +1148,11 @@ osmgaMesaFlushWarp(void)
             osmgaMesaCountRefusal();
             for (i = 0UL; i < nsrc; i++)
                 (void)osmgaMesaReplaySource(ctx, i);
+            /* Both, and they are different questions: Replayed is "a
+             * refused batch was redrawn in software", which is what a
+             * fallback test asks, and Rescued also covers the recovery
+             * when the command window has gone away. */
+            hookReplayed += nsrc;
             hookRescued += nsrc;
             ctx->PolygonZoffset = zoffWas;
             ctx->VB->ColorPtr   = cptrWas;
@@ -3639,6 +3669,7 @@ OSMGAMesaHookFlushCounts(unsigned long out[4])
 unsigned long OSMGAMesaHookUniformArmed(void) { return hookUniformArmed; }
 unsigned long OSMGAMesaHookDrawn(void)    { return hookDrawn; }
 unsigned long OSMGAMesaHookWarp(void)     { return hookWarp; }
+unsigned long OSMGAMesaHookWarpTried(void) { return hookWarpTried; }
 unsigned long OSMGAMesaHookClears(void)   { return hookClears; }
 unsigned long OSMGAMesaHookMirrors(void)  { return hookMirrors; }
 int           OSMGAMesaHookClearWhy(void) { return hookClearWhy; }
