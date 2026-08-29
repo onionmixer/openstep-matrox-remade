@@ -44,7 +44,7 @@ PREFIX=/tmp/_mgateapot/prefix
 T="$OUT/Examples/Mesa342/Teapot"
 W="$OUT/Examples/Mesa342/GLWindow"
 S="$OUT/Examples/Mesa342/SDLTeapot"
-SDLB=/usr/local/nxbuild/SDL20/build/SDL-2.32.10-openstep
+SDLB=/me/SDL20/build/SDL-2.32.10-openstep
 
 if [ "`/usr/bin/arch`" != i386 ]; then
     echo "build-demos-overlay: the binaries are i386; build them on i386" >&2
