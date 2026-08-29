@@ -130,6 +130,16 @@ unsigned long OSMGAMesaHookTexAbsent(void);
  * off unless a test turns it on, and no application has a way to reach it.
  */
 void OSMGAMesaHookForceSoftware(int on);
+/*
+ * Test only: while on, a source the WARP tier would have taken goes down
+ * the trapezoid path instead, with no GL state touched.
+ *
+ * Alternating the tier through a state the policy refuses is the other
+ * way, and it is worth doing too -- but it moves the render state, the
+ * batching and the run boundaries at the same moment as the tier, so it
+ * cannot state the scheduler's invariant by itself.  This can.
+ */
+void OSMGAMesaHookForceTrapezoid(int on);
 
 /*
  * MEASUREMENT ARMS -- test only, and they make the picture wrong on purpose.

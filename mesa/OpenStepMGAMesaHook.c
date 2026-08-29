@@ -105,6 +105,8 @@ static unsigned long hookTexPersp, hookTexAbsent;
 /* see OSMGAMesaHookForceSoftware -- the tests' way to change the path
  * without changing anything else */
 static int hookForcedSoftware;
+/* see OSMGAMesaHookForceTrapezoid -- the same idea, one tier along */
+static int hookForcedTrapezoid;
 
 /*
  * MEASUREMENT ARMS.  Test-only, and they make the picture WRONG on purpose --
@@ -1245,6 +1247,23 @@ osmgaMesaWarpTriangle(GLcontext *ctx, struct vertex_buffer *VB,
 
     if (!osmgaMesaWarpWanted())
         return 0;
+    /*
+     * Test only: send this source down the trapezoid path instead, without
+     * touching a single piece of GL state.
+     *
+     * The mirror of OSMGAMesaHookForceSoftware, and for the same reason
+     * that one exists -- "the tests' way to change the path without
+     * changing anything else".  Alternating the tier through a state the
+     * policy refuses would work, but it changes the render state, the
+     * batching and the run boundaries at the same moment as it changes the
+     * tier, so it cannot state the SCHEDULER's invariant on its own.  This
+     * can: the ordering guarantee is that anything already queued for WARP
+     * is submitted before a source takes another path, and that is what
+     * declineOne does below -- the production path, entered from here
+     * rather than from a policy refusal.
+     */
+    if (hookForcedTrapezoid)
+        goto declineOne;
 
     /*
      * The run key, from the same function the trapezoid builder uses.
@@ -3733,6 +3752,15 @@ unsigned long OSMGAMesaHookSoftState(void) { return hookSoftState; }
 unsigned long OSMGAMesaHookTexPersp(void)  { return hookTexPersp; }
 unsigned long OSMGAMesaHookTexAbsent(void) { return hookTexAbsent; }
 void OSMGAMesaHookForceSoftware(int on)    { hookForcedSoftware = on; }
+void
+OSMGAMesaHookForceTrapezoid(int on)
+{
+    /* No flush here: the helper's own declineOne submits what WARP
+     * has queued before the next source takes another path, which is
+     * the ordering guarantee this switch exists to test.  Flushing
+     * here as well would hide whether that works. */
+    hookForcedTrapezoid = on;
+}
 
 /*
  * The measurement arm.  Flushes first, so a batch left half built by the
