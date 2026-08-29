@@ -354,13 +354,13 @@ main(void)
                         built++;
                         if (g_worst != 0) {
                             gapa += ar; gapn++; found++;
-                            if (g_site == 1) site1++;
-                            else if (g_site == 2) site2++;
-                            else if (g_site == 31) s31++;
-                            else if (g_site == 32) s32++;
-                            else if (g_site == 33) s33++;
-                            else if (g_site == 4) site4++;
-                            else if (g_site == 5) site5++;
+                            if (g_site == OSMGA_HW3D_TEXSITE_ANCHOR)   site1++;
+                            else if (g_site == OSMGA_HW3D_TEXSITE_QBUDGET) site2++;
+                            else if (g_site == OSMGA_HW3D_TEXSITE_SLOPEX)  s31++;
+                            else if (g_site == OSMGA_HW3D_TEXSITE_SLOPEDY) s32++;
+                            else if (g_site == OSMGA_HW3D_TEXSITE_SLOPEVY) s33++;
+                            else if (g_site == OSMGA_HW3D_TEXSITE_ROWENDS) site4++;
+                            else if (g_site == OSMGA_HW3D_TEXSITE_EMPTYROW) site5++;
                             /*
                              * Not every refusal is a texture coordinate.
                              * Counting the verdicts apart keeps the site

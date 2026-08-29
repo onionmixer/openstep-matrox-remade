@@ -1554,10 +1554,25 @@ int osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                            OSMGAHW3DTexBand *bands);
 
 /*
- * The same, and it also says WHICH check refused.  Zero means no texture
- * check spoke -- the verdict came from somewhere else, or there was none.
- * The numbers are the file's own and are listed beside the macro that
- * writes them.
+ * WHICH check answered E_TEXCOORD.  Zero means none did -- the verdict
+ * came from somewhere else, or there was no verdict.
+ *
+ * They are named and dense because they are counted: a driver that keeps
+ * a tally per site can say what a whole run refused for, which one batch's
+ * verdict cannot.  The three slope entries are separate because they bound
+ * against different extents and a fix for one is not a fix for another.
+ */
+#define OSMGA_HW3D_TEXSITE_ANCHOR    1  /* the trapezoid's own tu0/tv0 */
+#define OSMGA_HW3D_TEXSITE_QBUDGET   2  /* denominator anchor and slopes */
+#define OSMGA_HW3D_TEXSITE_SLOPEX    3  /* a u or v slope times the width */
+#define OSMGA_HW3D_TEXSITE_SLOPEDY   4  /* du/dy times the height */
+#define OSMGA_HW3D_TEXSITE_SLOPEVY   5  /* dv/dy times the height */
+#define OSMGA_HW3D_TEXSITE_ROWENDS   6  /* a drawn row's two ends */
+#define OSMGA_HW3D_TEXSITE_EMPTYROW  7  /* an empty row's position */
+#define OSMGA_HW3D_TEXSITE_COUNT     8  /* slot 0 is the total, not a site */
+
+/*
+ * The same as osmgaHW3DValidateReach, and it also reports the site.
  */
 int osmgaHW3DValidateReachSite(const OSMGAHW3DBatch *b,
                                const OSMGAHW3DLimits *lim,

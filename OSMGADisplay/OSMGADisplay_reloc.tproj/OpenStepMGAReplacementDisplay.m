@@ -845,6 +845,18 @@ typedef int OSMGAD3ZorgAligned[
  */
 #define OSMGA_HW3D_SUBMIT_PARAM "OSMGAHW3DSubmit"
 #define OSMGA_HW3D_STATUS_PARAM "OSMGAHW3DStatus"
+/*
+ * How many batches each texture check refused, since boot.  A separate
+ * parameter rather than more slots on OSMGAStats, whose count is an exact
+ * contract with everything that already reads it.
+ *
+ * The status parameter above reports one batch, and one batch is the wrong
+ * unit for this question: nearly every batch is accepted, so a reader that
+ * samples the last one almost never sees a refusal at all.  A tally does
+ * not have to be caught in the act.  Slot zero counts refusals of every
+ * kind; the rest are the sites, by their own numbers.
+ */
+#define OSMGA_HW3D_SITES_PARAM  "OSMGAHW3DSites"
 
 /*
  * T0.1: one read-only look at the registers that a soft reset might
@@ -1099,6 +1111,7 @@ osmgaM4SumPrint(void)
 #define OSMGA_HW3D_CLIP_COLS    64UL
 
 static unsigned osmgaHW3DLast[4];
+static unsigned osmgaHW3DSiteCount[OSMGA_HW3D_TEXSITE_COUNT];
 
 /*
  * One log line per distinct verdict, for the life of the load.  Twenty-three
@@ -5791,6 +5804,18 @@ unmap:
         return IO_R_SUCCESS;
     }
 
+    if (osmgaTextEquals(parameterName, OSMGA_HW3D_SITES_PARAM)) {
+        unsigned i;
+
+        if (parameterArray == 0 || count == 0 ||
+            *count != (unsigned)OSMGA_HW3D_TEXSITE_COUNT)
+            return IO_R_INVALID_ARG;
+        for (i = 0U; i < (unsigned)OSMGA_HW3D_TEXSITE_COUNT; i++)
+            parameterArray[i] = osmgaHW3DSiteCount[i];
+        *count = (unsigned)OSMGA_HW3D_TEXSITE_COUNT;
+        return IO_R_SUCCESS;
+    }
+
     if (osmgaTextEquals(parameterName, OSMGA_HW3D_STATUS_PARAM)) {
         unsigned i;
 
@@ -6708,6 +6733,12 @@ refuse2:
      * refused a box corner, and those want opposite fixes.
      */
     osmgaHW3DLast[2] = (v3 == 0) ? 0U : (unsigned)texSite3;
+    if (v3 != 0) {
+        osmgaHW3DSiteCount[0]++;
+        if (texSite3 > 0UL &&
+            texSite3 < (unsigned long)OSMGA_HW3D_TEXSITE_COUNT)
+            osmgaHW3DSiteCount[texSite3]++;
+    }
     osmgaHW3DLast[3] = 0U;
     if (v3 != OSMGA_HW3D_OK) {
         /*

@@ -1010,7 +1010,7 @@ osmgaHW3DValidateReachSite(const OSMGAHW3DBatch *b,
                     t->tv0 > (long)OSMGA_HW3D_TEX_COORD_MAX) {
                     if (badTri != 0)
                         *badTri = i;
-                    OSMGA_HW3D_TEXCOORD_SITE(1);
+                    OSMGA_HW3D_TEXCOORD_SITE(OSMGA_HW3D_TEXSITE_ANCHOR);
                     return OSMGA_HW3D_E_TEXCOORD;
                 }
 
@@ -1087,7 +1087,7 @@ osmgaHW3DValidateReachSite(const OSMGAHW3DBatch *b,
                         b->state.tmr[5] < -lim5) {
                         if (badTri != 0)
                             *badTri = i;
-                        OSMGA_HW3D_TEXCOORD_SITE(2);
+                        OSMGA_HW3D_TEXCOORD_SITE(OSMGA_HW3D_TEXSITE_QBUDGET);
                         return OSMGA_HW3D_E_TEXCOORD;
                     }
                 }
@@ -1113,15 +1113,15 @@ osmgaHW3DValidateReachSite(const OSMGAHW3DBatch *b,
                                 b->state.tmr[2] > slopeRoom / ex ||
                                 b->state.tmr[2] < -(slopeRoom / ex)))
                     { texBad = 1; texBadTri = i;
-                      OSMGA_HW3D_TEXCOORD_SITE(31); }
+                      OSMGA_HW3D_TEXCOORD_SITE(OSMGA_HW3D_TEXSITE_SLOPEX); }
                 else if (ey > 0L && (b->state.tmr[1] > slopeRoom / ey ||
                                      b->state.tmr[1] < -(slopeRoom / ey)))
                     { texBad = 1; texBadTri = i;
-                      OSMGA_HW3D_TEXCOORD_SITE(32); }
+                      OSMGA_HW3D_TEXCOORD_SITE(OSMGA_HW3D_TEXSITE_SLOPEDY); }
                 else if (vy > 0L && (b->state.tmr[3] > slopeRoom / vy ||
                                      b->state.tmr[3] < -(slopeRoom / vy)))
                     { texBad = 1; texBadTri = i;
-                      OSMGA_HW3D_TEXCOORD_SITE(33); }
+                      OSMGA_HW3D_TEXCOORD_SITE(OSMGA_HW3D_TEXSITE_SLOPEVY); }
                 else {
                     long ux, vx2, ly, ry, qa, qb;
                     int boxOK = 1;
@@ -1224,7 +1224,7 @@ osmgaHW3DValidateReachSite(const OSMGAHW3DBatch *b,
                             if (!osmgaHW3DRatioOK(ux,  qa, roomHi) ||
                                 !osmgaHW3DRatioOK(vx2, qa, roomHi))
                                 { texBad = 1; texBadTri = i;
-                                  OSMGA_HW3D_TEXCOORD_SITE(5); }
+                                  OSMGA_HW3D_TEXCOORD_SITE(OSMGA_HW3D_TEXSITE_EMPTYROW); }
 #endif
                             continue;
                         }
@@ -1243,7 +1243,7 @@ osmgaHW3DValidateReachSite(const OSMGAHW3DBatch *b,
                             !osmgaHW3DRatioOK(ly,  qb, roomHi) ||
                             !osmgaHW3DRatioOK(ry,  qb, roomHi))
                             { texBad = 1; texBadTri = i;
-                              OSMGA_HW3D_TEXCOORD_SITE(4); }
+                              OSMGA_HW3D_TEXCOORD_SITE(OSMGA_HW3D_TEXSITE_ROWENDS); }
                         /*
                          * And how far it reaches, from the same four values:
                          * the coordinate is linear along a row, so a row's

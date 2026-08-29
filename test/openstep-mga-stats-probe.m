@@ -44,6 +44,18 @@
 #define HW3D_PARAM    "OSMGAHW3DStatus"
 #define HW3D_COUNT    4
 
+/*
+ * And the tally, which does not have to be caught in the act: nearly every
+ * batch is accepted, so reading the last one almost never shows a refusal.
+ */
+#define SITES_PARAM   "OSMGAHW3DSites"
+#define SITES_COUNT   8
+
+static const char *siteName[SITES_COUNT] = {
+    "refusals(all)", "anchor-uv", "q-budget", "slope-x",
+    "slope-du/dy", "slope-dv/dy", "row-ends", "empty-row"
+};
+
 static const char *hw3dName[HW3D_COUNT] = {
     "verdict", "triangle", "dwords/site", "spins"
 };
@@ -140,6 +152,22 @@ main(int argc, char **argv)
                     objectNumber:objNum count:PROBE_COUNT];
         printf("OSMGA_PROBE_BLIT result=%d %s\n", (int)r,
                (r == IO_R_SUCCESS) ? "SUCCESS" : "refused/failed");
+    }
+
+    if (argc >= 2 && strcmp(argv[1], "sites") == 0) {
+        unsigned sc[SITES_COUNT];
+
+        count = SITES_COUNT;
+        r = [master getIntValues:sc forParameter:SITES_PARAM
+                    objectNumber:objNum count:&count];
+        if (r != IO_R_SUCCESS) {
+            printf("OSMGA_PROBE_SITES result=%d (failed)\n", (int)r);
+            return 1;
+        }
+        printf("OSMGA_PROBE_SITES result=0 count=%u\n", count);
+        for (i = 0; i < (int)count && i < SITES_COUNT; i++)
+            printf("  %-14s %u\n", siteName[i], sc[i]);
+        return 0;
     }
 
     if (argc >= 2 && strcmp(argv[1], "hw3d") == 0) {
