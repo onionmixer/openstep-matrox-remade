@@ -184,3 +184,24 @@ nib/data.classes, nib/data.dependency, nib/data.nib
 
 도중에 검증기의 `kill -0` 대기가 **정상 종료한 작업에서 "No such process" 를
 찍어** 깨끗한 실행을 깨진 것처럼 보이게 했다.  표식 파일로 바꿨다.
+
+## 11. 4~5 단계 시행 — 실기 상태를 바꿨다
+
+```
+백업        /private/Devices/System.config/Instance0.table.pre-osmga  (358 바이트)
+설치        OSMGADisplay.config,  reloc 537,564 바이트
+이관        살아 있던 표에서 두 줄만 바꾼 것을 얹었다
+            Driver Name / Server Name -> OSMGADisplay
+            Class Names / Location / Display Mode / Gray Levels /
+            Mesa Acceleration / WARP 3D / VRAM Mmap / MGA Memory Size  전부 보존
+교체        "Active Drivers" = "... OSMGADisplay"   한 번에, 겹침 없이
+격리        옛 번들 -> OpenStepMGAReplacementDisplay.prev  (.config 가 아니므로 안 보인다)
+```
+
+이관이 **필요했다는 증거**: 설치 스크립트가 `first install: the built
+bundle's instance table is in use` 라고 말했고, 그 표의 `Location` 은
+비어 있었다.  얹지 않았으면 카드를 못 찾았을 것이다.
+
+그리고 첫 시도가 조용히 실패했다 — 긴 한 줄을 원격 셸에 보냈다가 터미널이
+엉켰고, `Location` 이 여전히 비어 있는 것을 보고서야 알았다.  **표를 읽어
+확인하지 않았으면 그대로 재부팅했을 것이다.**
