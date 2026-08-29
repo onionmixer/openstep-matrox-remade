@@ -315,6 +315,10 @@ const OSMGAMesaRefusal *OSMGAMesaHookLastRefusal(void);
 
 /* M20 -- the mirror's pixel budget against a narrowed one's.  Only moves
  * when OSMGA_MESA_INST_AREA is on; see OSMGAMesaHookInstrument(). */
+void OSMGAMesaHookNarrowMirror(int mode);   /* 0 off, 1 narrow, 2 + verify */
+void OSMGAMesaHookAreaOmit(unsigned long mask);
+unsigned long OSMGAMesaHookAreaMissed(void);
+unsigned long OSMGAMesaHookAreaVerified(void);
 unsigned long OSMGAMesaHookAreaAll(void);
 unsigned long OSMGAMesaHookAreaBox(void);
 unsigned long OSMGAMesaHookAreaFullBr(void);

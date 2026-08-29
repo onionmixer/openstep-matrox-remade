@@ -382,6 +382,24 @@ OSMGAMesaHookDeltaRegs(unsigned long out[25])
  * file cannot see -- and after the span wrappers there is nothing left that
  * it cannot see, which is a finding rather than an assumption.
  */
+/*
+ * Whether the box is being kept at all.  Two switches want it -- the
+ * instrumentation that only measures, and the narrowed mirror that depends
+ * on it -- and a narrowed mirror running against a box nobody filled would
+ * deliver an empty rectangle.  One predicate, set by both.
+ */
+static int           areaWanted;
+static int           hookNarrow;      /* 0 off, 1 narrow, 2 narrow + verify */
+/*
+ * TEST ONLY: drop a source from the box, to prove each one is load-bearing.
+ * A guard that is never exercised is a guard nobody has tested, and the
+ * verification would pass on a workload that never reaches it.
+ *   1 vertices  2 spans  4 software triangles  8 lines  16 clear
+ */
+static unsigned long areaOmit;
+static unsigned long areaMissed;      /* pixels a narrowed mirror lost      */
+static unsigned long areaVerified;    /* brackets the verifier looked at    */
+
 static long          areaMinX, areaMaxX, areaMinY, areaMaxY;
 static int           areaValid, areaFull;
 static unsigned long areaBoxPixels;     /* what (B) would have copied      */
@@ -1841,6 +1859,27 @@ osmgaMesaSoftly(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
      * no-op -- the batch was already detached.
      */
     osmgaMesaFlushPending();
+    /*
+     * M21's first invisible writer, and the comment below already knew about
+     * it.  What savedTriangle points at, for this format, is OSMesa's own
+     * smooth_rgba_z_triangle -- which writes the surface without a span.
+     * A flag survived that; a rectangle does not, so the three vertices go
+     * into the box before the triangle is drawn.  A rasteriser cannot write
+     * outside the convex hull of its vertices, and the box contains the
+     * hull; the one pixel of slack absorbs the rounding.
+     */
+    if (areaWanted && !(areaOmit & 4UL) && ctx->VB != 0) {
+        struct vertex_buffer *VB = ctx->VB;
+        GLuint t[3];
+        int k;
+
+        t[0] = v0; t[1] = v1; t[2] = v2;
+        for (k = 0; k < 3; k++)
+            osmgaAreaAdd((long)VB->Win.data[t[k]][0] - 1L,
+                         (long)VB->Win.data[t[k]][1] - 1L,
+                         (long)VB->Win.data[t[k]][0] + 1L,
+                         (long)VB->Win.data[t[k]][1] + 1L);
+    }
     (*savedTriangle)(ctx, v0, v1, v2, pv);
     /*
      * It drew into the substituted surface and did not tell us.  Without
@@ -2119,7 +2158,7 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         hookLastWin[nwin][1] = (float)VB->Win.data[idx][1];              \
         hookLastWin[nwin][2] = (float)VB->Win.data[idx][2];              \
         nwin = (nwin + 1) % 3;                                           \
-        if ((hookInstrument & OSMGA_MESA_INST_AREA) != 0)                \
+        if (areaWanted && !(areaOmit & 1UL))                             \
             osmgaAreaAdd((long)VB->Win.data[idx][0] - 1L,                \
                          (long)VB->Win.data[idx][1] - 1L,                \
                          (long)VB->Win.data[idx][0] + 1L,                \
@@ -3189,6 +3228,43 @@ static void (*prevWriteRGBAPixels)(const GLcontext *, GLuint, const GLint [],
 static void (*prevWriteMonoRGBAPixels)(const GLcontext *, GLuint,
                                        const GLint [], const GLint [],
                                        const GLubyte []);
+/*
+ * M21's second invisible writer.
+ *
+ * OSMesa installs its own line rasteriser -- osmesa.c:1996 takes
+ * choose_line_function(), which for OSMESA_ARGB returns flat_rgba_z_line or
+ * flat_rgba_line -- and those write the surface DIRECTLY, without a span.
+ * This back end does not draw lines and so never looked at LineFunc, which
+ * was harmless while the dirty mark was a flag: the mark is set at every
+ * bracket, so a line still got delivered by a full mirror.  A RECTANGLE
+ * would not have seen it, and the picture would have lost lines.
+ *
+ * So the line is wrapped for its coordinates and for nothing else.  It is
+ * not intercepted, not accelerated and not altered -- the saved function
+ * draws exactly as it did.
+ */
+static void (*prevLineFunc)(GLcontext *, GLuint, GLuint, GLuint);
+
+static void
+osmgaLineFunc(GLcontext *ctx, GLuint v1, GLuint v2, GLuint pv)
+{
+    if (areaWanted && !(areaOmit & 8UL) && ctx->VB != 0) {
+        struct vertex_buffer *VB = ctx->VB;
+        GLuint e[2];
+        int k;
+
+        e[0] = v1; e[1] = v2;
+        for (k = 0; k < 2; k++)
+            osmgaAreaAdd((long)VB->Win.data[e[k]][0] - 1L,
+                         (long)VB->Win.data[e[k]][1] - 1L,
+                         (long)VB->Win.data[e[k]][0] + 1L,
+                         (long)VB->Win.data[e[k]][1] + 1L);
+    }
+    spanWrote = 1;      /* it wrote, whatever this file could see of it */
+    if (prevLineFunc)
+        (*prevLineFunc)(ctx, v1, v2, pv);
+}
+
 static void (*prevReadRGBASpan)(const GLcontext *, GLuint, GLint, GLint,
                                 GLubyte [][4]);
 static void (*prevReadRGBAPixels)(const GLcontext *, GLuint, const GLint [],
@@ -3201,7 +3277,7 @@ osmgaWriteRGBASpan(const GLcontext *ctx, GLuint n, GLint x, GLint y,
 {
     osmgaMesaFlushPending();
     spanWrote = 1;
-    if ((hookInstrument & OSMGA_MESA_INST_AREA) != 0)
+    if (areaWanted && !(areaOmit & 2UL))
         osmgaAreaAdd((long)x, (long)y, (long)x + (long)n - 1L, (long)y);
     if (prevWriteRGBASpan) (*prevWriteRGBASpan)(ctx, n, x, y, rgba, mask);
 }
@@ -3212,7 +3288,7 @@ osmgaWriteRGBSpan(const GLcontext *ctx, GLuint n, GLint x, GLint y,
 {
     osmgaMesaFlushPending();
     spanWrote = 1;
-    if ((hookInstrument & OSMGA_MESA_INST_AREA) != 0)
+    if (areaWanted && !(areaOmit & 2UL))
         osmgaAreaAdd((long)x, (long)y, (long)x + (long)n - 1L, (long)y);
     if (prevWriteRGBSpan) (*prevWriteRGBSpan)(ctx, n, x, y, rgb, mask);
 }
@@ -3223,7 +3299,7 @@ osmgaWriteMonoRGBASpan(const GLcontext *ctx, GLuint n, GLint x, GLint y,
 {
     osmgaMesaFlushPending();
     spanWrote = 1;
-    if ((hookInstrument & OSMGA_MESA_INST_AREA) != 0)
+    if (areaWanted && !(areaOmit & 2UL))
         osmgaAreaAdd((long)x, (long)y, (long)x + (long)n - 1L, (long)y);
     if (prevWriteMonoRGBASpan) (*prevWriteMonoRGBASpan)(ctx, n, x, y, mask);
 }
@@ -3235,7 +3311,7 @@ osmgaWriteRGBAPixels(const GLcontext *ctx, GLuint n, const GLint x[],
 {
     osmgaMesaFlushPending();
     spanWrote = 1;
-    if ((hookInstrument & OSMGA_MESA_INST_AREA) != 0) {
+    if (areaWanted && !(areaOmit & 2UL)) {
         GLuint i;
         for (i = 0; i < n; i++)
             osmgaAreaAdd((long)x[i], (long)y[i], (long)x[i], (long)y[i]);
@@ -3249,7 +3325,7 @@ osmgaWriteMonoRGBAPixels(const GLcontext *ctx, GLuint n, const GLint x[],
 {
     osmgaMesaFlushPending();
     spanWrote = 1;
-    if ((hookInstrument & OSMGA_MESA_INST_AREA) != 0) {
+    if (areaWanted && !(areaOmit & 2UL)) {
         GLuint i;
         for (i = 0; i < n; i++)
             osmgaAreaAdd((long)x[i], (long)y[i], (long)x[i], (long)y[i]);
@@ -3306,6 +3382,7 @@ osmgaMesaWrapSpans(GLcontext *ctx)
         prevWriteMonoRGBASpan = 0;  prevWriteRGBAPixels = 0;
         prevWriteMonoRGBAPixels = 0;
         prevReadRGBASpan = 0;       prevReadRGBAPixels = 0;
+        prevLineFunc = 0;
     }
     OSMGA_WRAP(WriteRGBASpan,       osmgaWriteRGBASpan,       prevWriteRGBASpan);
     OSMGA_WRAP(WriteRGBSpan,        osmgaWriteRGBSpan,        prevWriteRGBSpan);
@@ -3314,6 +3391,15 @@ osmgaMesaWrapSpans(GLcontext *ctx)
     OSMGA_WRAP(WriteMonoRGBAPixels, osmgaWriteMonoRGBAPixels, prevWriteMonoRGBAPixels);
     OSMGA_WRAP(ReadRGBASpan,        osmgaReadRGBASpan,        prevReadRGBASpan);
     OSMGA_WRAP(ReadRGBAPixels,      osmgaReadRGBAPixels,      prevReadRGBAPixels);
+    /*
+     * And the line, for its coordinates only.  NULL is a legitimate value
+     * here -- Mesa draws the line itself when the driver has no function --
+     * and OSMGA_WRAP would then install ours over a null saved pointer,
+     * which is exactly right: ours forwards to nothing and Mesa's own path
+     * never runs.  So it is wrapped only when there is something to wrap.
+     */
+    if (ctx->Driver.LineFunc != 0 && ctx->Driver.LineFunc != osmgaLineFunc)
+        OSMGA_WRAP(LineFunc, osmgaLineFunc, prevLineFunc);
 }
 
 /*
@@ -3416,7 +3502,7 @@ osmgaMesaMirror(GLcontext *ctx)
      * with the scissor, which cannot have moved inside the bracket --
      * glScissor is ASSERT_OUTSIDE_BEGIN_END_AND_FLUSH.
      */
-    if ((hookInstrument & OSMGA_MESA_INST_AREA) != 0) {
+    if (areaWanted) {
         unsigned long W = OSMGAMesaBufferWidth();
         unsigned long H = OSMGAMesaBufferHeight();
 
@@ -3449,7 +3535,42 @@ osmgaMesaMirror(GLcontext *ctx)
         }
     }
     hookMirrors++;
-    OSMGAMesaBufferMirror();
+    if (hookNarrow && !areaFull && areaValid) {
+        long x0 = areaMinX, y0 = areaMinY, x1 = areaMaxX, y1 = areaMaxY;
+        unsigned long W = OSMGAMesaBufferWidth();
+        unsigned long H = OSMGAMesaBufferHeight();
+
+        if (ctx != 0 && ctx->Scissor.Enabled) {
+            if (ctx->Scissor.X > x0) x0 = (long)ctx->Scissor.X;
+            if (ctx->Scissor.Y > y0) y0 = (long)ctx->Scissor.Y;
+            if ((long)ctx->Scissor.X + (long)ctx->Scissor.Width - 1L < x1)
+                x1 = (long)ctx->Scissor.X + (long)ctx->Scissor.Width - 1L;
+            if ((long)ctx->Scissor.Y + (long)ctx->Scissor.Height - 1L < y1)
+                y1 = (long)ctx->Scissor.Y + (long)ctx->Scissor.Height - 1L;
+        }
+        if (x0 < 0L) x0 = 0L;
+        if (y0 < 0L) y0 = 0L;
+        if (x1 > (long)W - 1L) x1 = (long)W - 1L;
+        if (y1 > (long)H - 1L) y1 = (long)H - 1L;
+        if (x1 < x0 || y1 < y0)
+            OSMGAMesaBufferUnsoil();       /* nothing inside the surface */
+        else
+            OSMGAMesaBufferMirrorNarrow((unsigned long)x0, (unsigned long)y0,
+                                        (unsigned long)x1, (unsigned long)y1);
+    } else {
+        OSMGAMesaBufferMirror();
+    }
+    /*
+     * And then ask whether it was enough.  The mirror's contract is that the
+     * application's array equals the surface afterwards, so a pixel that
+     * still differs is a pixel some writer produced and no source in the box
+     * accounted for.  It costs a full read of both, which is why it is a
+     * mode and not a default.
+     */
+    if (hookNarrow > 1) {
+        areaMissed += OSMGAMesaBufferDisagree();
+        areaVerified++;
+    }
 }
 
 /*
@@ -3648,7 +3769,8 @@ osmgaMesaClearOnEngine(GLcontext *ctx, GLbitfield mask, GLboolean all,
         return 0;
     }
     hookClearWhy = 0;
-    areaPendingFull = 1;
+    if (!(areaOmit & 16UL))
+        areaPendingFull = 1;
     OSMGAMesaBufferSoiled();
     /*
      * The surface now holds one value, and _mesa_Clear is about to open a
@@ -3819,6 +3941,29 @@ double OSMGAMesaHookLastWin(unsigned long v, unsigned long c)
  * the two bracket counts say how much of the difference is real narrowing
  * and how much is brackets nothing could narrow.
  */
+/*
+ * Narrow the mirror: 0 leaves it alone, 1 delivers only the box, 2 also
+ * checks that the box was enough.  Turning it on turns the box on -- see
+ * areaWanted -- because a narrowed mirror against a box nobody filled would
+ * deliver an empty rectangle.
+ */
+void
+OSMGAMesaHookNarrowMirror(int mode)
+{
+    hookNarrow = mode;
+    areaWanted = (mode != 0) || ((hookInstrument & OSMGA_MESA_INST_AREA) != 0);
+}
+
+/* TEST ONLY -- drop a source from the box, so a test can show that leaving
+ * it out actually loses pixels.  See areaOmit. */
+void
+OSMGAMesaHookAreaOmit(unsigned long mask)
+{
+    areaOmit = mask;
+}
+
+unsigned long OSMGAMesaHookAreaMissed(void)   { return areaMissed; }
+unsigned long OSMGAMesaHookAreaVerified(void) { return areaVerified; }
 unsigned long OSMGAMesaHookAreaAll(void)      { return areaAllPixels; }
 unsigned long OSMGAMesaHookAreaBox(void)      { return areaBoxPixels; }
 unsigned long OSMGAMesaHookAreaFullBr(void)   { return areaFullBrackets; }
@@ -3919,6 +4064,7 @@ void OSMGAMesaHookMeasureArm(int arm)
 void OSMGAMesaHookInstrument(int on)
 {
     hookInstrument = on;
+    areaWanted = (hookNarrow != 0) || ((on & OSMGA_MESA_INST_AREA) != 0);
 }
 unsigned long OSMGAMesaHookBatches(void)   { return hookBatches; }
 unsigned long OSMGAMesaHookTraps(void)     { return hookTraps; }

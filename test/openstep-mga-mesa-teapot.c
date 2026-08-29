@@ -68,6 +68,9 @@
 #define OSMGAMesaHookAreaBoxBr()       0UL
 #define OSMGAMesaBufferCopies()        0UL
 #define OSMGAMesaHookInstrument(n)     ((void)(n))
+#define OSMGAMesaHookNarrowMirror(n)   ((void)(n))
+#define OSMGAMesaHookAreaMissed()      0UL
+#define OSMGAMesaHookAreaVerified()    0UL
 #endif
 
 /* patchdata, cpdata, tex and teapot(), cut from the Mesa tree at build time */
@@ -333,6 +336,16 @@ main(int argc, char **argv)
      * the claim is checkable rather than asserted.
      */
     OSMGAMesaHookInstrument(8);
+    /*
+     * M21's narrowed mirror, off unless asked for: 1 narrows, 2 also checks
+     * that the box was enough.  It is not the default and this switch is how
+     * the default gets measured against it on the same model.
+     */
+    {
+        const char *nm = getenv("OSMGA_MESA_NARROW");
+        if (nm && *nm)
+            OSMGAMesaHookNarrowMirror(atoi(nm));
+    }
     mir0 = OSMGAMesaHookMirrors();
     copies0 = OSMGAMesaBufferCopies();
     areaAll0 = OSMGAMesaHookAreaAll();
@@ -404,6 +417,10 @@ main(int argc, char **argv)
                all ? (unsigned long)(100UL - (box * 100UL) / all) : 0UL,
                OSMGAMesaHookAreaBoxBr() - areaBoxBr0,
                OSMGAMesaHookAreaFullBr() - areaFullBr0);
+        if (OSMGAMesaHookAreaVerified() > 0UL)
+            printf("   narrowing missed        : %lu pixels over %lu"
+                   " verified brackets\n", OSMGAMesaHookAreaMissed(),
+                   OSMGAMesaHookAreaVerified());
     }
     printf("   source triangles drawn  : %lu\n", drawn1 - drawn0);
     printf("   submissions             : %lu   (batching: %lu sources per"

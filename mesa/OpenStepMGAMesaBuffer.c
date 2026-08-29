@@ -35,6 +35,19 @@ static void *bufApp;      /* what the application gave us */
 static unsigned long bufAppRow;  /* and how its rows are laid out */
 static int   bufDirty;
 static unsigned long bufCopies;   /* mirrors that got PAST the early return */
+/*
+ * The next mirror must copy everything, whatever box it is given.
+ *
+ * A narrowed mirror rests on an invariant the full one establishes: after a
+ * mirror, the application's array EQUALS the surface, so delivering only
+ * what this bracket wrote is enough.  A freshly bound array has never been
+ * given the surface at all -- it is whatever the caller malloc'd -- so the
+ * first mirror after a bind has to establish the invariant before anything
+ * may narrow against it.  Found while building the verification and not by
+ * it: a narrowed first mirror leaves the caller's uninitialised memory
+ * everywhere the first bracket did not draw.
+ */
+static int bufFullNext = 1;
 static void *depthMapped;
 /*
  * Present mode: the caller has opted into ON-SCREEN delivery, and its own
@@ -464,6 +477,85 @@ OSMGAMesaBufferSoiled(void)
  * order -- and it leaves bufDirty exactly as it found it, so a test can call
  * it without changing what the next real mirror does.
  */
+/*
+ * The narrowed mirror: deliver the box this bracket wrote, and nothing else.
+ *
+ * It is the same copy as the full one and obeys the same guard, so a bracket
+ * that wrote nothing still costs nothing.  The box is the caller's business
+ * -- see M21 for what has to be in it -- and the one thing decided here is
+ * that the first mirror after a bind ignores it.
+ */
+void
+OSMGAMesaBufferMirrorNarrow(unsigned long x0, unsigned long y0,
+                            unsigned long x1, unsigned long y1)
+{
+    const unsigned long *src;
+    unsigned long *dst;
+    unsigned long y;
+
+    if (bufPresent)
+        return;
+    if (bufMapped == 0 || bufApp == 0 || !bufDirty)
+        return;
+    if (bufFullNext) {
+        OSMGAMesaBufferMirror();
+        bufFullNext = 0;
+        return;
+    }
+    bufDirty = 0;
+    bufCopies++;
+
+    if (x1 >= bufWidth)  x1 = bufWidth - 1UL;
+    if (y1 >= bufHeight) y1 = bufHeight - 1UL;
+    if (x0 > x1 || y0 > y1)
+        return;
+
+    src = (const unsigned long *)bufMapped;
+    dst = (unsigned long *)bufApp;
+    for (y = y0; y <= y1; y++) {
+        const unsigned long *s = src + y * bufStride + x0;
+        unsigned long *d = dst + y * bufAppRow + x0;
+        unsigned long x;
+
+        for (x = x0; x <= x1; x++)
+            *d++ = *s++;
+    }
+}
+
+/*
+ * How many pixels of the application's array disagree with the surface.
+ *
+ * This is the whole verification, and it needs no scratch copy: the mirror's
+ * contract IS that the two are equal afterwards, so anything a narrowed
+ * mirror missed shows up here as a pixel that differs.  Comparing a full
+ * mirror against a narrowed one in the same array would have compared the
+ * array with itself, which is what the review caught.
+ *
+ * Read-only on both sides.
+ */
+unsigned long
+OSMGAMesaBufferDisagree(void)
+{
+    const unsigned long *src;
+    const unsigned long *dst;
+    unsigned long y, bad = 0UL;
+
+    if (bufPresent || bufMapped == 0 || bufApp == 0)
+        return 0UL;
+    src = (const unsigned long *)bufMapped;
+    dst = (const unsigned long *)bufApp;
+    for (y = 0UL; y < bufHeight; y++) {
+        const unsigned long *s = src + y * bufStride;
+        const unsigned long *d = dst + y * bufAppRow;
+        unsigned long x;
+
+        for (x = 0UL; x < bufWidth; x++)
+            if (d[x] != s[x])
+                bad++;
+    }
+    return bad;
+}
+
 void
 OSMGAMesaBufferMirrorBox(unsigned long x0, unsigned long y0,
                          unsigned long x1, unsigned long y1)
@@ -746,6 +838,7 @@ OpenStepMesaAccelReleaseBuffer(void *ctx)
     }
     bufCtx = 0;
     bufApp = 0;
+    bufFullNext = 1;
     bufAppRow = 0UL;
     bufDirty = 0;
     bufOrigin = 0UL;
@@ -860,7 +953,13 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
             return 0;
         if (bufWidth == (unsigned long)width &&
             bufHeight == (unsigned long)height) {
+            /*
+             * And it may be a buffer that has never been given the surface,
+             * so the narrowed mirror's invariant has to be established again
+             * before anything narrows against it.
+             */
             bufApp = buffer;    /* it may be a different buffer this time */
+            bufFullNext = 1;
             bufAppRow = (unsigned long)appRowLength;
             *rowLength = (int)bufStride;
             bufBound = ctx;
@@ -938,6 +1037,7 @@ OpenStepMesaAccelBuffer(void *ctx, void *buffer, int width, int height,
     }
 
     bufMapped = (void *)addr;
+    bufFullNext = 1;
     bufCtx    = ctx;
     bufBound  = ctx;
     bufApp    = buffer;

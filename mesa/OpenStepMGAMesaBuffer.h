@@ -86,6 +86,9 @@ unsigned long OSMGAMesaBufferDepthOrigin(void);
  */
 void OSMGAMesaBufferMirror(void);
 unsigned long OSMGAMesaBufferCopies(void);
+void OSMGAMesaBufferMirrorNarrow(unsigned long x0, unsigned long y0,
+                                 unsigned long x1, unsigned long y1);
+unsigned long OSMGAMesaBufferDisagree(void);
 void OSMGAMesaBufferMirrorBox(unsigned long x0, unsigned long y0,
                               unsigned long x1, unsigned long y1);
 
