@@ -130,6 +130,40 @@ def main():
               " (%d)" % (name, srccov))
         return 1
 
+    #
+    # -- the source ALPHA, which IS judged.
+    #
+    # The colour difference above stays reported and unjudged: the engine's
+    # multiply is not Mesa's multiply and that is a recorded fact.  Alpha is
+    # not that.  It is an interpolated plane with nothing to round but the
+    # last bit, and the engine and Mesa agree on it -- so a disagreement of
+    # more than one level is a defect and not a fact.
+    #
+    # It went unnoticed for as long as these scenes have existed because
+    # this file counted the difference and scored each path against its own
+    # source, which is exactly the arrangement in which an alpha 128 levels
+    # out still comes to "ok" on every pixel.  M14: the second triangle of
+    # this very quad was drawn from where the first one finished, because
+    # the kernel's state tracking skipped an alpha start it thought had not
+    # changed and the engine had advanced it.
+    #
+    # One level, not zero: the WARP tier truncates where the trapezoid tier
+    # pre-adds half a level, and that difference is measured, understood
+    # and unfixable through the vertex format (M12 section 8).
+    #
+    srcalpha = 0
+    srcalphaAt = None
+    for k in A:
+        if k in As_:
+            d = abs(((A[k] >> 24) & 0xFF) - ((As_[k] >> 24) & 0xFF))
+            if d > srcalpha:
+                srcalpha, srcalphaAt = d, k
+    if srcalpha > 1:
+        print("%-12s SOURCE ALPHA: worst %d levels from software at %s -- the"
+              " unblended source alpha must agree within one"
+              % (name, srcalpha, srcalphaAt))
+        return 1
+
     klass = {'coverage': 0, 'engine': 0, 'mesa': 0, 'both': 0, 'ok': 0}
     worst = 0
     for k in set(A) | set(B) | set(Bs):

@@ -1321,6 +1321,67 @@ static const signed char osmgaDmaGroup[OSMGA_DMA_GROUPS][4] = {
  * so before the execute, which is the only order the engine requires. */
 static const signed char osmgaDmaTail[2] = { 7, 17 };
 
+/*
+ * The registers the ENGINE ADVANCES, which therefore have to be written
+ * even when the value has not changed.
+ *
+ * State tracking below skips a group whose four values equal the previous
+ * trapezoid's.  That is sound for a register the engine only reads, and
+ * wrong for one it walks: "unchanged since we last wrote it" says nothing
+ * about what the hardware now holds.
+ *
+ * Measured, M14: a quad whose two triangles want the SAME alpha start --
+ * they anchor at the same vertex -- had its second triangle drawn from
+ * where the first one finished.  Wanted 97, drew 225, which is the first
+ * triangle's ending alpha plus the rounding.  Turning tracking off made
+ * the whole quad match Mesa exactly, 0 of 16384 pixels differing in any
+ * channel; turning it back on brought the 128 levels back.  The colours
+ * escaped only because that quad's triangles have different vertex
+ * colours, so their group was dirty anyway.
+ *
+ * The spec says which ones, in two places.  Of the interpolation starts:
+ * "the ALPHASTART register is used to SCAN the left edge of the trapezoid
+ * ... must be initialized with its starting alpha value" (3-36), and the
+ * same sentence for DR0 (3-118); DR4, DR8 and DR12 are the same kind of
+ * thing for red, green and blue.  Of the edges: "when a primitive is
+ * completed, the common continuity points that result allow a duplicate
+ * adjacent primitive to be drawn without the necessity of re-initializing
+ * all of the edges" (4-36) -- so the edge ERROR TERMS AR1 and AR4 end up
+ * where the walk left them.  AR0, AR2, AR5 and AR6 are increments and are
+ * not walked, and neither is any of the dx/dy or control words.
+ *
+ * Zstart is not listed here because it is in the tail block above, which
+ * is written every time already.
+ */
+static const signed char osmgaDmaAdvanced[6] = {
+     2,   /* AR1        left edge error term   */
+     4,   /* AR4        right edge error term  */
+     8,   /* DR4        red start              */
+    11,   /* DR8        green start            */
+    14,   /* DR12       blue start             */
+    20    /* ALPHASTART alpha start            */
+};
+
+/* Does this group hold one?  Six values against six slots, at encode time,
+ * on a list that is already thousands of dwords -- and it is not in the
+ * per-trapezoid inner loop below, which asks the question once per group. */
+static int
+osmgaDmaGroupAdvances(int g)
+{
+    int sl, k;
+
+    for (sl = 0; sl < 4; sl++) {
+        int ix = osmgaDmaGroup[g][sl];
+
+        if (ix < 0)
+            continue;
+        for (k = 0; k < 6; k++)
+            if (osmgaDmaAdvanced[k] == (signed char)ix)
+                return 1;
+    }
+    return 0;
+}
+
 #define OSMGA_DMA_BLOCK_DWORDS  5
 #define OSMGA_DMA_BLOCK_BYTES   (OSMGA_DMA_BLOCK_DWORDS * 4UL)
 #define OSMGA_DWGREG0           0x1c00
@@ -15179,7 +15240,11 @@ osmgaHW3DEncode(unsigned long *list, unsigned long listDwords,
         }
 
         for (g = 0; ok && g < OSMGA_DMA_GROUPS; g++) {
-            int dirty = (!track || !have);
+            /* A group holding a register the engine advances is written
+             * every time, whatever it held last -- see osmgaDmaAdvanced.
+             * Three of the six do: the two edge error terms, the three
+             * colour starts, and the alpha start. */
+            int dirty = (!track || !have || osmgaDmaGroupAdvances(g));
             unsigned long r[4], d[4];
 
             for (sl = 0; !dirty && sl < 4; sl++) {
