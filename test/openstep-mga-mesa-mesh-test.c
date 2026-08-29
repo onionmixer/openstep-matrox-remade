@@ -162,6 +162,23 @@ main(int argc, char **argv)
            OSMGAMesaHookDeclined() - x0);
     printf("# select hard %lu soft %lu\n",
            OSMGAMesaHookHardState() - h0, OSMGAMesaHookSoftState() - w0);
+    /*
+     * What the submissions cost the kernel to encode.
+     *
+     * The list size is the whole subject of the state tracking, and this
+     * is the biggest repeatable load in the tree -- 512 triangles, always
+     * the same ones.  submitCount and submitDwords are outside the
+     * instrumentation switch, so this costs nothing to read.
+     */
+    {
+        unsigned long st[6];
+
+        OSMGAMesaHookSubmitStats(st);
+        printf("# submits %lu dwords %lu  dwords/submit %lu.%02lu\n",
+               st[0], st[2],
+               st[0] ? st[2] / st[0] : 0UL,
+               st[0] ? ((st[2] % st[0]) * 100UL) / st[0] : 0UL);
+    }
     for (y = 0; y < H; y++)
         for (x = 0; x < W; x++) {
             unsigned long c = app[y * W + x];
