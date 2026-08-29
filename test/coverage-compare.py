@@ -107,14 +107,47 @@ def main(d, passes=3):
               if not any(f.startswith(mode) for f in fail) else "SOME DIFFER"))
 
     print("\n== the engine, not the fallback, drew the accelerated runs ==")
+    #
+    # And WHICH engine tier.  Both accelerated tiers are "the engine drew
+    # it", so drawn alone cannot tell a WARP arm from one that asked for
+    # WARP and quietly got trapezoids.  The first WARP sweep came out byte
+    # for byte identical to the trapezoid one and nothing in the output
+    # could say whether that was agreement or a silent fallback.
+    #
+    # warp is a SUBSET of drawn, so the arm is named by comparing them: all
+    # of it, none of it, or a mixture -- and a mixture is not judgeable,
+    # because the shapes it covers are drawn by two different tiers and the
+    # rows below cannot say which.  Dumps written before the counter
+    # existed have no warp key at all, and those still read as before.
+    #
+    anyWarp = any('warp' in load(S % ('hw', n, 1))[0] for n in SHAPES)
     for n in SHAPES:
         m, _ = load(S % ('hw', n, 1))
         ok = (m['software'] == 0 and m['declined'] == 0
               and m['unsupported'] == 0 and m['drawn'] > 0)
         if not ok: fail.append("shape %d was not purely hardware: %r" % (n, m))
-        print("   shape %d: %-9s drawn=%d software=%d unsupported=%d declined=%d%s"
+        tier = ""
+        if 'warp' in m:
+            if m['warp'] == 0:
+                tier = "  trapezoid"
+            elif m['warp'] == m['drawn']:
+                tier = "  WARP"
+            else:
+                tier = "  MIXED TIERS"
+                fail.append("shape %d drew %d on the engine of which %d were "
+                            "WARP -- a mixed arm cannot be judged"
+                            % (n, m['drawn'], m['warp']))
+        print("   shape %d: %-9s drawn=%d software=%d unsupported=%d "
+              "declined=%d%s%s"
               % (n, m['mode'], m['drawn'], m['software'], m['unsupported'],
-                 m['declined'], "" if ok else "   <-- NOT PURE"))
+                 m['declined'], tier, "" if ok else "   <-- NOT PURE"))
+    if anyWarp:
+        tiers = set()
+        for n in SHAPES:
+            m, _ = load(S % ('hw', n, 1))
+            tiers.add('warp' if m.get('warp', 0) == m['drawn'] else 'trap')
+        if len(tiers) != 1:
+            fail.append("the accelerated arm is not one tier throughout")
 
     print("\n== each covered row is covered without a gap ==")
     for mode in ('hw', 'sw'):

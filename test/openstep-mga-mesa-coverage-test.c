@@ -129,7 +129,7 @@ main(int argc, char **argv)
     OSMesaContext ctx;
     int which = (argc > 1) ? atoi(argv[1]) : 1;
     long x, y;
-    unsigned long d0, s0, u0, x0;
+    unsigned long d0, s0, u0, x0, w0;
 
     if (which < 1 || which > 9) { printf("shape 1..9\n"); return 2; }
 
@@ -161,15 +161,25 @@ main(int argc, char **argv)
     s0 = OSMGAMesaHookSoftware();
     u0 = OSMGAMesaHookUnsupported();
     x0 = OSMGAMesaHookDeclined();
+    w0 = OSMGAMesaHookWarp();
     shape(which);
     glFinish();
 
     /* Provenance, so the runs below can be read a year from now. */
     printf("# shape %d  surface %dx%d  origin %lu  clear %08lx\n",
            which, W, H, OSMGAMesaBufferOrigin(), CLEARC);
-    printf("# counters drawn=%lu software=%lu unsupported=%lu declined=%lu\n",
+    /*
+     * warp is a SUBSET of drawn, not a fourth path.  Both accelerated tiers
+     * are "the engine drew it", so drawn alone cannot tell a WARP run from
+     * one that asked for WARP and quietly got trapezoids -- which is the
+     * shape of the first WARP coverage sweep, where the two arms came out
+     * byte for byte identical and nothing in the output could say why.
+     */
+    printf("# counters drawn=%lu software=%lu unsupported=%lu declined=%lu"
+           " warp=%lu\n",
            OSMGAMesaHookDrawn() - d0, OSMGAMesaHookSoftware() - s0,
-           OSMGAMesaHookUnsupported() - u0, OSMGAMesaHookDeclined() - x0);
+           OSMGAMesaHookUnsupported() - u0, OSMGAMesaHookDeclined() - x0,
+           OSMGAMesaHookWarp() - w0);
     /*
      * Acceleration being on is not evidence the engine drew it: a refused
      * batch is deliberately redrawn in software.  The run says which it was
