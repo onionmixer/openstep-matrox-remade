@@ -3,10 +3,23 @@
  *
  * The arena is a stretch of video memory after the colour surface and the
  * space a depth buffer would take (OpenStepMGAMesaBuffer.c decides where);
- * this decides who has which part of it.  Textures are few and large -- a
- * 256 by 256 one is a quarter of a megabyte and the arena at 320x240 is two
- * and a half -- so running out is ordinary rather than exceptional, and the
- * allocator is written for a handful of blocks rather than for many.
+ * this decides who has which part of it.
+ *
+ * THIS USED TO SAY textures are few and large, and the allocator was written
+ * for a handful of blocks.  That was true of the demos it was written for --
+ * a 256 by 256 texture is a quarter of a megabyte -- and it is not true of a
+ * game.  Quake's textures are MANY AND SMALL: one level references up to 65
+ * distinct world textures of 64 by 64 and below, packs its lightmaps into a
+ * couple of dozen sheets, and never frees a texture between levels, so a
+ * session accumulates.  Counted from the data: 133 blocks for the worst
+ * single level, 344 across a whole playthrough.
+ *
+ * So the block count is no longer a handful.  What did not change is the
+ * shape: blocks stay sorted by origin and a request still takes the first
+ * gap that fits, which is O(n) to scan and O(n) to insert.  At the bound
+ * below that is 0.60 ms for a level's worth of allocations on this machine
+ * -- less than one frame -- so the simple allocator is kept rather than
+ * replaced with something that would need its own correctness argument.
  *
  * Blocks are kept sorted by origin and a request takes the first gap that
  * fits.  Freeing removes a block; there is nothing to coalesce, because the
@@ -21,7 +34,15 @@
 
 #include "OpenStepMGAMesaTexArena.h"
 
-#define OSMGA_TEX_BLOCKS 32
+/*
+ * 384: above both numbers measured from Quake's data (133 for the worst
+ * single level, 344 for a playthrough) with room left over, and the array
+ * it sizes is 8 bytes a block -- three kilobytes in total.
+ *
+ * It was 32, which Q2-0 measured running out at the thirtieth texture while
+ * the smallest level needs 27 world textures before a single lightmap.
+ */
+#define OSMGA_TEX_BLOCKS 384
 /* Origins are kept on a sixteen-texel boundary, which is what the DDX rounds
  * its own scratch texture to.  Nothing measured requires it; it costs a few
  * bytes and takes one class of alignment question off the table. */
