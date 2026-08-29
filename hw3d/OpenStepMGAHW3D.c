@@ -9,6 +9,27 @@
  */
 #include "OpenStepMGAHW3D.h"
 
+/*
+ * Three separate places in this file answer E_TEXCOORD, and they refuse
+ * for three different reasons: the trapezoid's own texture anchor out of
+ * range, the denominator's anchor or slope budget, and a row endpoint
+ * whose reach leaves the band.  A verdict number cannot say which one
+ * spoke, and the host-side harness that reproduces the builder's
+ * disagreement with this file has to know -- only one of the three is a
+ * candidate for changing.
+ *
+ * Compiled out of the driver entirely.  A single shared global is the
+ * wrong thing to carry into the kernel, where validation runs for
+ * whoever asks and there is more than one asker; the harness is one
+ * process running one case at a time and can hold it safely.
+ */
+#ifdef OSMGA_HW3D_TESTSITE
+long osmgaHW3DTestTexcoordSite = 0;
+#define OSMGA_HW3D_TEXCOORD_SITE(n) (osmgaHW3DTestTexcoordSite = (n))
+#else
+#define OSMGA_HW3D_TEXCOORD_SITE(n) ((void)0)
+#endif
+
 #define OSMGA_HW3D_DEPTH_BYTES  2UL    /* MACCESS leaves depth 16-bit */
 
 /*
@@ -941,6 +962,14 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
 
                 long room = (long)OSMGA_HW3D_TEX_COORD_MAX;
                 long roomHi = room >> 16;
+                /*
+                 * The COORDINATE policy and the SLOPE budget are two
+                 * different numbers that have so far been one.  roomHi --
+                 * which is what every actual coordinate is judged against,
+                 * at the box corners and at each drawn row's two ends --
+                 * stays derived from room and is not touched here.
+                 */
+                long slopeRoom = (long)OSMGA_HW3D_TEX_SLOPE_ROOM;
                 int persp = (b->state.texFlags
                              & OSMGA_HW3D_TEXF_PERSP) != 0UL;
 
@@ -971,6 +1000,7 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                     t->tv0 > (long)OSMGA_HW3D_TEX_COORD_MAX) {
                     if (badTri != 0)
                         *badTri = i;
+                    OSMGA_HW3D_TEXCOORD_SITE(1);
                     return OSMGA_HW3D_E_TEXCOORD;
                 }
 
@@ -1031,6 +1061,7 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                         a5 > budget / mrow) {
                         if (badTri != 0)
                             *badTri = i;
+                        OSMGA_HW3D_TEXCOORD_SITE(2);
                         return OSMGA_HW3D_E_TEXCOORD;
                     }
                 }
@@ -1044,15 +1075,27 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                  *      tmr[0] = ds/dx   width      tmr[1] = ds/dy   height
                  *      tmr[2] = dt/dx   width      tmr[3] = dt/dy   height
                  */
-                if ((ex > 0L && (b->state.tmr[0] > room / ex ||
-                                 b->state.tmr[0] < -(room / ex) ||
-                                 b->state.tmr[2] > room / ex ||
-                                 b->state.tmr[2] < -(room / ex))) ||
-                    (ey > 0L && (b->state.tmr[1] > room / ey ||
-                                 b->state.tmr[1] < -(room / ey))) ||
-                    (vy > 0L && (b->state.tmr[3] > room / vy ||
-                                 b->state.tmr[3] < -(room / vy))))
-                    { texBad = 1; texBadTri = i; }
+                /*
+                 * Written as three tests rather than one so that a harness
+                 * can be told WHICH extent ran out.  slopeRoom defaults to
+                 * room, so this is the same condition it has always been;
+                 * the separate name exists to be overridden by a
+                 * measurement that asks what a wider budget would refuse.
+                 */
+                if (ex > 0L && (b->state.tmr[0] > slopeRoom / ex ||
+                                b->state.tmr[0] < -(slopeRoom / ex) ||
+                                b->state.tmr[2] > slopeRoom / ex ||
+                                b->state.tmr[2] < -(slopeRoom / ex)))
+                    { texBad = 1; texBadTri = i;
+                      OSMGA_HW3D_TEXCOORD_SITE(31); }
+                else if (ey > 0L && (b->state.tmr[1] > slopeRoom / ey ||
+                                     b->state.tmr[1] < -(slopeRoom / ey)))
+                    { texBad = 1; texBadTri = i;
+                      OSMGA_HW3D_TEXCOORD_SITE(32); }
+                else if (vy > 0L && (b->state.tmr[3] > slopeRoom / vy ||
+                                     b->state.tmr[3] < -(slopeRoom / vy)))
+                    { texBad = 1; texBadTri = i;
+                      OSMGA_HW3D_TEXCOORD_SITE(33); }
                 else {
                     long ux, vx2, ly, ry, qa, qb;
                     int boxOK = 1;
@@ -1134,7 +1177,8 @@ osmgaHW3DValidateReach(const OSMGAHW3DBatch *b, const OSMGAHW3DLimits *lim,
                             !osmgaHW3DRatioOK(vx2, qa, roomHi) ||
                             !osmgaHW3DRatioOK(ly,  qb, roomHi) ||
                             !osmgaHW3DRatioOK(ry,  qb, roomHi))
-                            { texBad = 1; texBadTri = i; }
+                            { texBad = 1; texBadTri = i;
+                              OSMGA_HW3D_TEXCOORD_SITE(4); }
                         /*
                          * And how far it reaches, from the same four values:
                          * the coordinate is linear along a row, so a row's

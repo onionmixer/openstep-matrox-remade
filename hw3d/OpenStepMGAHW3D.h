@@ -584,6 +584,21 @@ unsigned long osmgaHW3DWarpTexDim(unsigned long dim, unsigned long log2dim);
 #define OSMGA_HW3D_TEX_COORD_MAX (8UL * OSMGA_HW3D_TEX_SPAN)
 
 /*
+ * How far a SLOPE may carry a coordinate across a trapezoid's own bounding
+ * box.  This is not the coordinate policy above -- a box corner is not a
+ * pixel, and what the pixels are allowed is judged separately and exactly,
+ * at the four corners and then at each drawn row's two ends.
+ *
+ * The default is the policy limit, which is what this bound has always
+ * been, so nothing changes until somebody overrides it deliberately.  It
+ * is named apart so that the question "what would a wider budget refuse?"
+ * can be measured instead of argued.
+ */
+#ifndef OSMGA_HW3D_TEX_SLOPE_ROOM
+#define OSMGA_HW3D_TEX_SLOPE_ROOM OSMGA_HW3D_TEX_COORD_MAX
+#endif
+
+/*
  * Here rather than beside the allowance itself, because the allowance is
  * written in terms of the span and the span is declared below it.
  *

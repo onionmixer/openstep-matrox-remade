@@ -37,6 +37,19 @@ static double g_tq_a = 1.0, g_tq_b = 1.0, g_tq_c = 1.0;
  * triangle the builder passed and the kernel then refused, which is the
  * whole object of the exercise.
  */
+/*
+ * Which of the three E_TEXCOORD sites answered, as recorded by the
+ * validator itself under OSMGA_HW3D_TESTSITE: 1 is the trapezoid's
+ * texture anchor, 2 the denominator's anchor and slope budget, 3 the
+ * conservative bound of a slope times the trapezoid's own box, and 4 the
+ * exact reach of a row's two drawn endpoints.  Three and four both end at
+ * the same return and mean opposite things: three is a bound that may
+ * refuse a triangle whose drawn pixels are all in range, four is a
+ * measurement of those pixels saying they are not.
+ */
+extern long osmgaHW3DTestTexcoordSite;
+static long g_site = 0;
+
 static int g_quiet = 0;
 static int g_lastn = 0;
 static int g_worst = 0;
@@ -65,6 +78,8 @@ one(const char *name, double ax, double ay, double as, double at,
     OSMGAMesaVertex a, b, c;
     OSMGAHW3DTri out[4];
     OSMGAMesaTex tex;
+    OSMGAHW3DTexReach vreach;
+    OSMGAHW3DTexBand vbands[OSMGA_HW3D_MAX_TRI];
     long tmr[4][9];
     int n, i;
 
@@ -84,7 +99,7 @@ one(const char *name, double ax, double ay, double as, double at,
     if (!g_quiet) printf("# v %ld %ld %.9f %.9f\n", a.x, a.y, a.s, a.tc);
     if (!g_quiet) printf("# v %ld %ld %.9f %.9f\n", b.x, b.y, b.s, b.tc);
     if (!g_quiet) printf("# v %ld %ld %.9f %.9f\n", c.x, c.y, c.s, c.tc);
-    g_lastn = n; g_worst = 0;
+    g_lastn = n; g_worst = 0; g_site = 0;
     if (n < 0) { if (!g_quiet) printf("# refused %d\n", n); return; }
     for (i = 0; i < n; i++)
         if (!g_quiet) printf("T %ld %ld %lu %lu   %ld %ld %ld %ld %ld %ld\n",
@@ -135,7 +150,19 @@ one(const char *name, double ax, double ay, double as, double at,
             batch.state.tmr[2] = tmr[i][2]; batch.state.tmr[3] = tmr[i][3];
             batch.tri[0] = out[i];
             badTri = 0UL;
-            v = osmgaHW3DValidate(&batch, &lim, &badTri);
+            osmgaHW3DTestTexcoordSite = 0;
+            /*
+             * Through the SAME entry the kernel uses.  The three-argument
+             * wrapper passes a null reach and a null band table, and the
+             * validator has a shortcut -- accept without walking the rows --
+             * that it can only take when both are null.  The driver's submit
+             * path passes both (OpenStepMGAReplacementDisplay.m:6698), so it
+             * never takes that shortcut and always walks.  A harness on the
+             * wrapper is therefore measuring a path the card never sees.
+             */
+            v = osmgaHW3DValidateReach(&batch, &lim, &badTri,
+                                       &vreach, vbands);
+            if (v != 0 && g_worst == 0) g_site = osmgaHW3DTestTexcoordSite;
             if (v != 0 && g_worst == 0) g_worst = v;
             if (!g_quiet) printf("# validator trapezoid %d -> %d\n", i, v);
         }
@@ -250,8 +277,8 @@ main(void)
             if (g_lastn > 0) built++;
             if (g_lastn > 0 && g_worst != 0) {
                 found++;
-                printf("=== GAP %ld: builder emitted %d, validator said %d\n",
-                       found, g_lastn, g_worst);
+                printf("=== GAP %ld: builder emitted %d, validator said %d"
+                       " at site %ld\n", found, g_lastn, g_worst, g_site);
                 printf("=== q %.6f %.6f %.6f\n", pq[0], pq[1], pq[2]);
                 printf("=== coord u %.6f %.6f %.6f\n", pc[0], pc[1], pc[2]);
                 printf("=== coord v %.6f %.6f %.6f\n", pd[0], pd[1], pd[2]);
@@ -286,7 +313,7 @@ main(void)
             static const double lo[] = { 0.0, 0.0, 0.0, 0.0, -0.9 };
             static const double hi[] = { 1.0, 2.0, 4.0, 7.9,  7.9 };
             double oka, gapa;
-            long okn, gapn;
+            long okn, gapn, site1, site2, s31, s32, s33, site4, v13, vother, vex;
             int band;
 
             for (band = 0; band < 5; band++) {
@@ -294,6 +321,8 @@ main(void)
                 seed = 20260830UL;
                 found = 0; built = 0;
                 oka = gapa = 0.0; okn = gapn = 0;
+                site1 = site2 = s31 = s32 = s33 = site4 = 0;
+                v13 = vother = vex = 0;
                 for (round = 0; round < 20000L; round++) {
                     for (k = 0; k < 3; k++) {
                         px[k] = RND * 250.0;
@@ -322,7 +351,24 @@ main(void)
                                      (px[2] - px[0]) * (py[1] - py[0])) / 2.0;
                         if (ar < 0.0) ar = -ar;
                         built++;
-                        if (g_worst != 0) { gapa += ar; gapn++; found++; }
+                        if (g_worst != 0) {
+                            gapa += ar; gapn++; found++;
+                            if (g_site == 1) site1++;
+                            else if (g_site == 2) site2++;
+                            else if (g_site == 31) s31++;
+                            else if (g_site == 32) s32++;
+                            else if (g_site == 33) s33++;
+                            else if (g_site == 4) site4++;
+                            /*
+                             * Not every refusal is a texture coordinate.
+                             * Counting the verdicts apart keeps the site
+                             * tally honest: a site of nought means some
+                             * other check spoke, and saying which one it
+                             * was costs a variable.
+                             */
+                            if (g_worst == 13) v13++;
+                            else { vother++; vex = g_worst; }
+                        }
                         else              { oka  += ar; okn++; }
                     }
                 }
@@ -331,6 +377,10 @@ main(void)
                        lo[band], hi[band], built, found,
                        okn ? oka / (double)okn : 0.0,
                        gapn ? gapa / (double)gapn : 0.0);
+                printf("===   anchor %ld qbud %ld  slope-x %ld slope-dy %ld"
+                       " slope-vy %ld  rowends %ld  v13 %ld other %ld\n",
+                       site1, site2, s31, s32, s33, site4, v13, vother);
+                (void)vex;
             }
         }
     }
