@@ -58,6 +58,53 @@ foreach t ($kept)
 end
 
 #
+# THE PACKAGE'S IDENTITY GOES BACK IN.
+#
+# C4 preserves the machine's table whole, which is right for what the
+# operator chose and wrong for what describes the driver: it kept a
+# development "Version" = "0.5" through 1.0 and 1.1, and it wrote the OLD
+# Driver Name back over a renamed bundle -- which would have booted with no
+# display driver, since Active Drivers called for the new name.
+#
+# Five keys, from Default.table (the payload's instance table is gone by
+# now -- the restore above wrote over it).  Everything else is emitted byte
+# for byte in place.  See pkg/osmga-identity-keys.awk.
+#
+foreach t ($kept)
+    awk -f "$cfg/../osmga-identity-keys.awk" "$cfg/Default.table" \
+        "$cfg/$t" > "$stash/cand-$t"
+    if ($status != 0) then
+        echo "OSMGADisplay: could not rewrite $t's identity keys; $stash is kept"
+        exit 1
+    endif
+    #
+    # The invariant is not "same number of lines" -- a key the machine lacks
+    # is appended.  It is that everything OUTSIDE those five keys is
+    # untouched, so both sides are compared with the selected lines removed.
+    #
+    egrep -v '^"(Driver Name|Server Name|Class Names|Family|Version)"' \
+        "$cfg/$t" > "$stash/a-$t"
+    egrep -v '^"(Driver Name|Server Name|Class Names|Family|Version)"' \
+        "$stash/cand-$t" > "$stash/b-$t"
+    cmp -s "$stash/a-$t" "$stash/b-$t"
+    if ($status != 0) then
+        echo "OSMGADisplay: rewriting $t changed something outside the five"
+        echo "OSMGADisplay: identity keys; nothing moved and $stash is kept"
+        exit 1
+    endif
+    #
+    # Built and checked outside the bundle, then renamed into place, so a
+    # failure never leaves a half-written table where the driver reads one.
+    #
+    mv "$stash/cand-$t" "$cfg/$t"
+    if ($status != 0) then
+        echo "OSMGADisplay: could not put $t back; $stash is kept"
+        exit 1
+    endif
+    chmod 444 "$cfg/$t"
+end
+
+#
 # Only now: the payload's tables that the machine did not have.  The
 # machine's SET is what counts -- a machine with only Instance1.table must
 # not silently gain an Instance0 from the package.

@@ -27,6 +27,10 @@ setup() {
     echo '"Location" = "Dev:0 Func:0 Bus:4";' >  $CFG/Instance0.table
     echo '"WARP 3D" = "Yes";'                 >> $CFG/Instance0.table
     chmod 444 $CFG/Instance0.table
+    # the two files post_install reads out of the installed layout: the
+    # package's own table, and the transform that puts its identity keys back
+    cp $SRC/OSMGADisplay/Default.table $CFG/Default.table
+    cp $SRC/pkg/osmga-identity-keys.awk $R/private/Drivers/i386/
 }
 extract() {   # what the payload does: its own table lands on top
     chmod 644 $CFG/Instance0.table 2> /dev/null
@@ -53,6 +57,39 @@ if [ -d $R/private/Drivers/i386/OSMGADisplay.instances ]; then
     fail "the stash was left behind after a successful restore"
 else
     note "the stash is gone after a clean restore"
+fi
+
+echo "the package's identity keys are updated, the machine's settings are not"
+setup
+# a machine that has an OLD driver name and an OLD version, as a machine
+# upgraded across the 2026-08-29 rename would
+chmod 644 $CFG/Instance0.table
+echo '"Driver Name" = "OpenStepMGAReplacementDisplay";' >> $CFG/Instance0.table
+echo '"Version" = "0.5";'                               >> $CFG/Instance0.table
+chmod 444 $CFG/Instance0.table
+csh -f $SRC/pkg/OSMGADisplay.pre_install one $R > /dev/null
+extract
+csh -f $SRC/pkg/OSMGADisplay.post_install one $R > /dev/null
+if grep '"Driver Name" = "OSMGADisplay";' $CFG/Instance0.table > /dev/null; then
+    note "the driver name follows the package"
+else
+    fail "the driver name is still the old one -- Active Drivers would call"
+    fail "for a bundle whose table claims to be something else"
+fi
+if grep '"Version" = "1.1";' $CFG/Instance0.table > /dev/null; then
+    note "the version follows the package"
+else
+    fail "the version is still the machine's stale one"
+fi
+if grep 'Dev:0 Func:0 Bus:4' $CFG/Instance0.table > /dev/null; then
+    note "and Location -- the machine's -- is untouched"
+else
+    fail "a machine key moved; only the five identity keys may"
+fi
+if grep '"WARP 3D" = "Yes"' $CFG/Instance0.table > /dev/null; then
+    note "and so is the operator's switch"
+else
+    fail "the operator's switch moved"
 fi
 
 echo "without the hooks the value IS lost -- so the test is not vacuous"
