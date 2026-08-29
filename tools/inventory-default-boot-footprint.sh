@@ -45,5 +45,5 @@ ls -l /private/Drivers/i386/System.config
 echo
 echo "=== 6. anything of ours installed in a system path ==="
 ls -d /usr/local/Documentation/OpenStep-MGA-G450 2>/dev/null
-ls -d /private/Drivers/i386/OpenStepMGAReplacementDisplay.config 2>/dev/null
+ls -d /private/Drivers/i386/OSMGADisplay.config 2>/dev/null
 echo "  (both are expected; neither is in the Default boot path)"

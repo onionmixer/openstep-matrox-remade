@@ -28,7 +28,7 @@ if [ "$1" = "-a" ]; then
     shift
 fi
 K="$1"; V="$2"
-T=/private/Drivers/i386/OpenStepMGAReplacementDisplay.config/Instance0.table
+T=/private/Drivers/i386/OSMGADisplay.config/Instance0.table
 if [ -z "$K" ] || [ -z "$V" ]; then
     echo "usage: set-config-key.sh [-a] <key> <value>" >&2
     exit 2

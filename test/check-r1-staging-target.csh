@@ -5,14 +5,14 @@
 
 set present = 0
 
-if (-e /private/Drivers/i386/OpenStepMGAReplacementDisplay.config) then
+if (-e /private/Drivers/i386/OSMGADisplay.config) then
     echo "OPENSTEP_MGA_R1_TARGET_ARTIFACT=present:/private/Drivers/i386"
     set present = 1
 else
     echo "OPENSTEP_MGA_R1_TARGET_ARTIFACT=absent:/private/Drivers/i386"
 endif
 
-if (-e /private/Devices/OpenStepMGAReplacementDisplay.config) then
+if (-e /private/Devices/OSMGADisplay.config) then
     echo "OPENSTEP_MGA_R1_TARGET_ARTIFACT=present:/private/Devices"
     set present = 1
 else

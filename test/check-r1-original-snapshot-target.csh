@@ -3,7 +3,7 @@
 # It only reads the current instance table and production-artifact presence.
 
 set instance = /private/Drivers/i386/MatroxMGA.config/Instance0.table
-set replacement = /private/Drivers/i386/OpenStepMGAReplacementDisplay.config
+set replacement = /private/Drivers/i386/OSMGADisplay.config
 set failure = 0
 
 if (! -f "$instance") then

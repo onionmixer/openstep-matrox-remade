@@ -5,10 +5,10 @@ set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
-bundle_root="$project_root/OpenStepMGAReplacementDisplay"
+bundle_root="$project_root/OSMGADisplay"
 table="$bundle_root/Default.table"
 makefile="$bundle_root/Makefile"
-source="$bundle_root/OpenStepMGAReplacementDisplay_reloc.tproj/OpenStepMGAReplacementDisplay.m"
+source="$bundle_root/OSMGADisplay_reloc.tproj/OpenStepMGAReplacementDisplay.m"
 
 for required in "$table" "$makefile" "$source"; do
     if [ ! -f "$required" ]; then

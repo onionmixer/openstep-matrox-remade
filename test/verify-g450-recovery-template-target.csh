@@ -14,7 +14,7 @@ if (! -f "$template") then
     exit 2
 endif
 
-egrep '^"Driver Name" = "OpenStepMGAReplacementDisplay";' "$template" > /dev/null
+egrep '^"Driver Name" = "OSMGADisplay";' "$template" > /dev/null
 if ($status != 0) set failure = 1
 egrep '^"Location" = "Dev:0 Func:0 Bus:4";' "$template" > /dev/null
 if ($status != 0) set failure = 1

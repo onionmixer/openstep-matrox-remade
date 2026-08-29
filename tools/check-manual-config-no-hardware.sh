@@ -4,7 +4,7 @@
 set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-source_root=$(CDPATH= cd -- "$script_dir/../OpenStepMGAReplacementDisplay/OpenStepMGAReplacementDisplay_reloc.tproj" && pwd)
+source_root=$(CDPATH= cd -- "$script_dir/../OSMGADisplay/OSMGADisplay_reloc.tproj" && pwd)
 
 if [ ! -f "$source_root/OpenStepMGAManualConfig.c" ] || \
    [ ! -f "$source_root/OpenStepMGAManualConfig.h" ]; then

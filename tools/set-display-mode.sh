@@ -13,7 +13,7 @@
 # the driver reads the mode once, in init.
 set -e
 W="$1"; H="$2"; CS="$3"; G="${4:-256}"
-T=/private/Drivers/i386/OpenStepMGAReplacementDisplay.config/Instance0.table
+T=/private/Drivers/i386/OSMGADisplay.config/Instance0.table
 if [ -z "$W" ] || [ -z "$H" ] || [ -z "$CS" ]; then
     echo "usage: set-display-mode.sh <width> <height> <ColorSpace> [greys]" >&2
     exit 2

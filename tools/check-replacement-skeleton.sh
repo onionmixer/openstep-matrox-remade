@@ -5,8 +5,8 @@ set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
-bundle_root="$project_root/OpenStepMGAReplacementDisplay"
-source_root="$bundle_root/OpenStepMGAReplacementDisplay_reloc.tproj"
+bundle_root="$project_root/OSMGADisplay"
+source_root="$bundle_root/OSMGADisplay_reloc.tproj"
 source_file="$source_root/OpenStepMGAReplacementDisplay.m"
 header_file="$source_root/OpenStepMGAReplacementDisplay.h"
 table_file="$bundle_root/Default.table"
@@ -78,7 +78,7 @@ if grep -n -E 'OpenStepMGAModeTransaction|OpenStepMGABoundedPoll|OpenStepMGAG450
 fi
 
 if ! grep -q '^"Family" = "Display";$' "$table_file" || \
-   ! grep -q '^"Driver Name" = "OpenStepMGAReplacementDisplay";$' "$table_file" || \
+   ! grep -q '^"Driver Name" = "OSMGADisplay";$' "$table_file" || \
    ! grep -q '^"Memory Maps" = "";$' "$table_file" || \
    ! grep -q '^"I/O Ports" = "";$' "$table_file"; then
     echo "OPENSTEP_MGA_REPLACEMENT_R4_REJECT=staging-table" >&2

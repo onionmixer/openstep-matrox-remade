@@ -9,7 +9,7 @@ set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
-source_root="$project_root/OpenStepMGAReplacementDisplay/OpenStepMGAReplacementDisplay_reloc.tproj"
+source_root="$project_root/OSMGADisplay/OSMGADisplay_reloc.tproj"
 edid_root="$project_root/edid"
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/openstep-mga-window-math.XXXXXX")
 trap 'rm -rf "$work_dir"' EXIT HUP INT TERM

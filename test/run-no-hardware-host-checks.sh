@@ -7,7 +7,12 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 
 sh "$project_root/tools/check-p2-no-hardware.sh"
-sh "$project_root/tools/check-p1-config-readonly.sh"
+#
+# check-p1-config-readonly.sh was here and is retired.  It asserted that the
+# P1 probe stays config-header read-only, and the probe has mapped MMIO since
+# the initial commit -- so the guard NEVER PASSED, and `set -e` stopped this
+# runner on it.  Every check below this line had therefore never run.
+#
 sh "$project_root/tools/check-d0-no-hardware.sh"
 sh "$project_root/tools/check-profile-no-hardware.sh"
 sh "$project_root/tools/check-mode-review-no-hardware.sh"

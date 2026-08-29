@@ -35,7 +35,7 @@ out="$root/build/nibout"
     exit 1
 }
 rm -rf "$out"; mkdir -p "$out"
-python3 "$root/OpenStepMGAReplacementDisplay/nib-src/build-inspector-nib.py" \
+python3 "$root/OSMGADisplay/nib-src/build-inspector-nib.py" \
     "$ws/openstep-nibmaker" \
     "$stock" \
     "$ws/openstep-spacesaver2ps2/ref/nibtemplates/PS2MouseInspector.xml" \
@@ -53,6 +53,6 @@ python3 "$root/OpenStepMGAReplacementDisplay/nib-src/build-inspector-nib.py" \
 # connection -- an outlet that fails to connect is nil, and messages to nil
 # say nothing.  Checked: `grep -c OSMGADisplayInspector` on the stock copy
 # answers 0.
-dst="$root/OpenStepMGAReplacementDisplay/English.lproj/DisplayInspector.nib"
+dst="$root/OSMGADisplay/English.lproj/DisplayInspector.nib"
 cp "$out/data.nib" "$dst/data.nib"
 echo "rebuild-inspector-nib: PASS $(stat -c%s "$dst/data.nib") bytes -> $dst"

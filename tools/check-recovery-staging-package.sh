@@ -6,7 +6,7 @@ set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 package_root="$project_root/packaging/openstep"
-table_file="$project_root/OpenStepMGAReplacementDisplay/Default.table"
+table_file="$project_root/OSMGADisplay/Default.table"
 
 for required in \
     "$package_root/OpenStepMGARecoveryStaging.info" \
@@ -23,7 +23,7 @@ done
 
 if ! grep -qx 'DefaultLocation /LocalDeveloper' \
         "$package_root/OpenStepMGARecoveryStaging.info" || \
-   ! grep -Fq 'DriverStaging/OpenStepMGAReplacementDisplay.config' \
+   ! grep -Fq 'DriverStaging/OSMGADisplay.config' \
         "$package_root/verify-recovery-staging-package.csh" || \
    ! grep -Fq 'must not install below /private' \
         "$package_root/OpenStepMGARecoveryStaging.pre_install"; then

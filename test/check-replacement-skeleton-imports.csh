@@ -6,7 +6,7 @@
 #
 
 if ($#argv != 1) then
-    echo "usage: $0 <OpenStepMGAReplacementDisplay_reloc>"
+    echo "usage: $0 <OSMGADisplay_reloc>"
     exit 2
 endif
 

@@ -10,7 +10,7 @@ if [ ! -f "$collector" ]; then
     echo "OPENSTEP_MGA_R1_ORIGINAL_SNAPSHOT_STATIC_GUARD_INPUT=missing" >&2
     exit 2
 fi
-if grep -n -E '(driverLoader|Configure|kl_util[[:space:]]+-u|[[:space:]]cp[[:space:]]|[[:space:]]mv[[:space:]]|[[:space:]]rm[[:space:]]|Installer|/private/Devices/.*OpenStepMGAReplacementDisplay)' \
+if grep -n -E '(driverLoader|Configure|kl_util[[:space:]]+-u|[[:space:]]cp[[:space:]]|[[:space:]]mv[[:space:]]|[[:space:]]rm[[:space:]]|Installer|/private/Devices/.*OSMGADisplay)' \
         "$collector"; then
     echo "OPENSTEP_MGA_R1_ORIGINAL_SNAPSHOT_STATIC_GUARD_STATUS=fail" >&2
     exit 1
