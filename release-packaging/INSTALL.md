@@ -39,11 +39,20 @@ which is the safe state to prepare a recovery from.
 
 ### The switches ship OFF
 
-The instance table the package installs has `Raster Test`, `VRAM Mmap` and
-`Mesa Acceleration` all set to `No`, and `Display Mode` set to 1024x768 at
-60 Hz, 32-bit.  Those are not the values this project develops against; the
+The instance table the package installs has `Raster Test`, `VRAM Mmap`,
+`Mesa Acceleration` and `WARP 3D` all set to `No`, and `Display Mode` set to
+1024x768 at 60 Hz, 32-bit.  Those are not the values this project develops against; the
 development instance turns three diagnostics on, and none of them should
 arrive on somebody else's machine.  You turn on what you need in step 3.
+
+### Installing again does not cost you your settings
+
+From v1.1 the package preserves the instance tables already on the machine,
+byte for byte, so an upgrade keeps your resolution, your switches and the
+`Location` the system worked out for your card.  It does not merge: a key
+you do not have stays absent, because absence can mean something.
+
+A first install has nothing to preserve and gets the table above.
 
 ## 2. Activating it, and getting back if it goes wrong
 
@@ -127,6 +136,18 @@ Then turn on the two switches in `Configure.app`, on the display's instance:
 - `VRAM Mmap` = `Yes` -- publishes the offscreen video memory as a character
   device, which is how a program gets a buffer on the card.
 - `Mesa Acceleration` = `Yes` -- lets the driver report the capability.
+
+There is a third switch, and it is optional:
+
+- `WARP 3D` = `Yes` -- hands the triangles to the card's WARP setup engine
+  instead of having the library work them out.  Measured on this hardware, a
+  spinning teapot goes from 40.6 to 53.7 frames a second.  It ships OFF for
+  two reasons, neither of them speed: a package cannot know how much video
+  memory the board in your machine has, and on needle-thin triangles WARP
+  differs from software more than the default path does, with no rule that
+  separates the shapes it gets wrong from the ones it does not.  An
+  environment variable `OSMGA_MESA_WARP` still overrides it either way, `1`
+  for on and `0` for off.
 
 **`VRAM Mmap` carries one commitment**: once it is on and a program has
 mapped the window, the driver must not be unloaded, because those mappings

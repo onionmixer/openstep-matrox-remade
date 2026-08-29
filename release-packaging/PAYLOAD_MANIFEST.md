@@ -182,9 +182,16 @@ tree; rebuilding does, and `build-teapot.csh` says so and checks the cut
 before compiling.
 
 `post_install` reruns `ranlib` -- OPENSTEP's archive index records the
-pre-install pathname, so a relocated `.a` is unusable without it.  (The
-driver package needs no `post_install`: it contains executables, not
-archives.)
+pre-install pathname, so a relocated `.a` is unusable without it.
+
+The driver package has hooks of its own, and for a different reason.  A note
+here used to say it needed no `post_install` because it ships executables
+rather than archives; that was true of `ranlib` and missed what the pair is
+actually for.  Its `pre_install` copies the machine's instance tables aside
+before the payload is extracted and its `post_install` puts them back, so an
+upgrade does not cost the operator the resolution, the switches and the
+`Location` the system worked out for the card.  Installing through
+Installer.app used to do exactly that.
 
 ## Exclusions, and why each would otherwise ship
 
@@ -288,7 +295,7 @@ the driver bundle
   same      OSMGADisplay_reloc
   same      OSMGADisplay
   same      Default.table
-  REPLACED  Instance0.table
+  PRESERVED Instance0.table   (the payload's is put back by post_install)
   same      Display.modes
   same      English.lproj/Localizable.strings
   same      English.lproj/DisplayInspector.nib/{data.classes,data.dependency,data.nib}
