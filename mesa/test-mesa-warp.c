@@ -36,22 +36,27 @@ static const struct { long x, y; unsigned long z;
                      unsigned long ex, ey, ez, erhw, ediff, etu, etv;
 } cases[] = {
     { 0L, 0L, 0UL, 1.0, 1.0, 0UL, 0UL, 0UL, 0UL, 0.0, 0.0,
-      0x00000000UL, 0x00000000UL, 0x00000000UL, 0x3F800000UL, 0x00000000UL,
+      0xBF000000UL, 0xBF000000UL, 0x00000000UL, 0x3F800000UL, 0x00000000UL,
       0x00000000UL, 0x00000000UL },
     { 256L, 512L, 8388608UL, 1.0, 1.0, 255UL, 128UL, 64UL, 255UL, 0.25, 0.75,
-      0x3F800000UL, 0x40000000UL, 0x3F000000UL, 0x3F800000UL, 0xFFFF8040UL,
+      0x3F000000UL, 0x3FC00000UL, 0x3F000000UL, 0x3F800000UL, 0xFFFF8040UL,
       0x3E800000UL, 0x3F400000UL },
     { 100L, 200L, 16776960UL, 1.0, 1.0, 1UL, 2UL, 3UL, 4UL, 0.5, 0.5,
-      0x3EC80000UL, 0x3F480000UL, 0x3F7FFF00UL, 0x3F800000UL, 0x04010203UL,
+      0xBDE00000UL, 0x3E900000UL, 0x3F7FFF00UL, 0x3F800000UL, 0x04010203UL,
       0x3F000000UL, 0x3F000000UL },
     { -2048L, 4096L, 256UL, 0.5, 2.0, 10UL, 20UL, 30UL, 40UL, 0.125, 0.875,
-      0xC1000000UL, 0x41800000UL, 0x37800000UL, 0x3F800000UL, 0x280A141EUL,
+      0xC1080000UL, 0x41780000UL, 0x37800000UL, 0x3F800000UL, 0x280A141EUL,
       0x3D800000UL, 0x3EE00000UL },
-    { 2097152L, -2097152L, 3160320UL, 4.0, 32.0, 99UL, 8UL, 7UL, 6UL, 1.0, 2.0,
+    /* The two ends of the accepted window, which the half-pixel MOVED:
+     * raw 2097280 and -2097024 are what now convert to +-8192.0 exactly.
+     * The old pair (2097152, -2097152) is kept below, in refusals(), where
+     * the negative one is now refused -- which is the whole visible
+     * consequence of the bias outside the picture itself. */
+    { 2097280L, -2097024L, 3160320UL, 4.0, 32.0, 99UL, 8UL, 7UL, 6UL, 1.0, 2.0,
       0x46000000UL, 0xC6000000UL, 0x3E40E400UL, 0x43000000UL, 0x06630807UL,
       0x3D000000UL, 0x3D800000UL },
     { 333L, 777L, 13906176UL, 0.25, 0.5, 11UL, 22UL, 33UL, 44UL, 0.3, 0.7,
-      0x3FA68000UL, 0x40424000UL, 0x3F543100UL, 0x3E000000UL, 0x2C0B1621UL,
+      0x3F4D0000UL, 0x40224000UL, 0x3F543100UL, 0x3E000000UL, 0x2C0B1621UL,
       0x3F19999AUL, 0x3FB33333UL }
 };
 
@@ -155,6 +160,24 @@ refusals(void)
     check(OSMGAMesaBuildWarpVertex(&mv, &mt, 0.0, &out) ==
           OSMGA_MESA_TRI_UNSUPPORTED,
           "the bound is symmetric", 0UL, 0UL);
+    /*
+     * And the window's own half-pixel move, both sides, stated as tests
+     * rather than left to be discovered.  The bound is applied AFTER the
+     * bias, so raw -8192*256 -- which used to convert to exactly -8192.0
+     * and pass -- now converts to -8192.5 and is refused, while raw
+     * 8192*256 + 128 converts to exactly 8192.0 and is accepted where it
+     * used to be past the end.  A refusal is a decline and the triangle
+     * takes the trapezoid path, so this costs a tier and not a picture.
+     */
+    fill(0); mv.x = -8192L * 256L;
+    check(OSMGAMesaBuildWarpVertex(&mv, &mt, 0.0, &out) ==
+          OSMGA_MESA_TRI_UNSUPPORTED,
+          "the half pixel moved the negative end in", 0UL, 0UL);
+    fill(0); mv.x = 8192L * 256L + 128L;
+    check(OSMGAMesaBuildWarpVertex(&mv, &mt, 0.0, &out) == 0 &&
+          (unsigned long)out.x == 0x46000000UL,
+          "and moved the positive end out",
+          (unsigned long)out.x, 0x46000000UL);
     fill(0); mv.qw = 0.0;
     check(OSMGAMesaBuildWarpVertex(&mv, &mt, 0.0, &out) ==
           OSMGA_MESA_TRI_UNSUPPORTED,
@@ -408,7 +431,8 @@ main(void)
     if (failures == 0)
         printf("test-mesa-warp: the vertex conversion matches an independent "
                "table, all 65536 depth codes round trip, polygon offset shifts "
-               "and refuses, and every assembled "
+               "and refuses, the half pixel is subtracted and moved the "
+               "accepted window with it, and every assembled "
                "batch is accepted by the kernel validator (0 failing)\n");
     else
         printf("test-mesa-warp: %d failing\n", failures);

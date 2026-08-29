@@ -60,6 +60,29 @@ int OSMGAMesaBuildWarpVertex(const OSMGAMesaVertex *v,
  */
 #define OSMGA_MESA_WARP_ZSCALE  16777216.0
 
+/*
+ * Half a pixel, in the vertex's own 1/256 units, subtracted from x and y.
+ *
+ * Handed the coordinates Mesa computes, this tier draws the picture the
+ * rational oracle draws for vertices at V + 1/2.  That is measured -- a
+ * 512 triangle mesh where the trapezoid tier scores (0, 0, 0) and this
+ * one scored (462, 463, 7707), and where rescoring the SAME observation
+ * over a joint grid of offsets puts the minimum at exactly (+1/2, +1/2)
+ * and at no neighbour of it.  So the vertices go out half a pixel low and
+ * the two tiers draw the same picture.
+ *
+ * A coordinate contract, not a mechanism: corner sampling would produce
+ * this, and so would a bias inside the microcode or a setup origin half a
+ * pixel off.  A translation experiment cannot separate those, and the
+ * compensation is the same for all of them.
+ *
+ * It belongs HERE and not in the kernel.  The kernel contains no floating
+ * point -- a double clip box was removed for exactly that rule -- and
+ * cannot subtract a half from an IEEE float.  In 1/256ths it is an
+ * integer, applied before the one conversion this file makes.
+ */
+#define OSMGA_MESA_WARP_XY_BIAS 128L
+
 #endif
 
 /*

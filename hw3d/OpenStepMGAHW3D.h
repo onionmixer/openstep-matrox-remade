@@ -852,6 +852,16 @@ typedef unsigned int osmga_u32;
  * FPU, so the client -- which does -- performs every conversion, and the
  * kernel judges the bits (see the osmgaHW3DF32* family).
  *
+ * x and y are what the ENGINE is to be given, not what GL computed.  This
+ * tier draws the picture a centre-sampling oracle draws for vertices half
+ * a pixel higher, so a client that wants GL's own picture sends GL's
+ * coordinates less a half (mesa/OpenStepMGAMesaWarp.h explains the
+ * measurement, and the reference's SUBPIXEL_X = -0.5 agrees).  The kernel
+ * does not apply it and could not -- it has no FPU -- and a harness that
+ * supplies its own vertices to ask what the ENGINE does with them wants
+ * no bias at all.  Stating it here is what keeps those two uses from
+ * being confused for one.
+ *
  * z is normalised to [0,1].  Measured: the engine multiplies by 65536 and
  * saturates, so a Mesa window depth code becomes code / 65536.0 and the
  * round trip is exact for every code.  NOT the reference DRI's 1/65535.

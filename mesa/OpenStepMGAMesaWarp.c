@@ -34,17 +34,59 @@ OSMGAMesaBuildWarpVertex(const OSMGAMesaVertex *v,
 
     memset(out, 0, sizeof *out);
 
-    /* Screen position.  The vertex carries 1/256 pixel; WARP takes pixels.
-     * No half-pixel is folded in: M4's T4b matched an oracle evaluated on
-     * the integer vertex lattice at all 1176 pixels, so the engine samples
-     * where the vertex says and not half a pixel away. */
-    if (!f32bits((double)v->x / 256.0, &w))
+    /*
+     * Screen position, less half a pixel.  The vertex carries 1/256 of a
+     * pixel, so half of one is exactly 128 -- an integer subtraction
+     * before the single conversion, and no new floating point anywhere.
+     *
+     * WHY, and what is and is not claimed.  Handed the vertices Mesa
+     * computes, this tier draws the picture the rational oracle draws for
+     * vertices at V + 1/2.  That was measured, not reasoned: the same 512
+     * triangle mesh, the same process, the same surface, only the tier
+     * differing -- trapezoid (0 gap, 0 extra, 0 misattributed) against
+     * WARP (462, 463, 7707).  Rescoring that one observation against the
+     * oracle over a joint 5x5 grid of offsets puts the minimum at exactly
+     * (+1/2, +1/2) and nowhere else, at (0, 1, 50).
+     *
+     * So the claim is a COORDINATE CONTRACT and not a mechanism: this
+     * tier behaves as though it sampled where the oracle samples V + 1/2,
+     * and handing it V - 1/2 makes the two agree.  Corner sampling would
+     * produce exactly this, and so would centre sampling with a bias
+     * inside the microcode, or a setup origin half a pixel off; a
+     * translation experiment cannot separate them and does not need to.
+     *
+     * The reference agrees on x to the digit.  mgavb.c:87 adds
+     * xoffset = drawX + SUBPIXEL_X with SUBPIXEL_X = -0.5
+     * (mgacontext.h:306), and W2's "the real remaining risk -- coordinate
+     * convention" wrote that down a year ago as the FIRST thing to
+     * suspect if pixels came out wrong.  They are at -0.375 in y, but
+     * their y is also flipped (-win[1] + yoffset) and ours is not; ours
+     * measures a clean half on both axes.
+     *
+     * What this is NOT resting on.  The comment here used to say no
+     * half-pixel was needed because M4's T4b matched an oracle at all
+     * 1176 pixels.  It did -- but that oracle indexes dx = col - TRI_LO,
+     * an integer column, over vertices that are themselves on integers,
+     * so it agrees with a corner sampler and a centre sampler alike.  T4b
+     * measured the DIVIDE, which was its question; it never had the
+     * resolution to place the sample point, and citing it for that was
+     * over-reading it.
+     *
+     * The bound below is applied after the shift, so the window of raw
+     * coordinates this accepts moves half a pixel with it: raw -8192*256
+     * used to convert to -8192.0 and pass, and now converts to -8192.5
+     * and is refused.  A refusal here is a decline, and a declined
+     * triangle goes down the trapezoid path -- so the effect at the far
+     * negative edge of a 16384 pixel coordinate space is a tier choice,
+     * not a lost triangle.
+     */
+    if (!f32bits((double)(v->x - OSMGA_MESA_WARP_XY_BIAS) / 256.0, &w))
         return OSMGA_MESA_TRI_UNSUPPORTED;
     out->x = w;
     if (!osmgaHW3DF32AbsAtMost((unsigned long)w, OSMGA_HW3D_F32_COORD))
         return OSMGA_MESA_TRI_UNSUPPORTED;
 
-    if (!f32bits((double)v->y / 256.0, &w))
+    if (!f32bits((double)(v->y - OSMGA_MESA_WARP_XY_BIAS) / 256.0, &w))
         return OSMGA_MESA_TRI_UNSUPPORTED;
     out->y = w;
     if (!osmgaHW3DF32AbsAtMost((unsigned long)w, OSMGA_HW3D_F32_COORD))
