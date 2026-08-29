@@ -19,7 +19,7 @@ MESADIST="${3:-/usr/local/mesastage/OpenStepMesa342/dist}"
 DEST="$SRC/build/release-pkgs"
 
 DRV=OSMGADisplay
-ACC=OpenStepMGAMesaAccel
+ACC=OSMGAMesaAccel
 DEM=OpenStepMesa342DemosMGA
 
 for p in "$DRVOUT/$DRV.pkg" "$DRVOUT/$ACC.pkg" "$MESADIST/$DEM.pkg"; do

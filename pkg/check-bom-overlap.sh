@@ -22,7 +22,7 @@ W=/tmp/_bomoverlap
 rm -rf "$W"; /bin/mkdirs "$W"
 
 : > "$W/mine"
-for p in OSMGADisplay OpenStepMGAMesaAccel; do
+for p in OSMGADisplay OSMGAMesaAccel; do
     b="$PKGDIR/$p.pkg/$p.bom"
     if [ ! -r "$b" ]; then
         echo "check-bom-overlap: no $b" >&2

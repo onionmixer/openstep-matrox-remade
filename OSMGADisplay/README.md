@@ -1,4 +1,4 @@
-# OpenStepMGAReplacementDisplay
+# OSMGADisplay
 
 Matrox MGA G450(PCI `102b:0525`, rev ≥ 0x80) primary head용 OPENSTEP 4.2
 DriverKit 디스플레이 드라이버. `IOFrameBufferDisplay` 서브클래스이며 **실기에서

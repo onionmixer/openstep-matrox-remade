@@ -1,0 +1,9 @@
+Title OSMGAMesaAccel
+Version 1.1
+Description Intel i486-only Matrox G450 hardware acceleration for the OPENSTEP Mesa 3.4.2 port. Adds libGL_mga.a BESIDE the stock Mesa libraries rather than replacing them: Mesa itself is untouched, and a program chooses acceleration when it is built by linking this archive and asking for a video-memory buffer. Requires OSMGADisplay installed and active, with VRAM Mmap and Mesa Acceleration set to Yes in Configure.app. Includes the three opt-in headers. It does NOT include the teapot demo -- that is in OpenStepMesa342DemosMGA. Contains Mesa code; Mesa's own notices are in Documentation/OpenStep-MGA-Accel/Mesa-3.4.2.
+DefaultLocation /LocalDeveloper
+Relocatable YES
+Application NO
+UseUserMask NO
+DiskName OPENSTEP MGA Mesa Accel Intel
+DeleteWarning Removing this package removes only the accelerated library, its headers and its documentation from the selected development prefix. The stock Mesa libraries, their documentation, the demos and the display driver are untouched.

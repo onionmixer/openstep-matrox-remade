@@ -1,5 +1,5 @@
 #!/bin/sh
-# Check a built OpenStepMGAMesaAccel.pkg without installing it.
+# Check a built OSMGAMesaAccel.pkg without installing it.
 #
 #   sh .../pkg/verify-accel-pkg.sh [pkgdir] [source-root] [mesa-repo]
 #
@@ -8,7 +8,7 @@
 PKGDIR="${1:-/tmp/pkgout}"   # the same default as every other script here
 SRC="${2:-/ndrv/openstep-matrox-remade}"
 MESA="${3:-/ndrv/opennstep-mesa342}"
-NAME=OpenStepMGAMesaAccel
+NAME=OSMGAMesaAccel
 PKG="$PKGDIR/$NAME.pkg"
 UNPACK=/tmp/_mgaaccelverify
 MESADOCS="$MESA/upstream/Mesa-3.4.2/docs"

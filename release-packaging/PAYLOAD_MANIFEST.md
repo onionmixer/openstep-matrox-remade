@@ -4,18 +4,18 @@ Every file either package installs, where it comes from, and where it goes.
 Anything not listed here is not shipped; the exclusions at the end are the
 ones that would otherwise ride along by accident.
 
-## 1. `OpenStepMGAReplacementDisplay.pkg` — the driver
+## 1. `OSMGADisplay.pkg` — the driver
 
 `DefaultLocation /`, not relocatable, `NeedsAuthorization YES`,
 `DisableSparseInstall YES`.  Installs; does NOT activate.
 
 | Destination | Source | Bytes | Note |
 | --- | --- | --- | --- |
-| `/private/Drivers/i386/OpenStepMGAReplacementDisplay.config/OpenStepMGAReplacementDisplay_reloc` | built on target | 369712 | the kernel driver, Mach-O preloaded i386 |
-| `.../OpenStepMGAReplacementDisplay` | built on target | 15364 | the Configure inspector, the bundle's executable |
-| `.../Default.table` | `OpenStepMGAReplacementDisplay/Default.table` | 2660 | all switches already `No`; ships verbatim |
+| `/private/Drivers/i386/OSMGADisplay.config/OSMGADisplay_reloc` | built on target | 369712 | the kernel driver, Mach-O preloaded i386 |
+| `.../OSMGADisplay` | built on target | 15364 | the Configure inspector, the bundle's executable |
+| `.../Default.table` | `OSMGADisplay/Default.table` | 2660 | all switches already `No`; ships verbatim |
 | `.../Instance0.table` | **`pkg/Instance0.release.table`** | 704 | NOT the development instance -- see below |
-| `.../Display.modes` | `OpenStepMGAReplacementDisplay/Display.modes` | — | five geometries x four formats, 60 Hz, no monitor identifiers.  The byte count is deliberately not pinned here: the verifier compares the packaged copy with the source byte for byte and asserts the list is the complete 5x4 product, which is a stronger check than a number that has to be edited by hand |
+| `.../Display.modes` | `OSMGADisplay/Display.modes` | — | five geometries x four formats, 60 Hz, no monitor identifiers.  The byte count is deliberately not pinned here: the verifier compares the packaged copy with the source byte for byte and asserts the list is the complete 5x4 product, which is a stronger check than a number that has to be edited by hand |
 | `.../English.lproj/Localizable.strings` | built on target | 166 | |
 | `.../English.lproj/DisplayInspector.nib/{data.classes,data.dependency,data.nib}` | built on target | 1382/43/3361 | all three files; see the nib hazard below |
 | `/usr/local/Documentation/OpenStep-MGA-G450/*` | `release-packaging/`, `LICENSE`, `NOTICE` | — | licence, notice, install/recovery guide |
@@ -25,7 +25,7 @@ three values, verified by diff -- `Raster Test`, `VRAM Mmap` and
 `Mesa Acceleration` all `Yes` -> `No`; the other twenty keys are identical.
 The reasons are in the file's own header.
 
-## 2. `OpenStepMGAMesaAccel.pkg` — the driver's client half
+## 2. `OSMGAMesaAccel.pkg` — the driver's client half
 
 `DefaultLocation /LocalDeveloper`, relocatable, i386-only.  Requires the
 driver package; the driver does not require this one.
@@ -192,7 +192,7 @@ archives.)
 | --- | --- |
 | `.lastBuildTime` | build residue; the shipped sibling package strips it explicitly |
 | `packaging/System.config.Instance0.activate-mga.table` | **this machine's own file** -- it names `SpaceSaver2Mouse Pro1000 SoundBlaster16PCI`.  Installing it would wreck an unrelated system, and site values belong in `site.conf`, never in shipped files |
-| `OpenStepMGAReplacementDisplay/Instance0.table` | the DEVELOPMENT instance, with three diagnostics on |
+| `OSMGADisplay/Instance0.table` | the DEVELOPMENT instance, with three diagnostics on |
 | `teapot-geometry.h` itself | cut out of the Mesa tree at build time so the repository carries no copied upstream source.  **Not** a licence bar: the cut region is SGI's 1993 permissive grant, not GPL, and the binaries built from it ARE shipped, with the SGI notice |
 | everything under `refs/` | analysis-only third-party material; `refs/SOURCES.md` forbids redistribution |
 | `build/mesa/libGL.a` | that is stock Mesa; shipping it here would be replacing the Mesa package's job |
@@ -285,8 +285,8 @@ that machine's own build tree:
 
 ```
 the driver bundle
-  same      OpenStepMGAReplacementDisplay_reloc
-  same      OpenStepMGAReplacementDisplay
+  same      OSMGADisplay_reloc
+  same      OSMGADisplay
   same      Default.table
   REPLACED  Instance0.table
   same      Display.modes
@@ -315,17 +315,17 @@ and the cost is undone by one copy:
 
 ```sh
 # before
-cp /private/Drivers/i386/OpenStepMGAReplacementDisplay.config/Instance0.table \
-   /private/Drivers/i386/OpenStepMGAReplacementDisplay.config/Instance0.table.dev
+cp /private/Drivers/i386/OSMGADisplay.config/Instance0.table \
+   /private/Drivers/i386/OSMGADisplay.config/Instance0.table.dev
 
 # install with /NextAdmin/Installer.app, then confirm the release instance
 # actually landed
 grep '^"Raster Test"' \
-   /private/Drivers/i386/OpenStepMGAReplacementDisplay.config/Instance0.table
+   /private/Drivers/i386/OSMGADisplay.config/Instance0.table
 
 # after, to go on developing
-cp /private/Drivers/i386/OpenStepMGAReplacementDisplay.config/Instance0.table.dev \
-   /private/Drivers/i386/OpenStepMGAReplacementDisplay.config/Instance0.table
+cp /private/Drivers/i386/OSMGADisplay.config/Instance0.table.dev \
+   /private/Drivers/i386/OSMGADisplay.config/Instance0.table
 ```
 
 No reboot is needed either way: nothing the install writes takes effect

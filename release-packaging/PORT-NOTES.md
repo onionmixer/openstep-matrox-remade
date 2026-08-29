@@ -1,8 +1,8 @@
-# OpenStepMGAMesaAccel — what this package adds, and what it does not
+# OSMGAMesaAccel — what this package adds, and what it does not
 
 This package ships one static library, `libGL_mga.a`, and the three headers
 an application needs to opt into it.  It is the client half of the
-`OpenStepMGAReplacementDisplay` driver: the driver draws the screen on its
+`OSMGADisplay` driver: the driver draws the screen on its
 own and needs nothing from here, while this library needs the driver.
 
 ## It adds a second library; it replaces nothing
@@ -126,7 +126,7 @@ VERDICT: software (missing 00000008)
 
 ## Requirements
 
-1. `OpenStepMGAReplacementDisplay` installed **and active** — the display in
+1. `OSMGADisplay` installed **and active** — the display in
    use must be the Matrox driver, not the VGA fallback.
 2. In `Configure.app`, on the display's Instance, `VRAM Mmap` = `Yes` and
    `Mesa Acceleration` = `Yes`.  Both ship as `No`; turning `VRAM Mmap` on

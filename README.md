@@ -11,7 +11,7 @@ display driver를 고친 것이 아니라, 공개 하드웨어 자료와 공개 
 
 ## 현재 상태 (2026-08-29)
 
-**`OpenStepMGAReplacementDisplay`가 실기에서 동작한다.** 기존 `MatroxMGA`를
+**`OSMGADisplay`가 실기에서 동작한다.** 기존 `MatroxMGA`를
 대체하는 완전한 `IOFrameBufferDisplay` 서브클래스로, G450을 다음 조합으로
 구동한다:
 
@@ -173,7 +173,7 @@ Mesa Demos 변종 패키지가 데모 **두 쌍**을 싣는다. 각각 소스 �
 현재 사실의 정본은 [docs/REMAINING_WORK.md](docs/REMAINING_WORK.md)이고,
 초기 단계의 검증 이력은 [docs/TEST_STATUS.md](docs/TEST_STATUS.md), 드라이버
 사용법은
-[OpenStepMGAReplacementDisplay/README.md](OpenStepMGAReplacementDisplay/README.md)다.
+[OSMGADisplay/README.md](OSMGADisplay/README.md)다.
 3D 착수 전의 실현 가능성 조사는
 [docs/S5_HW3D_DMA_FEASIBILITY.md](docs/S5_HW3D_DMA_FEASIBILITY.md)에 남아 있다.
 

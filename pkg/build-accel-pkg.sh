@@ -19,7 +19,7 @@ SRC="${1:-/ndrv/openstep-matrox-remade}"
 # directory is created below rather than assumed.
 OUT="${2:-/tmp/pkgout}"
 MESA="${3:-/ndrv/opennstep-mesa342}"
-NAME=OpenStepMGAMesaAccel
+NAME=OSMGAMesaAccel
 PKGTOOL=/NextAdmin/Installer.app/package
 LIB="$SRC/build/mesa/libGL_mga.a"
 MESADOCS="$MESA/upstream/Mesa-3.4.2/docs"

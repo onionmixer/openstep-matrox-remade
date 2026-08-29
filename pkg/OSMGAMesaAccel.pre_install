@@ -1,0 +1,39 @@
+#!/bin/csh -f
+# i386 only, for the same reason as the driver: the archive is i386 machine
+# code.  The relocatable prefix is the caller's to choose, so unlike the
+# recovery staging package this one places no restriction on it.
+
+if ($#argv != 2) then
+    echo "FAILED (unexpected Installer arguments)"
+    exit 1
+endif
+
+set cpu = `/usr/bin/arch`
+if ("$cpu" != "i386") then
+    echo "OpenStepMGAMesaAccel installs only on Intel i386/i486 computers."
+    exit 1
+endif
+
+#
+# THE PACKAGE WAS CALLED SOMETHING ELSE UNTIL 2026-08-29.
+#
+# Installer records a receipt per package name, and a receipt lists the files
+# that package owns.  A machine that installed OpenStepMGAMesaAccel and then
+# installs this one ends up with TWO receipts claiming the same library and
+# headers -- and deleting either through Installer would take files the other
+# still claims.
+#
+# Warned rather than refused: the files here are a development library and
+# its headers, so the cost of getting it wrong is a reinstall and not a
+# machine that will not boot.  The order that avoids it entirely is to delete
+# the old package first, then install this one.
+#
+set old = /NextLibrary/Receipts/OpenStepMGAMesaAccel.pkg
+if (-d "$old") then
+    echo "OSMGAMesaAccel: this machine still has a receipt for the package's"
+    echo "OSMGAMesaAccel: former name, OpenStepMGAMesaAccel.  Both will claim"
+    echo "OSMGAMesaAccel: the same files.  Delete the old one in Installer"
+    echo "OSMGAMesaAccel: after this, and before removing anything."
+endif
+
+exit 0

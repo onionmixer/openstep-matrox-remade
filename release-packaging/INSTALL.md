@@ -4,8 +4,8 @@ Three packages, and you do not need all of them.
 
 | Package | What it gives you | Needed for |
 | --- | --- | --- |
-| `OpenStepMGAReplacementDisplay` | the display driver: 640x480 through 1600x1200, 8/16/32-bit | a working screen on a G450 |
-| `OpenStepMGAMesaAccel` | `libGL_mga.a` and its headers, into `/LocalDeveloper` | building programs that draw 3D on the card |
+| `OSMGADisplay` | the display driver: 640x480 through 1600x1200, 8/16/32-bit | a working screen on a G450 |
+| `OSMGAMesaAccel` | `libGL_mga.a` and its headers, into `/LocalDeveloper` | building programs that draw 3D on the card |
 | `OpenStepMesa342DemosMGA` | the Mesa demos plus the teapot pair | seeing it work, and having an example to copy |
 
 The driver is complete on its own.  The other two are for development, and
@@ -25,11 +25,11 @@ anything.
 
 ## 1. The driver
 
-Open `OpenStepMGAReplacementDisplay.pkg` in `/NextAdmin/Installer.app`,
+Open `OSMGADisplay.pkg` in `/NextAdmin/Installer.app`,
 authorise, install.  It writes one bundle:
 
 ```
-/private/Drivers/i386/OpenStepMGAReplacementDisplay.config/
+/private/Drivers/i386/OSMGADisplay.config/
 ```
 
 **Installing does not activate.**  Nothing changes on screen and nothing
@@ -105,7 +105,7 @@ same as above.
 
 Only after the driver is active and the screen is working.
 
-Install `OpenStepMGAMesaAccel.pkg`.  It is **relocatable**: the Installer
+Install `OSMGAMesaAccel.pkg`.  It is **relocatable**: the Installer
 asks where to put it, and `/LocalDeveloper` is the default, matching the Mesa
 port's own Libraries and Headers packages.  Put it where those went.
 
@@ -210,6 +210,6 @@ them explains the title bar and says what the numbers do and do not prove.
 the bundle from under an active driver leaves the system booting toward
 something that is not there.
 
-Removing `OpenStepMGAMesaAccel` removes only the extra archive, its headers
+Removing `OSMGAMesaAccel` removes only the extra archive, its headers
 and its documentation.  Stock Mesa and the driver are untouched, and nothing
 needs restoring, because nothing was displaced.
