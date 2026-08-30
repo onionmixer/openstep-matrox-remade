@@ -10829,6 +10829,103 @@ osmgaM4CheckBlend(volatile unsigned long *blk, unsigned long stride,
     return wrong + unmoved + spilled;
 }
 
+/*
+ * T4 (the rhw-scale question).  Three sections, run after T9, that ask
+ * whether the WARP microcode's setup cares about the ABSOLUTE size of the
+ * reciprocal-w it is handed, or only -- as the mathematics says it may --
+ * about the ratios between the three vertices.  The userland plan is to
+ * slide every triangle's rhw by one power of two into the admission
+ * window; that is sound only if these three see nothing move.
+ *
+ * The comparison is a snapshot: draw a reference, copy the block out of
+ * video memory, draw the candidate, count differing pixels.  Exact, not
+ * statistical -- the claim under test is bit-for-bit invariance.
+ */
+static unsigned long osmgaT4Snap[OSMGA_M3_BLK * OSMGA_M3_BLK];
+
+static void
+osmgaT4SnapTake(volatile unsigned long *blk, unsigned long stride)
+{
+    unsigned long row, col;
+
+    for (row = 0UL; row < OSMGA_M3_BLK; row++)
+        for (col = 0UL; col < OSMGA_M3_BLK; col++)
+            osmgaT4Snap[row * OSMGA_M3_BLK + col] = blk[row * stride + col];
+}
+
+static unsigned long
+osmgaT4SnapDiff(volatile unsigned long *blk, unsigned long stride,
+                const char *label)
+{
+    unsigned long row, col, differ = 0UL;
+    unsigned long badRow = 0UL, badCol = 0UL, badGot = 0UL, badWant = 0UL;
+
+    for (row = 0UL; row < OSMGA_M3_BLK; row++)
+        for (col = 0UL; col < OSMGA_M3_BLK; col++) {
+            unsigned long want = osmgaT4Snap[row * OSMGA_M3_BLK + col];
+            unsigned long got  = blk[row * stride + col];
+            if (got != want) {
+                if (differ == 0UL) {
+                    badRow = row; badCol = col;
+                    badGot = got; badWant = want;
+                }
+                differ++;
+            }
+        }
+    IOLog("OpenStepMGA T4/%s: %lu px differ from the reference\n",
+          label, differ);
+    osmgaD2Settle();
+    if (differ != 0UL)
+        IOLog("OpenStepMGA T4/%s: first at (%lu,%lu) got %08lx want %08lx\n",
+              label, badRow, badCol, badGot, badWant);
+    return differ;
+}
+
+/*
+ * A power-of-two scale of an IEEE single, as the integer it is: the
+ * exponent field moves by n.  Valid only for normal numbers that stay
+ * normal, which every value these probes use does -- the kernel has no
+ * FPU and needs none for this.
+ */
+static unsigned long
+osmgaT4RhwScale(unsigned long bits, long n)
+{
+    return (n >= 0L) ? bits + ((unsigned long)n << 23)
+                     : bits - ((unsigned long)(-n) << 23);
+}
+
+/*
+ * The mirror of osmgaM3BuildPerspTri's triangle: the other half of the
+ * same square, sharing the hypotenuse from (col+leg,row) to (col,row+leg).
+ * Vertex order keeps the same winding.
+ */
+static void
+osmgaT4BuildPerspTriMirror(unsigned long *v, unsigned long row,
+                           unsigned long col, unsigned long leg,
+                           const unsigned long *rhw,
+                           const unsigned long *tu,
+                           const unsigned long *tv,
+                           const unsigned long *z, unsigned long colour)
+{
+    unsigned long i, p = 0UL;
+    unsigned long xs[3], ys[3];
+
+    xs[0] = col + leg;  ys[0] = row;
+    xs[1] = col + leg;  ys[1] = row + leg;
+    xs[2] = col;        ys[2] = row + leg;
+
+    for (i = 0UL; i < 3UL; i++) {
+        v[p++] = osmgaF32FromUInt(xs[i]);
+        v[p++] = osmgaF32FromUInt(ys[i]);
+        v[p++] = z[i];
+        v[p++] = rhw[i];
+        v[p++] = colour;
+        v[p++] = 0UL;
+        v[p++] = tu[i];
+        v[p++] = tv[i];
+    }
+}
+
 /* Paint a block to one value, both surfaces, so a blend has something to
  * blend against and "nothing was drawn" is distinguishable from "drawn". */
 static void
@@ -13155,6 +13252,231 @@ releaseAndReturn:
         osmgaM4SumVal(OSMGA_M4B_T9, 2UL, m4t9Leak[1]);
         osmgaM4SumSet(OSMGA_M4B_T9, OSMGA_M4S_COMPLETE);
         osmgaD2Settle();
+      }
+
+      /* ---- TS1: does the ABSOLUTE rhw scale change any pixel? --------
+       *
+       * T4b's own perspective triangle -- rhw (1,4,1), a texture that
+       * encodes each texel's address in its colour -- drawn three times:
+       * as T4b drew it, then with every rhw 2^-3 of that, then 2^+5.
+       * The mathematics says the picture cannot move; these are the
+       * bounds of the window the userland plan would slide into.
+       */
+      {
+        static const long ts1n[2] = { -3L, 5L };
+        unsigned long t, ts1bad = 0UL;
+
+        osmgaM4FillTexture(blkM4, OSMGA_M4_MIN_PITCH, OSMGA_M4_MIN_ROWS,
+                           OSMGA_M4_MIN_GUARD, OSMGA_M4_MIN_DIM);
+        m4tex.enable  = 1UL;
+        m4tex.org     = OSMGA_M4_TEX + OSMGA_M4_MIN_OFS;
+        m4tex.dim     = OSMGA_M4_MIN_DIM;
+        m4tex.log2dim = OSMGA_M4_MIN_LOG2;
+        m4tex.dimH    = OSMGA_M4_MIN_DIM;
+        m4tex.log2dimH = OSMGA_M4_MIN_LOG2;
+        m4tex.pitch   = OSMGA_M4_MIN_PITCH;
+        m4tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21);   /* nearest */
+        m4tex.clamp   = MGA_TEXCTL_CLAMPUV;
+        m4tex.tds     = 0UL;
+        if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
+                             osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
+                             (dwgctlFlat & ~MGA_DWGCTL_OPCODE_MASK) |
+                                 MGA_DWGCTL_TEXTURE_TRAP |
+                                 MGA_DWGCTL_NOZCMP,
+                             OSMGA_M3_ALPHACTRL_NOBLEND,
+                             OSMGA_M3_WARP, OSMGA_M3_ZORG, &m4tex, "TS1")) {
+            IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
+                  "REQUIRED ***\n");
+            goto unmapM4;
+        }
+        for (row = 0UL; row < OSMGA_M3_BLK; row++)
+            for (col = 0UL; col < OSMGA_M3_BLK; col++)
+                blkWa[row * stride + col] = OSMGA_S1_SENTINEL;
+        m4rhw[0] = OSMGA_M4_F32_ONE;
+        m4rhw[1] = OSMGA_M4_F32_FOUR;
+        m4rhw[2] = OSMGA_M4_F32_ONE;
+        m4tu[0]  = OSMGA_M4_TU_NEAR;
+        m4tu[1]  = OSMGA_M4_TU_FAR;
+        m4tu[2]  = OSMGA_M4_TU_NEAR;
+        m4tv[0]  = m4tv[1] = m4tv[2] = OSMGA_M4_TV_ALL;
+        m4z[0]   = m4z[1] = m4z[2] = OSMGA_M3_F32_HALF;
+        osmgaM3BuildPerspTri(vtx, OSMGA_M3_TRI_LO, OSMGA_M3_TRI_LO,
+                             OSMGA_M3_TRI_HI - OSMGA_M3_TRI_LO,
+                             m4rhw, m4tu, m4tv, m4z, OSMGA_M3_COLOUR);
+        if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys, OSMGA_D2C_VTX_DWORDS,
+                                 1, "TS1-base", 0)) {
+            IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** REBOOT "
+                  "REQUIRED ***\n");
+            goto unmapM4;
+        }
+        osmgaT4SnapTake(blkWa, stride);
+        for (t = 0UL; t < 2UL; t++) {
+            for (row = 0UL; row < OSMGA_M3_BLK; row++)
+                for (col = 0UL; col < OSMGA_M3_BLK; col++)
+                    blkWa[row * stride + col] = OSMGA_S1_SENTINEL;
+            m4rhw[0] = osmgaT4RhwScale(OSMGA_M4_F32_ONE,  ts1n[t]);
+            m4rhw[1] = osmgaT4RhwScale(OSMGA_M4_F32_FOUR, ts1n[t]);
+            m4rhw[2] = m4rhw[0];
+            osmgaM3BuildPerspTri(vtx, OSMGA_M3_TRI_LO, OSMGA_M3_TRI_LO,
+                                 OSMGA_M3_TRI_HI - OSMGA_M3_TRI_LO,
+                                 m4rhw, m4tu, m4tv, m4z, OSMGA_M3_COLOUR);
+            if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys,
+                                     OSMGA_D2C_VTX_DWORDS, 1, "TS1-s", 0)) {
+                IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** "
+                      "REBOOT REQUIRED ***\n");
+                goto unmapM4;
+            }
+            ts1bad += osmgaT4SnapDiff(blkWa, stride,
+                                      (t == 0UL) ? "TS1-n-3" : "TS1-n+5");
+        }
+        if (ts1bad == 0UL)
+            IOLog("OpenStepMGA T4: TS1 PASS -- the picture is indifferent "
+                  "to the absolute rhw scale across the window\n");
+        else
+            IOLog("OpenStepMGA T4: TS1 FAIL -- the microcode is NOT scale "
+                  "indifferent; the userland plan must not rescale\n");
+        osmgaD2Settle();
+
+        /* ---- TS2: two triangles, one shared edge, DIFFERENT scales ---
+         *
+         * The left half of a square at scale 2^0 beside the right half at
+         * 2^+5, against a reference with both at 2^0.  The userland plan
+         * chooses a scale per triangle, so neighbours will disagree
+         * exactly like this; a seam would show here as differing pixels.
+         */
+        {
+            unsigned long rhwR[3], tuR[3], tvR[3], zR[3], pass;
+            unsigned long ts2bad = 0UL;
+
+            for (pass = 0UL; pass < 2UL; pass++) {
+                for (row = 0UL; row < OSMGA_M3_BLK; row++)
+                    for (col = 0UL; col < OSMGA_M3_BLK; col++)
+                        blkWa[row * stride + col] = OSMGA_S1_SENTINEL;
+                m4rhw[0] = OSMGA_M4_F32_ONE;
+                m4rhw[1] = OSMGA_M4_F32_FOUR;
+                m4rhw[2] = OSMGA_M4_F32_ONE;
+                osmgaM3BuildPerspTri(vtx, OSMGA_M3_TRI_LO, OSMGA_M3_TRI_LO,
+                                     OSMGA_M3_TRI_HI - OSMGA_M3_TRI_LO,
+                                     m4rhw, m4tu, m4tv, m4z,
+                                     OSMGA_M3_COLOUR);
+                if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys,
+                                         OSMGA_D2C_VTX_DWORDS, 1,
+                                         "TS2-L", 0)) {
+                    IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** "
+                          "REBOOT REQUIRED ***\n");
+                    goto unmapM4;
+                }
+                /* The mirror shares (HI,LO) rhw 4 tu FAR and (LO,HI)
+                 * rhw 1 tu NEAR; its own corner keeps the far plane. */
+                rhwR[0] = OSMGA_M4_F32_FOUR;
+                rhwR[1] = OSMGA_M4_F32_FOUR;
+                rhwR[2] = OSMGA_M4_F32_ONE;
+                tuR[0] = OSMGA_M4_TU_FAR;
+                tuR[1] = OSMGA_M4_TU_FAR;
+                tuR[2] = OSMGA_M4_TU_NEAR;
+                tvR[0] = tvR[1] = tvR[2] = OSMGA_M4_TV_ALL;
+                zR[0] = zR[1] = zR[2] = OSMGA_M3_F32_HALF;
+                if (pass == 1UL) {
+                    rhwR[0] = osmgaT4RhwScale(rhwR[0], 5L);
+                    rhwR[1] = osmgaT4RhwScale(rhwR[1], 5L);
+                    rhwR[2] = osmgaT4RhwScale(rhwR[2], 5L);
+                }
+                osmgaT4BuildPerspTriMirror(vtx, OSMGA_M3_TRI_LO,
+                                           OSMGA_M3_TRI_LO,
+                                           OSMGA_M3_TRI_HI -
+                                               OSMGA_M3_TRI_LO,
+                                           rhwR, tuR, tvR, zR,
+                                           OSMGA_M3_COLOUR);
+                if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys,
+                                         OSMGA_D2C_VTX_DWORDS, 1,
+                                         "TS2-R", 0)) {
+                    IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** "
+                          "REBOOT REQUIRED ***\n");
+                    goto unmapM4;
+                }
+                if (pass == 0UL)
+                    osmgaT4SnapTake(blkWa, stride);
+                else
+                    ts2bad = osmgaT4SnapDiff(blkWa, stride, "TS2-seam");
+            }
+            if (ts2bad == 0UL)
+                IOLog("OpenStepMGA T4: TS2 PASS -- neighbours under "
+                      "different scales share an edge without a seam\n");
+            else
+                IOLog("OpenStepMGA T4: TS2 FAIL -- per-triangle scales "
+                      "seam; the plan must fall back to one scale per "
+                      "batch\n");
+            osmgaD2Settle();
+        }
+
+        /* ---- TS3: the min/mag decision astride its threshold ---------
+         *
+         * Magnify-bilinear with minify-nearest, and a triangle whose
+         * texel rate crosses one per pixel inside it (at dx 15 by the
+         * oracle) -- so the hardware chooses a DIFFERENT filter on the
+         * two sides of that line.  If the choice looked at the absolute
+         * rhw rather than the ratio, the boundary would move under
+         * scale, and pixels near it would change filter and value.
+         */
+        {
+            unsigned long ts3bad;
+
+            m4tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21) |
+                            MGA_TEXFILTER_MAGBILIN;
+            if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
+                                 osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
+                                 (dwgctlFlat & ~MGA_DWGCTL_OPCODE_MASK) |
+                                     MGA_DWGCTL_TEXTURE_TRAP |
+                                     MGA_DWGCTL_NOZCMP,
+                                 OSMGA_M3_ALPHACTRL_NOBLEND,
+                                 OSMGA_M3_WARP, OSMGA_M3_ZORG, &m4tex,
+                                 "TS3")) {
+                IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** "
+                      "REBOOT REQUIRED ***\n");
+                goto unmapM4;
+            }
+            for (row = 0UL; row < OSMGA_M3_BLK; row++)
+                for (col = 0UL; col < OSMGA_M3_BLK; col++)
+                    blkWa[row * stride + col] = OSMGA_S1_SENTINEL;
+            m4rhw[0] = OSMGA_M4_F32_ONE;
+            m4rhw[1] = OSMGA_M4_F32_FOUR;
+            m4rhw[2] = OSMGA_M4_F32_ONE;
+            osmgaM3BuildPerspTri(vtx, OSMGA_M3_TRI_LO, OSMGA_M3_TRI_LO,
+                                 OSMGA_M3_TRI_HI - OSMGA_M3_TRI_LO,
+                                 m4rhw, m4tu, m4tv, m4z, OSMGA_M3_COLOUR);
+            if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys,
+                                     OSMGA_D2C_VTX_DWORDS, 1,
+                                     "TS3-base", 0)) {
+                IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** "
+                      "REBOOT REQUIRED ***\n");
+                goto unmapM4;
+            }
+            osmgaT4SnapTake(blkWa, stride);
+            for (row = 0UL; row < OSMGA_M3_BLK; row++)
+                for (col = 0UL; col < OSMGA_M3_BLK; col++)
+                    blkWa[row * stride + col] = OSMGA_S1_SENTINEL;
+            m4rhw[0] = osmgaT4RhwScale(OSMGA_M4_F32_ONE,  5L);
+            m4rhw[1] = osmgaT4RhwScale(OSMGA_M4_F32_FOUR, 5L);
+            m4rhw[2] = m4rhw[0];
+            osmgaM3BuildPerspTri(vtx, OSMGA_M3_TRI_LO, OSMGA_M3_TRI_LO,
+                                 OSMGA_M3_TRI_HI - OSMGA_M3_TRI_LO,
+                                 m4rhw, m4tu, m4tv, m4z, OSMGA_M3_COLOUR);
+            if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys,
+                                     OSMGA_D2C_VTX_DWORDS, 1,
+                                     "TS3-s", 0)) {
+                IOLog("OpenStepMGA M3: RETAINED, engine claimed.  *** "
+                      "REBOOT REQUIRED ***\n");
+                goto unmapM4;
+            }
+            ts3bad = osmgaT4SnapDiff(blkWa, stride, "TS3-minmag");
+            if (ts3bad == 0UL)
+                IOLog("OpenStepMGA T4: TS3 PASS -- the min/mag choice "
+                      "does not move under the scale\n");
+            else
+                IOLog("OpenStepMGA T4: TS3 FAIL -- the filter boundary "
+                      "moved; scaling changes which filter runs\n");
+            osmgaD2Settle();
+        }
       }
 
     } else {
