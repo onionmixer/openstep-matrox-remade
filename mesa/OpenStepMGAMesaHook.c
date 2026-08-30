@@ -138,6 +138,7 @@ static unsigned long hookPrevalidated;
  */
 static unsigned long hookFlushClip, hookFlushTex, hookFlushTmr;
 static unsigned long hookWarpNoState, hookWarpNoVertex, hookWarpForced;
+static unsigned long hookWarpRhwRatio;   /* no power of two fits the window */
 /* Raised by the measurement deadline (see osmgaMesaSoftly); read by the
  * application at the end of the frame, which is where a run can end. */
 static int hookDeadlineHit;
@@ -1448,6 +1449,7 @@ osmgaMesaWarpTriangle(GLcontext *ctx, struct vertex_buffer *VB,
                       GLuint v0, GLuint v1, GLuint v2, GLuint pv)
 {
     OSMGAHW3DWarpBatch *wb;
+    OSMGAMesaVertex ca, cb, cc;    /* this tier's own copies; see below */
     OSMGAHW3DVertex wv[3];
     OSMGAHW3DState probeState;
     unsigned long dwgctl;
@@ -1528,11 +1530,66 @@ osmgaMesaWarpTriangle(GLcontext *ctx, struct vertex_buffer *VB,
      * three carry the provoking colour.  The COLOUR only -- position,
      * depth and texture coordinates stay each vertex's own.
      */
+    /*
+     * COPIES from here on.  A declined triangle goes to the trapezoid
+     * tier with the caller's own a, b, c, so nothing this tier does may
+     * change them -- and this tier changes two things: the flat-shade
+     * colour (which used to be written into the originals) and, below,
+     * the reciprocal-w.
+     */
+    ca = *a; cb = *b; cc = *c;
     if (prov != 0) {
-        a->r = b->r = c->r = prov->r;
-        a->g = b->g = c->g = prov->g;
-        a->b = b->b = c->b = prov->b;
-        a->a = b->a = c->a = prov->a;
+        ca.r = cb.r = cc.r = prov->r;
+        ca.g = cb.g = cc.g = prov->g;
+        ca.b = cb.b = cc.b = prov->b;
+        ca.a = cb.a = cc.a = prov->a;
+    }
+
+    /*
+     * THE RE-BASE.  The admission window for the vertex weight is
+     * [0.125, 128] -- a thousand and twenty-four to one, inherited from
+     * the other tier's fixed point -- and a Quake view's 1/w runs down
+     * to 1/4096, so most of a level fell out of the bottom.  The weight
+     * only ever appears in the perspective ratio, where a factor common
+     * to the three vertices cancels; measured on the silicon (probes
+     * TS1-TS3, 2026-08-31): scaling every rhw by a power of two moved
+     * not one pixel, two triangles under different powers shared an
+     * edge without a seam, and the min/mag choice stayed put.  So a
+     * triangle whose weights lie outside the window is slid into it,
+     * all three by the same power of two, chosen to centre the slack;
+     * one whose weights span more than the window has no such power
+     * and declines to the trapezoid tier, counted.
+     *
+     * The scale multiplies exact doubles; the one binary32 rounding is
+     * the builder's own conversion, and the builder's range check stays
+     * the final judge.
+     */
+    {
+        double r0 = ca.qw * ca.tq;
+        double r1 = cb.qw * cb.tq;
+        double r2 = cc.qw * cc.tq;
+
+        if (r0 > 0.0 && r1 > 0.0 && r2 > 0.0) {
+            double mn = r0, mx = r0;
+
+            if (r1 < mn) mn = r1;
+            if (r1 > mx) mx = r1;
+            if (r2 < mn) mn = r2;
+            if (r2 > mx) mx = r2;
+            if (mn < 0.125 || mx > 128.0) {
+                int e, n;
+                double m = frexp(mx, &e);
+
+                n = (m == 0.5) ? (8 - e) : (7 - e);
+                if (ldexp(mn, n) < 0.125) {
+                    hookWarpRhwRatio++;
+                    goto declineOne;
+                }
+                ca.qw = ldexp(ca.qw, n);
+                cb.qw = ldexp(cb.qw, n);
+                cc.qw = ldexp(cc.qw, n);
+            }
+        }
     }
 
     /*
@@ -1546,9 +1603,9 @@ osmgaMesaWarpTriangle(GLcontext *ctx, struct vertex_buffer *VB,
      * A vertex built without it draws unoffset, and a shifted plane that
      * leaves the depth range is refused rather than clamped.
      */
-    if (OSMGAMesaBuildWarpVertex(a, texOn ? tex : 0, zoffset, &wv[0]) != 0 ||
-        OSMGAMesaBuildWarpVertex(b, texOn ? tex : 0, zoffset, &wv[1]) != 0 ||
-        OSMGAMesaBuildWarpVertex(c, texOn ? tex : 0, zoffset, &wv[2]) != 0) {
+    if (OSMGAMesaBuildWarpVertex(&ca, texOn ? tex : 0, zoffset, &wv[0]) != 0 ||
+        OSMGAMesaBuildWarpVertex(&cb, texOn ? tex : 0, zoffset, &wv[1]) != 0 ||
+        OSMGAMesaBuildWarpVertex(&cc, texOn ? tex : 0, zoffset, &wv[2]) != 0) {
         hookWarpNoVertex++;
         goto declineOne;
     }
@@ -4434,11 +4491,12 @@ unsigned long OSMGAMesaHookTraps(void)     { return hookTraps; }
 unsigned long OSMGAMesaHookUnsupported(void) { return hookUnsupported; }
 unsigned long OSMGAMesaHookGated(void)        { return hookGated; }
 void
-OSMGAMesaHookWhyBatch(unsigned long out[6])
+OSMGAMesaHookWhyBatch(unsigned long out[7])
 {
     out[0] = hookFlushClip;   out[1] = hookWarpNoState;
     out[2] = hookWarpNoVertex; out[3] = hookWarpForced;
     out[4] = hookFlushTex;    out[5] = hookFlushTmr;
+    out[6] = hookWarpRhwRatio;
 }
 int           OSMGAMesaHookDeadlineHit(void)  { return hookDeadlineHit; }
 void
