@@ -136,7 +136,7 @@ static unsigned long hookPrevalidated;
  * The WARP declines say why the tier that does NOT key a batch on the
  * texture gradients is only taking half the triangles.
  */
-static unsigned long hookFlushClip;
+static unsigned long hookFlushClip, hookFlushTex, hookFlushTmr;
 static unsigned long hookWarpNoState, hookWarpNoVertex, hookWarpForced;
 /* Raised by the measurement deadline (see osmgaMesaSoftly); read by the
  * application at the end of the frame, which is where a run can end. */
@@ -1452,7 +1452,29 @@ osmgaMesaWarpTriangle(GLcontext *ctx, struct vertex_buffer *VB,
     OSMGAHW3DState probeState;
     unsigned long dwgctl;
     int r;
-    int batchable = (VB->ClipOrMask == 0) &&
+    /*
+     * WHICH VERTICES, not whether the buffer clips.
+     *
+     * A source is deferred only if its three vertices will still be there
+     * when a software replay would read them.  The clipper writes the
+     * vertices it interpolates at indices from VB->FirstFree upward
+     * (clip_funcs.h) and reuses them for the next clipped polygon; it
+     * never writes below that line.  So a triangle made of ORIGINAL
+     * vertices is safe to batch even in a buffer that clips, and only one
+     * built from the clipper's own output has to go out at once.
+     *
+     * The old test was the buffer's ClipOrMask, which is set if ANY vertex
+     * anywhere in the buffer is off screen -- and a Quake view clips nearly
+     * every buffer, so nearly every triangle was submitted alone: 48582 of
+     * 171014 submissions in a hundred frames, none of them counted.
+     *
+     * A batch cannot span two buffers: RenderFinish flushes at the end of
+     * every one (5400 bracket flushes in the same hundred frames, one per
+     * buffer), so an original vertex cannot be refilled underneath a
+     * pending batch either.
+     */
+    int batchable = (v0 < VB->FirstFree && v1 < VB->FirstFree &&
+                     v2 < VB->FirstFree && pv < VB->FirstFree) &&
                     (ctx->Driver.MultipassFunc == 0);
 
     if (!osmgaMesaWarpWanted())
@@ -2899,7 +2921,12 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
      * Either way it still goes through the engine; it just travels alone,
      * exactly as every triangle used to.
      */
-    batchable = (VB->ClipOrMask == 0) && (ctx->Driver.MultipassFunc == 0);
+    /* See the note in osmgaMesaWarpTriangle: what matters is whether these
+     * three vertices are the clipper's own temporaries, not whether the
+     * buffer clips somewhere. */
+    batchable = (v0 < VB->FirstFree && v1 < VB->FirstFree &&
+                 v2 < VB->FirstFree && pv < VB->FirstFree) &&
+                (ctx->Driver.MultipassFunc == 0);
 
     if (!osmgaMesaPendEmpty()) {
         int part = 0;
@@ -2918,6 +2945,16 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
                     pendTmr[0] != tmr[0][0] || pendTmr[1] != tmr[0][1] ||
                     pendTmr[2] != tmr[0][2] || pendTmr[3] != tmr[0][3] ||
                     pendTmr[4] != tmr[0][4] || pendTmr[5] != tmr[0][5])) {
+            /* Which half of the key moved.  A batch carries one texture AND
+             * one texture matrix; the first changes when the engine binds
+             * another texture, the second when a surface has another plane.
+             * They want different answers, so they are counted apart. */
+            if (pendTexOrg != texOrg || pendTexW != texW ||
+                pendTexH != texH || pendTexPitch != texPitch ||
+                pendTexFlags != texFlagsL)
+                hookFlushTex++;
+            else
+                hookFlushTmr++;
             hookFlushKey++;
             part = 1;
         }
@@ -4397,10 +4434,11 @@ unsigned long OSMGAMesaHookTraps(void)     { return hookTraps; }
 unsigned long OSMGAMesaHookUnsupported(void) { return hookUnsupported; }
 unsigned long OSMGAMesaHookGated(void)        { return hookGated; }
 void
-OSMGAMesaHookWhyBatch(unsigned long out[4])
+OSMGAMesaHookWhyBatch(unsigned long out[6])
 {
     out[0] = hookFlushClip;   out[1] = hookWarpNoState;
     out[2] = hookWarpNoVertex; out[3] = hookWarpForced;
+    out[4] = hookFlushTex;    out[5] = hookFlushTmr;
 }
 int           OSMGAMesaHookDeadlineHit(void)  { return hookDeadlineHit; }
 void
