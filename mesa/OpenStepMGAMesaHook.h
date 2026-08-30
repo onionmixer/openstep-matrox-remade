@@ -255,6 +255,9 @@ void OSMGAMesaHookFlushCounts(unsigned long out[4]);
  * out[5] how many submissions polled more than once.
  */
 void OSMGAMesaHookSubmitStats(unsigned long out[6]);
+/* The bracket clock, armed with the same INST_TIME: [0] brackets closed,
+ * [1] microseconds from RenderStart entry to RenderFinish return. */
+void OSMGAMesaHookBracketStats(unsigned long out[2]);
 
 /*
  * Test only: how much of each trapezoid repeats the one before it.

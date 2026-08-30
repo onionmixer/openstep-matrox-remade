@@ -676,6 +676,18 @@ osmgaMesaCountDeltas(const OSMGAHW3DBatch *b)
 static unsigned long submitCount, submitUs, submitDwords;
 static unsigned long submitSpins, submitSpinMax, submitSpun;
 
+unsigned long hookBracketCountGet(void);
+unsigned long hookBracketUsGet(void);
+
+void
+OSMGAMesaHookBracketStats(unsigned long out[2])
+{
+    if (out == 0)
+        return;
+    out[0] = hookBracketCountGet();
+    out[1] = hookBracketUsGet();
+}
+
 void
 OSMGAMesaHookSubmitStats(unsigned long out[6])
 {
@@ -3880,6 +3892,48 @@ osmgaMesaSoil(GLcontext *ctx)
     hookPendingUniform = 0;
 }
 
+/*
+ * The bracket clock: from the first thing that runs in a bracket to the
+ * last.  Everything Mesa does between glBegin and the mirror -- transform,
+ * clip, shade, project, this file's triangle work, the flush, the copy --
+ * is inside; what remains of a frame is the application and the dispatch.
+ * Armed by OSMGA_MESA_INST_TIME like the submission clock, and 9 us of
+ * gettimeofday a bracket when armed.
+ */
+static unsigned long bracketCount, bracketUs;
+static struct timeval bracketT0;
+static int bracketOpen;
+unsigned long hookBracketCountGet(void) { return bracketCount; }
+unsigned long hookBracketUsGet(void)    { return bracketUs; }
+
+static void osmgaMesaSoil(GLcontext *ctx);
+static void osmgaMesaMirror(GLcontext *ctx);
+
+static void
+osmgaMesaSoilTimed(GLcontext *ctx)
+{
+    if ((hookInstrument & OSMGA_MESA_INST_TIME) != 0) {
+        gettimeofday(&bracketT0, (struct timezone *)0);
+        bracketOpen = 1;
+    }
+    osmgaMesaSoil(ctx);
+}
+
+static void
+osmgaMesaMirrorTimed(GLcontext *ctx)
+{
+    osmgaMesaMirror(ctx);
+    if (bracketOpen) {
+        struct timeval t1;
+
+        gettimeofday(&t1, (struct timezone *)0);
+        bracketUs += (unsigned long)((t1.tv_sec - bracketT0.tv_sec) * 1000000L
+                                     + (t1.tv_usec - bracketT0.tv_usec));
+        bracketCount++;
+        bracketOpen = 0;
+    }
+}
+
 static void
 osmgaMesaMirror(GLcontext *ctx)
 {
@@ -4374,8 +4428,8 @@ OpenStepMesaAccelUpdateState(GLcontext *ctx, int rowLength, int yUp)
     OSMGAMesaTexInstall(ctx);
 
     {
-        ctx->Driver.RenderStart = osmgaMesaSoil;
-        ctx->Driver.RenderFinish = osmgaMesaMirror;
+        ctx->Driver.RenderStart = osmgaMesaSoilTimed;
+        ctx->Driver.RenderFinish = osmgaMesaMirrorTimed;
         ctx->Driver.Finish = osmgaMesaMirror;
         ctx->Driver.Flush = osmgaMesaMirror;
         if (ctx->Driver.Clear != osmgaMesaClear) {
