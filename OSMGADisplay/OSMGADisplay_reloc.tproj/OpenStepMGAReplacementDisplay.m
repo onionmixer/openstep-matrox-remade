@@ -11186,6 +11186,7 @@ osmgaWarpFenceAndStop(vm_address_t base, const char *label)
     unsigned long dstW, dstH, dstP;
     unsigned long tailDwords, totalDwords, listEnd, spins, status;
     unsigned long badRun = 0UL;
+    unsigned long epochW = 0UL;
     unsigned primAfter;
     OSMGAM3Tex tex;
     int v, failed = 0;
@@ -11213,6 +11214,9 @@ osmgaWarpFenceAndStop(vm_address_t base, const char *label)
         return IO_R_RESOURCE;
     }
     stormBusy = YES;
+    /* Taken under the claim, exactly as version 9 takes epoch3: a mode
+     * change that lands while this batch runs belongs to the next one. */
+    epochW = osmgaModeEpoch;
     simple_unlock(&stormLock);
 
     /*
@@ -11501,7 +11505,23 @@ osmgaWarpFenceAndStop(vm_address_t base, const char *label)
         return IO_R_RESOURCE;
     }
 
-    simple_lock(&stormLock); stormBusy = NO; simple_unlock(&stormLock);
+    simple_lock(&stormLock);
+    stormBusy = NO;
+    /*
+     * A mode change that cannot claim the engine goes ahead regardless
+     * (see -claimEngineForMode), and version 9 reports that case as a
+     * failure rather than a success.  This path drew the same way: if the
+     * epoch moved, whatever landed went to a mode this batch was not
+     * validated against.  No latch -- the engine is fine, the mode moved --
+     * which is also exactly what version 9 does.
+     */
+    if (osmgaModeEpoch != epochW) {
+        simple_unlock(&stormLock);
+        IOLog("OpenStepMGA WARP: the mode changed while a batch was "
+              "drawing; reporting it as failed\n");
+        return IO_R_RESOURCE;
+    }
+    simple_unlock(&stormLock);
     return IO_R_SUCCESS;
 }
 
