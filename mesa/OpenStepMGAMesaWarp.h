@@ -144,3 +144,7 @@ int OSMGAMesaWarpAdd(OSMGAMesaWarpBuilder *w,
                      const OSMGAHW3DVertex *v0,
                      const OSMGAHW3DVertex *v1,
                      const OSMGAHW3DVertex *v2);
+
+/* null,xbits,xrange,ybits,yrange,zbits,zrange,qsign,rhwbits,rhwrange,ubits,vbits */
+#define OSMGA_WARP_NO_COUNT 12
+void OSMGAMesaWarpNoCounts(unsigned long out[OSMGA_WARP_NO_COUNT]);

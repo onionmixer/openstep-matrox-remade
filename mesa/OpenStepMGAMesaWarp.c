@@ -21,6 +21,42 @@ f32bits(double d, osmga_u32 *out)
 }
 
 int
+/*
+ * Which admission a vertex failed, counted.  WARP is the tier that does
+ * NOT key a batch on the texture gradients, so what it declines is what
+ * keeps a Quake frame at two triangles a batch -- and "declined" without a
+ * reason cannot be acted on.
+ */
+#define OSMGA_WARP_NO_NULL 0
+#define OSMGA_WARP_NO_XBITS 1
+#define OSMGA_WARP_NO_XRANGE 2
+#define OSMGA_WARP_NO_YBITS 3
+#define OSMGA_WARP_NO_YRANGE 4
+#define OSMGA_WARP_NO_ZBITS 5
+#define OSMGA_WARP_NO_ZRANGE 6
+#define OSMGA_WARP_NO_QSIGN 7
+#define OSMGA_WARP_NO_RHWBITS 8
+#define OSMGA_WARP_NO_RHWRANGE 9
+#define OSMGA_WARP_NO_UBITS 10
+#define OSMGA_WARP_NO_VBITS 11
+#define OSMGA_WARP_NO_COUNT 12
+static unsigned long warpNo[OSMGA_WARP_NO_COUNT];
+
+static int
+osmgaWarpNo(int which)
+{
+    if (which >= 0 && which < OSMGA_WARP_NO_COUNT)
+        warpNo[which]++;
+    return OSMGA_MESA_TRI_UNSUPPORTED;
+}
+
+void
+OSMGAMesaWarpNoCounts(unsigned long out[OSMGA_WARP_NO_COUNT])
+{
+    int i;
+    for (i = 0; i < OSMGA_WARP_NO_COUNT; i++) out[i] = warpNo[i];
+}
+
 OSMGAMesaBuildWarpVertex(const OSMGAMesaVertex *v,
                          const OSMGAMesaTex *tex,
                          double zoffset,
@@ -30,7 +66,7 @@ OSMGAMesaBuildWarpVertex(const OSMGAMesaVertex *v,
     double rhw;
 
     if (v == 0 || out == 0)
-        return OSMGA_MESA_TRI_UNSUPPORTED;
+        return osmgaWarpNo(OSMGA_WARP_NO_NULL);
 
     memset(out, 0, sizeof *out);
 
@@ -81,16 +117,16 @@ OSMGAMesaBuildWarpVertex(const OSMGAMesaVertex *v,
      * not a lost triangle.
      */
     if (!f32bits((double)(v->x - OSMGA_MESA_WARP_XY_BIAS) / 256.0, &w))
-        return OSMGA_MESA_TRI_UNSUPPORTED;
+        return osmgaWarpNo(OSMGA_WARP_NO_XBITS);
     out->x = w;
     if (!osmgaHW3DF32AbsAtMost((unsigned long)w, OSMGA_HW3D_F32_COORD))
-        return OSMGA_MESA_TRI_UNSUPPORTED;
+        return osmgaWarpNo(OSMGA_WARP_NO_XRANGE);
 
     if (!f32bits((double)(v->y - OSMGA_MESA_WARP_XY_BIAS) / 256.0, &w))
-        return OSMGA_MESA_TRI_UNSUPPORTED;
+        return osmgaWarpNo(OSMGA_WARP_NO_YBITS);
     out->y = w;
     if (!osmgaHW3DF32AbsAtMost((unsigned long)w, OSMGA_HW3D_F32_COORD))
-        return OSMGA_MESA_TRI_UNSUPPORTED;
+        return osmgaWarpNo(OSMGA_WARP_NO_YRANGE);
 
     /*
      * Depth, with glPolygonOffset folded in.  See the header: the scale is
@@ -104,10 +140,10 @@ OSMGAMesaBuildWarpVertex(const OSMGAMesaVertex *v,
      */
     if (!f32bits(((double)v->z + zoffset * 256.0) / OSMGA_MESA_WARP_ZSCALE,
                  &w))
-        return OSMGA_MESA_TRI_UNSUPPORTED;
+        return osmgaWarpNo(OSMGA_WARP_NO_ZBITS);
     out->z = w;
     if (!osmgaHW3DF32InUnit((unsigned long)w))
-        return OSMGA_MESA_TRI_UNSUPPORTED;
+        return osmgaWarpNo(OSMGA_WARP_NO_ZRANGE);
 
     /*
      * The vertex weight.  The texture's own divisor is folded in here and
@@ -121,15 +157,15 @@ OSMGAMesaBuildWarpVertex(const OSMGAMesaVertex *v,
      * positive.  The kernel checks it again.
      */
     if (!(v->qw > 0.0) || !(v->tq > 0.0))
-        return OSMGA_MESA_TRI_UNSUPPORTED;
+        return osmgaWarpNo(OSMGA_WARP_NO_QSIGN);
     rhw = v->qw * v->tq;
     if (!f32bits(rhw, &w))
-        return OSMGA_MESA_TRI_UNSUPPORTED;
+        return osmgaWarpNo(OSMGA_WARP_NO_RHWBITS);
     out->rhw = w;
     if (!osmgaHW3DF32PosNormal((unsigned long)w) ||
         !osmgaHW3DF32Between((unsigned long)w, OSMGA_HW3D_F32_RHW_MIN,
                              OSMGA_HW3D_F32_RHW_MAX))
-        return OSMGA_MESA_TRI_UNSUPPORTED;
+        return osmgaWarpNo(OSMGA_WARP_NO_RHWRANGE);
 
     /* Colour, packed the way the engine reads a 32 bit pixel: alpha in the
      * top byte, then red, green, blue. */
@@ -141,10 +177,10 @@ OSMGAMesaBuildWarpVertex(const OSMGAMesaVertex *v,
 
     if (tex != 0) {
         if (!f32bits(v->s / v->tq, &w))
-            return OSMGA_MESA_TRI_UNSUPPORTED;
+            return osmgaWarpNo(OSMGA_WARP_NO_UBITS);
         out->tu0 = w;
         if (!f32bits(v->tc / v->tq, &w))
-            return OSMGA_MESA_TRI_UNSUPPORTED;
+            return osmgaWarpNo(OSMGA_WARP_NO_VBITS);
         out->tv0 = w;
     }
 

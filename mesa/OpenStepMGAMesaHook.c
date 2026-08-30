@@ -124,6 +124,20 @@ osmgaMesaGateNo(unsigned long line)
  * the accounting can tell it from a kernel's answer.
  */
 static unsigned long hookPrevalidated;
+/*
+ * Why a batch ended, beyond the three reasons already counted.
+ *
+ * hookFlushClip is the one that was invisible: both tiers submit a source
+ * at once when the vertex buffer is clipping, because the clip's temporary
+ * vertices can be overwritten before a software replay would read them --
+ * and a Quake view clips almost every buffer, so almost every triangle
+ * went out as its own batch without anything saying so.
+ *
+ * The WARP declines say why the tier that does NOT key a batch on the
+ * texture gradients is only taking half the triangles.
+ */
+static unsigned long hookFlushClip;
+static unsigned long hookWarpNoState, hookWarpNoVertex, hookWarpForced;
 /* Raised by the measurement deadline (see osmgaMesaSoftly); read by the
  * application at the end of the frame, which is where a run can end. */
 static int hookDeadlineHit;
@@ -1458,8 +1472,10 @@ osmgaMesaWarpTriangle(GLcontext *ctx, struct vertex_buffer *VB,
      * declineOne does below -- the production path, entered from here
      * rather than from a policy refusal.
      */
-    if (hookForcedTrapezoid)
+    if (hookForcedTrapezoid) {
+        hookWarpForced++;
         goto declineOne;
+    }
 
     /*
      * The run key, from the same function the trapezoid builder uses.
@@ -1480,8 +1496,10 @@ osmgaMesaWarpTriangle(GLcontext *ctx, struct vertex_buffer *VB,
         probeState.texPitch = texPitch;
         probeState.texFlags = texFlags;
     }
-    if (!osmgaMesaWarpTakes(&probeState, dwgctl, blend))
+    if (!osmgaMesaWarpTakes(&probeState, dwgctl, blend)) {
+        hookWarpNoState++;
         goto declineOne;
+    }
 
     /*
      * Flat shading: WARP has no separate provoking-vertex argument, so all
@@ -1508,8 +1526,10 @@ osmgaMesaWarpTriangle(GLcontext *ctx, struct vertex_buffer *VB,
      */
     if (OSMGAMesaBuildWarpVertex(a, texOn ? tex : 0, zoffset, &wv[0]) != 0 ||
         OSMGAMesaBuildWarpVertex(b, texOn ? tex : 0, zoffset, &wv[1]) != 0 ||
-        OSMGAMesaBuildWarpVertex(c, texOn ? tex : 0, zoffset, &wv[2]) != 0)
+        OSMGAMesaBuildWarpVertex(c, texOn ? tex : 0, zoffset, &wv[2]) != 0) {
+        hookWarpNoVertex++;
         goto declineOne;
+    }
 
     /* A different shape is pending, or a different context, or the
      * texture object moved: submit what is there before adding to it. */
@@ -1596,8 +1616,10 @@ osmgaMesaWarpTriangle(GLcontext *ctx, struct vertex_buffer *VB,
      * vertices a later clip may overwrite, and a multipass context repeats
      * the loop before RenderFinish.  Both submit this source at once.
      */
-    if (!batchable)
+    if (!batchable) {
+        hookFlushClip++;
         osmgaMesaFlushPending();
+    }
     return 1;
 
 declineOne:
@@ -2953,8 +2975,10 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     pendSrc[pendSrcCount].firstTrap = pendTraps - (unsigned long)n;
     pendSrcCount++;
 
-    if (!batchable)
+    if (!batchable) {
+        hookFlushClip++;
         osmgaMesaFlushPending();
+    }
     }
 }
 
@@ -4372,6 +4396,12 @@ unsigned long OSMGAMesaHookBatches(void)   { return hookBatches; }
 unsigned long OSMGAMesaHookTraps(void)     { return hookTraps; }
 unsigned long OSMGAMesaHookUnsupported(void) { return hookUnsupported; }
 unsigned long OSMGAMesaHookGated(void)        { return hookGated; }
+void
+OSMGAMesaHookWhyBatch(unsigned long out[4])
+{
+    out[0] = hookFlushClip;   out[1] = hookWarpNoState;
+    out[2] = hookWarpNoVertex; out[3] = hookWarpForced;
+}
 int           OSMGAMesaHookDeadlineHit(void)  { return hookDeadlineHit; }
 void
 OSMGAMesaHookGateWhy(unsigned long lines[OSMGA_MESA_GATE_WHY],

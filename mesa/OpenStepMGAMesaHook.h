@@ -296,6 +296,9 @@ unsigned long OSMGAMesaHookUnsupported(void);
  */
 unsigned long OSMGAMesaHookGated(void);
 
+/* clip-forced flushes, and the three reasons WARP declined a primitive */
+void OSMGAMesaHookWhyBatch(unsigned long out[4]);
+
 /*
  * Batches refused by the validator run in this process before the ioctl,
  * with the named triangle drawn in software.  These never reach the driver
