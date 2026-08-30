@@ -227,6 +227,9 @@ unsigned long OSMGAMesaHookInjectedNamed(void);
  */
 unsigned long OSMGAMesaHookRescued(void);
 unsigned long OSMGAMesaHookDropped(void);
+/* The subset of Dropped that was a clip-deferred (non-replayable) source a
+ * replay asked for; its first increment latches clip deferral off. */
+unsigned long OSMGAMesaHookDroppedClipped(void);
 /*
  * Test only: run the submission instrumentation -- the per-submission
  * timing and the register-change counting.  OFF by default: two

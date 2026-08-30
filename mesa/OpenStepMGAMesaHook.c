@@ -766,17 +766,19 @@ static triangle_func savedTriangle;
  *   - accumulation never crosses a render bracket (the RenderFinish wrapper
  *     flushes), inside which ctx->VB is stable (vbrender.c:699-728, and the
  *     indirect path pins it, vbindirect.c:311-338);
- *   - a VB that clips (ClipOrMask != 0) does not batch at all, because
- *     clipped triangles use temporary vertices in the VB's free area and a
+ *   - clipped triangles use temporary vertices in the VB's free area and a
  *     LATER clip may overwrite an EARLIER one's -- an index replayed after
- *     that reads the wrong vertex.  Those triangles submit immediately,
- *     alone, exactly as before, and their replay happens while the
- *     temporaries still hold their values.  (Cross-review missed this one;
- *     the gate is ours.)
+ *     that reads the wrong vertex.  They still batch for the HARDWARE (the
+ *     batch copies vertex VALUES at append time) but are recorded
+ *     replayable=0: a replay that asks for one drops it, counts it
+ *     (hookDroppedClipped), and latches clip deferral off for the rest of
+ *     the run -- back to submit-at-once, under which a clipped source's
+ *     replay happens while the temporaries still hold their values and is
+ *     valid again.
  *   - Mesa multipass repeats the loop before RenderFinish (vbrender.c:721),
  *     so a context with a MultipassFunc does not batch either.
  *
- * Those three gates are about the INDICES, and for a long time this comment
+ * Those three rules are about the INDICES, and for a long time this comment
  * stopped there -- as though an index were the whole of what a software
  * triangle reads.  It is not.  Mesa passes part of its input through the
  * context, and moves it around every callback: the polygon offset is
@@ -929,6 +931,9 @@ static struct {
     GLvector4ub  *cptr;          /* VB->ColorPtr, front or back */
     GLvector1ui  *iptr;          /* VB->IndexPtr */
     GLubyte     (*spec)[4];      /* VB->Specular */
+    int           replayable;    /* 0: built from clip temporaries, whose
+                                    slots a later clip reuses -- a replay
+                                    drops it and latches deferral off */
     unsigned long firstTrap;     /* where its trapezoids begin in tri[] --
                                     a source's trapezoids are contiguous:
                                     every flush happens BEFORE the append,
@@ -954,6 +959,9 @@ static unsigned long hookFlushOther, hookReplayed;
  */
 static unsigned long hookRescued;   /* redrawn in software after a revoke */
 static unsigned long hookDropped;   /* nowhere left to draw: lost */
+static unsigned long hookDroppedClipped; /* of those, non-replayable clipped
+                                            sources a replay asked for */
+static int clipDeferralOff;         /* latched by the first such loss */
 /* The A/B knob: 1 reproduces the old one-triangle-per-submission behaviour
  * exactly, which is what the identical-image comparison runs against. */
 static unsigned long hookBatchLimit = OSMGA_HW3D_MAX_TRI;
@@ -1068,6 +1076,17 @@ osmgaMesaVerdictNamesTriangle(unsigned long v)
 static int
 osmgaMesaReplaySource(GLcontext *ctx, unsigned long i)
 {
+    if (!pendSrc[i].replayable) {
+        /* Built from the clipper's temporaries: the indices no longer name
+         * its vertices (a later clip reused the slots), so drawing would
+         * read the wrong data.  The source is lost -- count it, and latch
+         * clip deferral off so clipped sources go back to submit-at-once,
+         * under which their immediate replay is valid again. */
+        hookDropped++;
+        hookDroppedClipped++;
+        clipDeferralOff = 1;
+        return 0;
+    }
     ctx->PolygonZoffset = pendSrc[i].zoff;
     ctx->VB->ColorPtr   = pendSrc[i].cptr;
     ctx->VB->IndexPtr   = pendSrc[i].iptr;
@@ -1209,8 +1228,8 @@ osmgaMesaWarpTakes(const OSMGAHW3DState *st, unsigned long dwgctl,
  * Submit the assembled WARP batch, and deal with what comes back.
  *
  * THE BOUNDARY THAT MATTERS.  A refusal with a verdict happened BEFORE the
- * kernel encoded anything, so the batch drew nothing and every source in
- * it can be replayed in software -- in record order, which is the source
+ * kernel encoded anything, so the batch drew nothing and every replayable
+ * source in it is redrawn in software -- in record order, which is the source
  * order the trapezoid path's narrowing exists to preserve.  A failure with
  * verdict OK happened after the doorbell and may have drawn PART of the
  * batch; replaying then draws some triangles twice, and blending and
@@ -1247,8 +1266,8 @@ osmgaMesaFlushWarp(void)
             GLubyte     (*specWas)[4] = ctx->VB->Specular;
 
             for (i = 0UL; i < nsrc; i++)
-                (void)osmgaMesaReplaySource(ctx, i);
-            hookRescued += nsrc;
+                if (osmgaMesaReplaySource(ctx, i))
+                    hookRescued++;
             ctx->PolygonZoffset = zoffWas;
             ctx->VB->ColorPtr   = cptrWas;
             ctx->VB->IndexPtr   = iptrWas;
@@ -1391,16 +1410,19 @@ osmgaMesaFlushWarp(void)
             GLvector4ub  *cptrWas = ctx->VB->ColorPtr;
             GLvector1ui  *iptrWas = ctx->VB->IndexPtr;
             GLubyte     (*specWas)[4] = ctx->VB->Specular;
+            unsigned long drawn = 0UL;
 
             osmgaMesaCountRefusal(&res);
             for (i = 0UL; i < nsrc; i++)
-                (void)osmgaMesaReplaySource(ctx, i);
+                if (osmgaMesaReplaySource(ctx, i))
+                    drawn++;
             /* Both, and they are different questions: Replayed is "a
              * refused batch was redrawn in software", which is what a
              * fallback test asks, and Rescued also covers the recovery
-             * when the command window has gone away. */
-            hookReplayed += nsrc;
-            hookRescued += nsrc;
+             * when the command window has gone away.  Both count sources
+             * actually DRAWN; a non-replayable drop is hookDropped's. */
+            hookReplayed += drawn;
+            hookRescued += drawn;
             ctx->PolygonZoffset = zoffWas;
             ctx->VB->ColorPtr   = cptrWas;
             ctx->VB->IndexPtr   = iptrWas;
@@ -1475,8 +1497,9 @@ osmgaMesaWarpTriangle(GLcontext *ctx, struct vertex_buffer *VB,
      * buffer), so an original vertex cannot be refilled underneath a
      * pending batch either.
      */
-    int batchable = (v0 < VB->FirstFree && v1 < VB->FirstFree &&
-                     v2 < VB->FirstFree && pv < VB->FirstFree) &&
+    int batchable = ((v0 < VB->FirstFree && v1 < VB->FirstFree &&
+                      v2 < VB->FirstFree && pv < VB->FirstFree) ||
+                     !clipDeferralOff) &&
                     (ctx->Driver.MultipassFunc == 0);
 
     if (!osmgaMesaWarpWanted())
@@ -1687,14 +1710,18 @@ osmgaMesaWarpTriangle(GLcontext *ctx, struct vertex_buffer *VB,
     pendSrc[pendSrcCount].cptr = VB->ColorPtr;
     pendSrc[pendSrcCount].iptr = VB->IndexPtr;
     pendSrc[pendSrcCount].spec = VB->Specular;
+    pendSrc[pendSrcCount].replayable =
+        (v0 < VB->FirstFree && v1 < VB->FirstFree &&
+         v2 < VB->FirstFree && pv < VB->FirstFree) || !batchable;
     pendSrc[pendSrcCount].firstTrap = pendVerts - 3UL;   /* vertices here */
     pendSrcCount++;
 
     /*
-     * The two gates that must not defer: a clipping VB uses temporary
-     * vertices a later clip may overwrite, and a multipass context repeats
-     * the loop before RenderFinish.  Both submit this source at once.
-     */
+     * A multipass context repeats the loop before RenderFinish, so it
+     * submits at once.  A source on clip temporaries defers too -- the
+     * batch holds vertex VALUES -- it is just non-replayable; once the
+     * first dropped replay latches deferral off, such sources land here
+     * again and their immediate replay is valid.  THE REPLAY CONTRACT. */
     if (!batchable) {
         hookFlushClip++;
         osmgaMesaFlushPending();
@@ -1767,8 +1794,8 @@ osmgaMesaFlushPending(void)
             GLubyte     (*specWas)[4] = ctx->VB->Specular;
 
             for (i = 0UL; i < nsrc; i++)
-                (void)osmgaMesaReplaySource(ctx, i);
-            hookRescued += nsrc;
+                if (osmgaMesaReplaySource(ctx, i))
+                    hookRescued++;
             ctx->PolygonZoffset = zoffWas;
             ctx->VB->ColorPtr   = cptrWas;
             ctx->VB->IndexPtr   = iptrWas;
@@ -1902,8 +1929,8 @@ osmgaMesaFlushPending(void)
                  * which triangle", which is what the backstop is for. */
                 osmgaMesaCountRefusal(&res);
                 for (i = lo; i < nsrc; i++)
-                    (void)osmgaMesaReplaySource(ctx, i);
-                hookReplayed += nsrc - lo;
+                    if (osmgaMesaReplaySource(ctx, i))
+                        hookReplayed++;
                 break;
             }
             hookNarrowed++;
@@ -1946,8 +1973,8 @@ osmgaMesaFlushPending(void)
                 if (batch == 0) {
                     if (OSMGAMesaBufferBoundTo(ctx->DriverCtx)) {
                         for (i = lo; i < nsrc; i++)
-                            (void)osmgaMesaReplaySource(ctx, i);
-                        hookRescued += nsrc - lo;
+                            if (osmgaMesaReplaySource(ctx, i))
+                                hookRescued++;
                     } else {
                         hookDropped += nsrc - lo;
                     }
@@ -1970,8 +1997,8 @@ osmgaMesaFlushPending(void)
                      * nothing this map can reason about: software for it. */
                     osmgaMesaCountRefusal(&res);
                     for (i = lo; i < s2; i++)
-                        (void)osmgaMesaReplaySource(ctx, i);
-                    hookReplayed += s2 - lo;
+                        if (osmgaMesaReplaySource(ctx, i))
+                            hookReplayed++;
                 }
             }
 
@@ -1988,8 +2015,9 @@ osmgaMesaFlushPending(void)
 
                 if (!redrew || !osmgaMesaGeometryVerdict(named.verdict))
                     osmgaMesaCountRefusal(&named);
+                if (redrew)
+                    hookReplayed++;
             }
-            hookReplayed++;
             lo = s2 + 1UL;
             if (lo >= nsrc)
                 break;
@@ -2012,8 +2040,8 @@ osmgaMesaFlushPending(void)
                  */
                 if (OSMGAMesaBufferBoundTo(ctx->DriverCtx)) {
                     for (i = lo; i < nsrc; i++)
-                        (void)osmgaMesaReplaySource(ctx, i);
-                    hookRescued += nsrc - lo;
+                        if (osmgaMesaReplaySource(ctx, i))
+                            hookRescued++;
                 } else {
                     hookDropped += nsrc - lo;
                 }
@@ -2076,6 +2104,12 @@ unsigned long
 OSMGAMesaHookDropped(void)
 {
     return hookDropped;
+}
+
+unsigned long
+OSMGAMesaHookDroppedClipped(void)
+{
+    return hookDroppedClipped;
 }
 
 void
@@ -2981,8 +3015,9 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     /* See the note in osmgaMesaWarpTriangle: what matters is whether these
      * three vertices are the clipper's own temporaries, not whether the
      * buffer clips somewhere. */
-    batchable = (v0 < VB->FirstFree && v1 < VB->FirstFree &&
-                 v2 < VB->FirstFree && pv < VB->FirstFree) &&
+    batchable = ((v0 < VB->FirstFree && v1 < VB->FirstFree &&
+                  v2 < VB->FirstFree && pv < VB->FirstFree) ||
+                 !clipDeferralOff) &&
                 (ctx->Driver.MultipassFunc == 0);
 
     if (!osmgaMesaPendEmpty()) {
@@ -3066,6 +3101,9 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     pendSrc[pendSrcCount].cptr = VB->ColorPtr;
     pendSrc[pendSrcCount].iptr = VB->IndexPtr;
     pendSrc[pendSrcCount].spec = VB->Specular;
+    pendSrc[pendSrcCount].replayable =
+        (v0 < VB->FirstFree && v1 < VB->FirstFree &&
+         v2 < VB->FirstFree && pv < VB->FirstFree) || !batchable;
     pendSrc[pendSrcCount].firstTrap = pendTraps - (unsigned long)n;
     pendSrcCount++;
 
