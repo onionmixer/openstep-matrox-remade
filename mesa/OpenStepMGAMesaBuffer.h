@@ -86,6 +86,11 @@ unsigned long OSMGAMesaBufferDepthOrigin(void);
  */
 void OSMGAMesaBufferMirror(void);
 unsigned long OSMGAMesaBufferCopies(void);
+/* How often present mode was switched on and off, and how often a present
+ * was refused, by the kernel's verdict (OSMGA_PRESENT_E_*, below 8). */
+unsigned long OSMGAMesaBufferPresentOnCount(void);
+unsigned long OSMGAMesaBufferPresentOffCount(void);
+unsigned long OSMGAMesaBufferPresentRefused(unsigned long verdict);
 void OSMGAMesaBufferMirrorNarrow(unsigned long x0, unsigned long y0,
                                  unsigned long x1, unsigned long y1);
 

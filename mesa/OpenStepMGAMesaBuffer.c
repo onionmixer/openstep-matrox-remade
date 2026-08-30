@@ -35,6 +35,8 @@ static void *bufApp;      /* what the application gave us */
 static unsigned long bufAppRow;  /* and how its rows are laid out */
 static int   bufDirty;
 static unsigned long bufCopies;   /* mirrors that got PAST the early return */
+static unsigned long bufPresentOn, bufPresentOff;   /* mode switches */
+static unsigned long bufPresentRefused[8];          /* by the kernel's verdict */
 /*
  * The next mirror must copy everything, whatever box it is given.
  *
@@ -743,7 +745,23 @@ OSMGAMesaBufferFill(unsigned long word)
 void
 OSMGAMesaBufferPresentMode(int on)
 {
+    /*
+     * Counted, because when this is OFF every render bracket that dirtied
+     * the surface copies the whole of it back to the application -- and
+     * the caller that switches it is in another library, so the only way
+     * to know from here how often the picture was being delivered the slow
+     * way is to count the switches.
+     */
+    if (on != 0 && !bufPresent) bufPresentOn++;
+    if (on == 0 && bufPresent)  bufPresentOff++;
     bufPresent = (on != 0);
+}
+
+unsigned long OSMGAMesaBufferPresentOnCount(void)  { return bufPresentOn; }
+unsigned long OSMGAMesaBufferPresentOffCount(void) { return bufPresentOff; }
+unsigned long OSMGAMesaBufferPresentRefused(unsigned long verdict)
+{
+    return (verdict < 8UL) ? bufPresentRefused[verdict] : 0UL;
 }
 
 /*
@@ -789,6 +807,8 @@ OSMGAMesaBufferPresentRect(unsigned long srcX, unsigned long srcY,
         return -1;
     if (outVerdict)
         *outVerdict = blk.verdict;
+    if (blk.status != 0UL && blk.verdict < 8UL)
+        bufPresentRefused[blk.verdict]++;
     return (blk.status == 0UL) ? 0 : -1;
 }
 

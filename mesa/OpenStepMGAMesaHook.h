@@ -291,6 +291,36 @@ unsigned long OSMGAMesaHookTraps(void);
 unsigned long OSMGAMesaHookUnsupported(void);
 
 /*
+ * Triangles that arrived while the state gate had chosen software.  Not
+ * the same as OSMGAMesaHookSoftState(), which counts the state CHANGES.
+ */
+unsigned long OSMGAMesaHookGated(void);
+
+/*
+ * Batches refused by the validator run in this process before the ioctl,
+ * with the named triangle drawn in software.  These never reach the driver
+ * and never count toward revocation.
+ */
+unsigned long OSMGAMesaHookPrevalidated(void);
+/* Non-zero once the measurement deadline has passed; the run should quit. */
+int OSMGAMesaHookDeadlineHit(void);
+unsigned long OSMGAMesaHookLocalVerdictCount(unsigned long verdict);
+unsigned long OSMGAMesaHookLocalLastVerdict(void);
+unsigned long OSMGAMesaHookLocalLastSite(void);
+
+/* Which lines of the state gate refused, and how often each.  Zero ends. */
+#define OSMGA_MESA_GATE_WHY 16
+void OSMGAMesaHookGateWhy(unsigned long lines[OSMGA_MESA_GATE_WHY],
+                          unsigned long counts[OSMGA_MESA_GATE_WHY]);
+
+/*
+ * Which texture check the last refusal came from (OSMGA_HW3D_TEXSITE_*, or
+ * nought when no texture check spoke).  The verdict itself is in
+ * OSMGAMesaHookLastRefusal(), and the histogram in OSMGAMesaHookVerdictCount().
+ */
+unsigned long OSMGAMesaHookLastRefusalSite(void);
+
+/*
  * What the kernel said about a batch it would not run.
  *
  * The verdict is the validator's; the status is what the submission itself
@@ -298,7 +328,7 @@ unsigned long OSMGAMesaHookUnsupported(void);
  * status means validation passed and the trouble came after the engine had
  * the work, which is the one case that must not be drawn again.
  */
-#define OSMGA_MESA_VERDICTS 24
+#define OSMGA_MESA_VERDICTS 32   /* the kernel's run to 24 inclusive */
 
 typedef struct {
     unsigned long status;       /* 0, or errno-like */

@@ -349,3 +349,11 @@ int OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
 unsigned long OSMGAMesaEdgeVanished(void);
 
 #endif /* OPENSTEP_MGA_MESA_TRIANGLE_H */
+
+/* Which lines of the builder refused a triangle, and how often.  Zero ends. */
+#define OSMGA_MESA_BUILD_WHY 16
+void OSMGAMesaBuildWhy(unsigned long lines[OSMGA_MESA_BUILD_WHY],
+                       unsigned long counts[OSMGA_MESA_BUILD_WHY]);
+
+/* seen, moved, no-whole-K, blocked by a texture q that is not one */
+void OSMGAMesaRebaseStats(unsigned long out[7]);

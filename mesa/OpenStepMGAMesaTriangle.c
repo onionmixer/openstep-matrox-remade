@@ -997,6 +997,60 @@ osmgaTrapezoid(OSMGAHW3DTri *t, long y, long h, long sub,
  * the coordinate alone -- the range check below will then refuse it and it
  * will be drawn in software, which is what happens today.
  */
+/*
+ * WHICH line of this builder refused, the last time and how often.  The
+ * builder answers OSMGA_MESA_TRI_UNSUPPORTED from many places for many
+ * reasons -- a coordinate out of range, a denominator that is not
+ * positive, a shape too thin to walk -- and the caller sees one number.
+ * In one level frame of GLQuake the caller saw it twelve thousand times.
+ */
+#define OSMGA_MESA_BUILD_WHY 16
+static unsigned long buildWhyLine[OSMGA_MESA_BUILD_WHY];
+static unsigned long buildWhyCount[OSMGA_MESA_BUILD_WHY];
+/*
+ * What re-basing did, per triangle: how many were offered to it, how many
+ * it moved, how many it could not (no whole number of repeats leaves the
+ * span inside the window), and how many never reached it because the
+ * texture's own q was not one.  The range check that follows refuses
+ * thousands a frame and these say which of its causes is which.
+ */
+static unsigned long buildRebaseSeen, buildRebaseDid, buildRebaseNoK,
+                     buildRebaseNotQ1, buildRepeatU, buildOverU;
+static double buildWorstU;
+
+static int
+osmgaMesaBuildNo(unsigned long line)
+{
+    unsigned i;
+    for (i = 0U; i < (unsigned)OSMGA_MESA_BUILD_WHY; i++) {
+        if (buildWhyLine[i] == line || buildWhyLine[i] == 0UL) {
+            buildWhyLine[i] = line;
+            buildWhyCount[i]++;
+            break;
+        }
+    }
+    return OSMGA_MESA_TRI_UNSUPPORTED;
+}
+
+void
+OSMGAMesaRebaseStats(unsigned long out[7])
+{
+    out[0] = buildRebaseSeen;  out[1] = buildRebaseDid;
+    out[2] = buildRebaseNoK;   out[3] = buildRebaseNotQ1;
+    out[4] = buildRepeatU;     out[5] = buildOverU;
+    out[6] = (unsigned long)buildWorstU;
+}
+
+void
+OSMGAMesaBuildWhy(unsigned long lines[OSMGA_MESA_BUILD_WHY],
+                  unsigned long counts[OSMGA_MESA_BUILD_WHY])
+{
+    unsigned i;
+    for (i = 0U; i < (unsigned)OSMGA_MESA_BUILD_WHY; i++) {
+        lines[i] = buildWhyLine[i]; counts[i] = buildWhyCount[i];
+    }
+}
+
 static int
 osmgaMesaRebaseK(double lo, double hi, double *k)
 {
@@ -1046,9 +1100,9 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
      * answer now means UNSUPPORTED and zero keeps its old meaning.
      */
     if (a == 0 || b == 0 || c == 0 || out == 0)
-        return OSMGA_MESA_TRI_UNSUPPORTED;
+        return osmgaMesaBuildNo((unsigned long)__LINE__);
     if (!osmgaCoordOK(a) || !osmgaCoordOK(b) || !osmgaCoordOK(c))
-        return OSMGA_MESA_TRI_UNSUPPORTED;
+        return osmgaMesaBuildNo((unsigned long)__LINE__);
 
     /*
      * The two edge vectors and their determinant, once.
@@ -1155,7 +1209,7 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
             if (t < lo) lo = t;
             if (t > hi) hi = t;
             if (lo < 0.0 || hi > 65535.0)
-                return OSMGA_MESA_TRI_UNSUPPORTED;
+                return osmgaMesaBuildNo((unsigned long)__LINE__);
         }
     }
 
@@ -1217,7 +1271,7 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
          * so that a NaN is refused here too rather than travelling on.
          */
         if (!(a->tq > 0.0) || !(b->tq > 0.0) || !(c->tq > 0.0))
-            return OSMGA_MESA_TRI_UNSUPPORTED;
+            return osmgaMesaBuildNo((unsigned long)__LINE__);
 
         /*
          * TAKE THE WHOLE REPEATS OFF, where the axis repeats and the
@@ -1243,18 +1297,25 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
          *
          * Before the range check, before the planes, before any rounding.
          */
+        buildRebaseSeen++;
+        if (!(a->tq == 1.0 && b->tq == 1.0 && c->tq == 1.0))
+            buildRebaseNotQ1++;
         if (a->tq == 1.0 && b->tq == 1.0 && c->tq == 1.0) {
             double k;
 
             if (tex->repeatU != 0UL) {
+                buildRepeatU++;
                 lo = hi = ua / us;
                 if (ub / us < lo) lo = ub / us;
                 if (ub / us > hi) hi = ub / us;
                 if (uc / us < lo) lo = uc / us;
                 if (uc / us > hi) hi = uc / us;
-                if ((lo < 0.0 || hi > 8.0) &&
-                    osmgaMesaRebaseK(lo, hi, &k) && k != 0.0) {
-                    ua -= k * us; ub -= k * us; uc -= k * us;
+                if (lo < 0.0 || hi > 8.0) {
+                    if (!osmgaMesaRebaseK(lo, hi, &k)) buildRebaseNoK++;
+                    else if (k != 0.0) {
+                        buildRebaseDid++;
+                        ua -= k * us; ub -= k * us; uc -= k * us;
+                    }
                 }
             }
             if (tex->repeatV != 0UL) {
@@ -1263,9 +1324,12 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
                 if (vb / vs > hi) hi = vb / vs;
                 if (vc / vs < lo) lo = vc / vs;
                 if (vc / vs > hi) hi = vc / vs;
-                if ((lo < 0.0 || hi > 8.0) &&
-                    osmgaMesaRebaseK(lo, hi, &k) && k != 0.0) {
-                    va -= k * vs; vb -= k * vs; vc -= k * vs;
+                if (lo < 0.0 || hi > 8.0) {
+                    if (!osmgaMesaRebaseK(lo, hi, &k)) buildRebaseNoK++;
+                    else if (k != 0.0) {
+                        buildRebaseDid++;
+                        va -= k * vs; vb -= k * vs; vc -= k * vs;
+                    }
                 }
             }
         }
@@ -1292,8 +1356,12 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
         if (uc / c->tq < lo) lo = uc / c->tq;
         if (uc / c->tq > hi) hi = uc / c->tq;
         if (lo < -(double)OSMGA_HW3D_TEX_SPAN ||
-            hi > (double)OSMGA_HW3D_TEX_COORD_MAX)
-            return OSMGA_MESA_TRI_UNSUPPORTED;
+            hi > (double)OSMGA_HW3D_TEX_COORD_MAX) {
+            double w = (hi > -lo) ? hi : -lo;
+            buildOverU++;
+            if (w / us > buildWorstU) buildWorstU = w / us;
+            return osmgaMesaBuildNo((unsigned long)__LINE__);
+        }
         lo = hi = va / a->tq;
         if (vb / b->tq < lo) lo = vb / b->tq;
         if (vb / b->tq > hi) hi = vb / b->tq;
@@ -1301,7 +1369,7 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
         if (vc / c->tq > hi) hi = vc / c->tq;
         if (lo < -(double)OSMGA_HW3D_TEX_SPAN ||
             hi > (double)OSMGA_HW3D_TEX_COORD_MAX)
-            return OSMGA_MESA_TRI_UNSUPPORTED;
+            return osmgaMesaBuildNo((unsigned long)__LINE__);
 
         if (a->qw * a->tq == b->qw * b->tq &&
             a->qw * a->tq == c->qw * c->tq) {
@@ -1329,7 +1397,7 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
         } else if (!osmgaPerspPlanes(a, b, c, ua, ub, uc, va, vb, vc,
                                      x1, y1, x2, y2, den,
                                      &uplane, &vplane, &qplane)) {
-            return OSMGA_MESA_TRI_UNSUPPORTED;
+            return osmgaMesaBuildNo((unsigned long)__LINE__);
         }
     }
 
@@ -1435,7 +1503,7 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
      * loses the triangle.
      */
     if (crossD == 0.0)
-        return OSMGA_MESA_TRI_UNSUPPORTED;
+        return osmgaMesaBuildNo((unsigned long)__LINE__);
 
     /*
      * How much of the vertex fraction the registers can hold.
@@ -1493,7 +1561,7 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
         if (osmgaEdgeVanishes(longE.height, sub) ||
             osmgaEdgeVanishes(shortE.height, sub)) {
             osmgaEdgeVanished++;
-            return OSMGA_MESA_TRI_UNSUPPORTED;
+            return osmgaMesaBuildNo((unsigned long)__LINE__);
         }
         skip = osmgaFirstDrawn(le, re, rT, rM - rT, sub);
         if (skip < rM - rT) {
@@ -1520,7 +1588,7 @@ OSMGAMesaBuildTriangleTex(const OSMGAMesaVertex *a,
         if (osmgaEdgeVanishes(longE.height, sub) ||
             osmgaEdgeVanishes(shortE.height, sub)) {
             osmgaEdgeVanished++;
-            return OSMGA_MESA_TRI_UNSUPPORTED;
+            return osmgaMesaBuildNo((unsigned long)__LINE__);
         }
         skip = osmgaFirstDrawn(le, re, rM, rL - rM, sub);
         if (skip < rL - rM) {

@@ -79,6 +79,57 @@ static unsigned long hookSoftware;
 /* Consecutive refusals that never reached the engine. */
 static unsigned long hookRefusedRun;
 static unsigned long hookLastRefusalVerdict;
+/*
+ * Which texture check the last refusal came from, beside the verdict the
+ * record further down already keeps.
+ */
+static unsigned long hookLastRefusalSite;
+/*
+ * Triangles that arrived while the state gate had chosen software.  These
+ * used to be invisible: with the gate refusing, Mesa's own triangle
+ * function was left in place and nothing here saw the call.  hookSoftState
+ * counts STATE CHANGES, which is a different number from the triangles
+ * drawn under them.
+ */
+static unsigned long hookGated;
+/*
+ * WHICH line of the state gate refused, the last time and how often.
+ * A gate that says only "no" leaves the reason to be guessed at from the
+ * GL state, and guessing is what this replaces.  Sixteen distinct lines
+ * is more than one application exercises.
+ */
+#define OSMGA_MESA_GATE_WHY 16
+static unsigned long hookGateLine[OSMGA_MESA_GATE_WHY];
+static unsigned long hookGateCount[OSMGA_MESA_GATE_WHY];
+static void
+osmgaMesaGateNo(unsigned long line)
+{
+    unsigned i;
+    for (i = 0U; i < (unsigned)OSMGA_MESA_GATE_WHY; i++) {
+        if (hookGateLine[i] == line || hookGateLine[i] == 0UL) {
+            hookGateLine[i] = line;
+            hookGateCount[i]++;
+            return;
+        }
+    }
+}
+/*
+ * Batches the validator refused HERE, in this process, before the kernel
+ * was asked.  The same validator the kernel runs is linked into this
+ * library, and a batch it would refuse for one named triangle can have
+ * that triangle taken out and drawn in software before the ioctl -- the
+ * kernel then never refuses it, and a refusal that never reached the
+ * driver is not "the driver refusing", so it does not advance the run
+ * that revokes acceleration.  A result made here carries this status so
+ * the accounting can tell it from a kernel's answer.
+ */
+static unsigned long hookPrevalidated;
+/* Raised by the measurement deadline (see osmgaMesaSoftly); read by the
+ * application at the end of the frame, which is where a run can end. */
+static int hookDeadlineHit;
+static unsigned long hookLocalVerdict[OSMGA_MESA_VERDICTS];
+static unsigned long hookLocalLastVerdict, hookLocalLastSite;
+#define OSMGA_MESA_LOCAL_STATUS 0x4C4F43A1UL   /* never an errno */
 /* Counted apart, because "this back end cannot express it" and "the kernel
  * refused the batch" are different things to have to fix. */
 static unsigned long hookUnsupported;
@@ -942,6 +993,8 @@ static unsigned long hookInjectTrap;
 
 static int osmgaMesaSubmitBatch(GLcontext *ctx, OSMGAHW3DBatch *batch,
                                 OSMGAHW3DSubmitBlock *out);
+static int osmgaMesaPrevalidate(OSMGAHW3DBatch *batch,
+                                OSMGAHW3DSubmitBlock *res);
 static void osmgaMesaBatchUntextured(OSMGAHW3DState *st);
 static void osmgaMesaFillState(GLcontext *ctx, OSMGAHW3DState *st);
 static int osmgaMesaSoftly(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2,
@@ -1034,8 +1087,9 @@ osmgaMesaGeometryVerdict(unsigned long verdict)
  * That backstop catches a driver refusing every attempted submission --
  * the narrowing loop's own bound is separate and smaller. */
 static void
-osmgaMesaCountRefusal(unsigned long verdict, unsigned long site)
+osmgaMesaCountRefusal(const OSMGAHW3DSubmitBlock *r)
 {
+    unsigned long verdict = r->verdict, site = r->dwords;
     /*
      * The verdict travels with the count now.
      *
@@ -1057,7 +1111,10 @@ osmgaMesaCountRefusal(unsigned long verdict, unsigned long site)
      */
     static char why[112];
 
+    if (r->status == (unsigned long)OSMGA_MESA_LOCAL_STATUS)
+        return;                 /* refused here, not by the driver */
     hookLastRefusalVerdict = verdict;
+    hookLastRefusalSite = site;
     if (++hookRefusedRun >= OSMGA_MESA_REFUSAL_LIMIT) {
         sprintf(why,
                 "the driver kept refusing batches; last verdict %lu site %lu",
@@ -1320,7 +1377,7 @@ osmgaMesaFlushWarp(void)
             GLvector1ui  *iptrWas = ctx->VB->IndexPtr;
             GLubyte     (*specWas)[4] = ctx->VB->Specular;
 
-            osmgaMesaCountRefusal(res.verdict, res.dwords);
+            osmgaMesaCountRefusal(&res);
             for (i = 0UL; i < nsrc; i++)
                 (void)osmgaMesaReplaySource(ctx, i);
             /* Both, and they are different questions: Replayed is "a
@@ -1557,7 +1614,7 @@ static void
 osmgaMesaFlushPending(void)
 {
     OSMGAHW3DBatch *batch;
-    OSMGAHW3DSubmitBlock res;
+    OSMGAHW3DSubmitBlock res, named;
     GLcontext *ctx;
     unsigned long nsrc, ntraps, i;
 
@@ -1713,9 +1770,22 @@ osmgaMesaFlushPending(void)
              * good.
              */
             s2 = nsrc;
+            /*
+             * The bound on rounds is for the KERNEL's refusals: each one
+             * costs an ioctl that failed, and eight of them in one batch
+             * is a sign that narrowing is not converging.  A refusal made
+             * here, before the ioctl, costs nothing to make and names
+             * exactly one source per round, so it converges in at most
+             * nsrc rounds by construction -- and bounding it at eight
+             * sent everything past the eighth to software: measured,
+             * 4485 software triangles for 147 named refusals in one
+             * level frame.  Order is preserved either way: the prefix is
+             * submitted before the named source is replayed.
+             */
             if (osmgaMesaVerdictNamesTriangle(res.verdict)
                 && res.triangle < ntraps - base
-                && rounds < OSMGA_MESA_NARROW_LIMIT) {
+                && (rounds < OSMGA_MESA_NARROW_LIMIT
+                    || res.status == (unsigned long)OSMGA_MESA_LOCAL_STATUS)) {
                 absBad = base + res.triangle;
                 if (pendSrc[lo].firstTrap <= absBad) {
                     for (s2 = lo; s2 + 1UL < nsrc; s2++)
@@ -1729,7 +1799,7 @@ osmgaMesaFlushPending(void)
                  * exactly as the whole batch always did.  This one counts --
                  * it is the shape "the driver refused and we could not say
                  * which triangle", which is what the backstop is for. */
-                osmgaMesaCountRefusal(res.verdict, res.dwords);
+                osmgaMesaCountRefusal(&res);
                 for (i = lo; i < nsrc; i++)
                     (void)osmgaMesaReplaySource(ctx, i);
                 hookReplayed += nsrc - lo;
@@ -1737,6 +1807,16 @@ osmgaMesaFlushPending(void)
             }
             hookNarrowed++;
             rounds++;
+            /*
+             * The answer that NAMED s2, kept apart.  The prefix below is
+             * submitted through the same res, and when the prefix is
+             * refused its answer used to stand in for this one: the
+             * prefix's refusal was counted once for itself and once more
+             * for s2, and a refusal made here, before the kernel, was
+             * counted as the kernel's.  Each answer is counted for the
+             * batch that got it.
+             */
+            named = res;
 
             /* The good prefix, on the engine, in order. */
             prefix = pendSrc[s2].firstTrap - base;
@@ -1787,7 +1867,7 @@ osmgaMesaFlushPending(void)
                 } else {
                     /* A prefix that validated moments ago refusing now is
                      * nothing this map can reason about: software for it. */
-                    osmgaMesaCountRefusal(res.verdict, res.dwords);
+                    osmgaMesaCountRefusal(&res);
                     for (i = lo; i < s2; i++)
                         (void)osmgaMesaReplaySource(ctx, i);
                     hookReplayed += s2 - lo;
@@ -1805,8 +1885,8 @@ osmgaMesaFlushPending(void)
             {
                 int redrew = osmgaMesaReplaySource(ctx, s2);
 
-                if (!redrew || !osmgaMesaGeometryVerdict(res.verdict))
-                    osmgaMesaCountRefusal(res.verdict, res.dwords);
+                if (!redrew || !osmgaMesaGeometryVerdict(named.verdict))
+                    osmgaMesaCountRefusal(&named);
             }
             hookReplayed++;
             lo = s2 + 1UL;
@@ -1917,6 +1997,56 @@ OSMGAMesaHookBatchLimit(unsigned long limit)
 static int
 osmgaMesaSoftly(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
 {
+    /*
+     * A deadline, for measurement runs only.  A level frame that has gone
+     * to software can take longer than the run, and a run that is ended
+     * from outside -- a signal while the process is inside the driver --
+     * has twice been followed by a frozen machine.  So when
+     * OSMGA_MESA_DEADLINE_SECS is set and passes, this raises a flag and
+     * from then on every software triangle is SKIPPED rather than drawn:
+     * the frame unwinds quickly, the application reads the flag at the
+     * end of the frame (OSMGAMesaHookDeadlineHit) and quits the ordinary
+     * way, through its own shutdown.  Nothing is drawn wrong; the frame
+     * is simply not finished, and the run was never about that frame's
+     * picture.  Off unless set.
+     */
+    {
+        static long deadline = -1L;
+        if (deadline < 0L) {
+            const char *e = getenv("OSMGA_MESA_DEADLINE_SECS");
+            deadline = (e != 0 && atol(e) > 0L) ? atol(e) : 0L;
+            if (deadline > 0L) {
+                struct timeval t0;
+                gettimeofday(&t0, (struct timezone *)0);
+                deadline += t0.tv_sec;
+            }
+        }
+        if (deadline > 0L && !hookDeadlineHit) {
+            struct timeval now;
+            gettimeofday(&now, (struct timezone *)0);
+            if (now.tv_sec >= deadline) {
+                hookDeadlineHit = 1;
+                fprintf(stderr, "OpenStepMGA: deadline reached in software; "
+                        "software %lu drawn %lu prevalidated %lu gated %lu"
+                        " unsupported %lu replayed %lu persp %lu absent %lu\n",
+                        hookSoftware, hookDrawn, hookPrevalidated, hookGated,
+                        hookUnsupported, hookReplayed, hookTexPersp,
+                        hookTexAbsent);
+                {
+                    unsigned long bl[OSMGA_MESA_BUILD_WHY];
+                    unsigned long bc[OSMGA_MESA_BUILD_WHY];
+                    unsigned i;
+                    OSMGAMesaBuildWhy(bl, bc);
+                    fprintf(stderr, "OpenStepMGA: builder refused:");
+                    for (i = 0U; i < (unsigned)OSMGA_MESA_BUILD_WHY && bl[i]; i++)
+                        fprintf(stderr, " Triangle.c:%lu x%lu", bl[i], bc[i]);
+                    fprintf(stderr, "\n");
+                }
+            }
+        }
+        if (hookDeadlineHit)
+            return 1;               /* skipped, on purpose */
+    }
     if (savedTriangle == 0 || savedTriangleCtx != ctx)
         return 0;
     /*
@@ -2088,6 +2218,60 @@ osmgaMesaFillState(GLcontext *ctx, OSMGAHW3DState *st)
     }
 }
 
+/*
+ * Run the kernel's own validator over the batch before the kernel does.
+ *
+ * Only a verdict that NAMES a triangle is acted on: the caller already
+ * knows how to take one named triangle out, draw it in software and go on
+ * with the rest, and that is exactly what it would do for the same verdict
+ * from the kernel -- except that from here it costs no ioctl and does not
+ * count as the driver refusing.  A batch-level verdict is left for the
+ * kernel to give, so that its accounting and its revoke stay its own.
+ *
+ * The window limits are left open.  This process does not know where the
+ * driver's window begins and ends, and it does not need to: those checks
+ * are the kernel's and the kernel still makes them.  What this catches is
+ * the per-triangle work -- coordinates, slopes, edges, empty shapes --
+ * which depends on the clip and the pitch alone, and those the batch
+ * carries.
+ *
+ * Returns 1 and fills *res, marked local, when a triangle was named.
+ */
+static int
+osmgaMesaPrevalidate(OSMGAHW3DBatch *batch, OSMGAHW3DSubmitBlock *res)
+{
+    static OSMGAHW3DTexBand bands[OSMGA_HW3D_MAX_TRI];
+    static int off = -1;
+    OSMGAHW3DLimits lim;
+    OSMGAHW3DTexReach reach;
+    unsigned long bad = 0UL, site = 0UL;
+    int v;
+
+    if (off < 0)
+        off = (getenv("OSMGA_MESA_NO_PREVALIDATE") != 0);
+    if (off)
+        return 0;
+    if (batch->state.dstWidth == 0UL || batch->state.dstHeight == 0UL)
+        return 0;
+    lim.pitchBytes  = batch->state.dstPitch * 4UL;
+    lim.clipX1      = batch->state.dstWidth - 1UL;
+    lim.clipY1      = batch->state.dstHeight - 1UL;
+    lim.colourStart = 0UL; lim.colourEnd = ~0UL;
+    lim.depthStart  = 0UL; lim.depthEnd  = ~0UL;
+    lim.texStart    = 0UL; lim.texEnd    = ~0UL;
+    lim.batchBytes  = OSMGA_HW3D_BATCH_BYTES;
+    lim.maxEdgeWalk = OSMGA_HW3D_EDGE_WALK;
+    v = osmgaHW3DValidateReachSite(batch, &lim, &bad, &reach, bands, &site);
+    if (v == OSMGA_HW3D_OK || !osmgaMesaVerdictNamesTriangle((unsigned long)v))
+        return 0;
+    res->status   = (unsigned long)OSMGA_MESA_LOCAL_STATUS;
+    res->verdict  = (unsigned long)v;
+    res->triangle = bad;
+    res->dwords   = site;
+    res->spins    = 0UL;
+    return 1;
+}
+
 static int
 osmgaMesaSubmitBatch(GLcontext *ctx, OSMGAHW3DBatch *batch,
                      OSMGAHW3DSubmitBlock *out)
@@ -2095,6 +2279,15 @@ osmgaMesaSubmitBatch(GLcontext *ctx, OSMGAHW3DBatch *batch,
     OSMGAHW3DSubmitBlock res;
 
     osmgaMesaFillState(ctx, &batch->state);
+    if (osmgaMesaPrevalidate(batch, &res)) {
+        hookPrevalidated++;
+        if (res.verdict < (unsigned long)OSMGA_MESA_VERDICTS)
+            hookLocalVerdict[res.verdict]++;
+        hookLocalLastVerdict = res.verdict;
+        hookLocalLastSite = res.dwords;
+        if (out != 0) *out = res;
+        return 1;
+    }
     {
         struct timeval t0, t1;
         int rc;
@@ -2794,9 +2987,9 @@ osmgaMesaTexStateOK(GLcontext *ctx)
     /* One unit, and 2D.  The global mask carries unit one's bits too, so
      * asking unit zero alone would let a second unit through. */
     if (ctx->Texture.ReallyEnabled != TEXTURE0_2D)
-        return 0;
+        { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
     if (ctx->Texture.Unit[0].TexGenEnabled != 0U)
-        return 0;
+        { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
     /*
      * GL_REPLACE and GL_MODULATE, which are two words of the combiner.
      *
@@ -2815,15 +3008,15 @@ osmgaMesaTexStateOK(GLcontext *ctx)
      */
     if (ctx->Texture.Unit[0].EnvMode != GL_REPLACE &&
         ctx->Texture.Unit[0].EnvMode != GL_MODULATE)
-        return 0;
+        { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
     /* A second colour would be added after the texture and the engine has
      * nowhere to put it. */
     if (ctx->Light.Model.ColorControl != GL_SINGLE_COLOR)
-        return 0;
+        { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
 
     t = ctx->Texture.Unit[0].CurrentD[2];
     if (t == 0)
-        return 0;
+        { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
     /*
      * The two filters no longer have to agree.
      *
@@ -2846,9 +3039,9 @@ osmgaMesaTexStateOK(GLcontext *ctx)
      * where their levels live has not been measured.
      */
     if (t->MinFilter != GL_NEAREST && t->MinFilter != GL_LINEAR)
-        return 0;
+        { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
     if (t->MagFilter != GL_NEAREST && t->MagFilter != GL_LINEAR)
-        return 0;
+        { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
     /*
      * The wrap rule asks whether EITHER filter is linear, not whether the
      * magnification one is.  GL_CLAMP blends the border colour in under a
@@ -2867,7 +3060,7 @@ osmgaMesaTexStateOK(GLcontext *ctx)
              t->WrapS != GL_REPEAT) ||
             (t->WrapT != GL_CLAMP && t->WrapT != GL_CLAMP_TO_EDGE &&
              t->WrapT != GL_REPEAT))
-            return 0;
+            { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
         /*
          * And GL_REPEAT, per axis.  The engine wraps by masking, which is GL's modulo only for a
          * power-of-two dimension, so that is refused here.  It also needs a
@@ -2913,13 +3106,13 @@ osmgaMesaTexStateOK(GLcontext *ctx)
          */
         if ((t->WrapS != GL_CLAMP_TO_EDGE && t->WrapS != GL_REPEAT) ||
             (t->WrapT != GL_CLAMP_TO_EDGE && t->WrapT != GL_REPEAT))
-            return 0;
+            { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
     }
     if (t->BaseLevel != 0)
-        return 0;
+        { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
     img = t->Image[0];
     if (img == 0 || img->Data == 0 || img->IsCompressed || img->Border != 0)
-        return 0;
+        { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
     /*
      * The power-of-two check for repeat lives HERE, after the image is in
      * hand: it was written above the line that fetches it, where the pointer
@@ -2933,7 +3126,7 @@ osmgaMesaTexStateOK(GLcontext *ctx)
          (img->Height == 0 ||
           ((unsigned long)img->Height & ((unsigned long)img->Height - 1UL))
               != 0UL)))
-        return 0;
+        { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
     /*
      * RGB and RGBA, and the difference between them is one bit.
      *
@@ -2945,7 +3138,7 @@ osmgaMesaTexStateOK(GLcontext *ctx)
      * and is not offered.
      */
     if (img->Format != GL_RGB && img->Format != GL_RGBA)
-        return 0;
+        { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
     return 1;
 }
 
@@ -2955,7 +3148,7 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
     OSMGAMesaProbe probe;
 
     OSMGAMesaProbeRun(&probe);
-    if (probe.verdict != OSMGA_PROBE_HARDWARE) return NULL;
+    if (probe.verdict != OSMGA_PROBE_HARDWARE) { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
 
     /*
      * The tier, decided here because this is the first place that has both
@@ -2974,15 +3167,15 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
      * one of them; NoRaster asks for the drawing to be discarded, which is
      * not something to answer by drawing.
      */
-    if (ctx->RenderMode != GL_RENDER) return NULL;
-    if (ctx->NoRaster)                return NULL;
+    if (ctx->RenderMode != GL_RENDER) { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
+    if (ctx->NoRaster)                { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
 
     /*
      * Colour-index mode keeps its colours in IndexPtr, and reading RGB out
      * of ColorPtr there would draw whatever happened to be in an array this
      * mode does not maintain.
      */
-    if (!ctx->Visual->RGBAflag)       return NULL;
+    if (!ctx->Visual->RGBAflag)       { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
 
     /*
      * Ask for the batch here rather than per triangle.  Once the function is
@@ -2991,7 +3184,7 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
      * software function from inside the call.  Anything that can be found
      * out in advance has to be found out here.
      */
-    if (OSMGAMesaProbeBatch() == 0)   return NULL;
+    if (OSMGAMesaProbeBatch() == 0)   { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
 
     /*
      * And refuse unless the surface really is in video memory.  Without the
@@ -2999,7 +3192,7 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
      * own buffer while this drew into the card, and a frame split between
      * two places is worse than a slow one.
      */
-    if (OSMGAMesaBufferOrigin() == 0UL) return NULL;
+    if (OSMGAMesaBufferOrigin() == 0UL) { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
 
     /*
      * And refuse a stride the engine cannot walk.
@@ -3013,11 +3206,11 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
      * nothing at all.
      */
     if ((OSMGAMesaBufferStride() % OSMGA_HW3D_PITCH_ALIGN) != 0UL)
-        return NULL;
+        { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
 
     /* Neither of these reaches RasterMask, so they are asked about here. */
-    if (ctx->Polygon.SmoothFlag)      return NULL;
-    if (ctx->Polygon.StippleFlag)     return NULL;
+    if (ctx->Polygon.SmoothFlag)      { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
+    if (ctx->Polygon.StippleFlag)     { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
 
     /*
      * RasterMask is the union of everything that makes rasterisation more
@@ -3110,7 +3303,7 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
         case GL_DST_ALPHA: case GL_ONE_MINUS_DST_ALPHA:
             break;
         default:
-            return NULL;
+            { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
         }
         switch (ctx->Color.BlendDstRGB) {
         case GL_ZERO: case GL_ONE:
@@ -3119,7 +3312,7 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
         case GL_DST_ALPHA: case GL_ONE_MINUS_DST_ALPHA:
             break;
         default:
-            return NULL;
+            { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
         }
         /*
          * The alpha factors are stored separately and can be set separately,
@@ -3137,16 +3330,16 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
          * true by accident.  Widening the first two without saying this would
          * have let an alpha factor be silently replaced by a colour one.
          */
-        if (ctx->Color.BlendSrcA != ctx->Color.BlendSrcRGB)   return NULL;
-        if (ctx->Color.BlendDstA != ctx->Color.BlendDstRGB)   return NULL;
-        if (ctx->Color.BlendEquation != GL_FUNC_ADD_EXT)      return NULL;
+        if (ctx->Color.BlendSrcA != ctx->Color.BlendSrcRGB)   { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
+        if (ctx->Color.BlendDstA != ctx->Color.BlendDstRGB)   { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
+        if (ctx->Color.BlendEquation != GL_FUNC_ADD_EXT)      { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
         /*
          * And the destination alpha has to be where the engine puts it.  If
          * Mesa is keeping a software alpha buffer it reads alpha from there
          * instead of from the surface, and would blend against alpha this
          * back end never wrote.
          */
-        if (ctx->DrawBuffer->UseSoftwareAlphaBuffers)         return NULL;
+        if (ctx->DrawBuffer->UseSoftwareAlphaBuffers)         { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
     }
 
     if ((ctx->RasterMask & DEPTH_BIT) != 0) {
@@ -3162,7 +3355,7 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
         case GL_EQUAL: case GL_NOTEQUAL: case GL_ALWAYS:
             break;
         default:
-            return NULL;
+            { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
         }
         /*
          * Testing without writing IS expressible, and the answer was in the
@@ -3176,8 +3369,8 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
          * wide open on every submission and is not part of the batch.  It is
          * not needed: the write is not masked, it is simply not made.
          */
-        if (ctx->Visual->DepthBits != 16)           return NULL;
-        if (OSMGAMesaBufferDepthOrigin() == 0UL)    return NULL;
+        if (ctx->Visual->DepthBits != 16)           { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
+        if (OSMGAMesaBufferDepthOrigin() == 0UL)    { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
     }
 
     /*
@@ -3200,8 +3393,7 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
      * modulate on before the two candidate readings said different things.
      */
     if ((ctx->RasterMask & (GLuint)TEXTURE_BIT) != 0) {
-        if (!osmgaMesaTexStateOK(ctx))
-            return NULL;
+        if (!osmgaMesaTexStateOK(ctx)) return NULL;   /* the reason is recorded inside */
     }
 
     /*
@@ -3217,7 +3409,7 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
         case GL_EQUAL: case GL_NOTEQUAL: case GL_ALWAYS:
             break;
         default:
-            return NULL;
+            { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
         }
     }
 
@@ -3249,7 +3441,7 @@ osmgaMesaChooseTriangle(GLcontext *ctx)
     if ((ctx->RasterMask &
          ~(GLuint)(ALPHABUF_BIT | DEPTH_BIT | BLEND_BIT | TEXTURE_BIT |
                    ALPHATEST_BIT | SCISSOR_BIT)) != 0)
-        return NULL;
+        { osmgaMesaGateNo((unsigned long)__LINE__); return NULL; }
 
     return osmgaMesaTriangle;
 }
@@ -3889,6 +4081,21 @@ osmgaMesaClearOnEngine(GLcontext *ctx, GLbitfield mask, GLboolean all,
                         (wantDepth ? DD_DEPTH_BIT : 0));
 }
 
+/*
+ * What is installed while the state gate says software: Mesa's own
+ * function, behind a count.  Nothing else changes -- the surface is not
+ * marked, no flush is made -- because the point is to see what was already
+ * happening, not to alter it.
+ */
+static void
+osmgaMesaGatedTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2,
+                       GLuint pv)
+{
+    hookGated++;
+    if (savedTriangle != 0 && savedTriangleCtx == ctx)
+        (*savedTriangle)(ctx, v0, v1, v2, pv);
+}
+
 static GLbitfield
 osmgaMesaClear(GLcontext *ctx, GLbitfield mask, GLboolean all,
                GLint x, GLint y, GLint w, GLint h)
@@ -3964,7 +4171,13 @@ OpenStepMesaAccelUpdateState(GLcontext *ctx, int rowLength, int yUp)
      */
     if (f != 0) hookHardState++; else hookSoftState++;
 
-    if (f != 0) {
+    /*
+     * Both cases now, not only the accelerated one.  When the gate says
+     * software, what goes in front of Mesa's function is a counter and
+     * nothing else -- see osmgaMesaGatedTriangle -- so that the triangles
+     * drawn under a refused state stop being invisible.
+     */
+    {
         /*
          * Ask Mesa for a software triangle before putting ours over it.
          *
@@ -3978,14 +4191,15 @@ OpenStepMesaAccelUpdateState(GLcontext *ctx, int rowLength, int yUp)
          */
         gl_set_triangle_function(ctx);
         if (ctx->Driver.TriangleFunc != 0
-            && ctx->Driver.TriangleFunc != osmgaMesaTriangle) {
+            && ctx->Driver.TriangleFunc != osmgaMesaTriangle
+            && ctx->Driver.TriangleFunc != osmgaMesaGatedTriangle) {
             savedTriangle = ctx->Driver.TriangleFunc;
             savedTriangleCtx = ctx;
         } else {
             savedTriangle = 0;
             savedTriangleCtx = 0;
         }
-        ctx->Driver.TriangleFunc = f;
+        ctx->Driver.TriangleFunc = (f != 0) ? f : osmgaMesaGatedTriangle;
     }
 
     /*
@@ -4157,6 +4371,25 @@ void OSMGAMesaHookInstrument(int on)
 unsigned long OSMGAMesaHookBatches(void)   { return hookBatches; }
 unsigned long OSMGAMesaHookTraps(void)     { return hookTraps; }
 unsigned long OSMGAMesaHookUnsupported(void) { return hookUnsupported; }
+unsigned long OSMGAMesaHookGated(void)        { return hookGated; }
+int           OSMGAMesaHookDeadlineHit(void)  { return hookDeadlineHit; }
+void
+OSMGAMesaHookGateWhy(unsigned long lines[OSMGA_MESA_GATE_WHY],
+                     unsigned long counts[OSMGA_MESA_GATE_WHY])
+{
+    unsigned i;
+    for (i = 0U; i < (unsigned)OSMGA_MESA_GATE_WHY; i++) {
+        lines[i] = hookGateLine[i]; counts[i] = hookGateCount[i];
+    }
+}
+unsigned long OSMGAMesaHookPrevalidated(void) { return hookPrevalidated; }
+unsigned long OSMGAMesaHookLocalVerdictCount(unsigned long v)
+{
+    return (v < (unsigned long)OSMGA_MESA_VERDICTS) ? hookLocalVerdict[v] : 0UL;
+}
+unsigned long OSMGAMesaHookLocalLastVerdict(void) { return hookLocalLastVerdict; }
+unsigned long OSMGAMesaHookLocalLastSite(void)    { return hookLocalLastSite; }
+unsigned long OSMGAMesaHookLastRefusalSite(void) { return hookLastRefusalSite; }
 unsigned long OSMGAMesaHookVerdictCount(unsigned long v)
 {
     return (v < OSMGA_MESA_VERDICTS) ? hookVerdictCount[v] : 0UL;
