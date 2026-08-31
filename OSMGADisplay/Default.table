@@ -44,7 +44,7 @@
  * version this driver never shipped as.  Held equal to the package's by
  * pkg/verify-driver-pkg.sh.
  */
-"Version" = "1.2";
+"Version" = "1.3";
 "Location" = "";
 "Instance" = "0";
 "Driver Name" = "OSMGADisplay";
