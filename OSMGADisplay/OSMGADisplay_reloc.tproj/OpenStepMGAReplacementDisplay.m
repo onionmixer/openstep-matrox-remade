@@ -13847,11 +13847,21 @@ releaseAndReturn:
      * fourteen rows, one line each, and a sample line only for a row
      * whose pixels left the expected window.  The verdict is the
      * host's (plan section 9-5): cnt 136, bad 0, gMin >= exp-2,
-     * gMax <= exp+2, |gSum - exp*cnt| <= 2*cnt. */
+     * gMax <= exp+2, |gSum - exp*cnt| <= 2*cnt.
+     *
+     * PACED.  The first v3 run lost rows 0..4 twice over: the kernel
+     * message ring holds about thirteen lines, the block is nineteen,
+     * and osmgaD2Settle is far too quick to let syslogd drain -- the
+     * ring keeps the TAIL, so the head died identically both times.
+     * A fifth of a second per line keeps the whole block under the
+     * drain rate, and the wait before the block lets the T7..T9
+     * chatter clear first. */
     {
         unsigned long mo;
 
+        IOSleep(1500);
         for (mo = 0UL; mo < osmgaM12OutN; mo++) {
+            IOSleep(200);
             IOLog("OpenStepMGA M12C[%lu] %s: exp %lu cnt %lu G "
                   "%lu..%lu sum %lu bad %lu\n",
                   mo, osmgaM12Out[mo].tag,
