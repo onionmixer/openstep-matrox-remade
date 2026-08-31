@@ -5,10 +5,10 @@ Intel. Install with `Installer.app`; `INSTALL.md` in the repository has the
 order and the recovery route.
 
 **This release is about mipmapping.** The WARP path now fetches mip levels
-in hardware for `GL_NEAREST_MIPMAP_NEAREST` and `GL_LINEAR_MIPMAP_NEAREST`,
-and the measured cost of a full mip chain over the same scene is 0.6%.
-Distant textures stop shimmering; GLQuake runs its world at the same frame
-time it had without mipmaps, filtered.
+in hardware for all four mip minification filters, and the measured cost
+of a full mip chain over the same scene is 0.6%.  Distant textures stop
+shimmering; GLQuake runs its world at the same frame time it had without
+mipmaps, filtered.
 
 ## The display driver changed this time
 
@@ -35,11 +35,13 @@ as the swapped one -- was right. This release maps
 `GL_LINEAR_MIPMAP_NEAREST` to `MM4S` (bilinear in the rounded level),
 which is what the GL name means.
 
-The blending pair stays software: its fraction sits up to four green
-codes (f error 1/8) from Mesa's `frac(lambda)` at the worst point, all of
-it from the lambda approximation. The deviation is deterministic and
-documented in `docs/M12_WARP_MIPMAP_PLAN.md` section 10, should
-approximate trilinear ever be worth having.
+The blending pair ships as a DOCUMENTED approximation:
+`GL_NEAREST_MIPMAP_LINEAR` on `MM2S` and `GL_LINEAR_MIPMAP_LINEAR` on
+`MM8S`.  Their fraction sits up to four green codes (f error 1/8) from
+Mesa's `frac(lambda)` at the worst point, all of it from the lambda
+approximation -- deterministic, monotonic, and the whole deviation table
+lives in `docs/M12_WARP_MIPMAP_PLAN.md` section 10-1.  The alternative
+was Mesa's software trilinear, which nobody could play.
 
 ## Exactness has one client-side condition
 
