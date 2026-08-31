@@ -1562,6 +1562,9 @@ osmgaMesaWarpTriangle(GLcontext *ctx, struct vertex_buffer *VB,
         probeState.texH     = texH;
         probeState.texPitch = texPitch;
         probeState.texFlags = texFlags;
+        /* The format the flush will declare -- the admission rules for a
+         * mip chain check it, and a zero here would refuse every one. */
+        probeState.texFormat = OSMGA_HW3D_TEXFMT_TW32;
     }
     if (!osmgaMesaWarpTakes(&probeState, dwgctl, blend, texMipMapnb)) {
         hookWarpNoState++;
@@ -3404,7 +3407,15 @@ osmgaMesaTexStateOK(GLcontext *ctx)
             { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
         if (ctx->Texture.Unit[0].LodBias != 0.0F)
             { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
-        if (t->MinLod != 0.0F || t->MaxLod != 1000.0F)
+        eff = ((t->MaxLevel < t->P) ? t->MaxLevel : t->P) - t->BaseLevel;
+        /*
+         * The LOD WINDOW gates only when it would BITE.  The defaults are
+         * MinLod -1000 and MaxLod +1000 (texobj.c:76) -- a window so wide
+         * lambda never touches it, which is exactly the state every
+         * GLQuake texture is in.  Requiring the default VALUES here sent
+         * 55%% of a measured frame's triangles to software (M12).
+         */
+        if (t->MinLod > 0.0F || t->MaxLod < (GLfloat)eff)
             { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
         if (img->Width == 0 || img->Height == 0 ||
             ((unsigned long)img->Width &
@@ -3412,7 +3423,6 @@ osmgaMesaTexStateOK(GLcontext *ctx)
             ((unsigned long)img->Height &
              ((unsigned long)img->Height - 1UL)) != 0UL)
             { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
-        eff = ((t->MaxLevel < t->P) ? t->MaxLevel : t->P) - t->BaseLevel;
         if (eff < 1 || eff > 4)
             { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
         if ((img->Width >> eff) < 8 || (img->Height >> eff) < 8)
