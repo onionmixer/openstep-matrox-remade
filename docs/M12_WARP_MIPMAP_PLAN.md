@@ -128,3 +128,43 @@ D2C_PIPE(tgzsaf) 그대로 — 밉은 레지스터 측 상태다(마이크로코
   avgstride → 합법 rfw/rfh → PITCHLIN 63/64.  그래도 음성이면 결론은
   "정본 WARP 상태에서 관측 실패" 로 제한 (DRI 선례 때문에 미지원 단정 금지).
 - 타임아웃 = 기존 WARP 래치 정책 그대로 (재부팅 1회 예산).
+
+## 6. Phase A 실측 결과 (2026-08-31) — **양성: WARP 경로에 밉 fetch 실재**
+
+두 실행(v1 은 syslog 유실·분석기 결함으로 참고용, v2 가 정본).  v2 는 픽셀
+단위 diff(대조군과 바이트 동일=별칭, 둘 다와 상이=fetch) + 레벨별 분리 G
+대역 서명.  축소율 4(λ=2), mapnb=2(3레벨), 16px 다리.
+
+```
+        [affine 0-9]                          [perspective 10-15]
+[5] mm8s  dN136 dB136  전량 혼합(bad136)   [10] nrst   dN0   L0 136  (대조군)
+[6] m1n1  dN136 dB136  L1 136  bad0       [11] bilin  dN31  L0 105 bad31
+[7] m1n4  dN136 dB136  L2 136  bad0       [12] mm1s   dN136 dB136  L2 136 bad0
+[8] m1f2  dN136 dB136  L2 136  bad0       [13] mm2s   dN136 dB136  L2 136 bad0
+[9] m8f2  dN136 dB136  전량 혼합          [14] mm4s   dN136 dB136  L2 105 bad31
+                                          [15] mm8s   dN136 dB136  L2 105 bad31
+(affine 0-4 행은 두 실행 모두 syslog 에 밀려 유실 — 6-8 이 affine 의
+ MM1S 변형들을 깨끗한 L1/L2 로 보여 좌표는 닫힘)
+```
+
+### 판정
+1. **밉 fetch 실재**: MM1S/MM2S 가 두 대조군과 전 픽셀 상이하면서 서명
+   오류 0 으로 **정확히 레벨 2** 를 읽음 — 별칭 불가능한 결과.
+2. **LOD 산술 정확**: 축소 4 → λ=2 → 레벨 2.  mapnb=1 이면 λ 가 1로
+   클램프되어 레벨 1 (m1n1).  mapnb=4(원점 중복)도 L2 (m1n4).
+3. **레벨 간 혼합**: MM4S/MM8S 는 perspective 에서 L2 105 + 혼합 31(경계),
+   affine 정수 λ 에서 전량 혼합 — *_MIPMAP_LINEAR 계열 동작.  λ 정수점의
+   혼합 가중은 Phase B 의 fthres/반올림 조사 항목.
+4. **스펙 대 DRI 명명**: MM2S 가 단일 레벨(=\*_MIPMAP_NEAREST), MM4S 가
+   혼합(=\*_MIPMAP_LINEAR) — **스펙 9612-9614 의 매핑이 옳고 DRI 쪽 표기가
+   뒤집혀 있다.**
+5. fthres 0x20 은 결과 불변 (m1f2).
+
+### 다음
+Phase B(생산 구현)는 계획 §3 대로 — 착수 전 별도 codex 검토.  추가로 Phase
+B 조사 항목: λ 정수점 혼합 가중, affine/persp 혼합 차이, MM2S/MM4S GL 매핑
+확정치 반영(스펙 기준).
+
+부산물 교훈: 요약은 꼬리에서도 16줄이면 머리가 밀린다 — 다음 밴드는 10줄
+이하로.  4D9 의 "trapezoid 밉 없음" 은 여전히 참이며, 두 경로의 차이가
+이로써 실측으로 갈렸다.
