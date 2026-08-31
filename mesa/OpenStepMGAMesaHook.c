@@ -2666,7 +2666,9 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
             texMipMapnb = 0UL;
             if (tmo != 0 &&
                 (tmo->MinFilter == GL_NEAREST_MIPMAP_NEAREST ||
-                 tmo->MinFilter == GL_LINEAR_MIPMAP_NEAREST)) {
+                 tmo->MinFilter == GL_LINEAR_MIPMAP_NEAREST ||
+                 tmo->MinFilter == GL_NEAREST_MIPMAP_LINEAR ||
+                 tmo->MinFilter == GL_LINEAR_MIPMAP_LINEAR)) {
                 GLint eff = ((tmo->MaxLevel < tmo->P)
                                  ? tmo->MaxLevel : tmo->P)
                             - tmo->BaseLevel;
@@ -2943,13 +2945,20 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
         texFlagsBase =
             ((to->MagFilter == GL_LINEAR) ? OSMGA_HW3D_TEXF_BILIN : 0UL)
             | ((to->MinFilter == GL_LINEAR ||
-                to->MinFilter == GL_LINEAR_MIPMAP_NEAREST)
+                to->MinFilter == GL_LINEAR_MIPMAP_NEAREST ||
+                to->MinFilter == GL_LINEAR_MIPMAP_LINEAR)
                  ? OSMGA_HW3D_TEXF_BILINMIN : 0UL)
             | ((to->MinFilter == GL_NEAREST_MIPMAP_NEAREST && texMipMapnb)
                  ? (OSMGA_HW3D_TEXF_MINMODE_MM1S
                         << OSMGA_HW3D_TEXF_MINMODE_SHIFT) : 0UL)
             | ((to->MinFilter == GL_LINEAR_MIPMAP_NEAREST && texMipMapnb)
                  ? (OSMGA_HW3D_TEXF_MINMODE_MM4S
+                        << OSMGA_HW3D_TEXF_MINMODE_SHIFT) : 0UL)
+            | ((to->MinFilter == GL_NEAREST_MIPMAP_LINEAR && texMipMapnb)
+                 ? (OSMGA_HW3D_TEXF_MINMODE_MM2S
+                        << OSMGA_HW3D_TEXF_MINMODE_SHIFT) : 0UL)
+            | ((to->MinFilter == GL_LINEAR_MIPMAP_LINEAR && texMipMapnb)
+                 ? (OSMGA_HW3D_TEXF_MINMODE_MM8S
                         << OSMGA_HW3D_TEXF_MINMODE_SHIFT) : 0UL)
             | ((ti != 0 && ti->Format == GL_RGBA)
                ? OSMGA_HW3D_TEXF_TEXALPHA : 0UL)
@@ -3286,7 +3295,9 @@ osmgaMesaTexStateOK(GLcontext *ctx)
      */
     if (t->MinFilter != GL_NEAREST && t->MinFilter != GL_LINEAR &&
         t->MinFilter != GL_NEAREST_MIPMAP_NEAREST &&
-        t->MinFilter != GL_LINEAR_MIPMAP_NEAREST)
+        t->MinFilter != GL_LINEAR_MIPMAP_NEAREST &&
+        t->MinFilter != GL_NEAREST_MIPMAP_LINEAR &&
+        t->MinFilter != GL_LINEAR_MIPMAP_LINEAR)
         { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
     if (t->MagFilter != GL_NEAREST && t->MagFilter != GL_LINEAR)
         { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
@@ -3299,7 +3310,8 @@ osmgaMesaTexStateOK(GLcontext *ctx)
      * about one of them answered for both.
      */
     if ((t->MinFilter == GL_NEAREST ||
-         t->MinFilter == GL_NEAREST_MIPMAP_NEAREST) &&
+         t->MinFilter == GL_NEAREST_MIPMAP_NEAREST ||
+         t->MinFilter == GL_NEAREST_MIPMAP_LINEAR) &&
         t->MagFilter == GL_NEAREST) {
         /*
          * With nearest sampling GL_CLAMP and GL_CLAMP_TO_EDGE name the same
@@ -3396,17 +3408,21 @@ osmgaMesaTexStateOK(GLcontext *ctx)
      * the same last map.  The port pins MaxLevel to the 8x8 level for
      * its mip textures, which makes the two clamps agree; anything else
      * (a deeper chain, an LOD bias, a min/max LOD window) stays in
-     * software.  Only the two *_MIPMAP_NEAREST modes ship, as MM1S and
-     * MM4S -- M12-C measured those two ROUNDING the level with no
-     * blend, and measured the spec's mode table as the swapped one
-     * (an earlier build shipped LINEAR_MIPMAP_NEAREST on MM2S off that
-     * table, and MM2S turned out to be the two-tap level BLENDER).
-     * The blending pair stays closed: its fraction comes floored to
-     * sixteenths off a mantissa-linear lambda, four green codes from
-     * Mesa at the worst point (plan section 10).
+     * software.  All four mip filters ship, on M12-C's measurements:
+     * the *_MIPMAP_NEAREST pair as MM1S/MM4S, which ROUND the level and
+     * never blend, and the *_MIPMAP_LINEAR pair as MM2S/MM8S, which
+     * blend two levels -- the spec's mode table is the swapped one, the
+     * DRI's names were right.  The blenders are a DOCUMENTED
+     * approximation: their fraction comes floored to sixteenths off a
+     * mantissa-linear lambda, up to four green codes from Mesa's
+     * frac(lambda) at the worst measured point (plan section 10-1) --
+     * deterministic and monotonic, against a software trilinear no one
+     * could play.
      */
     if (t->MinFilter == GL_NEAREST_MIPMAP_NEAREST ||
-        t->MinFilter == GL_LINEAR_MIPMAP_NEAREST) {
+        t->MinFilter == GL_LINEAR_MIPMAP_NEAREST ||
+        t->MinFilter == GL_NEAREST_MIPMAP_LINEAR ||
+        t->MinFilter == GL_LINEAR_MIPMAP_LINEAR) {
         GLint eff;
 
         if (!t->Complete)

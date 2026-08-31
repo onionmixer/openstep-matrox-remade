@@ -1591,12 +1591,15 @@ osmgaHW3DWarpAdmits(const OSMGAHW3DState *st, const OSMGAHW3DRun *run,
      * The mip shape, judged here so the library's pre-admission and the
      * kernel's validator apply one rule.  A textured run with a mip
      * minfilter needs a matching chain declaration and the other way
-     * round; only the two single-LEVEL-per-pixel modes ship, and M12-C
-     * measured which two those are: MM1S and MM4S round the level and
-     * never blend -- the spec's 9612-9614 naming is the swapped one,
-     * not the DRI's -- while MM2S and MM8S blend two levels with a
-     * sixteenth-floored fraction of a mantissa-linear lambda, which is
-     * NOT Mesa's arithmetic; the chain must fit the base's own
+     * round; all four engine modes ship, on M12-C's measurements.  MM1S
+     * and MM4S round the level and never blend -- the spec's 9612-9614
+     * naming is the swapped one, not the DRI's.  MM2S and MM8S blend two
+     * levels with a sixteenth-floored fraction of a mantissa-linear
+     * lambda, which is NOT Mesa's arithmetic: up to four green codes
+     * (f error 1/8) from frac(lambda) at the worst measured point.
+     * They ship as a DOCUMENTED approximation (plan section 10-1) --
+     * deterministic, monotonic, and the only way this hardware blends
+     * levels at all; the chain must fit the base's own
      * power-of-two geometry with both axes at least 8 at the deepest
      * declared map.  Per-level FOOTPRINTS are the validator's, not
      * ours -- they need the VRAM window.
@@ -1612,7 +1615,9 @@ osmgaHW3DWarpAdmits(const OSMGAHW3DState *st, const OSMGAHW3DRun *run,
             unsigned long lw = 0UL, lh = 0UL;
 
             if (mm != OSMGA_HW3D_TEXF_MINMODE_MM1S &&
-                mm != OSMGA_HW3D_TEXF_MINMODE_MM4S)
+                mm != OSMGA_HW3D_TEXF_MINMODE_MM2S &&
+                mm != OSMGA_HW3D_TEXF_MINMODE_MM4S &&
+                mm != OSMGA_HW3D_TEXF_MINMODE_MM8S)
                 return OSMGA_HW3D_E_WARPPOLICY;
             if (mipMapnb > 4UL)
                 return OSMGA_HW3D_E_WARPPOLICY;
