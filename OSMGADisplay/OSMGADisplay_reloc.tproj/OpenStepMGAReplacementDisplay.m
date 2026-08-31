@@ -694,7 +694,8 @@ typedef int OSMGAD3ZorgAligned[
  * parameter because osmgaM3StateRun stands between the band and the
  * builder and twenty call sites should not learn about mip probes.
  */
-static const unsigned long *osmgaM12MipOrgs = 0;
+/* (the M12 static hook retired: the chain rides OSMGAM3Tex and, in
+ * production, the version-11 batch tail) */
 
 /* The band's results, buffered and printed at the METHOD's tail: the
  * first M12 run lost its opening lines to the syslog volume trap the
@@ -8813,6 +8814,14 @@ typedef struct {
      * field, written to both lanes, is the only safe shape.
      */
     unsigned long tds;
+    /*
+     * The mip chain, version-11 shape: 0 maps below the base, or 1..4
+     * absolute origins.  EVERY stack fill of this struct sets these --
+     * a field-by-field fill would otherwise hand the list builder
+     * whatever the stack held (the Phase A review's warning).
+     */
+    unsigned long mipMapnb;
+    unsigned long mipOrg[4];
 } OSMGAM3Tex;
 
 /*
@@ -8860,8 +8869,8 @@ osmgaDmaBuildTriangleList(unsigned long *ring, unsigned long ringDwords,
         /* NOPERSP is deliberately absent: the trapezoid path sets it
          * because it feeds affine planes, and the reference WARP path does
          * not set it either (mgatex.c:373 builds texctl without bit 21). */
-        if (osmgaM12MipOrgs != 0)
-            /* Mip probe: the DRI's nonlinear pitch, tpitch<18:16>. */
+        if (tex->mipMapnb != 0UL)
+            /* Mip chain: the DRI's nonlinear pitch, tpitch<18:16>. */
             texctl = ((tex->log2dim - 3UL) << 16)
                    | MGA_TEXCTL_TAKEY | tex->clamp | MGA_TEXCTL_TW32;
         else
@@ -8971,17 +8980,28 @@ osmgaDmaBuildTriangleList(unsigned long *ring, unsigned long ringDwords,
                              MGA_TEXFILTER,    texfil,
                              MGA_TEXBORDERCOL, 0UL);
     ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
-                             MGA_TEXORG,  (osmgaM12MipOrgs != 0)
-                                              ? osmgaM12MipOrgs[0] : texorg,
-                             MGA_TEXORG1, (osmgaM12MipOrgs != 0)
-                                              ? osmgaM12MipOrgs[1] : 0UL,
-                             MGA_TEXORG2, (osmgaM12MipOrgs != 0)
-                                              ? osmgaM12MipOrgs[2] : 0UL,
-                             MGA_TEXORG3, (osmgaM12MipOrgs != 0)
-                                              ? osmgaM12MipOrgs[3] : 0UL);
+                             MGA_TEXORG,  texorg,
+                             MGA_TEXORG1,
+                             (tex != 0 && tex->mipMapnb > 0UL)
+                                 ? tex->mipOrg[0] : 0UL,
+                             MGA_TEXORG2,
+                             (tex != 0 && tex->mipMapnb > 1UL)
+                                 ? tex->mipOrg[1]
+                                 : ((tex != 0 && tex->mipMapnb > 0UL)
+                                        ? tex->mipOrg[0] : 0UL),
+                             MGA_TEXORG3,
+                             (tex != 0 && tex->mipMapnb > 2UL)
+                                 ? tex->mipOrg[2]
+                                 : ((tex != 0 && tex->mipMapnb > 0UL)
+                                        ? tex->mipOrg[tex->mipMapnb - 1UL]
+                                        : 0UL));
     ok = ok && osmgaDmaBlock(ring, ringDwords, &pos,
-                             MGA_TEXORG4, (osmgaM12MipOrgs != 0)
-                                              ? osmgaM12MipOrgs[4] : 0UL,
+                             MGA_TEXORG4,
+                             (tex != 0 && tex->mipMapnb > 3UL)
+                                 ? tex->mipOrg[3]
+                                 : ((tex != 0 && tex->mipMapnb > 0UL)
+                                        ? tex->mipOrg[tex->mipMapnb - 1UL]
+                                        : 0UL),
                              MGA_TEXWIDTH,  texW,
                              MGA_TEXHEIGHT, texH,
                              MGA_WR49,      0UL);
@@ -11106,6 +11126,7 @@ osmgaWarpFillLimits(OSMGAHW3DLimits *lim)
  */
 static void
 osmgaWarpTexFromState(const OSMGAHW3DState *st, int textured,
+                      unsigned long mipMapnb, const osmga_u32 *mipOrg,
                       OSMGAM3Tex *tex)
 {
     unsigned long axes;
@@ -11120,6 +11141,9 @@ osmgaWarpTexFromState(const OSMGAHW3DState *st, int textured,
     tex->filter = 0UL;
     tex->clamp = MGA_TEXCTL_CLAMPUV;
     tex->tds = MGA_TDS_COLOR_SEL_MUL;
+    tex->mipMapnb = 0UL;
+    tex->mipOrg[0] = tex->mipOrg[1] = 0UL;
+    tex->mipOrg[2] = tex->mipOrg[3] = 0UL;
     if (st == 0 || !textured)
         return;
 
@@ -11136,6 +11160,15 @@ osmgaWarpTexFromState(const OSMGAHW3DState *st, int textured,
         (((axes & OSMGA_HW3D_CLAMP_U) != 0UL) ? MGA_TEXCTL_CLAMPU : 0UL) |
         (((axes & OSMGA_HW3D_CLAMP_V) != 0UL) ? MGA_TEXCTL_CLAMPV : 0UL);
     tex->tds      = osmgaHW3DTexDualStage(st->texFlags, 1);
+    if (mipMapnb != 0UL && mipOrg != 0) {
+        unsigned long li;
+
+        tex->mipMapnb = mipMapnb;
+        for (li = 0UL; li < 4UL; li++)
+            tex->mipOrg[li] = (unsigned long)mipOrg[li];
+        /* mapnb rides TEXFILTER <31:29>; 1..4 needs no bit 18. */
+        tex->filter |= (mipMapnb << 29);
+    }
 }
 
 
@@ -11421,7 +11454,9 @@ osmgaWarpFenceAndStop(vm_address_t base, const char *label)
          */
         osmgaWarpTexFromState(&osmgaHW3DSnap.warp.state,
                               (((unsigned long)run->dwgctl & 0xFUL) ==
-                               OSMGA_HW3D_OPCODE_TEX) ? 1 : 0, &tex);
+                               OSMGA_HW3D_OPCODE_TEX) ? 1 : 0,
+                              (unsigned long)osmgaHW3DSnap.warp.mipMapnb,
+                              osmgaHW3DSnap.warp.mipOrg, &tex);
         if (!osmgaDmaBuildTriangleList(rlist,
                                        OSMGA_HW3D_WARP_STATE_BYTES / 4UL,
                                        osmgaWarpPipeHeld[OSMGA_D2C_PIPE],
@@ -12521,6 +12556,9 @@ releaseAndReturn:
         m3tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21);
         m3tex.clamp   = MGA_TEXCTL_CLAMPUV;
         m3tex.tds     = 0UL;
+        m3tex.mipMapnb = 0UL;
+        m3tex.mipOrg[0] = m3tex.mipOrg[1] = 0UL;
+        m3tex.mipOrg[2] = m3tex.mipOrg[3] = 0UL;
 
         if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
                              osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
@@ -12675,6 +12713,9 @@ releaseAndReturn:
         m4tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21);   /* nearest */
         m4tex.clamp   = MGA_TEXCTL_CLAMPUV;
         m4tex.tds     = 0UL;
+        m4tex.mipMapnb = 0UL;
+        m4tex.mipOrg[0] = m4tex.mipOrg[1] = 0UL;
+        m4tex.mipOrg[2] = m4tex.mipOrg[3] = 0UL;
 
         for (row = 0UL; row < OSMGA_M3_BLK; row++)
             for (col = 0UL; col < OSMGA_M3_BLK; col++)
@@ -12733,6 +12774,9 @@ releaseAndReturn:
                         MGA_TEXFILTER_MAGBILIN;
         m4tex.clamp   = MGA_TEXCTL_CLAMPUV;
         m4tex.tds     = 0UL;
+        m4tex.mipMapnb = 0UL;
+        m4tex.mipOrg[0] = m4tex.mipOrg[1] = 0UL;
+        m4tex.mipOrg[2] = m4tex.mipOrg[3] = 0UL;
 
         for (row = 0UL; row < OSMGA_M3_BLK; row++)
             for (col = 0UL; col < OSMGA_M3_BLK; col++)
@@ -12773,6 +12817,9 @@ releaseAndReturn:
                         MGA_TEXFILTER_MINBILIN;
         m4tex.clamp   = MGA_TEXCTL_CLAMPUV;
         m4tex.tds     = 0UL;
+        m4tex.mipMapnb = 0UL;
+        m4tex.mipOrg[0] = m4tex.mipOrg[1] = 0UL;
+        m4tex.mipOrg[2] = m4tex.mipOrg[3] = 0UL;
 
         for (row = 0UL; row < OSMGA_M3_BLK; row++)
             for (col = 0UL; col < OSMGA_M3_BLK; col++)
@@ -12835,6 +12882,9 @@ releaseAndReturn:
         m4tex.pitch   = OSMGA_M4_REP_PITCH;   /* == dim: repeat requires it */
         m4tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21);  /* nearest */
         m4tex.tds     = 0UL;
+        m4tex.mipMapnb = 0UL;
+        m4tex.mipOrg[0] = m4tex.mipOrg[1] = 0UL;
+        m4tex.mipOrg[2] = m4tex.mipOrg[3] = 0UL;
 
         for (i = 0UL; i < 3UL; i++) {
             const char *lbl = (i == 0UL) ? "T7a-clamp"
@@ -12935,6 +12985,9 @@ releaseAndReturn:
         m4tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21) |
                         MGA_TEXFILTER_MAGBILIN;
         m4tex.tds     = 0UL;
+        m4tex.mipMapnb = 0UL;
+        m4tex.mipOrg[0] = m4tex.mipOrg[1] = 0UL;
+        m4tex.mipOrg[2] = m4tex.mipOrg[3] = 0UL;
 
         for (row = 0UL; row < OSMGA_M3_BLK; row++)
             for (col = 0UL; col < OSMGA_M3_BLK; col++)
@@ -13355,6 +13408,9 @@ releaseAndReturn:
         m4tex.filter  = MGA_TEXFILTER_ALPHA | (0x10UL << 21);   /* nearest */
         m4tex.clamp   = MGA_TEXCTL_CLAMPUV;
         m4tex.tds     = 0UL;
+        m4tex.mipMapnb = 0UL;
+        m4tex.mipOrg[0] = m4tex.mipOrg[1] = 0UL;
+        m4tex.mipOrg[2] = m4tex.mipOrg[3] = 0UL;
         if (!osmgaM3StateRun(base, ring, ringDwords, ringPhys,
                              osmgaWarpPipeHeld[OSMGA_D2C_PIPE], stride,
                              (dwgctlFlat & ~MGA_DWGCTL_OPCODE_MASK) |
@@ -13644,9 +13700,16 @@ releaseAndReturn:
                 m12tex.pitch    = OSMGA_M12_L0_DIM;
                 m12tex.clamp    = MGA_TEXCTL_CLAMPUV;
                 m12tex.tds      = 0UL;
+        m12tex.mipMapnb = 0UL;
+        m12tex.mipOrg[0] = m12tex.mipOrg[1] = 0UL;
+        m12tex.mipOrg[2] = m12tex.mipOrg[3] = 0UL;
 
                 osmgaM12OutN = 0UL;
-                osmgaM12MipOrgs = m12orgs;
+                m12tex.mipMapnb  = 2UL;
+                m12tex.mipOrg[0] = m12orgs[1];
+                m12tex.mipOrg[1] = m12orgs[2];
+                m12tex.mipOrg[2] = m12orgs[3];
+                m12tex.mipOrg[3] = m12orgs[4];
                 for (arm = 0UL; arm < 2UL; arm++) {
                     unsigned long runs = (arm == 0UL) ? 10UL : 6UL;
 
@@ -13672,7 +13735,6 @@ releaseAndReturn:
                                              OSMGA_M3_ALPHACTRL_NOBLEND,
                                              OSMGA_M3_WARP, OSMGA_M3_ZORG,
                                              &m12tex, "M12")) {
-                            osmgaM12MipOrgs = 0;
                             IOUnmapPhysicalFromIOTask(aMip, lMip);
                             IOLog("OpenStepMGA M3: RETAINED, engine "
                                   "claimed.  *** REBOOT REQUIRED ***\n");
@@ -13713,7 +13775,6 @@ releaseAndReturn:
                         if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys,
                                                  OSMGA_D2C_VTX_DWORDS,
                                                  1, "M12", 0)) {
-                            osmgaM12MipOrgs = 0;
                             IOUnmapPhysicalFromIOTask(aMip, lMip);
                             IOLog("OpenStepMGA M3: RETAINED, engine "
                                   "claimed.  *** REBOOT REQUIRED ***\n");
@@ -13765,7 +13826,6 @@ releaseAndReturn:
                         }
                     }
                 }
-                osmgaM12MipOrgs = 0;
                 IOUnmapPhysicalFromIOTask(aMip, lMip);
             }
         }

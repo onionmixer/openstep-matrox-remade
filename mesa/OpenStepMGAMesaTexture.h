@@ -17,10 +17,15 @@ int OSMGAMesaTexResident(void *ctx, struct gl_texture_object *tObj,
                          unsigned long *origin, unsigned long *w,
                          unsigned long *h, unsigned long *pitch);
 
-/* The same for whatever 2D texture is bound in the current unit. */
-int OSMGAMesaTexResidentCurrent(void *ctx, unsigned long *origin,
+/* The same for whatever 2D texture is bound in the current unit.
+ * mipLevels asks for that many maps BELOW the base as one chain (0 is
+ * the old single-level residency); mipOrg[4] receives their absolute
+ * origins when a chain was asked for. */
+int OSMGAMesaTexResidentCurrent(void *ctx, unsigned long mipLevels,
+                                unsigned long *origin,
                                 unsigned long *w, unsigned long *h,
-                                unsigned long *pitch);
+                                unsigned long *pitch,
+                                unsigned long *mipOrg);
 
 unsigned long OSMGAMesaTexUploads(void);
 unsigned long OSMGAMesaTexRefused(void);

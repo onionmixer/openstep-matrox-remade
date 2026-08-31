@@ -957,6 +957,8 @@ static void *pendVB;
 static int pendHasTex;
 static unsigned long pendTexOrg, pendTexW, pendTexH, pendTexPitch;
 static unsigned long pendTexFlags;
+static unsigned long pendTexMipMapnb;
+static unsigned long pendTexMipOrg[4];
 static long pendTmr[6];
 static int pendInFlush;
 /* Why flushes happened, so fragmentation is a number and not a feeling. */
@@ -1221,7 +1223,7 @@ static OSMGAMesaWarpBuilder warpBuild;
  */
 static int
 osmgaMesaWarpTakes(const OSMGAHW3DState *st, unsigned long dwgctl,
-                   unsigned long alphactrl)
+                   unsigned long alphactrl, unsigned long mipMapnb)
 {
     OSMGAHW3DRun probe;
 
@@ -1231,7 +1233,7 @@ osmgaMesaWarpTakes(const OSMGAHW3DState *st, unsigned long dwgctl,
     probe.count     = 3U;
     if (osmgaHW3DValidatePrimState(dwgctl, alphactrl) != OSMGA_HW3D_OK)
         return 0;
-    if (osmgaHW3DWarpAdmits(st, &probe) != OSMGA_HW3D_OK)
+    if (osmgaHW3DWarpAdmits(st, &probe, mipMapnb) != OSMGA_HW3D_OK)
         return 0;
     return 1;
 }
@@ -1307,6 +1309,11 @@ osmgaMesaFlushWarp(void)
      */
     osmgaMesaFillState(ctx, &wb->state);
     if (pendHasTex) {
+        wb->mipMapnb  = (osmga_u32)pendTexMipMapnb;
+        wb->mipOrg[0] = (osmga_u32)pendTexMipOrg[0];
+        wb->mipOrg[1] = (osmga_u32)pendTexMipOrg[1];
+        wb->mipOrg[2] = (osmga_u32)pendTexMipOrg[2];
+        wb->mipOrg[3] = (osmga_u32)pendTexMipOrg[3];
         wb->state.texorg    = pendTexOrg;
         wb->state.texW      = pendTexW;
         wb->state.texH      = pendTexH;
@@ -1479,7 +1486,8 @@ osmgaMesaWarpTriangle(GLcontext *ctx, struct vertex_buffer *VB,
                       int texOn, const OSMGAMesaTex *tex,
                       unsigned long texOrg, unsigned long texW,
                       unsigned long texH, unsigned long texPitch,
-                      unsigned long texFlags, double zoffset,
+                      unsigned long texFlags, unsigned long texMipMapnb,
+                      const unsigned long *texMipOrg, double zoffset,
                       GLuint v0, GLuint v1, GLuint v2, GLuint pv)
 {
     OSMGAHW3DWarpBatch *wb;
@@ -1555,7 +1563,7 @@ osmgaMesaWarpTriangle(GLcontext *ctx, struct vertex_buffer *VB,
         probeState.texPitch = texPitch;
         probeState.texFlags = texFlags;
     }
-    if (!osmgaMesaWarpTakes(&probeState, dwgctl, blend)) {
+    if (!osmgaMesaWarpTakes(&probeState, dwgctl, blend, texMipMapnb)) {
         hookWarpNoState++;
         goto declineOne;
     }
@@ -1653,7 +1661,13 @@ osmgaMesaWarpTriangle(GLcontext *ctx, struct vertex_buffer *VB,
          (texOn && pendHasTex &&
           (pendTexOrg != texOrg || pendTexW != texW ||
            pendTexH != texH || pendTexPitch != texPitch ||
-           pendTexFlags != texFlags)))) {
+           pendTexFlags != texFlags ||
+           pendTexMipMapnb != texMipMapnb ||
+           (texMipMapnb != 0UL &&
+            (pendTexMipOrg[0] != texMipOrg[0] ||
+             pendTexMipOrg[1] != texMipOrg[1] ||
+             pendTexMipOrg[2] != texMipOrg[2] ||
+             pendTexMipOrg[3] != texMipOrg[3])))))) {
         hookFlushKey++;
         osmgaMesaFlushPending();
     }
@@ -1679,6 +1693,11 @@ osmgaMesaWarpTriangle(GLcontext *ctx, struct vertex_buffer *VB,
         pendTexH     = texH;
         pendTexPitch = texPitch;
         pendTexFlags = texFlags;
+        pendTexMipMapnb = texMipMapnb;
+        pendTexMipOrg[0] = (texMipOrg != 0) ? texMipOrg[0] : 0UL;
+        pendTexMipOrg[1] = (texMipOrg != 0) ? texMipOrg[1] : 0UL;
+        pendTexMipOrg[2] = (texMipOrg != 0) ? texMipOrg[2] : 0UL;
+        pendTexMipOrg[3] = (texMipOrg != 0) ? texMipOrg[3] : 0UL;
         /* tmr is NOT part of this key: the gradients are per-triangle
          * geometry that the microcode computes from the vertices, so they
          * are not batch state at all for this tier. */
@@ -2511,6 +2530,8 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
     unsigned long zmode, blend;
     double zoffset;
     unsigned long texOrg = 0UL, texW = 0UL, texH = 0UL, texPitch = 0UL;
+    unsigned long texMipMapnb = 0UL;
+    unsigned long texMipOrgs[4];
     /*
      * The texture flags MINUS the perspective bit.
      *
@@ -2635,8 +2656,24 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
             (void)osmgaMesaSoftly(ctx, v0, v1, v2, pv);
             return;
         }
-        if (!OSMGAMesaTexResidentCurrent(ctx, &texOrg, &texW, &texH,
-                                         &texPitch)) {
+        {
+            const struct gl_texture_object *tmo =
+                ctx->Texture.Unit[0].CurrentD[2];
+
+            texMipMapnb = 0UL;
+            if (tmo != 0 &&
+                (tmo->MinFilter == GL_NEAREST_MIPMAP_NEAREST ||
+                 tmo->MinFilter == GL_LINEAR_MIPMAP_NEAREST)) {
+                GLint eff = ((tmo->MaxLevel < tmo->P)
+                                 ? tmo->MaxLevel : tmo->P)
+                            - tmo->BaseLevel;
+
+                if (eff >= 1 && eff <= 4)
+                    texMipMapnb = (unsigned long)eff;
+            }
+        }
+        if (!OSMGAMesaTexResidentCurrent(ctx, texMipMapnb, &texOrg, &texW,
+                                         &texH, &texPitch, texMipOrgs)) {
             hookTexAbsent++;
             (void)osmgaMesaSoftly(ctx, v0, v1, v2, pv);
             return;
@@ -2902,8 +2939,15 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
 
         texFlagsBase =
             ((to->MagFilter == GL_LINEAR) ? OSMGA_HW3D_TEXF_BILIN : 0UL)
-            | ((to->MinFilter == GL_LINEAR)
+            | ((to->MinFilter == GL_LINEAR ||
+                to->MinFilter == GL_LINEAR_MIPMAP_NEAREST)
                  ? OSMGA_HW3D_TEXF_BILINMIN : 0UL)
+            | ((to->MinFilter == GL_NEAREST_MIPMAP_NEAREST && texMipMapnb)
+                 ? (OSMGA_HW3D_TEXF_MINMODE_MM1S
+                        << OSMGA_HW3D_TEXF_MINMODE_SHIFT) : 0UL)
+            | ((to->MinFilter == GL_LINEAR_MIPMAP_NEAREST && texMipMapnb)
+                 ? (OSMGA_HW3D_TEXF_MINMODE_MM2S
+                        << OSMGA_HW3D_TEXF_MINMODE_SHIFT) : 0UL)
             | ((ti != 0 && ti->Format == GL_RGBA)
                ? OSMGA_HW3D_TEXF_TEXALPHA : 0UL)
             | ((ctx->Texture.Unit[0].EnvMode == GL_MODULATE)
@@ -2926,8 +2970,20 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
                               zmode, blend, texOn,
                               texOn ? &tex : (const OSMGAMesaTex *)0,
                               texOrg, texW, texH, texPitch, texFlagsBase,
+                              texMipMapnb, texMipOrgs,
                               zoffset, v0, v1, v2, pv))
         return;
+
+    /*
+     * A mip state WARP would not take goes to SOFTWARE, never to the
+     * trapezoid tier: M1-4D9 measured that tier fetching no mip levels,
+     * so it would draw the base level at every distance and call it
+     * done.  Software keeps the picture Mesa's.
+     */
+    if (texOn && (texFlagsBase & OSMGA_HW3D_TEXF_MINMODE_MASK) != 0UL) {
+        (void)osmgaMesaSoftly(ctx, v0, v1, v2, pv);
+        return;
+    }
 
     if (ctx->Light.ShadeModel == GL_FLAT) {
         if (OSMGA_ARM(2)) return;                /* arm D */
@@ -3225,7 +3281,9 @@ osmgaMesaTexStateOK(GLcontext *ctx)
      * an ordinary MagFilter, and the four mipmap filters are still refused --
      * where their levels live has not been measured.
      */
-    if (t->MinFilter != GL_NEAREST && t->MinFilter != GL_LINEAR)
+    if (t->MinFilter != GL_NEAREST && t->MinFilter != GL_LINEAR &&
+        t->MinFilter != GL_NEAREST_MIPMAP_NEAREST &&
+        t->MinFilter != GL_LINEAR_MIPMAP_NEAREST)
         { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
     if (t->MagFilter != GL_NEAREST && t->MagFilter != GL_LINEAR)
         { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
@@ -3237,7 +3295,9 @@ osmgaMesaTexStateOK(GLcontext *ctx)
      * magnification one does -- and while the two had to be equal, asking
      * about one of them answered for both.
      */
-    if (t->MinFilter == GL_NEAREST && t->MagFilter == GL_NEAREST) {
+    if ((t->MinFilter == GL_NEAREST ||
+         t->MinFilter == GL_NEAREST_MIPMAP_NEAREST) &&
+        t->MagFilter == GL_NEAREST) {
         /*
          * With nearest sampling GL_CLAMP and GL_CLAMP_TO_EDGE name the same
          * texel for every coordinate in [0,1] -- Mesa's own two branches in
@@ -3326,6 +3386,38 @@ osmgaMesaTexStateOK(GLcontext *ctx)
      */
     if (img->Format != GL_RGB && img->Format != GL_RGBA)
         { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
+    /*
+     * The mip filters, exactly as far as the hardware chain reaches: the
+     * engine clamps its lambda at mapnb, so the acceleration is only
+     * exact when GL's own clamp -- min(MaxLevel, P) - BaseLevel -- names
+     * the same last map.  The port pins MaxLevel to the 8x8 level for
+     * its mip textures, which makes the two clamps agree; anything else
+     * (a deeper chain, an LOD bias, a min/max LOD window) stays in
+     * software.  Only the two *_MIPMAP_NEAREST modes ship -- the LINEAR
+     * ones mix at integer lambda where Mesa would not (M12 section 6).
+     */
+    if (t->MinFilter == GL_NEAREST_MIPMAP_NEAREST ||
+        t->MinFilter == GL_LINEAR_MIPMAP_NEAREST) {
+        GLint eff;
+
+        if (!t->Complete)
+            { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
+        if (ctx->Texture.Unit[0].LodBias != 0.0F)
+            { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
+        if (t->MinLod != 0.0F || t->MaxLod != 1000.0F)
+            { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
+        if (img->Width == 0 || img->Height == 0 ||
+            ((unsigned long)img->Width &
+             ((unsigned long)img->Width - 1UL)) != 0UL ||
+            ((unsigned long)img->Height &
+             ((unsigned long)img->Height - 1UL)) != 0UL)
+            { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
+        eff = ((t->MaxLevel < t->P) ? t->MaxLevel : t->P) - t->BaseLevel;
+        if (eff < 1 || eff > 4)
+            { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
+        if ((img->Width >> eff) < 8 || (img->Height >> eff) < 8)
+            { osmgaMesaGateNo((unsigned long)__LINE__); return 0; }
+    }
     return 1;
 }
 

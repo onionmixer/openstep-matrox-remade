@@ -168,3 +168,89 @@ B 조사 항목: λ 정수점 혼합 가중, affine/persp 혼합 차이, MM2S/MM
 부산물 교훈: 요약은 꼬리에서도 16줄이면 머리가 밀린다 — 다음 밴드는 10줄
 이하로.  4D9 의 "trapezoid 밉 없음" 은 여전히 참이며, 두 경로의 차이가
 이로써 실측으로 갈렸다.
+
+## 7. Phase B 설계 확정 (2026-08-31, 코딩 전 — codex 검토 대상)
+
+### 7-1. 계약 (hw3d 헤더, 양측 동시 재빌드)
+- `OSMGAHW3DState` 끝에 `mipMapnb`(0=밉 없음, 1..4)와 `mipOrg[4]`(레벨 1..4
+  절대 원점) 추가.  **WARP 배치 version 10 → 11** — 커널은 11만 수락,
+  구판 라이브러리는 깨끗이 거절(레이아웃 lockstep 강제).  v9 계약 불변.
+- 필터는 기존 `texFlags` 의 MINMODE 비트(9-12)를 그대로 탄다 — 검증기·
+  인코더가 이미 알고 있는 채널.  GL 매핑(Phase A 확정, 스펙 기준):
+  NEAREST_MM→MM1S(0x8), LINEAR_MM_NEAREST→MM2S(0x9),
+  NEAREST_MM_LINEAR→MM4S(0xA), LINEAR_MM_LINEAR→MM8S(0xC).
+
+### 7-2. 커널
+- `OSMGAM3Tex` 에 `mipMapnb`+`mipOrg[4]` 추가; **기존 스택 채움 지점 9곳
+  전부에 명시적 0 초기화**(미초기화 위험은 codex 가 Phase A 에서 지적).
+  M12 밴드는 static 훅(osmgaM12MipOrgs)을 버리고 이 필드를 쓴다 — static
+  제거.
+- `osmgaWarpTexFromState`: state.mipMapnb>0 이면 tex 필드 채움 + filter 에
+  mapnb<<29 합성.
+- 빌더: `tex->mipMapnb>0` 이면 TEXORG1..4 = mipOrg(미사용 칸은 마지막 유효
+  원점 반복), texctl 은 비선형 tpitch(log2(w)-3).  0 이면 현행 그대로.
+- 검증기(`osmgaHW3DValidateStateCommon` 텍스처 절): MINMODE≠0 ↔ mapnb∈1..4
+  상호 필수; TW32·pow2·pitch==texW·최저 레벨 dim≥8(mapnb ≤ log2(texW)-3);
+  각 레벨 원점 32B 정렬 + 레벨 footprint 가 texStart..texEnd 안(halving
+  치수로 계산); `osmgaHW3DWarpAdmits` 는 mapnb 동반 시 네 MINMODE 허용.
+
+### 7-3. 유저랜드 텍스처 (Texture.c / TexArena)
+- `OSMGAMesaTexRes` 에 `levelCount`, `levelOff[5]` — **체인은 한 블록**
+  (Σ align32(레벨 바이트), 레벨 치수 128..8 은 패딩 불요), 레코드는 base
+  image 의 DriverData 하나.
+- 신규 `OSMGAMesaTexResidentMip(ctx, wantMip, ...)`: wantMip 이면 Mesa
+  완결성(`t->Complete`)·pow2·레벨 존재를 확인하고 체인 업로드(레벨별
+  osmgaTexCopy), mapnb=min(log2(dim)-3, 레벨수-1, 4) 반환.  비밉 텍스처는
+  현행 단일 레벨 그대로.
+- 무효화: TexImage/TexSubImage 훅이 **어느 레벨을 만져도 base 레코드**를
+  drop/invalid (체인 전체 lazy 재복사).  라이트맵 등 비밉 객체는 영향 없음
+  (단일 레벨 경로 유지 — 핫패스 비용 불변).
+- 단일↔체인 전환(필터가 나중에 밉으로 바뀜): 레코드 종류 불일치 시 drop 후
+  재업로드.
+
+### 7-4. 훅 (Hook.c)
+- admission(3228): 네 밉 MinFilter 허용 — 단 텍스처가 pow2·완결일 때만,
+  아니면 기존대로 소프트웨어.
+- 텍스처 준비(2638): 밉 필터면 Mip 변형 호출, pendTexMip{Mapnb,Org[4]}
+  보관, texFlags 에 MINMODE 합성; fillState 두 곳(1310, 1823)이 state 로
+  복사.  배치 키는 level-0 origin 그대로(체인 원점=키).
+- 기본 경로 주의: quake 기본 필터 = LINEAR_MIPMAP_NEAREST(MM2S) — Phase A
+  에서 가장 깨끗했던 모드.  MM8S 의 정수-λ 혼합 특성은 문서화만.
+
+### 7-5. 포트 (gl_vidsdl.c)
+- GL_LINEAR 강제 복구 제거, 필터 감사 허용 집합 갱신.  gl_texturemode
+  기본( LINEAR_MIPMAP_NEAREST )이 하드웨어로 가게 된다.
+
+### 7-6. 검증
+- 호스트: 검증기 신규 케이스(hw3d 호스트 시험) — mapnb/MINMODE 상호성,
+  레벨 창 이탈, 정렬, pow2, 최저 dim.
+- 실기(재부팅 1): ① qual run — 기존 밴드 전부 + M12(struct 경유) 불변
+  ② glquake: 원거리 시머링 소멸(육안), 120ms 회귀, declined 0, 텍스처
+  업로드 수(체인 비용) 관찰.
+
+### 7-7. codex 에 묻는 것
+1. 계약 확장 위치·version 11 처리(스냅샷 공용체 크기, 디스패처, 구판 거절
+   경로)의 함정.
+2. 검증기 레벨 footprint 산식(halving + 32B 정렬)과 admission 미러링의 구멍.
+3. base-레코드 무효화로 바꿀 때 기존 단일 레벨 경로(라이트맵 SubImage)의
+   회귀 위험 — 레코드 소유가 base image 로 옮겨질 때 TexImage(level>0)
+   redefinition 처리.
+4. GL λ 클램프 차이(mapnb 캡 vs GL 전체 체인)를 "정확 가속" 으로 광고할 수
+   있는가 — 아니면 admission 을 레벨 수 일치 때만 열어야 하는가.
+5. 전환(단일↔체인) 및 아레나 단편화·바이트 여유의 반례.
+6. 빠진 것.
+
+## 8. Phase B codex 판정 (2026-08-31) — GO-with-changes, 필수 6조건 채택
+
+| 조건 | 내용 |
+|---|---|
+| 1 | **v9 ABI 동결**: 밉 필드는 OSMGAHW3DState 가 아니라 **WARP v11 배치 전용 멤버**(state 뒤 osmga_u32 mipMapnb, mipOrg[4]).  VERSION_WARP 10→11, 디스패처는 9/11 만 명시 수락.  호스트에 sizeof(State)·v9 tri 오프셋·배치 크기 동결 검사 추가 |
+| 2 | 검증기: 레벨별 footprint(Reach, halving, 32B 정렬) + **양축** min-dim 8 (mapnb ≤ min(log2W,log2H)-3) + MINMODE↔mapnb 상호 필수.  v9 진단용 double-rows 규칙은 유지(선택자 경로), 생산 규칙은 v11 메타데이터에만 |
+| 3 | 정확성: admission 은 `mapnb == P - BaseLevel` 일 때만 — 포트가 밉 객체에 GL_TEXTURE_MAX_LEVEL 을 8×8 레벨로 캡(기존 필터 감사 순회 확장).  MinLod/MaxLod/LodBias 비기본 → 소프트웨어 |
+| 4 | 밉 상태의 WARP 선행 거절 폴백은 **소프트웨어** (v9 사다리꼴 금지 — 밉 fetch 없음 실측 경로) |
+| 5 | 1차 개방은 **MM1S/MM2S** 만 (quake 기본 = MM2S).  MM4S/MM8S 는 λ 정수점 혼합·fthres 경계를 Mesa 오라클과 대조한 뒤 |
+| 6 | pending 텍스처 키에 mipMapnb·mipOrg 포함; 모든 배치/프로브 초기화 경로에서 밉 필드 명시 0; 레벨별 usable(Data≠0·비압축·border0) 매 조회 검사; 랩 게이트의 공간 필터 분류(MM1S=nearest계, MM2S=linear계) |
+
+버전 거절 경로 검증 완료: 구 클라이언트 v10 → v9 낙하 → E_VERSION/EINVAL →
+훅 재생 → 8회 후 revoke (영구 재생 없음).  체인 아레나: first-fit 연속 gap
+실패 시 소프트웨어(성능만), 블록 수는 오히려 유리.

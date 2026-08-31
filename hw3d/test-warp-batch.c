@@ -135,6 +135,17 @@ layout(void)
     check(offsetof(OSMGAHW3DWarpBatch, state) ==
           offsetof(OSMGAHW3DBatch, state), "state is at the same offset");
 
+    /* Version 11: the mip tail is WARP-only, and version 9 is FROZEN --
+     * the same state struct is embedded there and its version number
+     * would not move with the layout. */
+    check(offsetof(OSMGAHW3DWarpBatch, mipMapnb) ==
+          offsetof(OSMGAHW3DWarpBatch, state) + sizeof(OSMGAHW3DState),
+          "the mip tail sits directly after the frozen state");
+    check(offsetof(OSMGAHW3DBatch, tri) ==
+          offsetof(OSMGAHW3DBatch, state) + sizeof(OSMGAHW3DState),
+          "version 9's triangles still sit directly after the state");
+    check(OSMGA_HW3D_VERSION_WARP == 11UL, "the WARP batch is version 11");
+
     /*
      * The command list has to hold what the maxima allow: a state list per
      * run plus every vertex, copied out of the client's reach.  The header

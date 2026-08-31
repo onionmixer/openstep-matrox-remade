@@ -49,6 +49,14 @@ typedef struct {
     unsigned long bytes;
     unsigned long epoch;
     unsigned long w, h;
+    /*
+     * 1 for the single-level residency every texture had until M12; 1+N
+     * when the block holds a mip chain of N maps below the base, with
+     * levelOff[i] naming level i+1's byte offset from origin.  A record
+     * of the wrong shape is dropped and rebuilt, like a size change.
+     */
+    unsigned long levelCount;
+    unsigned long levelOff[4];
     int valid;                  /* the bytes in video memory are current */
 } OSMGAMesaTexRes;
 
@@ -173,32 +181,51 @@ osmgaTexCopy(const struct gl_texture_image *img, unsigned long *dst,
  * Zero means it is not there and cannot be put there, which is the caller's
  * cue to draw this triangle in software.
  */
-int
-OSMGAMesaTexResident(void *ctxv, struct gl_texture_object *tObj,
-                     unsigned long *origin, unsigned long *w,
-                     unsigned long *h, unsigned long *pitch)
+static int
+osmgaTexResidentN(void *ctxv, struct gl_texture_object *tObj,
+                  unsigned long levels, unsigned long *origin,
+                  unsigned long *w, unsigned long *h, unsigned long *pitch,
+                  unsigned long *mipOrg)
 {
     GLcontext *ctx = (GLcontext *)ctxv;
     struct gl_texture_image *img;
     OSMGAMesaTexRes *r;
     unsigned long aOrg = 0UL, aLen = 0UL, epoch;
     void *map;
-    unsigned long need;
+    unsigned long need, li, off;
 
     if (origin != 0) *origin = 0UL;
-    if (tObj == 0)
+    if (tObj == 0 || levels == 0UL || levels > 5UL)
         return 0;
     /*
      * The level the software path would sample (triangle.c:658), not level
-     * zero.  Uploading one image while the other path reads another is a
-     * disagreement nobody would look for.
+     * zero.  A CHAIN is only ever asked for with BaseLevel zero -- the
+     * admission gate holds that -- so the levels below the base are
+     * Image[1..N].
      */
     if (tObj->BaseLevel < 0 || tObj->BaseLevel >= MAX_TEXTURE_LEVELS)
+        return 0;
+    if (levels > 1UL && tObj->BaseLevel != 0)
         return 0;
     img = tObj->Image[tObj->BaseLevel];
     if (!osmgaTexUsable(img)) {
         texRefused++;
         return 0;
+    }
+    /*
+     * Every level of the chain, EVERY time: completeness says the levels
+     * exist at the right sizes, but Data and compression are residency's
+     * own contract (a compressed TexImage never reaches our hook).
+     */
+    for (li = 1UL; li < levels; li++) {
+        const struct gl_texture_image *lv = tObj->Image[li];
+
+        if (!osmgaTexUsable(lv) ||
+            (unsigned long)lv->Width  != ((unsigned long)img->Width  >> li) ||
+            (unsigned long)lv->Height != ((unsigned long)img->Height >> li)) {
+            texRefused++;
+            return 0;
+        }
     }
 
     map = OSMGAMesaBufferTextureMap(ctx, &aOrg, &aLen);
@@ -211,9 +238,11 @@ OSMGAMesaTexResident(void *ctxv, struct gl_texture_object *tObj,
 
     r = (OSMGAMesaTexRes *)img->DriverData;
     if (r != 0 && (r->epoch != epoch || r->w != (unsigned long)img->Width ||
-                   r->h != (unsigned long)img->Height)) {
-        /* the surface moved under it, or the image was redefined at another
-         * size without our hook seeing it */
+                   r->h != (unsigned long)img->Height ||
+                   r->levelCount != levels)) {
+        /* the surface moved under it, the image was redefined at another
+         * size without our hook seeing it, or the record has the wrong
+         * SHAPE -- single where a chain is wanted or the other way */
         osmgaTexDrop(img);
         r = 0;
     }
@@ -227,10 +256,19 @@ OSMGAMesaTexResident(void *ctxv, struct gl_texture_object *tObj,
         r->epoch = epoch;
         r->w = (unsigned long)img->Width;
         r->h = (unsigned long)img->Height;
+        r->levelCount = levels;
         img->DriverData = r;
     }
     if (r->origin == 0UL) {
-        need = r->w * r->h * 4UL;
+        need = 0UL;
+        for (li = 0UL; li < levels; li++) {
+            unsigned long lb = (r->w >> li) * (r->h >> li) * 4UL;
+
+            lb = (lb + 31UL) & ~31UL;   /* the register's own alignment */
+            if (li != 0UL)
+                r->levelOff[li - 1UL] = need;
+            need += lb;
+        }
         if (!OSMGAMesaTexAlloc(need, epoch, &r->origin)) {
             /* the arena is full, or there is none: software, not a botched
              * draw */
@@ -251,8 +289,13 @@ OSMGAMesaTexResident(void *ctxv, struct gl_texture_object *tObj,
          * choke point where the ordering can be enforced.
          */
         OSMGAMesaHookFlushPending();
-        osmgaTexCopy(img, (unsigned long *)((char *)map +
-                                            (r->origin - aOrg)), r->w);
+        for (li = 0UL; li < levels; li++) {
+            off = (li == 0UL) ? 0UL : r->levelOff[li - 1UL];
+            osmgaTexCopy(tObj->Image[li],
+                         (unsigned long *)((char *)map +
+                                           (r->origin - aOrg) + off),
+                         r->w >> li);
+        }
         r->valid = 1;
         texUploads++;
     }
@@ -260,7 +303,20 @@ OSMGAMesaTexResident(void *ctxv, struct gl_texture_object *tObj,
     if (w != 0)      *w = r->w;
     if (h != 0)      *h = r->h;
     if (pitch != 0)  *pitch = r->w;
+    if (mipOrg != 0)
+        for (li = 0UL; li < 4UL; li++)
+            mipOrg[li] = (li + 1UL < levels)
+                             ? r->origin + r->levelOff[li] : 0UL;
     return 1;
+}
+
+int
+OSMGAMesaTexResident(void *ctxv, struct gl_texture_object *tObj,
+                     unsigned long *origin, unsigned long *w,
+                     unsigned long *h, unsigned long *pitch)
+{
+    return osmgaTexResidentN(ctxv, tObj, 1UL, origin, w, h, pitch,
+                             (unsigned long *)0);
 }
 
 /*
@@ -270,9 +326,10 @@ OSMGAMesaTexResident(void *ctxv, struct gl_texture_object *tObj,
  * unit belongs here rather than in three callers.
  */
 int
-OSMGAMesaTexResidentCurrent(void *ctxv, unsigned long *origin,
+OSMGAMesaTexResidentCurrent(void *ctxv, unsigned long mipLevels,
+                            unsigned long *origin,
                             unsigned long *w, unsigned long *h,
-                            unsigned long *pitch)
+                            unsigned long *pitch, unsigned long *mipOrg)
 {
     GLcontext *ctx = (GLcontext *)ctxv;
 
@@ -284,8 +341,8 @@ OSMGAMesaTexResidentCurrent(void *ctxv, unsigned long *origin,
      * single-unit texture path samples unit zero -- so following CurrentUnit
      * would upload one object and draw with another.
      */
-    return OSMGAMesaTexResident(ctxv, ctx->Texture.Unit[0].CurrentD[2],
-                                origin, w, h, pitch);
+    return osmgaTexResidentN(ctxv, ctx->Texture.Unit[0].CurrentD[2],
+                             mipLevels + 1UL, origin, w, h, pitch, mipOrg);
 }
 
 /* ---- the hooks ---- */
@@ -302,6 +359,10 @@ osmgaTexImage(GLcontext *ctx, GLenum target, struct gl_texture_object *tObj,
      */
     if (tObj != 0 && level >= 0 && level < MAX_TEXTURE_LEVELS)
         osmgaTexDrop(tObj->Image[level]);
+    /* A chain lives on the BASE image's record; redefining any lower
+     * level reshapes the chain, so the base record goes too. */
+    if (tObj != 0 && level > 0 && tObj->Image[0] != 0)
+        osmgaTexDrop(tObj->Image[0]);
     (void)target; (void)internalFormat; (void)image;
     if (prevTexImage != 0)
         (*prevTexImage)(ctx, target, tObj, level, internalFormat, image);
@@ -321,6 +382,10 @@ osmgaTexSubImage(GLcontext *ctx, GLenum target, struct gl_texture_object *tObj,
     if (tObj != 0 && level >= 0 && level < MAX_TEXTURE_LEVELS &&
         tObj->Image[level] != 0 && tObj->Image[level]->DriverData != 0)
         ((OSMGAMesaTexRes *)tObj->Image[level]->DriverData)->valid = 0;
+    /* The chain's copy of a lower level lives under the base record. */
+    if (tObj != 0 && level > 0 && tObj->Image[0] != 0 &&
+        tObj->Image[0]->DriverData != 0)
+        ((OSMGAMesaTexRes *)tObj->Image[0]->DriverData)->valid = 0;
     (void)target; (void)xoffset; (void)yoffset;
     (void)width; (void)height; (void)internalFormat; (void)image;
     if (prevTexSubImage != 0)

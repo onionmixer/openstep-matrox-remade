@@ -201,6 +201,9 @@ OSMGAMesaWarpReset(OSMGAMesaWarpBuilder *w, OSMGAHW3DWarpBatch *b)
     b->magic    = OSMGA_HW3D_MAGIC;
     b->version  = OSMGA_HW3D_VERSION_WARP;
     b->triCount = 0UL;            /* the other payload is not in use */
+    b->mipMapnb = 0U;
+    b->mipOrg[0] = b->mipOrg[1] = 0U;
+    b->mipOrg[2] = b->mipOrg[3] = 0U;
     b->runCount = 0U;
     b->vtxCount = 0U;
 }

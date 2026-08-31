@@ -424,6 +424,7 @@ osmgaHW3DValidatePrimState(unsigned long dwgctl, unsigned long alphactrl)
  */
 static int
 osmgaHW3DValidateStateCommon(const OSMGAHW3DState *st,
+                             unsigned long mipMapnb,
                              const OSMGAHW3DLimits *lim,
                              unsigned long rows, int anyDepth, int anyTex)
 {
@@ -560,7 +561,12 @@ osmgaHW3DValidateStateCommon(const OSMGAHW3DState *st,
             if ((st->texorg & (OSMGA_HW3D_TEXORG_ALIGN - 1UL)) != 0UL)
                 return OSMGA_HW3D_E_TEXORGAL;
 
-            if (!osmgaHW3DReach(st->texorg, (mm != 0UL) ? h * 2UL : h,
+            /* Version 11 declares its chain and the WARP validator
+             * proves every level's own footprint, so the base needs only
+             * its own rows there; the doubled reach stays for the v9
+             * DIAGNOSTIC selector, which declares nothing. */
+            if (!osmgaHW3DReach(st->texorg,
+                                (mm != 0UL && mipMapnb == 0UL) ? h * 2UL : h,
                                 pitch * 4UL, lim->texStart, lim->texEnd))
                 return OSMGA_HW3D_E_TEXORG;
         }
@@ -694,7 +700,7 @@ osmgaHW3DValidateReachSite(const OSMGAHW3DBatch *b,
             if ((b->tri[i].dwgctl & 0xFUL) == OSMGA_HW3D_OPCODE_TEX)  anyTex = 1;
         }
     
-        vs = osmgaHW3DValidateStateCommon(&b->state, lim, rows,
+        vs = osmgaHW3DValidateStateCommon(&b->state, 0UL, lim, rows,
                                           anyDepth, anyTex);
         if (vs != OSMGA_HW3D_OK)
             return vs;
@@ -1576,10 +1582,50 @@ osmgaHW3DF32Between(unsigned long p, unsigned long lo, unsigned long hi)
  * changes.
  */
 int
-osmgaHW3DWarpAdmits(const OSMGAHW3DState *st, const OSMGAHW3DRun *run)
+osmgaHW3DWarpAdmits(const OSMGAHW3DState *st, const OSMGAHW3DRun *run,
+                    unsigned long mipMapnb)
 {
     if (st == 0 || run == 0)
         return OSMGA_HW3D_E_WARPPOLICY;
+    /*
+     * The mip shape, judged here so the library's pre-admission and the
+     * kernel's validator apply one rule.  A textured run with a mip
+     * minfilter needs a matching chain declaration and the other way
+     * round; only the two single-level-per-pixel modes ship (the note
+     * by mipMapnb in the header); the chain must fit the base's own
+     * power-of-two geometry with both axes at least 8 at the deepest
+     * declared map.  Per-level FOOTPRINTS are the validator's, not
+     * ours -- they need the VRAM window.
+     */
+    if (((unsigned long)run->dwgctl & 0xFUL)
+            == OSMGA_HW3D_OPCODE_TEX) {
+        unsigned long mm = (st->texFlags & OSMGA_HW3D_TEXF_MINMODE_MASK)
+                           >> OSMGA_HW3D_TEXF_MINMODE_SHIFT;
+
+        if ((mm != 0UL) != (mipMapnb != 0UL))
+            return OSMGA_HW3D_E_WARPPOLICY;
+        if (mipMapnb != 0UL) {
+            unsigned long lw = 0UL, lh = 0UL;
+
+            if (mm != OSMGA_HW3D_TEXF_MINMODE_MM1S &&
+                mm != OSMGA_HW3D_TEXF_MINMODE_MM2S)
+                return OSMGA_HW3D_E_WARPPOLICY;
+            if (mipMapnb > 4UL)
+                return OSMGA_HW3D_E_WARPPOLICY;
+            if (st->texFormat != OSMGA_HW3D_TEXFMT_TW32)
+                return OSMGA_HW3D_E_WARPPOLICY;
+            if (st->texW == 0UL || st->texH == 0UL ||
+                (st->texW & (st->texW - 1UL)) != 0UL ||
+                (st->texH & (st->texH - 1UL)) != 0UL ||
+                st->texPitch != st->texW)
+                return OSMGA_HW3D_E_WARPPOLICY;
+            while ((1UL << lw) < st->texW) lw++;
+            while ((1UL << lh) < st->texH) lh++;
+            if (lw < 3UL || lh < 3UL ||
+                mipMapnb > lw - 3UL || mipMapnb > lh - 3UL)
+                return OSMGA_HW3D_E_WARPPOLICY;
+        }
+    }
 
     /*
      * Repeat and blending were refused here until the hardware answered.
@@ -1669,9 +1715,34 @@ osmgaHW3DValidateWarp(const OSMGAHW3DWarpBatch *b,
                                             (unsigned long)run->alphactrl);
         if (policy != OSMGA_HW3D_OK)
             return policy;
-        policy = osmgaHW3DWarpAdmits(&b->state, run);
+        policy = osmgaHW3DWarpAdmits(&b->state, run,
+                                     (unsigned long)b->mipMapnb);
         if (policy != OSMGA_HW3D_OK)
             return policy;
+    }
+    /*
+     * Every declared map's footprint, independently: origins are
+     * absolute, so each level stands or falls inside the texture
+     * window on its own.  Alignment is the register's own <31:5>.
+     */
+    if (b->mipMapnb != 0UL) {
+        unsigned long li;
+
+        if ((unsigned long)b->mipMapnb > 4UL)
+            return OSMGA_HW3D_E_WARPPOLICY;
+        for (li = 1UL; li <= (unsigned long)b->mipMapnb; li++) {
+            unsigned long lw = b->state.texW >> li;
+            unsigned long lh = b->state.texH >> li;
+            unsigned long lo = (unsigned long)b->mipOrg[li - 1UL];
+
+            if (lw < 8UL || lh < 8UL)
+                return OSMGA_HW3D_E_WARPPOLICY;
+            if ((lo & 31UL) != 0UL)
+                return OSMGA_HW3D_E_TEXORGAL;
+            if (!osmgaHW3DReach(lo, lh, lw * 4UL,
+                                lim->texStart, lim->texEnd))
+                return OSMGA_HW3D_E_TEXORG;
+        }
     }
     if (seen != (unsigned long)b->vtxCount)
         return OSMGA_HW3D_E_VTXCOUNT;
@@ -1701,7 +1772,9 @@ osmgaHW3DValidateWarp(const OSMGAHW3DWarpBatch *b,
             if (osmgaHW3DAddressesDepth(dw))                anyDepth = 1;
             if ((dw & 0xFUL) == OSMGA_HW3D_OPCODE_TEX)      anyTex = 1;
         }
-        vs = osmgaHW3DValidateStateCommon(&b->state, lim, lim->clipY1 + 1UL,
+        vs = osmgaHW3DValidateStateCommon(&b->state,
+                                          (unsigned long)b->mipMapnb,
+                                          lim, lim->clipY1 + 1UL,
                                           anyDepth, anyTex);
         if (vs != OSMGA_HW3D_OK)
             return vs;

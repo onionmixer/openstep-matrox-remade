@@ -952,7 +952,14 @@ typedef struct {
     osmga_u32 count;        /* vertices, a multiple of three */
 } OSMGAHW3DRun;
 
-#define OSMGA_HW3D_VERSION_WARP  10UL
+/*
+ * 11: the mip chain joined the batch.  The metadata lives in the WARP
+ * batch alone -- OSMGAHW3DState is FROZEN, because version 9 embeds the
+ * same struct and its version number would not change with the layout.
+ * A version-10 client lands in the version-9 arm and is refused with
+ * E_VERSION, which is the clean shape of "rebuild the library".
+ */
+#define OSMGA_HW3D_VERSION_WARP  11UL
 #define OSMGA_HW3D_MAX_RUN       16UL
 #define OSMGA_HW3D_MAX_VTX      720UL   /* 240 triangles */
 
@@ -972,6 +979,17 @@ typedef struct {
     unsigned long version;
     unsigned long triCount;
     OSMGAHW3DState state;
+    /*
+     * The mip chain, version 11.  mipMapnb 0 is exactly version 10's
+     * behaviour; 1..4 declares that many maps below the base, each at
+     * its own ABSOLUTE 32-byte-aligned origin (spec Table 4-2), each
+     * halving the base dimensions, none smaller than 8 on either axis.
+     * Only MM1S and MM2S ship: the LINEAR-between-levels modes mix at
+     * integer lambda where Mesa would not (M12 Phase A), and stay
+     * refused until that boundary is qualified.
+     */
+    osmga_u32 mipMapnb;
+    osmga_u32 mipOrg[4];
     osmga_u32 runCount;
     osmga_u32 vtxCount;
     OSMGAHW3DRun    run[OSMGA_HW3D_MAX_RUN];
@@ -1004,7 +1022,8 @@ int osmgaHW3DValidateWarp(const OSMGAHW3DWarpBatch *b,
  * the trapezoid path instead, so a refusal costs speed and never a
  * picture.
  */
-int osmgaHW3DWarpAdmits(const OSMGAHW3DState *st, const OSMGAHW3DRun *run);
+int osmgaHW3DWarpAdmits(const OSMGAHW3DState *st, const OSMGAHW3DRun *run,
+                        unsigned long mipMapnb);
 
 /*
  * One primitive's opcode, access type and alpha control.  Both contracts
