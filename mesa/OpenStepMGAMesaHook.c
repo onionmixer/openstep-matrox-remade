@@ -2750,8 +2750,27 @@ osmgaMesaTriangle(GLcontext *ctx, GLuint v0, GLuint v1, GLuint v2, GLuint pv)
      * and there is no quantisation to reproduce or to get wrong.
      */
     if (ctx->Color.AlphaEnabled) {
-        unsigned long at = OSMGA_MESA_AT_ENABLE
-                           | ((unsigned long)ctx->Color.AlphaRef
+        /*
+         * WITHOUT the enable bit, deliberately.  The engine tests alpha in
+         * two places (spec 3-34): aten gates a FIRST test on the raw
+         * filtered texel alpha, before the dual stage; the atmode field
+         * alone drives a SECOND test on the alpha alphasel picked, after
+         * the stage.  GL's test wants the fragment's FINAL alpha -- for an
+         * RGB texture that is the interpolated Af, which the stage yields
+         * (ARG2) and the raw texel byte does not carry (the arena stores
+         * nought there; see the pack note in OpenStepMGAMesaTexture.c).
+         * With aten set, GLQuake's opaque 2D -- console back, status bar --
+         * failed the first test texel by texel and vanished; measured on
+         * hardware, Q5 section 9.
+         *
+         * The second test alone is the GL mapping, and it is measured:
+         * W17 has it alive with aten=0, all 24 rows, and W18's contrary
+         * conclusion held only for a probe that FORCED alphasel=1 so the
+         * two tests saw different alphas -- under this file's
+         * ALPHASEL_TEX policy the second test sees exactly what GL asks
+         * it to compare, every format and environment.
+         */
+        unsigned long at = ((unsigned long)ctx->Color.AlphaRef
                               << OSMGA_MESA_AT_REF_SHIFT);
 
         switch (ctx->Color.AlphaFunc) {
