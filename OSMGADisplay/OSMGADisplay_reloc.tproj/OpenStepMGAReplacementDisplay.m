@@ -700,14 +700,18 @@ typedef int OSMGAD3ZorgAligned[
 /* The band's results, buffered and printed at the METHOD's tail: the
  * first M12 run lost its opening lines to the syslog volume trap the
  * note at the top of this file describes, and the tail is the part
- * that survives.  dN/dB: pixels differing from the NRST and BILIN
- * controls of the same regime; l0/l1/l2: pixels whose signature
- * decodes cleanly into one level's disjoint G band; bad: valid-looking
- * pixels whose checksum fails (bilinear mixtures land here). */
+ * that survives.  v3 (M12-C) reads the blend WEIGHT straight off the
+ * green channel -- the levels are filled with constant G (0/32/64), so
+ * f = (G-32)/32 between the two upper maps and every pixel judges
+ * itself against the row's expected G.  samp keeps the first four
+ * pixels that left the expected window, (row<<24)|(col<<16)|G, printed
+ * only when there are any. */
 #define OSMGA_M12_OUT_MAX 16UL
 static struct {
     const char *tag;
-    unsigned long dN, dB, l0, l1, l2, bad;
+    unsigned long expG, cnt, gMin, gMax, gSum, bad;
+    unsigned long nsamp;
+    unsigned long samp[4];
 } osmgaM12Out[OSMGA_M12_OUT_MAX];
 static unsigned long osmgaM12OutN = 0UL;
 
@@ -13629,27 +13633,36 @@ releaseAndReturn:
             volatile unsigned long *blkMip = 0;
             unsigned long m12orgs[5];
             unsigned long m12tu[3], m12tv[3], m12rhw[3], m12z[3];
-            unsigned long lvl, arm, runi, o;
-            static unsigned long m12snapN[OSMGA_M3_BLK * OSMGA_M3_BLK];
-            static unsigned long m12snapB[OSMGA_M3_BLK * OSMGA_M3_BLK];
+            unsigned long lvl, runi, o;
             static const unsigned long m12lvlOff[3] = {
                 0UL, OSMGA_M12_L1_OFF, OSMGA_M12_L2_OFF };
-            /* min nibble, mapnb bits, fthres bits, tag -- runs 0 and 1
-             * are the controls of each regime. */
+            /* M12-C: min nibble, tuSpan (= 2^lt / 4 over the 16px leg,
+             * python-checked IEEE), the row's expected G under Mesa's
+             * rule G = 32 + 32*frac(lambda) between L1 and L2, tag.
+             * EIGHTH-grid lambdas, so a blender that quantizes f to
+             * quarters CANNOT match the oracle (the quarter points of
+             * the first draft would have); the two MM1S rows sit a
+             * 1/32 either side of 1.5 and check the lambda arithmetic
+             * apart from the blender.  mapnb=2 and fthres 0x10 for
+             * every row -- both were swept in Phase A. */
             static const struct {
-                unsigned long minf, mapnb, fthres;
+                unsigned long minf, tuSpan, expG;
                 const char *tag;
-            } m12run[10] = {
-                { 0x0UL, OSMGA_M12_MAPNB2, 0x10UL << 21, "nrst"  },
-                { 0x2UL, OSMGA_M12_MAPNB2, 0x10UL << 21, "bilin" },
-                { 0x8UL, OSMGA_M12_MAPNB2, 0x10UL << 21, "mm1s"  },
-                { 0x9UL, OSMGA_M12_MAPNB2, 0x10UL << 21, "mm2s"  },
-                { 0xAUL, OSMGA_M12_MAPNB2, 0x10UL << 21, "mm4s"  },
-                { 0xCUL, OSMGA_M12_MAPNB2, 0x10UL << 21, "mm8s"  },
-                { 0x8UL, 1UL << 29,        0x10UL << 21, "m1n1"  },
-                { 0x8UL, 4UL << 29,        0x10UL << 21, "m1n4"  },
-                { 0x8UL, OSMGA_M12_MAPNB2, 0x20UL << 21, "m1f2"  },
-                { 0xCUL, OSMGA_M12_MAPNB2, 0x20UL << 21, "m8f2"  },
+            } m12run[14] = {
+                { 0xAUL, 0x3F000000UL, 32UL, "m4-1.000" },
+                { 0xAUL, 0x3F0B95C2UL, 36UL, "m4-1.125" },
+                { 0xAUL, 0x3F25FED7UL, 44UL, "m4-1.375" },
+                { 0xAUL, 0x3F45672AUL, 52UL, "m4-1.625" },
+                { 0xAUL, 0x3F6AC0C7UL, 60UL, "m4-1.875" },
+                { 0xAUL, 0x3F800000UL, 64UL, "m4-2.000" },
+                { 0xCUL, 0x3F000000UL, 32UL, "m8-1.000" },
+                { 0xCUL, 0x3F0B95C2UL, 36UL, "m8-1.125" },
+                { 0xCUL, 0x3F25FED7UL, 44UL, "m8-1.375" },
+                { 0xCUL, 0x3F45672AUL, 52UL, "m8-1.625" },
+                { 0xCUL, 0x3F6AC0C7UL, 60UL, "m8-1.875" },
+                { 0xCUL, 0x3F800000UL, 64UL, "m8-2.000" },
+                { 0x8UL, 0x3F3123F6UL, 32UL, "m1-lo"    },
+                { 0x8UL, 0x3F38FBAFUL, 64UL, "m1-hi"    },
             };
             OSMGAM3Tex m12tex;
 
@@ -13660,9 +13673,11 @@ releaseAndReturn:
                 IOLog("OpenStepMGA M12: atlas map r=%d, band skipped\n",
                       (int)r);
             } else {
-                /* Disjoint G bands name the level without the alpha:
-                 * G is 0..15 for level 0, 32..35 for level 1, 64 for
-                 * level 2; R is the low offset byte; B checks both. */
+                /* Constant G per level -- 0, 32, 64 -- so the green
+                 * channel IS the level-blend weight: bilinear inside a
+                 * level cannot change a constant, and a mix of the two
+                 * upper maps reads G = 32 + 32f.  R stays the offset
+                 * ramp and B the checksum, both diagnostic only. */
                 for (lvl = 0UL; lvl < 3UL; lvl++) {
                     unsigned long dim = OSMGA_M12_L0_DIM >> lvl;
                     unsigned long bas = m12lvlOff[lvl] / 4UL;
@@ -13671,10 +13686,9 @@ releaseAndReturn:
                         for (col = 0UL; col < dim; col++) {
                             unsigned long off = row * dim + col;
                             unsigned long rr = off & 255UL;
-                            unsigned long gg = (off >> 8)
-                                               + ((lvl == 1UL) ? 32UL
-                                                  : (lvl == 2UL) ? 64UL
-                                                                 : 0UL);
+                            unsigned long gg = (lvl == 1UL) ? 32UL
+                                               : (lvl == 2UL) ? 64UL
+                                                              : 0UL;
 
                             blkMip[bas + off] = 0xFF000000UL
                                 | (rr << 16) | (gg << 8)
@@ -13710,120 +13724,100 @@ releaseAndReturn:
                 m12tex.mipOrg[1] = m12orgs[2];
                 m12tex.mipOrg[2] = m12orgs[3];
                 m12tex.mipOrg[3] = m12orgs[4];
-                for (arm = 0UL; arm < 2UL; arm++) {
-                    unsigned long runs = (arm == 0UL) ? 10UL : 6UL;
+                for (runi = 0UL; runi < 14UL; runi++) {
+                    unsigned long cnt = 0UL, gMin = 255UL, gMax = 0UL;
+                    unsigned long gSum = 0UL, cbad = 0UL, nsamp = 0UL;
+                    unsigned long samp[4];
 
-                    for (runi = 0UL; runi < runs; runi++) {
-                        unsigned long dN = 0UL, dB = 0UL;
-                        unsigned long l0 = 0UL, l1 = 0UL, l2 = 0UL;
-                        unsigned long cbad = 0UL;
+                    samp[0] = samp[1] = samp[2] = samp[3] = 0UL;
+                    m12tex.filter = MGA_TEXFILTER_ALPHA
+                                  | (0x10UL << 21)
+                                  | OSMGA_M12_MAPNB2
+                                  | MGA_TEXFILTER_MAGBILIN
+                                  | m12run[runi].minf;
+                    if (!osmgaM3StateRun(base, ring, ringDwords,
+                                         ringPhys,
+                                         osmgaWarpPipeHeld[
+                                             OSMGA_D2C_PIPE], stride,
+                                         (dwgctlFlat &
+                                          ~MGA_DWGCTL_OPCODE_MASK) |
+                                             MGA_DWGCTL_TEXTURE_TRAP |
+                                             MGA_DWGCTL_NOZCMP,
+                                         OSMGA_M3_ALPHACTRL_NOBLEND,
+                                         OSMGA_M3_WARP, OSMGA_M3_ZORG,
+                                         &m12tex, "M12")) {
+                        IOUnmapPhysicalFromIOTask(aMip, lMip);
+                        IOLog("OpenStepMGA M3: RETAINED, engine "
+                              "claimed.  *** REBOOT REQUIRED ***\n");
+                        goto unmapM4;
+                    }
+                    /* Affine only: rhw 1 everywhere, tv constant, tu
+                     * spanning tuSpan over the 16-pixel leg -- so
+                     * lambda = log2(4 * tuSpan) exactly, the one
+                     * gradient the row's expected G was computed
+                     * from. */
+                    m12z[0] = m12z[1] = m12z[2] = OSMGA_M3_F32_HALF;
+                    m12rhw[0] = m12rhw[1] = m12rhw[2] = OSMGA_M4_F32_ONE;
+                    m12tu[0] = 0UL;
+                    m12tu[1] = m12run[runi].tuSpan;
+                    m12tu[2] = 0UL;
+                    m12tv[0] = m12tv[1] = m12tv[2] = OSMGA_M3_F32_HALF;
+                    for (row = 0UL; row < OSMGA_M3_BLK; row++)
+                        for (col = 0UL; col < OSMGA_M3_BLK; col++)
+                            blkWa[row * stride + col] =
+                                OSMGA_S1_SENTINEL;
+                    osmgaM3BuildPerspTri(vtx, OSMGA_M3_TRI_LO,
+                                         OSMGA_M3_TRI_LO, 16UL,
+                                         m12rhw, m12tu, m12tv,
+                                         m12z, 0xFFFFFFFFUL);
+                    if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys,
+                                             OSMGA_D2C_VTX_DWORDS,
+                                             1, "M12", 0)) {
+                        IOUnmapPhysicalFromIOTask(aMip, lMip);
+                        IOLog("OpenStepMGA M3: RETAINED, engine "
+                              "claimed.  *** REBOOT REQUIRED ***\n");
+                        goto unmapM4;
+                    }
+                    for (row = 0UL; row < OSMGA_M3_BLK; row++)
+                        for (col = 0UL; col < OSMGA_M3_BLK; col++) {
+                            unsigned long v =
+                                blkWa[row * stride + col];
+                            unsigned long gg;
 
-                        m12tex.filter = MGA_TEXFILTER_ALPHA
-                                      | m12run[runi].fthres
-                                      | m12run[runi].mapnb
-                                      | ((runi == 0UL)
-                                             ? 0UL : MGA_TEXFILTER_MAGBILIN)
-                                      | m12run[runi].minf;
-                        if (!osmgaM3StateRun(base, ring, ringDwords,
-                                             ringPhys,
-                                             osmgaWarpPipeHeld[
-                                                 OSMGA_D2C_PIPE], stride,
-                                             (dwgctlFlat &
-                                              ~MGA_DWGCTL_OPCODE_MASK) |
-                                                 MGA_DWGCTL_TEXTURE_TRAP |
-                                                 MGA_DWGCTL_NOZCMP,
-                                             OSMGA_M3_ALPHACTRL_NOBLEND,
-                                             OSMGA_M3_WARP, OSMGA_M3_ZORG,
-                                             &m12tex, "M12")) {
-                            IOUnmapPhysicalFromIOTask(aMip, lMip);
-                            IOLog("OpenStepMGA M3: RETAINED, engine "
-                                  "claimed.  *** REBOOT REQUIRED ***\n");
-                            goto unmapM4;
-                        }
-                        /* one scale: a 16-pixel leg over the whole s
-                         * span is a minification of four -- squarely in
-                         * mip territory with the filter threshold at
-                         * one. */
-                        m12z[0] = m12z[1] = m12z[2] = OSMGA_M3_F32_HALF;
-                        if (arm == 0UL) {
-                            m12rhw[0] = m12rhw[1] = m12rhw[2] =
-                                OSMGA_M4_F32_ONE;
-                            m12tu[0] = 0UL;
-                            m12tu[1] = OSMGA_M4_F32_ONE;
-                            m12tu[2] = 0UL;
-                            m12tv[0] = m12tv[1] = m12tv[2] =
-                                OSMGA_M3_F32_HALF;
-                        } else {
-                            m12rhw[0] = OSMGA_M4_F32_ONE;
-                            m12rhw[1] = OSMGA_M4_F32_FOUR;
-                            m12rhw[2] = OSMGA_M4_F32_ONE;
-                            m12tu[0] = 0UL;
-                            m12tu[1] = OSMGA_M4_F32_FOUR;
-                            m12tu[2] = 0UL;
-                            m12tv[0] = OSMGA_M3_F32_HALF;
-                            m12tv[1] = OSMGA_M12_F32_TWO;
-                            m12tv[2] = OSMGA_M3_F32_HALF;
-                        }
-                        for (row = 0UL; row < OSMGA_M3_BLK; row++)
-                            for (col = 0UL; col < OSMGA_M3_BLK; col++)
-                                blkWa[row * stride + col] =
-                                    OSMGA_S1_SENTINEL;
-                        osmgaM3BuildPerspTri(vtx, OSMGA_M3_TRI_LO,
-                                             OSMGA_M3_TRI_LO, 16UL,
-                                             m12rhw, m12tu, m12tv,
-                                             m12z, 0xFFFFFFFFUL);
-                        if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys,
-                                                 OSMGA_D2C_VTX_DWORDS,
-                                                 1, "M12", 0)) {
-                            IOUnmapPhysicalFromIOTask(aMip, lMip);
-                            IOLog("OpenStepMGA M3: RETAINED, engine "
-                                  "claimed.  *** REBOOT REQUIRED ***\n");
-                            goto unmapM4;
-                        }
-                        for (row = 0UL; row < OSMGA_M3_BLK; row++)
-                            for (col = 0UL; col < OSMGA_M3_BLK; col++) {
-                                unsigned long ix = row * OSMGA_M3_BLK
-                                                   + col;
-                                unsigned long v =
-                                    blkWa[row * stride + col];
-                                unsigned long rr, gg;
-
-                                if (runi == 0UL)
-                                    m12snapN[ix] = v;
-                                else if (v != m12snapN[ix])
-                                    dN++;
-                                if (runi == 1UL)
-                                    m12snapB[ix] = v;
-                                else if (runi > 1UL &&
-                                         v != m12snapB[ix])
-                                    dB++;
-                                if (v == OSMGA_S1_SENTINEL)
-                                    continue;
-                                rr = (v >> 16) & 255UL;
-                                gg = (v >> 8) & 255UL;
-                                if (((rr * rr + gg * gg) & 255UL) !=
-                                    (v & 255UL))
-                                    cbad++;
-                                else if (gg < 16UL)
-                                    l0++;
-                                else if (gg >= 32UL && gg < 36UL)
-                                    l1++;
-                                else if (gg == 64UL)
-                                    l2++;
-                                else
-                                    cbad++;
+                            if (v == OSMGA_S1_SENTINEL)
+                                continue;
+                            gg = (v >> 8) & 255UL;
+                            cnt++;
+                            if (gg < gMin) gMin = gg;
+                            if (gg > gMax) gMax = gg;
+                            gSum += gg;
+                            if (gg > 66UL)
+                                cbad++;
+                            if ((gg + 2UL < m12run[runi].expG ||
+                                 gg > m12run[runi].expG + 2UL) &&
+                                nsamp < 4UL) {
+                                samp[nsamp] = (row << 24) | (col << 16)
+                                              | gg;
+                                nsamp++;
                             }
-                        if (osmgaM12OutN < OSMGA_M12_OUT_MAX) {
-                            osmgaM12Out[osmgaM12OutN].tag =
-                                m12run[runi].tag;
-                            osmgaM12Out[osmgaM12OutN].dN  = dN;
-                            osmgaM12Out[osmgaM12OutN].dB  = dB;
-                            osmgaM12Out[osmgaM12OutN].l0  = l0;
-                            osmgaM12Out[osmgaM12OutN].l1  = l1;
-                            osmgaM12Out[osmgaM12OutN].l2  = l2;
-                            osmgaM12Out[osmgaM12OutN].bad = cbad;
-                            osmgaM12OutN++;
                         }
+                    if (osmgaM12OutN < OSMGA_M12_OUT_MAX) {
+                        unsigned long si;
+
+                        osmgaM12Out[osmgaM12OutN].tag =
+                            m12run[runi].tag;
+                        osmgaM12Out[osmgaM12OutN].expG =
+                            m12run[runi].expG;
+                        osmgaM12Out[osmgaM12OutN].cnt  = cnt;
+                        osmgaM12Out[osmgaM12OutN].gMin = gMin;
+                        osmgaM12Out[osmgaM12OutN].gMax = gMax;
+                        osmgaM12Out[osmgaM12OutN].gSum = gSum;
+                        osmgaM12Out[osmgaM12OutN].bad  = cbad;
+                        osmgaM12Out[osmgaM12OutN].nsamp = nsamp;
+                        for (si = 0UL; si < 4UL; si++)
+                            osmgaM12Out[osmgaM12OutN].samp[si] =
+                                samp[si];
+                        osmgaM12OutN++;
                     }
                 }
                 IOUnmapPhysicalFromIOTask(aMip, lMip);
@@ -13849,20 +13843,30 @@ releaseAndReturn:
           osmgaM3Probes[2].leg * (osmgaM3Probes[2].leg + 1UL) / 2UL);
     osmgaD2Settle();
 
-    /* M12, printed here because the tail is what the syslog keeps.  The
-     * first eight rows (ten runs) are the affine regime with its sweep
-     * arms; the last six the perspective regime. */
+    /* M12-C, printed here because the tail is what the syslog keeps:
+     * fourteen rows, one line each, and a sample line only for a row
+     * whose pixels left the expected window.  The verdict is the
+     * host's (plan section 9-5): cnt 136, bad 0, gMin >= exp-2,
+     * gMax <= exp+2, |gSum - exp*cnt| <= 2*cnt. */
     {
         unsigned long mo;
 
         for (mo = 0UL; mo < osmgaM12OutN; mo++) {
-            IOLog("OpenStepMGA M12[%lu] %s: dN %lu dB %lu | L0 %lu L1 "
-                  "%lu L2 %lu bad %lu\n",
+            IOLog("OpenStepMGA M12C[%lu] %s: exp %lu cnt %lu G "
+                  "%lu..%lu sum %lu bad %lu\n",
                   mo, osmgaM12Out[mo].tag,
-                  osmgaM12Out[mo].dN, osmgaM12Out[mo].dB,
-                  osmgaM12Out[mo].l0, osmgaM12Out[mo].l1,
-                  osmgaM12Out[mo].l2, osmgaM12Out[mo].bad);
+                  osmgaM12Out[mo].expG, osmgaM12Out[mo].cnt,
+                  osmgaM12Out[mo].gMin, osmgaM12Out[mo].gMax,
+                  osmgaM12Out[mo].gSum, osmgaM12Out[mo].bad);
             osmgaD2Settle();
+            if (osmgaM12Out[mo].nsamp != 0UL) {
+                IOLog("OpenStepMGA M12C[%lu] off-window %lu: %08lx "
+                      "%08lx %08lx %08lx\n",
+                      mo, osmgaM12Out[mo].nsamp,
+                      osmgaM12Out[mo].samp[0], osmgaM12Out[mo].samp[1],
+                      osmgaM12Out[mo].samp[2], osmgaM12Out[mo].samp[3]);
+                osmgaD2Settle();
+            }
         }
         osmgaM12OutN = 0UL;
     }
