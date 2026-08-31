@@ -696,6 +696,20 @@ typedef int OSMGAD3ZorgAligned[
  */
 static const unsigned long *osmgaM12MipOrgs = 0;
 
+/* The band's results, buffered and printed at the METHOD's tail: the
+ * first M12 run lost its opening lines to the syslog volume trap the
+ * note at the top of this file describes, and the tail is the part
+ * that survives.  dN/dB: pixels differing from the NRST and BILIN
+ * controls of the same regime; l0/l1/l2: pixels whose signature
+ * decodes cleanly into one level's disjoint G band; bad: valid-looking
+ * pixels whose checksum fails (bilinear mixtures land here). */
+#define OSMGA_M12_OUT_MAX 16UL
+static struct {
+    const char *tag;
+    unsigned long dN, dB, l0, l1, l2, bad;
+} osmgaM12Out[OSMGA_M12_OUT_MAX];
+static unsigned long osmgaM12OutN = 0UL;
+
 /*
  * TDUALSTAGE0's alpha selector.  Zero selects ARG1, which is the current
  * texture's alpha; this selects ARG2, and with every other field of the
@@ -13541,30 +13555,46 @@ releaseAndReturn:
             osmgaD2Settle();
         }
 
-        /* ---- M12: does the WARP path fetch mip levels? ---------------
-         * M1-4D9 measured the trapezoid path never reading below the
-         * base level and left "it lives on the WARP side" untested; the
-         * old DRI ships a five-level WARP mip chain, so the question is
-         * open exactly here.  Three-level atlas, level markers in alpha,
-         * address signatures in RGB; two rhw regimes; NRST and BILIN as
-         * controls beside the four mip encodings, all with the same
-         * mapnb and origins so the minfilter nibble is the only mover.
-         * One line per mode and regime; the mapnb/fthres/avgstride
-         * ladder waits for this first answer. */
+        /* ---- M12 v2: does the WARP path fetch mip levels? ------------
+         * The first run taught three lessons: the destination alpha does
+         * not carry the texel's alpha, so level markers there are blind;
+         * bilinear mixing breaks the checksum, so decoding alone cannot
+         * judge the filtered modes; and the opening summaries drown in
+         * the syslog burst.  So v2 judges by PER-PIXEL DIFFERENCE
+         * against the NRST and BILIN controls of the same regime -- an
+         * alias is byte-identical to one of them, a mip fetch is
+         * identical to neither -- keeps a disjoint G band per level so
+         * a clean decode names its level without the alpha, and buffers
+         * every verdict for the tail.  The mapnb and fthres sweep arms
+         * ride the same run on mm1s.  docs/M12_WARP_MIPMAP_PLAN.md. */
         {
             vm_address_t aMip = 0;
             unsigned long lMip = 0UL;
             volatile unsigned long *blkMip = 0;
             unsigned long m12orgs[5];
             unsigned long m12tu[3], m12tv[3], m12rhw[3], m12z[3];
-            unsigned long lvl, arm, mode, scale, leg, o;
-            unsigned long anyDeep = 0UL;
-            static const unsigned long m12min[6] = {
-                0x0UL, 0x2UL, 0x8UL, 0x9UL, 0xAUL, 0xCUL };
-            static const char *m12name[6] = {
-                "nrst", "bilin", "mm1s", "mm2s", "mm4s", "mm8s" };
+            unsigned long lvl, arm, runi, o;
+            static unsigned long m12snapN[OSMGA_M3_BLK * OSMGA_M3_BLK];
+            static unsigned long m12snapB[OSMGA_M3_BLK * OSMGA_M3_BLK];
             static const unsigned long m12lvlOff[3] = {
                 0UL, OSMGA_M12_L1_OFF, OSMGA_M12_L2_OFF };
+            /* min nibble, mapnb bits, fthres bits, tag -- runs 0 and 1
+             * are the controls of each regime. */
+            static const struct {
+                unsigned long minf, mapnb, fthres;
+                const char *tag;
+            } m12run[10] = {
+                { 0x0UL, OSMGA_M12_MAPNB2, 0x10UL << 21, "nrst"  },
+                { 0x2UL, OSMGA_M12_MAPNB2, 0x10UL << 21, "bilin" },
+                { 0x8UL, OSMGA_M12_MAPNB2, 0x10UL << 21, "mm1s"  },
+                { 0x9UL, OSMGA_M12_MAPNB2, 0x10UL << 21, "mm2s"  },
+                { 0xAUL, OSMGA_M12_MAPNB2, 0x10UL << 21, "mm4s"  },
+                { 0xCUL, OSMGA_M12_MAPNB2, 0x10UL << 21, "mm8s"  },
+                { 0x8UL, 1UL << 29,        0x10UL << 21, "m1n1"  },
+                { 0x8UL, 4UL << 29,        0x10UL << 21, "m1n4"  },
+                { 0x8UL, OSMGA_M12_MAPNB2, 0x20UL << 21, "m1f2"  },
+                { 0xCUL, OSMGA_M12_MAPNB2, 0x20UL << 21, "m8f2"  },
+            };
             OSMGAM3Tex m12tex;
 
             r = osmgaMapUncachedBlock(frameBufferPhysical, OSMGA_M12_TEX,
@@ -13574,6 +13604,9 @@ releaseAndReturn:
                 IOLog("OpenStepMGA M12: atlas map r=%d, band skipped\n",
                       (int)r);
             } else {
+                /* Disjoint G bands name the level without the alpha:
+                 * G is 0..15 for level 0, 32..35 for level 1, 64 for
+                 * level 2; R is the low offset byte; B checks both. */
                 for (lvl = 0UL; lvl < 3UL; lvl++) {
                     unsigned long dim = OSMGA_M12_L0_DIM >> lvl;
                     unsigned long bas = m12lvlOff[lvl] / 4UL;
@@ -13582,10 +13615,12 @@ releaseAndReturn:
                         for (col = 0UL; col < dim; col++) {
                             unsigned long off = row * dim + col;
                             unsigned long rr = off & 255UL;
-                            unsigned long gg = (off >> 8) & 255UL;
+                            unsigned long gg = (off >> 8)
+                                               + ((lvl == 1UL) ? 32UL
+                                                  : (lvl == 2UL) ? 64UL
+                                                                 : 0UL);
 
-                            blkMip[bas + off] =
-                                ((0x40UL + 0x40UL * lvl) << 24)
+                            blkMip[bas + off] = 0xFF000000UL
                                 | (rr << 16) | (gg << 8)
                                 | ((rr * rr + gg * gg) & 255UL);
                         }
@@ -13597,9 +13632,6 @@ releaseAndReturn:
                 m12orgs[0] = OSMGA_M12_TEX;
                 m12orgs[1] = OSMGA_M12_TEX + OSMGA_M12_L1_OFF;
                 m12orgs[2] = OSMGA_M12_TEX + OSMGA_M12_L2_OFF;
-                /* Valid, in-window, and never legitimately fetched at
-                 * mapnb 2 -- if either shows up in a signature the
-                 * chain walked further than it was told to. */
                 m12orgs[3] = m12orgs[2];
                 m12orgs[4] = m12orgs[2];
 
@@ -13613,18 +13645,22 @@ releaseAndReturn:
                 m12tex.clamp    = MGA_TEXCTL_CLAMPUV;
                 m12tex.tds      = 0UL;
 
+                osmgaM12OutN = 0UL;
                 osmgaM12MipOrgs = m12orgs;
                 for (arm = 0UL; arm < 2UL; arm++) {
-                    for (mode = 0UL; mode < 6UL; mode++) {
-                        unsigned long cl0 = 0UL, cl1 = 0UL, cl2 = 0UL;
-                        unsigned long cmix = 0UL, cbad = 0UL;
+                    unsigned long runs = (arm == 0UL) ? 10UL : 6UL;
+
+                    for (runi = 0UL; runi < runs; runi++) {
+                        unsigned long dN = 0UL, dB = 0UL;
+                        unsigned long l0 = 0UL, l1 = 0UL, l2 = 0UL;
+                        unsigned long cbad = 0UL;
 
                         m12tex.filter = MGA_TEXFILTER_ALPHA
-                                      | (0x10UL << 21)
-                                      | OSMGA_M12_MAPNB2
-                                      | ((mode == 0UL)
+                                      | m12run[runi].fthres
+                                      | m12run[runi].mapnb
+                                      | ((runi == 0UL)
                                              ? 0UL : MGA_TEXFILTER_MAGBILIN)
-                                      | m12min[mode];
+                                      | m12run[runi].minf;
                         if (!osmgaM3StateRun(base, ring, ringDwords,
                                              ringPhys,
                                              osmgaWarpPipeHeld[
@@ -13642,90 +13678,94 @@ releaseAndReturn:
                                   "claimed.  *** REBOOT REQUIRED ***\n");
                             goto unmapM4;
                         }
-                        for (scale = 0UL; scale < 3UL; scale++) {
-                            /* legs 32/16/8 sample the same s 0..1 span:
-                             * 64 texels over the leg = minification of
-                             * 2, 4 and 8. */
-                            leg = OSMGA_M12_L0_DIM >> (scale + 1UL);
-                            m12z[0] = m12z[1] = m12z[2] = OSMGA_M3_F32_HALF;
-                            if (arm == 0UL) {
-                                m12rhw[0] = m12rhw[1] = m12rhw[2] =
-                                    OSMGA_M4_F32_ONE;
-                                m12tu[0] = 0UL;
-                                m12tu[1] = OSMGA_M4_F32_ONE;
-                                m12tu[2] = 0UL;
-                                m12tv[0] = m12tv[1] = m12tv[2] =
-                                    OSMGA_M3_F32_HALF;
-                            } else {
-                                m12rhw[0] = OSMGA_M4_F32_ONE;
-                                m12rhw[1] = OSMGA_M4_F32_FOUR;
-                                m12rhw[2] = OSMGA_M4_F32_ONE;
-                                m12tu[0] = 0UL;
-                                m12tu[1] = OSMGA_M4_F32_FOUR;
-                                m12tu[2] = 0UL;
-                                m12tv[0] = OSMGA_M3_F32_HALF;
-                                m12tv[1] = OSMGA_M12_F32_TWO;
-                                m12tv[2] = OSMGA_M3_F32_HALF;
-                            }
-                            for (row = 0UL; row < OSMGA_M3_BLK; row++)
-                                for (col = 0UL; col < OSMGA_M3_BLK; col++)
-                                    blkWa[row * stride + col] =
-                                        OSMGA_S1_SENTINEL;
-                            osmgaM3BuildPerspTri(vtx, OSMGA_M3_TRI_LO,
-                                                 OSMGA_M3_TRI_LO, leg,
-                                                 m12rhw, m12tu, m12tv,
-                                                 m12z, 0xFFFFFFFFUL);
-                            if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys,
-                                                     OSMGA_D2C_VTX_DWORDS,
-                                                     1, "M12", 0)) {
-                                osmgaM12MipOrgs = 0;
-                                IOUnmapPhysicalFromIOTask(aMip, lMip);
-                                IOLog("OpenStepMGA M3: RETAINED, engine "
-                                      "claimed.  *** REBOOT REQUIRED "
-                                      "***\n");
-                                goto unmapM4;
-                            }
-                            for (row = 0UL; row < OSMGA_M3_BLK; row++)
-                                for (col = 0UL; col < OSMGA_M3_BLK;
-                                     col++) {
-                                    unsigned long v =
-                                        blkWa[row * stride + col];
-                                    unsigned long rr, gg;
-
-                                    if (v == OSMGA_S1_SENTINEL)
-                                        continue;
-                                    rr = (v >> 16) & 255UL;
-                                    gg = (v >> 8) & 255UL;
-                                    if (((rr * rr + gg * gg) & 255UL) !=
-                                        (v & 255UL))
-                                        cbad++;
-                                    else if ((v >> 24) == 0x40UL)
-                                        cl0++;
-                                    else if ((v >> 24) == 0x80UL)
-                                        cl1++;
-                                    else if ((v >> 24) == 0xC0UL)
-                                        cl2++;
-                                    else
-                                        cmix++;
-                                }
+                        /* one scale: a 16-pixel leg over the whole s
+                         * span is a minification of four -- squarely in
+                         * mip territory with the filter threshold at
+                         * one. */
+                        m12z[0] = m12z[1] = m12z[2] = OSMGA_M3_F32_HALF;
+                        if (arm == 0UL) {
+                            m12rhw[0] = m12rhw[1] = m12rhw[2] =
+                                OSMGA_M4_F32_ONE;
+                            m12tu[0] = 0UL;
+                            m12tu[1] = OSMGA_M4_F32_ONE;
+                            m12tu[2] = 0UL;
+                            m12tv[0] = m12tv[1] = m12tv[2] =
+                                OSMGA_M3_F32_HALF;
+                        } else {
+                            m12rhw[0] = OSMGA_M4_F32_ONE;
+                            m12rhw[1] = OSMGA_M4_F32_FOUR;
+                            m12rhw[2] = OSMGA_M4_F32_ONE;
+                            m12tu[0] = 0UL;
+                            m12tu[1] = OSMGA_M4_F32_FOUR;
+                            m12tu[2] = 0UL;
+                            m12tv[0] = OSMGA_M3_F32_HALF;
+                            m12tv[1] = OSMGA_M12_F32_TWO;
+                            m12tv[2] = OSMGA_M3_F32_HALF;
                         }
-                        if (cl1 != 0UL || cl2 != 0UL)
-                            anyDeep = 1UL;
-                        IOLog("OpenStepMGA M12 %s/%s: L0 %lu L1 %lu L2 "
-                              "%lu mix %lu bad %lu\n",
-                              (arm == 0UL) ? "aff" : "per",
-                              m12name[mode], cl0, cl1, cl2, cmix, cbad);
-                        osmgaD2Settle();
+                        for (row = 0UL; row < OSMGA_M3_BLK; row++)
+                            for (col = 0UL; col < OSMGA_M3_BLK; col++)
+                                blkWa[row * stride + col] =
+                                    OSMGA_S1_SENTINEL;
+                        osmgaM3BuildPerspTri(vtx, OSMGA_M3_TRI_LO,
+                                             OSMGA_M3_TRI_LO, 16UL,
+                                             m12rhw, m12tu, m12tv,
+                                             m12z, 0xFFFFFFFFUL);
+                        if (!osmgaD2eSubmitBatch(base, vtx, vtxPhys,
+                                                 OSMGA_D2C_VTX_DWORDS,
+                                                 1, "M12", 0)) {
+                            osmgaM12MipOrgs = 0;
+                            IOUnmapPhysicalFromIOTask(aMip, lMip);
+                            IOLog("OpenStepMGA M3: RETAINED, engine "
+                                  "claimed.  *** REBOOT REQUIRED ***\n");
+                            goto unmapM4;
+                        }
+                        for (row = 0UL; row < OSMGA_M3_BLK; row++)
+                            for (col = 0UL; col < OSMGA_M3_BLK; col++) {
+                                unsigned long ix = row * OSMGA_M3_BLK
+                                                   + col;
+                                unsigned long v =
+                                    blkWa[row * stride + col];
+                                unsigned long rr, gg;
+
+                                if (runi == 0UL)
+                                    m12snapN[ix] = v;
+                                else if (v != m12snapN[ix])
+                                    dN++;
+                                if (runi == 1UL)
+                                    m12snapB[ix] = v;
+                                else if (runi > 1UL &&
+                                         v != m12snapB[ix])
+                                    dB++;
+                                if (v == OSMGA_S1_SENTINEL)
+                                    continue;
+                                rr = (v >> 16) & 255UL;
+                                gg = (v >> 8) & 255UL;
+                                if (((rr * rr + gg * gg) & 255UL) !=
+                                    (v & 255UL))
+                                    cbad++;
+                                else if (gg < 16UL)
+                                    l0++;
+                                else if (gg >= 32UL && gg < 36UL)
+                                    l1++;
+                                else if (gg == 64UL)
+                                    l2++;
+                                else
+                                    cbad++;
+                            }
+                        if (osmgaM12OutN < OSMGA_M12_OUT_MAX) {
+                            osmgaM12Out[osmgaM12OutN].tag =
+                                m12run[runi].tag;
+                            osmgaM12Out[osmgaM12OutN].dN  = dN;
+                            osmgaM12Out[osmgaM12OutN].dB  = dB;
+                            osmgaM12Out[osmgaM12OutN].l0  = l0;
+                            osmgaM12Out[osmgaM12OutN].l1  = l1;
+                            osmgaM12Out[osmgaM12OutN].l2  = l2;
+                            osmgaM12Out[osmgaM12OutN].bad = cbad;
+                            osmgaM12OutN++;
+                        }
                     }
                 }
                 osmgaM12MipOrgs = 0;
-                if (anyDeep != 0UL)
-                    IOLog("OpenStepMGA M12: MIP FETCH OBSERVED on the "
-                          "WARP path -- Phase B is live\n");
-                else
-                    IOLog("OpenStepMGA M12: no mip fetch observed in "
-                          "this ladder; the sweep arms come next\n");
-                osmgaD2Settle();
                 IOUnmapPhysicalFromIOTask(aMip, lMip);
             }
         }
@@ -13748,6 +13788,24 @@ releaseAndReturn:
           osmgaM3Probes[0].leg * (osmgaM3Probes[0].leg + 1UL) / 2UL,
           osmgaM3Probes[2].leg * (osmgaM3Probes[2].leg + 1UL) / 2UL);
     osmgaD2Settle();
+
+    /* M12, printed here because the tail is what the syslog keeps.  The
+     * first eight rows (ten runs) are the affine regime with its sweep
+     * arms; the last six the perspective regime. */
+    {
+        unsigned long mo;
+
+        for (mo = 0UL; mo < osmgaM12OutN; mo++) {
+            IOLog("OpenStepMGA M12[%lu] %s: dN %lu dB %lu | L0 %lu L1 "
+                  "%lu L2 %lu bad %lu\n",
+                  mo, osmgaM12Out[mo].tag,
+                  osmgaM12Out[mo].dN, osmgaM12Out[mo].dB,
+                  osmgaM12Out[mo].l0, osmgaM12Out[mo].l1,
+                  osmgaM12Out[mo].l2, osmgaM12Out[mo].bad);
+            osmgaD2Settle();
+        }
+        osmgaM12OutN = 0UL;
+    }
 
 releaseAll:
     for (row = 0UL; row < OSMGA_M3_BLK; row++)
