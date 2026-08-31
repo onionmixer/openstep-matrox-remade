@@ -706,7 +706,7 @@ typedef int OSMGAD3ZorgAligned[
  * itself against the row's expected G.  samp keeps the first four
  * pixels that left the expected window, (row<<24)|(col<<16)|G, printed
  * only when there are any. */
-#define OSMGA_M12_OUT_MAX 16UL
+#define OSMGA_M12_OUT_MAX 24UL
 static struct {
     const char *tag;
     unsigned long expG, cnt, gMin, gMax, gSum, bad;
@@ -13648,7 +13648,7 @@ releaseAndReturn:
             static const struct {
                 unsigned long minf, tuSpan, expG;
                 const char *tag;
-            } m12run[14] = {
+            } m12run[17] = {
                 { 0xAUL, 0x3F000000UL, 32UL, "m4-1.000" },
                 { 0xAUL, 0x3F0B95C2UL, 36UL, "m4-1.125" },
                 { 0xAUL, 0x3F25FED7UL, 44UL, "m4-1.375" },
@@ -13663,6 +13663,20 @@ releaseAndReturn:
                 { 0xCUL, 0x3F800000UL, 64UL, "m8-2.000" },
                 { 0x8UL, 0x3F3123F6UL, 32UL, "m1-lo"    },
                 { 0x8UL, 0x3F38FBAFUL, 64UL, "m1-hi"    },
+                /* The deciders, added on the first full harvest.  The
+                 * fourteen rows above fit one model exactly -- mantissa-
+                 * linear lambda, MM4S rounding the LEVEL with no blend,
+                 * MM8S blending with f floored to sixteenths -- and that
+                 * model says the spec's 9612-9614 naming, not the DRI's,
+                 * is the swapped one.  MM2S at two fractional lambdas
+                 * settles it: blended G (40/48) means two levels one tap
+                 * each, binary G (32/64) means one level four taps.  The
+                 * MM1S row at lambda_lin 1.542 separates round from
+                 * floor, which m1-lo/m1-hi straddling 1.5 in TRUE lambda
+                 * could not. */
+                { 0x9UL, 0x3F25FED7UL, 44UL, "m2-1.375"  },
+                { 0x9UL, 0x3F45672AUL, 52UL, "m2-1.625"  },
+                { 0x8UL, 0x3F45672AUL, 64UL, "m1-1.625"  },
             };
             OSMGAM3Tex m12tex;
 
@@ -13724,7 +13738,7 @@ releaseAndReturn:
                 m12tex.mipOrg[1] = m12orgs[2];
                 m12tex.mipOrg[2] = m12orgs[3];
                 m12tex.mipOrg[3] = m12orgs[4];
-                for (runi = 0UL; runi < 14UL; runi++) {
+                for (runi = 0UL; runi < 17UL; runi++) {
                     unsigned long cnt = 0UL, gMin = 255UL, gMax = 0UL;
                     unsigned long gSum = 0UL, cbad = 0UL, nsamp = 0UL;
                     unsigned long samp[4];
