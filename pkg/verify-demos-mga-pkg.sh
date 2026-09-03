@@ -15,7 +15,7 @@
 #   5. the cut geometry header did not travel.
 PKGDIR="${1:-/usr/local/mesastage/OpenStepMesa342/dist}"
 SRC="${2:-/ndrv/openstep-matrox-remade}"
-MESA="${3:-/ndrv/opennstep-mesa342}"
+MESA="${3:-/ndrv/openstep-mesa342}"
 NAME=OpenStepMesa342DemosMGA
 PKG="$PKGDIR/$NAME.pkg"
 UNPACK=/tmp/_demosmgaverify

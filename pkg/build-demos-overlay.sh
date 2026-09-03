@@ -37,7 +37,7 @@
 # description -- so the two artefacts never share an identity.
 set -e
 SRC="${1:-/ndrv/openstep-matrox-remade}"
-MESA="${2:-/ndrv/opennstep-mesa342}"
+MESA="${2:-/ndrv/openstep-mesa342}"
 OUT="${3:-/tmp/_mgateapot/overlay}"
 MESASRC="$MESA/upstream/Mesa-3.4.2"
 PREFIX=/tmp/_mgateapot/prefix

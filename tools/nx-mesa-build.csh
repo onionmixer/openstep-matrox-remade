@@ -32,7 +32,7 @@ set stamp  = "$parent/.port-stamp"
 # of its lines -- so committing anything at all looked like the source had
 # moved, and forced a staging that changed nothing.
 #
-set ported = "$src/opennstep-mesa342/upstream $src/opennstep-mesa342/build $src/opennstep-mesa342/packaging $src/opennstep-mesa342/docs $src/opennstep-mesa342/examples $src/opennstep-mesa342/test"
+set ported = "$src/openstep-mesa342/upstream $src/openstep-mesa342/build $src/openstep-mesa342/packaging $src/openstep-mesa342/docs $src/openstep-mesa342/examples $src/openstep-mesa342/test"
 set force  = 0
 
 # Nested, not "&&": csh substitutes before it evaluates, so a one-line test
@@ -87,8 +87,8 @@ else
 endif
 
 if ($restage) then
-    csh -f $src/opennstep-mesa342/build/stage-openstep-mesa342.csh $src || exit 1
-    csh -f $src/opennstep-mesa342/build/build-openstep-mesa342.csh || exit 1
+    csh -f $src/openstep-mesa342/build/stage-openstep-mesa342.csh $src || exit 1
+    csh -f $src/openstep-mesa342/build/build-openstep-mesa342.csh || exit 1
     #
     # Written the way it will be READ.  Piping sum straight into the file
     # keeps its own spacing, while the comparison above goes through a

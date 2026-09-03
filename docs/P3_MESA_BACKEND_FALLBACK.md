@@ -2,7 +2,7 @@
 
 ## Existing Mesa port boundary
 
-The separately packaged `opennstep-mesa342` port builds Mesa 3.4.2's OPENSTEP
+The separately packaged `openstep-mesa342` port builds Mesa 3.4.2's OPENSTEP
 target and includes OSMesa in `libGL.a`.  OSMesa renders to caller-owned main
 memory, so it is the required software fallback for this project; no GLX,
 X11, or current-card access is involved.  The historical OSMesa header's

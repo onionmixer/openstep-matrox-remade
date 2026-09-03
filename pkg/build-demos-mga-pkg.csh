@@ -33,7 +33,7 @@ endif
 
 if (! -d "$MESA_STAGE_PARENT/OpenStepMesa342/src") then
     echo "build-demos-mga-pkg: no staged Mesa tree at $MESA_STAGE_PARENT"
-    echo "build-demos-mga-pkg: run opennstep-mesa342/build/stage-openstep-mesa342.csh first"
+    echo "build-demos-mga-pkg: run openstep-mesa342/build/stage-openstep-mesa342.csh first"
     exit 2
 endif
 if (! -d "$MESA_DEMO_OVERLAY/Examples") then

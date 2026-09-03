@@ -18,7 +18,7 @@ SRC="${1:-/ndrv/openstep-matrox-remade}"
 # package" on a package that had just been written somewhere else.  The
 # directory is created below rather than assumed.
 OUT="${2:-/tmp/pkgout}"
-MESA="${3:-/ndrv/opennstep-mesa342}"
+MESA="${3:-/ndrv/openstep-mesa342}"
 NAME=OSMGAMesaAccel
 PKGTOOL=/NextAdmin/Installer.app/package
 LIB="$SRC/build/mesa/libGL_mga.a"

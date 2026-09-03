@@ -2,7 +2,7 @@
 
 ## 0. 제약 — 소프트웨어 경로는 그대로 산다
 
-**`opennstep-mesa342` 는 손대지 않는다.** 확인했다: 그 트리의 `src` 에 우리 심볼이
+**`openstep-mesa342` 는 손대지 않는다.** 확인했다: 그 트리의 `src` 에 우리 심볼이
 하나도 없다. 훅은 `ctx->Driver.TriangleFunc` 등을 저장하고 갈아 끼우는 방식이고
 (`OpenStepMGAMesaHook.c:2535`), **못 그리면 NULL 을 돌려 소프트웨어가 그린다**
 (`:41` *"the refusal is a NULL return and the software function ..."*).

@@ -58,7 +58,7 @@ Mesa 스테이징은 이제 로컬 디스크에 있으므로 **다시 스테이�
 정말 필요하면:
 
 ```sh
-./tools/nxrun.sh 'csh /ndrv/opennstep-mesa342/build/stage-openstep-mesa342.csh /ndrv'
+./tools/nxrun.sh 'csh /ndrv/openstep-mesa342/build/stage-openstep-mesa342.csh /ndrv'
 ```
 
 ## 경로를 옮기고 확인한 것

@@ -141,7 +141,7 @@ AGP 경로는 대비되게 `MGA_PAGPXFER`를 넣는다(`:596`).
 DRM(`mga_warp.c`, `mga_state.c`)에 있으며 **우리에게 없다.**
 
 ### 4-3. 결정적 — Mesa 3.4.2에 MGA 드라이버가 없다
-우리 `opennstep-mesa342/upstream/Mesa-3.4.2/src/`에는 FX(3dfx)·S3·SVGA·GGI·
+우리 `openstep-mesa342/upstream/Mesa-3.4.2/src/`에는 FX(3dfx)·S3·SVGA·GGI·
 D3D·Allegro·DOS·BeOS·Windows·X·OSmesa만 있다. **MGA 없음.**
 MGA용 Mesa 하드웨어 드라이버는 DRI 트리(Mesa 3.5+)에 있고 **DRM ioctl·SAREA·
 DRI 락에 의존**한다 — OPENSTEP에 전부 없다. 따라서 **포팅이 아니라 신규 작성**이다.

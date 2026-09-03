@@ -58,7 +58,7 @@ mmap((caddr_t)addr, ..., OSMGAMesaProbeDeviceFd(),
 `ctx->gl_buffer->DepthBuffer` 에 꽂는다:
 
 ```c
-/* opennstep-mesa342/.../osmesa.c:476 */
+/* openstep-mesa342/.../osmesa.c:476 */
 ctx->gl_buffer->DepthBuffer = accelDepth;
 ctx->gl_buffer->UseSoftwareDepthBuffer = GL_FALSE;
 ```

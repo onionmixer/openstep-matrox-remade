@@ -224,7 +224,7 @@ changing what it boots.
 ```sh
 # 1-2. this project's two packages
 sh  /ndrv/openstep-matrox-remade/pkg/build-driver-pkg.sh  /ndrv/openstep-matrox-remade /tmp/pkgout
-sh  /ndrv/openstep-matrox-remade/pkg/build-accel-pkg.sh   /ndrv/openstep-matrox-remade /tmp/pkgout /ndrv/opennstep-mesa342
+sh  /ndrv/openstep-matrox-remade/pkg/build-accel-pkg.sh   /ndrv/openstep-matrox-remade /tmp/pkgout /ndrv/openstep-mesa342
 
 # 3. both demo pairs, staged as an overlay tree
 sh  /ndrv/openstep-matrox-remade/pkg/build-demos-overlay.sh
@@ -233,12 +233,12 @@ sh  /ndrv/openstep-matrox-remade/pkg/build-demos-overlay.sh
 #    builder reads and refuses when either target is missing -- both of its
 #    defaults are wrong here, and MESA_STAGE_PARENT defaulting to /tmp once
 #    produced a silent exit 2 with no output at all.
-csh -f /ndrv/opennstep-mesa342/build/stage-openstep-mesa342.csh /ndrv
+csh -f /ndrv/openstep-mesa342/build/stage-openstep-mesa342.csh /ndrv
 csh -f /ndrv/openstep-matrox-remade/pkg/build-demos-mga-pkg.csh
 
 # 5. verify all three, without installing anything
 sh  /ndrv/openstep-matrox-remade/pkg/verify-driver-pkg.sh    /tmp/pkgout
-sh  /ndrv/openstep-matrox-remade/pkg/verify-accel-pkg.sh     /tmp/pkgout /ndrv/openstep-matrox-remade /ndrv/opennstep-mesa342
+sh  /ndrv/openstep-matrox-remade/pkg/verify-accel-pkg.sh     /tmp/pkgout /ndrv/openstep-matrox-remade /ndrv/openstep-mesa342
 sh  /ndrv/openstep-matrox-remade/pkg/verify-demos-mga-pkg.sh
 
 # 5b. and the gate that spans them: no file claimed by two packages

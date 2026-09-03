@@ -7,7 +7,7 @@
 # at what an installer would actually place.
 PKGDIR="${1:-/tmp/pkgout}"   # the same default as every other script here
 SRC="${2:-/ndrv/openstep-matrox-remade}"
-MESA="${3:-/ndrv/opennstep-mesa342}"
+MESA="${3:-/ndrv/openstep-mesa342}"
 NAME=OSMGAMesaAccel
 PKG="$PKGDIR/$NAME.pkg"
 UNPACK=/tmp/_mgaaccelverify

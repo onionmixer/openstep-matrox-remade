@@ -61,7 +61,7 @@ set mesa_src  = "$MESA_STAGE_PARENT/OpenStepMesa342/src/Mesa-3.4.2"
 # from the fallback.  Same convention as the sh tools.
 if (! $?MOUNTPT) setenv MOUNTPT /ndrv
 set mga_src   = $MOUNTPT/openstep-matrox-remade
-set port_src  = $MOUNTPT/opennstep-mesa342/upstream/Mesa-3.4.2
+set port_src  = $MOUNTPT/openstep-mesa342/upstream/Mesa-3.4.2
 set out       = "$MGA_OUT_PARENT/OpenStepMesaMGA"   # -test appends a suffix, below
 
 # Enforced, not only asked for in the comment above: the two must be separate

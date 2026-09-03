@@ -61,7 +61,7 @@ and must be excluded from any payload.
 **P4.  The accelerated `libGL_mga.a` is a Mesa derivative.**  It is
 `osmesa.o` built from the Mesa port's own source plus six objects of ours,
 archived together.  Shipping it ships Mesa binary code and inherits Mesa's
-notice requirements -- and `opennstep-mesa342` is a separate sibling project
+notice requirements -- and `openstep-mesa342` is a separate sibling project
 with its own COPYING/COPYRIGHT/NOTICE and its own split packages.  Whether
 the accelerated library belongs in THIS release, or is a variant of the Mesa
 project's Libraries package, is a scoping decision to make before any
