@@ -24,7 +24,7 @@ dest="$root/release-assets"
 declare -A NAMES=(
   [OSMGADisplay]="OpenStep-MGA-G450-${version}-i486-Display"
   [OSMGAMesaAccel]="OpenStep-MGA-G450-${version}-i486-MesaAccel"
-  [OpenStepMesa342DemosMGA]="OpenStep-Mesa-3.4.2-openstep.1-mga.1-i486-Demos"
+  [OpenStepMesa342DemosMGA]="OpenStep-Mesa-3.4.2-openstep.1-mga.2-i486-Demos"
 )
 
 for n in "${!NAMES[@]}"; do

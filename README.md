@@ -5,10 +5,12 @@ OPENSTEP 4.2의 Matrox G450 PCI VGA를 위한 새 DriverKit 디스플레이
 display driver를 고친 것이 아니라, 공개 하드웨어 자료와 공개 MGA 구현을
 근거로 새로 만든 `IOFrameBufferDisplay` 서브클래스다.
 
-**v1.3 릴리스**: [releases/tag/v1.3](https://github.com/onionmixer/openstep-matrox-remade/releases/tag/v1.3)
+**v1.4 릴리스**: [releases/tag/v1.4](https://github.com/onionmixer/openstep-matrox-remade/releases/tag/v1.4)
 — 설치용 `.pkg` 세 개와 SHA256SUMS. 설치와 복구 절차는
 [release-packaging/INSTALL.md](release-packaging/INSTALL.md)에 있고,
-변경 내역은 [RELEASE_NOTES_v1.3.md](RELEASE_NOTES_v1.3.md)에 있다.
+변경 내역은 [RELEASE_NOTES_v1.4.md](RELEASE_NOTES_v1.4.md)에 있다.
+1.4 는 공유 Mesa 계약층의 형식 검사 하나 때문에 라이브러리를 다시 빌드한
+판이고, 드라이버 바이너리는 1.3 과 같다.
 
 ## SDL2 가속
 
