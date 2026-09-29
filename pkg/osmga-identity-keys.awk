@@ -44,6 +44,7 @@
 BEGIN {
     want["Driver Name"] = 1; want["Server Name"] = 1; want["Class Names"] = 1
     want["Family"] = 1;      want["Version"] = 1
+    want["Character Major"] = 1         # REL1: the package makes the node for it
     bad = 0
 }
 

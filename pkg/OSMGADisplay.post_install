@@ -26,6 +26,40 @@ set drv = "${prefix}/private/Drivers/i386"
 set cfg = "$drv/OSMGADisplay.config"
 set stash = "$drv/OSMGADisplay.instances"
 
+#
+# THE 3D osmgavram, ON EVERY INSTALL (REL1, openstep-radeon9250
+# docs/REL1_PACKAGING_PLAN.md 19).  Before the first-install exit below, or a
+# fresh install would never reach it.  The major is read from the installed
+# Default.table, which the driver registers with ("Character Major"), so the
+# node and the driver cannot disagree.  Mode 666 is the operator's decision:
+# every user may draw with the card -- and, through a defect in the kernel's
+# mmap (lengths of 2^31 and more skip the checks), every user who can open
+# this node can also crash the machine.  INSTALL.md says so.
+#
+set node = "${prefix}/private/dev/osmgavram"
+if (! -r "$cfg/Default.table") then
+    echo "OSMGADisplay: $cfg/Default.table is missing; the 3D node was not made"
+    exit 1
+endif
+set major = `grep '^"Character Major"' "$cfg/Default.table" | sed 's/[^0-9]//g'`
+if ("$major" == "") then
+    echo "OSMGADisplay: no Character Major in Default.table; the 3D node was not made"
+    exit 1
+endif
+rm -f "$node"
+/usr/etc/mknod "$node" c $major 0
+if ($status != 0) then
+    echo "OSMGADisplay: mknod $node c $major 0 failed; the card will not be used"
+    exit 1
+endif
+chmod 666 "$node"
+set got = `ls -l "$node" | awk '{print $1, $4, $5}'`
+if ("$got" != "crw-rw-rw- ${major}, 0") then
+    echo "OSMGADisplay: $node came out as '$got'; the card will not be used"
+    exit 1
+endif
+echo "OSMGADisplay: made $node (c $major 0, mode 666)"
+
 if (! -d "$stash") exit 0        # first install: the shipped table stays
 
 if (! -d "$cfg") then
@@ -66,7 +100,8 @@ end
 # Driver Name back over a renamed bundle -- which would have booted with no
 # display driver, since Active Drivers called for the new name.
 #
-# Five keys, from Default.table (the payload's instance table is gone by
+# Six keys, from Default.table ("Character Major" joined in REL1: the node
+# below is made for that major, so it is the package's, not the machine's) (the payload's instance table is gone by
 # now -- the restore above wrote over it).  Everything else is emitted byte
 # for byte in place.  See pkg/osmga-identity-keys.awk.
 #
@@ -79,16 +114,16 @@ foreach t ($kept)
     endif
     #
     # The invariant is not "same number of lines" -- a key the machine lacks
-    # is appended.  It is that everything OUTSIDE those five keys is
+    # is appended.  It is that everything OUTSIDE those six keys is
     # untouched, so both sides are compared with the selected lines removed.
     #
-    egrep -v '^"(Driver Name|Server Name|Class Names|Family|Version)"' \
+    egrep -v '^"(Driver Name|Server Name|Class Names|Family|Version|Character Major)"' \
         "$cfg/$t" > "$stash/a-$t"
-    egrep -v '^"(Driver Name|Server Name|Class Names|Family|Version)"' \
+    egrep -v '^"(Driver Name|Server Name|Class Names|Family|Version|Character Major)"' \
         "$stash/cand-$t" > "$stash/b-$t"
     cmp -s "$stash/a-$t" "$stash/b-$t"
     if ($status != 0) then
-        echo "OSMGADisplay: rewriting $t changed something outside the five"
+        echo "OSMGADisplay: rewriting $t changed something outside the six"
         echo "OSMGADisplay: identity keys; nothing moved and $stash is kept"
         exit 1
     endif

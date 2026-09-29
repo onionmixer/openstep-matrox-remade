@@ -137,6 +137,17 @@ Then turn on the two switches in `Configure.app`, on the display's instance:
   device, which is how a program gets a buffer on the card.
 - `Mesa Acceleration` = `Yes` -- lets the driver report the capability.
 
+The character device is reached through `/dev/osmgavram` (major 37, minor 0),
+which the driver package makes on every install, **readable and writable by
+every user** (`crw-rw-rw-`); from 1.4 the bundle names major 37 itself, so the
+node and the driver always agree (1.3 took whatever major was free, and the
+node had to be made by hand).  Once the two switches above are on, anyone
+logged in can draw with the card.  Know the price: OPENSTEP's kernel skips its
+own checks for a memory mapping of 2 GB or more, so **any user who can open
+this node can also crash the machine**.  On a machine whose local users you do
+not trust, `chmod 600 /dev/osmgavram` after installing (and again after every
+reinstall, which remakes it with mode 666).
+
 There is a third switch, and it is optional:
 
 - `WARP 3D` = `Yes` -- hands the triangles to the card's WARP setup engine

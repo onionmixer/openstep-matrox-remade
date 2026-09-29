@@ -66,6 +66,10 @@
 "MGA Memory Size" = "16";
 "Storm 2D Test" = "No";
 "VRAM Mmap" = "No";
+/* REL1: the character device takes major 37, and the package makes
+   /dev/osmgavram (c 37 0, mode 666) for it.  No comment on the key's own
+   line: post_install reads the number off that line. */
+"Character Major" = "37";
 "Mesa Acceleration" = "No";
 "WARP 3D" = "No";
 "DMA Ring Test" = "No";

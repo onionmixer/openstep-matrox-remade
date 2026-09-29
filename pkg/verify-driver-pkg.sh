@@ -258,6 +258,30 @@ else
     bad "the WARP notice is not in the shipped NOTICE"
 fi
 
+echo "the 3D node (REL1 19): made on every install, for the tables' major, mode 666"
+if grep '/usr/etc/mknod "$node" c $major 0' "$PKG/$NAME.post_install" > /dev/null && \
+   grep 'chmod 666 "$node"' "$PKG/$NAME.post_install" > /dev/null && \
+   grep 'private/dev/osmgavram"' "$PKG/$NAME.post_install" > /dev/null; then
+    note "ok   post_install makes /dev/osmgavram with mknod and mode 666"
+else
+    bad "post_install does not make /dev/osmgavram (mknod, chmod 666)"
+fi
+# before the first-install exit, or a fresh install never reaches it
+a=`grep -n '/usr/etc/mknod' "$PKG/$NAME.post_install" | head -1 | awk -F: '{print $1}'`
+b=`grep -n 'exit 0        # first install' "$PKG/$NAME.post_install" | head -1 | awk -F: '{print $1}'`
+if [ -n "$a" ] && [ -n "$b" ] && [ $a -lt $b ]; then
+    note "ok   the node is made before the first-install exit"
+else
+    bad "the node is made after the first-install exit -- a fresh install gets none"
+fi
+for t in Default.table Instance0.table; do
+    if grep '^"Character Major" = "37";$' "$D/$t" > /dev/null; then
+        note "ok   $t: Character Major 37"
+    else
+        bad "$t does not say \"Character Major\" = \"37\" -- the node would not match"
+    fi
+done
+
 n=`wc -l < "$FAILS"`
 if [ "$n" -eq 0 ]; then
     echo "VERIFY_DRIVER_PKG=PASS"
