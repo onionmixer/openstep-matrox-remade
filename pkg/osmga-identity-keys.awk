@@ -10,7 +10,7 @@
 # wrote the OLD Driver Name back over a renamed bundle, which would have
 # come up with no display driver.
 #
-# FIVE KEYS, NOT NINE.  Auto Detect IDs and Bus Type look like the package's,
+# SIX KEYS, NO MORE.  Auto Detect IDs and Bus Type look like the package's,
 # but doc/driverkit.md is explicit that InstanceN.table records the hardware
 # as DETECTED AND CONFIGURED -- its example of a working DEC 21041 carries
 # Auto Detect IDs inside the instance table.  Those are the machine's record
@@ -86,8 +86,8 @@ FILENAME ~ /Default\.table$/ {
     print
 }
 
-# A key the machine lacks is appended rather than dropped.  All five are
-# required for the driver to load, so their absence is not a setting.
+# A key the machine lacks is appended rather than dropped.  All six are
+# the package's to set, so their absence is not a setting.
 END {
     for (key in val)
         if (done[key] != 1) print val[key]
